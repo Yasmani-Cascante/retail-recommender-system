@@ -4,12 +4,18 @@ Este proyecto implementa un sistema de recomendaciones para productos de retail 
 
 ## Instalación
 
-1. Crear un entorno virtual:
+1. Clonar el repositorio:
+```bash
+git clone https://github.com/Yasmani-Cascante/retail-recommender-system.git
+cd retail-recommender-system
+```
+
+2. Crear un entorno virtual:
 ```bash
 python -m venv venv
 ```
 
-2. Activar el entorno virtual:
+3. Activar el entorno virtual:
 - En Windows:
 ```bash
 .\venv\Scripts\activate
@@ -19,20 +25,28 @@ python -m venv venv
 source venv/bin/activate
 ```
 
-3. Instalar dependencias:
+4. Instalar el proyecto en modo desarrollo:
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ## Ejecutar el proyecto
 
-1. Asegúrate de tener el entorno virtual activado
-2. Desde la raíz del proyecto, ejecuta:
+Hay varias formas de ejecutar el proyecto:
+
+1. Usando el archivo run.py en la raíz (recomendado):
+```bash
+python run.py
+```
+
+2. O directamente usando el módulo src:
 ```bash
 python src/api/run.py
 ```
-3. La API estará disponible en `http://localhost:8000`
-4. Puedes ver la documentación de la API en `http://localhost:8000/docs`
+
+El servidor estará disponible en:
+- API: http://localhost:8000
+- Documentación: http://localhost:8000/docs
 
 ## Endpoints disponibles
 
@@ -62,4 +76,19 @@ http://localhost:8000/products/category/Vestidos
 4. Buscar productos que contengan "algodón":
 ```
 http://localhost:8000/products/search/?q=algodón
+```
+
+## Estructura del proyecto
+
+```
+retail-recommender-system/
+├── setup.py               # Configuración del paquete
+├── requirements.txt       # Dependencias del proyecto
+├── run.py                # Script principal para ejecutar el proyecto
+└── src/                  # Código fuente
+    ├── api/              # API REST con FastAPI
+    │   ├── main.py      # Definición de endpoints
+    │   └── run.py       # Script de ejecución alternativo
+    └── recommenders/     # Módulos de recomendación
+        └── content_based.py  # Recomendador basado en contenido
 ```
