@@ -10,10 +10,10 @@ automatic_scaling:
 
 env_variables:
   API_KEY: ""  # Set this in GCP Console
-  GOOGLE_PROJECT_NUMBER: ""  # Set this in GCP Console
-  GOOGLE_LOCATION: "global"
+  GOOGLE_PROJECT_NUMBER: "178362262166"  # Set this in GCP Console
+  GOOGLE_LOCATION: us-central1
   GOOGLE_CATALOG: "default_catalog"
-  GOOGLE_SERVING_CONFIG: "default_config"
+  GOOGLE_SERVING_CONFIG: "D:/Projects/AI/retail-recommender/service-account-key.json"
 
 handlers:
 - url: /.*
