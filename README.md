@@ -1,94 +1,114 @@
-# Sistema de Recomendaciones para Retail
+# Retail Recommender System
 
-Este proyecto implementa un sistema de recomendaciones para productos de retail utilizando técnicas de recomendación basadas en contenido.
+Sistema de recomendaciones para retail que combina recomendaciones basadas en contenido con la API de Google Cloud Retail.
 
-## Instalación
+## Características
+
+- API REST con FastAPI
+- Sistema de recomendaciones híbrido
+- Integración con Google Cloud Retail API
+- Autenticación y autorización
+- Logging y monitoreo
+- Despliegue en Google Cloud Platform
+
+## Requisitos
+
+- Python 3.9+
+- Google Cloud Platform account
+- Google Cloud SDK
+
+## Configuración Local
 
 1. Clonar el repositorio:
 ```bash
-git clone https://github.com/Yasmani-Cascante/retail-recommender-system.git
+git clone https://github.com/yourusername/retail-recommender-system.git
 cd retail-recommender-system
 ```
 
-2. Crear un entorno virtual:
+2. Crear entorno virtual:
 ```bash
 python -m venv venv
+source venv/bin/activate  # Linux/Mac
+.\venv\Scripts\activate   # Windows
 ```
 
-3. Activar el entorno virtual:
-- En Windows:
+3. Instalar dependencias:
 ```bash
-.\venv\Scripts\activate
+pip install -r requirements.txt
 ```
-- En Linux/Mac:
+
+4. Configurar variables de entorno:
 ```bash
-source venv/bin/activate
+cp .env.example .env
+# Editar .env con tus configuraciones
 ```
 
-4. Instalar el proyecto en modo desarrollo:
-```bash
-pip install -e .
-```
-
-## Ejecutar el proyecto
-
-Hay varias formas de ejecutar el proyecto:
-
-1. Usando el archivo run.py en la raíz (recomendado):
+5. Ejecutar la aplicación:
 ```bash
 python run.py
 ```
 
-2. O directamente usando el módulo src:
+## Despliegue en Google Cloud Platform
+
+1. Configurar Google Cloud SDK:
 ```bash
-python src/api/run.py
+gcloud init
+gcloud auth configure-docker
 ```
 
-El servidor estará disponible en:
-- API: http://localhost:8000
-- Documentación: http://localhost:8000/docs
-
-## Endpoints disponibles
-
-- `GET /`: Mensaje de bienvenida
-- `GET /products/`: Lista todos los productos
-- `GET /recommendations/{product_id}`: Obtiene recomendaciones para un producto específico
-- `GET /products/category/{category}`: Obtiene productos por categoría
-- `GET /products/search/?q={query}`: Busca productos por nombre o descripción
-
-## Ejemplo de uso
-
-1. Ver todos los productos:
-```
-http://localhost:8000/products/
+2. Habilitar las APIs necesarias:
+```bash
+gcloud services enable cloudbuild.googleapis.com
+gcloud services enable run.googleapis.com
+gcloud services enable retail.googleapis.com
 ```
 
-2. Obtener recomendaciones para el Jeans Slim Fit (ID: 1):
-```
-http://localhost:8000/recommendations/1
-```
-
-3. Buscar productos de la categoría "Vestidos":
-```
-http://localhost:8000/products/category/Vestidos
+3. Configurar variables de entorno en GCP:
+```bash
+gcloud run services update retail-recommender \
+  --update-env-vars "API_KEY=your-api-key,GOOGLE_PROJECT_NUMBER=your-project-number"
 ```
 
-4. Buscar productos que contengan "algodón":
-```
-http://localhost:8000/products/search/?q=algodón
+4. Desplegar con Cloud Build:
+```bash
+gcloud builds submit --config cloudbuild.yaml
 ```
 
-## Estructura del proyecto
+## Documentación API
 
-```
-retail-recommender-system/
-├── setup.py               # Configuración del paquete
-├── requirements.txt       # Dependencias del proyecto
-├── run.py                # Script principal para ejecutar el proyecto
-└── src/                  # Código fuente
-    ├── api/              # API REST con FastAPI
-    │   ├── main.py      # Definición de endpoints
-    │   └── run.py       # Script de ejecución alternativo
-    └── recommenders/     # Módulos de recomendación
-        └── content_based.py  # Recomendador basado en contenido
-```
+La documentación de la API está disponible en:
+- Swagger UI: `/docs`
+- ReDoc: `/redoc`
+
+## Endpoints Principales
+
+- `GET /v1/recommendations/{product_id}`: Obtiene recomendaciones para un producto
+- `GET /v1/recommendations/user/{user_id}`: Obtiene recomendaciones personalizadas
+- `POST /v1/events/user/{user_id}`: Registra eventos de usuario
+- `GET /v1/products/category/{category}`: Lista productos por categoría
+- `GET /v1/products/search/`: Busca productos
+
+## Monitoreo
+
+- Logs: Google Cloud Logging
+- Métricas: Google Cloud Monitoring
+- Trazabilidad: Google Cloud Trace
+
+## Seguridad
+
+- Autenticación API Key
+- CORS configurado
+- Rate limiting
+- Validación de entrada
+
+## Contribuir
+
+1. Fork el repositorio
+2. Crear una rama para tu feature (`git checkout -b feature/AmazingFeature`)
+3. Commit tus cambios (`git commit -m 'Add some AmazingFeature'`)
+4. Push a la rama (`git push origin feature/AmazingFeature`)
+5. Abrir un Pull Request
+
+## Licencia
+
+Distribuido bajo la licencia MIT. Ver `LICENSE` para más información.
