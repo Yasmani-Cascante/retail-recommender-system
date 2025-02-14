@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends, Query, Header
 from typing import List, Optional, Dict
 from src.api.security import get_current_user
 from src.api.core.recommenders import hybrid_recommender
-from src.api.core.sample_data import SAMPLE_PRODUCTS
+from src.api.core.store import get_shopify_client
+import math
 
 router = APIRouter()
 
@@ -17,11 +18,41 @@ def read_root():
 
 # Listar productos
 @router.get("/products/")
-def get_products():
+def get_products(
+    page: int = Query(1, gt=0),
+    page_size: int = Query(50, gt=0, le=100)
+):
     """
-    Obtiene la lista completa de productos disponibles.
+    Obtiene la lista de productos con paginación.
     """
-    return SAMPLE_PRODUCTS
+    client = get_shopify_client()
+    if client:
+        try:
+            all_products = client.get_products()
+            total = len(all_products)
+            total_pages = math.ceil(total / page_size)
+            
+            start = (page - 1) * page_size
+            end = start + page_size
+            
+            return {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+                "products": all_products[start:end]
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    from src.api.core.sample_data import SAMPLE_PRODUCTS
+    return {
+        "total": len(SAMPLE_PRODUCTS),
+        "page": 1,
+        "page_size": len(SAMPLE_PRODUCTS),
+        "total_pages": 1,
+        "products": SAMPLE_PRODUCTS
+    }
 
 # Recomendaciones por producto
 @router.get("/recommendations/{product_id}")
@@ -116,16 +147,21 @@ def get_products_by_category(
     """
     Obtiene productos filtrados por categoría.
     """
-    category_products = [
-        p for p in SAMPLE_PRODUCTS 
-        if p["category"].lower() == category.lower()
-    ]
-    if not category_products:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No products found in category: {category}"
-        )
-    return category_products
+    try:
+        client = get_shopify_client()
+        products = client.get_products() if client else SAMPLE_PRODUCTS
+        category_products = [
+            p for p in products 
+            if p["category"].lower() == category.lower()
+        ]
+        if not category_products:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No products found in category: {category}"
+            )
+        return category_products
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Búsqueda de productos
 @router.get("/products/search/")
@@ -136,9 +172,14 @@ def search_products(
     """
     Busca productos por nombre o descripción.
     """
-    q = q.lower()
-    matching_products = [
-        p for p in SAMPLE_PRODUCTS 
-        if q in p["name"].lower() or q in p["description"].lower()
-    ]
-    return matching_products
+    try:
+        client = get_shopify_client()
+        products = client.get_products() if client else SAMPLE_PRODUCTS
+        q = q.lower()
+        matching_products = [
+            p for p in products 
+            if q in p["name"].lower() or q in p["description"].lower()
+        ]
+        return matching_products
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
