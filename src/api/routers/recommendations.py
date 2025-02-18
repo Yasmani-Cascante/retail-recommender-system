@@ -67,15 +67,33 @@ async def get_recommendations(
     content_weight: Optional[float] = Query(0.5, ge=0.0, le=1.0),
     current_user: str = Depends(get_current_user)
 ):
-    """
-    Obtiene recomendaciones híbridas para un producto.
-    Si se proporciona user_id, incluye recomendaciones personalizadas.
-    """
     try:
-        # Ajustar el peso del contenido si se especifica
-        hybrid_recommender.content_weight = content_weight
+        client = get_shopify_client()
+        if not client:
+            raise HTTPException(status_code=500, detail="Shopify client not initialized")
+            
+        logging.info(f"Checking if product {product_id} exists")
+        all_products = client.get_products()
+        logging.info(f"Total products found: {len(all_products)}")
         
-        # Obtener recomendaciones
+        # Mostrar IDs de productos disponibles
+        product_ids = [str(p.get('id')) for p in all_products]
+        logging.info(f"Available product IDs: {product_ids}")
+        
+        # Verificar si el ID existe
+        product_exists = any(str(p.get('id')) == product_id for p in all_products)
+        logging.info(f"Product {product_id} exists: {product_exists}")
+        
+        if not product_exists:
+            logging.error(f"Product {product_id} not found in Shopify products")
+            raise HTTPException(status_code=404, detail=f"Product ID {product_id} not found")
+
+        # Obtener el producto específico para los logs
+        product = next((p for p in all_products if str(p.get('id')) == product_id), None)
+        logging.info(f"Found product details: {product}")
+
+        # Continuar con las recomendaciones...
+        hybrid_recommender.content_weight = content_weight
         recommendations = await hybrid_recommender.get_recommendations(
             user_id=user_id or "anonymous",
             product_id=product_id,
@@ -94,6 +112,7 @@ async def get_recommendations(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        logging.error(f"Error getting recommendations: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Recomendaciones por usuario
@@ -153,11 +172,20 @@ def get_products_by_category(
     """
     try:
         client = get_shopify_client()
-        products = client.get_products() if client else SAMPLE_PRODUCTS
+        if not client:
+            raise HTTPException(status_code=500, detail="Shopify client not initialized")
+            
+        logging.info(f"Fetching products for category: {category}")
+        products = client.get_products()
+        logging.info(f"Retrieved {len(products)} total products")
+        
         category_products = [
             p for p in products 
-            if p["category"].lower() == category.lower()
+            if p.get("product_type", "").lower() == category.lower()
         ]
+        
+        logging.info(f"Found {len(category_products)} products in category {category}")
+        
         if not category_products:
             raise HTTPException(
                 status_code=404,
@@ -165,6 +193,10 @@ def get_products_by_category(
             )
         return category_products
     except Exception as e:
+        logging.error(f"Error in category search: {str(e)}")
+        if 'products' in locals():
+            sample_product = products[0] if products else None
+            logging.error(f"Sample product structure: {sample_product}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Búsqueda de productos
