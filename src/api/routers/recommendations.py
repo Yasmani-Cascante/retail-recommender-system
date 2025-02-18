@@ -4,6 +4,10 @@ from src.api.security import get_current_user
 from src.api.core.recommenders import hybrid_recommender
 from src.api.core.store import get_shopify_client
 import math
+import logging
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
 
 router = APIRouter()
 
@@ -174,12 +178,26 @@ def search_products(
     """
     try:
         client = get_shopify_client()
-        products = client.get_products() if client else SAMPLE_PRODUCTS
+        if not client:
+            raise HTTPException(status_code=500, detail="Shopify client not initialized")
+            
+        all_products = client.get_products()
+        logging.info(f"Got {len(all_products)} products from Shopify")
+        if all_products:
+            logging.info(f"Sample product structure: {all_products[0]}")
+            
         q = q.lower()
-        matching_products = [
-            p for p in products 
-            if q in p["name"].lower() or q in p["description"].lower()
-        ]
+        matching_products = []
+        
+        for product in all_products:
+            name = str(product.get("title", ""))
+            desc = str(product.get("body_html", ""))
+            
+            if q in name.lower() or q in desc.lower():
+                matching_products.append(product)
+        
         return matching_products
     except Exception as e:
+        logging.error(f"Error searching products: {str(e)}")
+        logging.error(f"Products structure: {all_products if 'all_products' in locals() else 'Not loaded'}")
         raise HTTPException(status_code=500, detail=str(e))

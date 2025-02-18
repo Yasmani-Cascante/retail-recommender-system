@@ -1,11 +1,11 @@
 from google.cloud import retail_v2
-# from google.cloud.retail_v2 import ProductService, ServingConfig
 from google.cloud.retail_v2 import ProductServiceClient, ServingConfig
 from google.cloud.retail_v2.types import Product, PredictRequest, PredictResponse
 from typing import List, Dict, Optional
 from datetime import datetime
 import asyncio
 import os
+import logging
 
 class RetailAPIRecommender:
     def __init__(
@@ -15,34 +15,53 @@ class RetailAPIRecommender:
         catalog: str = "default_catalog",
         serving_config_id: str = "default_config"
     ):
-        """
-        Inicializa el recomendador usando Google Cloud Retail API.
-        
-        Args:
-            project_number: Número del proyecto de Google Cloud
-            location: Ubicación del catálogo (ej: 'global')
-            catalog: ID del catálogo (default: 'default_catalog')
-            serving_config_id: ID de la configuración de servicio
-        """
         self.project_number = project_number
         self.location = location
         self.catalog = catalog
         self.serving_config_id = serving_config_id
         
-        # Inicializar clientes
         self.predict_client = retail_v2.PredictionServiceClient()
         self.product_client = retail_v2.ProductServiceClient()
         
-        # Construir la ruta del placement
         self.placement = (
             f"projects/{project_number}/locations/{location}"
             f"/catalogs/{catalog}/servingConfigs/{serving_config_id}"
         )
+
+    async def process_shopify_orders(self, orders: List[Dict], user_id: str):
+        """
+        Procesa órdenes de Shopify y las registra como eventos de usuario.
+        """
+        try:
+            events_recorded = 0
+            for order in orders:
+                # Registrar evento de compra
+                for item in order.get('products', []):
+                    await self.record_user_event(
+                        user_id=user_id,
+                        event_type='purchase',
+                        product_id=str(item.get('product_id'))
+                    )
+                    events_recorded += 1
+                    
+                    # Registrar evento de vista
+                    await self.record_user_event(
+                        user_id=user_id,
+                        event_type='detail-page-view',
+                        product_id=str(item.get('product_id'))
+                    )
+                    events_recorded += 1
+
+            return {
+                "status": "success", 
+                "events_recorded": events_recorded,
+                "orders_processed": len(orders)
+            }
+        except Exception as e:
+            logging.error(f"Error processing Shopify orders: {str(e)}")
+            return {"status": "error", "error": str(e)}
         
     def _convert_product_to_retail(self, product: Dict) -> Product:
-        """
-        Convierte un producto de nuestro formato al formato de Retail API.
-        """
         return Product(
             id=product["id"],
             title=product["name"],
@@ -60,17 +79,12 @@ class RetailAPIRecommender:
         )
         
     async def import_catalog(self, products: List[Dict]):
-        """
-        Importa productos al catálogo de Retail API.
-        """
         try:
-            # Convertir productos al formato de Retail API
             retail_products = [
                 self._convert_product_to_retail(product)
                 for product in products
             ]
             
-            # Crear la solicitud de importación
             parent = (
                 f"projects/{self.project_number}/locations/{self.location}"
                 f"/catalogs/{self.catalog}"
@@ -85,9 +99,8 @@ class RetailAPIRecommender:
                 )
             )
             
-            # Realizar la importación
             operation = self.product_client.import_products(request=import_request)
-            result = operation.result()  # Esperar a que termine
+            result = operation.result()
             
             return {
                 "status": "success",
@@ -107,18 +120,13 @@ class RetailAPIRecommender:
         product_id: Optional[str] = None,
         n_recommendations: int = 5
     ) -> List[Dict]:
-        """
-        Obtiene recomendaciones personalizadas usando Retail API.
-        """
         try:
-            # Construir el contexto de usuario
             user_event = {
                 "user_info": {"visitor_id": user_id},
                 "event_type": "detail-page-view" if product_id else "home-page-view",
                 "product_details": [{"product": {"id": product_id}}] if product_id else []
             }
             
-            # Crear la solicitud de predicción
             request = PredictRequest(
                 placement=self.placement,
                 user_event=user_event,
@@ -126,10 +134,8 @@ class RetailAPIRecommender:
                 params={"return_product": True}
             )
             
-            # Obtener predicciones
             response = self.predict_client.predict(request)
             
-            # Procesar y formatear las recomendaciones
             recommendations = []
             for result in response.results:
                 product = result.product
@@ -150,7 +156,7 @@ class RetailAPIRecommender:
             return recommendations
             
         except Exception as e:
-            print(f"Error getting recommendations: {str(e)}")
+            logging.error(f"Error getting recommendations: {str(e)}")
             return []
             
     async def record_user_event(
@@ -159,11 +165,7 @@ class RetailAPIRecommender:
         event_type: str,
         product_id: Optional[str] = None
     ):
-        """
-        Registra eventos de usuario para mejorar las recomendaciones.
-        """
         try:
-            # Construir el evento
             event = {
                 "event_type": event_type,
                 "visitor_id": user_id,
@@ -176,7 +178,6 @@ class RetailAPIRecommender:
                     "quantity": 1
                 }]
                 
-            # Crear la solicitud
             parent = (
                 f"projects/{self.project_number}/locations/{self.location}"
                 f"/catalogs/{self.catalog}"
@@ -187,13 +188,12 @@ class RetailAPIRecommender:
                 **event
             )
             
-            # Registrar el evento
             self.predict_client.write_user_event(user_event=request)
             
             return {"status": "success", "message": "Event recorded"}
             
         except Exception as e:
-            print(f"Error recording user event: {str(e)}")
+            logging.error(f"Error recording user event: {str(e)}")
             return {
                 "status": "error",
                 "error": str(e)
