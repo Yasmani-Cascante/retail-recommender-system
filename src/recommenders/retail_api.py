@@ -121,17 +121,17 @@ class RetailAPIRecommender:
         n_recommendations: int = 5
     ) -> List[Dict]:
         try:
-            user_event = {
-                "user_info": {"visitor_id": user_id},
-                "event_type": "detail-page-view" if product_id else "home-page-view",
-                "product_details": [{"product": {"id": product_id}}] if product_id else []
-            }
+            user_event = retail_v2.UserEvent(
+                user_info=retail_v2.UserInfo(user_id=user_id),
+                event_type="detail-page-view" if product_id else "home-page-view",
+                product_details=[{"product": {"id": product_id}}] if product_id else []
+            )
             
-            request = PredictRequest(
+            request = retail_v2.PredictRequest(
                 placement=self.placement,
                 user_event=user_event,
                 page_size=n_recommendations,
-                params={"return_product": True}
+                params={"returnProduct": True}
             )
             
             response = self.predict_client.predict(request)

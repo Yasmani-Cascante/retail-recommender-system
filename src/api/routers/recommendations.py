@@ -115,6 +115,33 @@ async def get_recommendations(
         logging.error(f"Error getting recommendations: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Listar clientes
+@router.get("/customers/")
+async def get_customers(
+    current_user: str = Depends(get_current_user)
+):
+    try:
+        client = get_shopify_client()
+        if not client:
+            raise HTTPException(status_code=500, detail="Shopify client not initialized")
+            
+        customers = client.get_customers()
+        
+        if not customers:
+            logging.warning("No customers found")
+            return {
+                "total": 0,
+                "customers": []
+            }
+            
+        return {
+            "total": len(customers),
+            "customers": customers
+        }
+    except Exception as e:
+        logging.error(f"Error fetching customers: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Recomendaciones por usuario
 @router.get("/recommendations/user/{user_id}")
 async def get_user_recommendations(
@@ -122,23 +149,48 @@ async def get_user_recommendations(
     n: Optional[int] = Query(5, gt=0, le=20),
     current_user: str = Depends(get_current_user)
 ):
-    """
-    Obtiene recomendaciones personalizadas para un usuario basadas en su historial.
-    """
     try:
+        client = get_shopify_client()
+        if not client:
+            raise HTTPException(status_code=500, detail="Shopify client not initialized")
+        
+        logging.info(f"Getting recommendations for user {user_id}")
+        
+        # Obtener productos y órdenes del usuario
+        all_products = client.get_products()
+        user_orders = client.get_orders_by_customer(user_id)
+        
+        if not user_orders:
+            logging.info(f"No order history found for user {user_id}")
+        else:
+            logging.info(f"Found {len(user_orders)} orders for user {user_id}")
+        
+        # Entrenar el recomendador con productos actuales
+        content_recommender.fit(all_products)
+        
+        # Obtener recomendaciones
         recommendations = await hybrid_recommender.get_recommendations(
             user_id=user_id,
             n_recommendations=n
         )
+        
+        if not recommendations:
+            logging.warning(f"No recommendations generated for user {user_id}")
+        
         return {
             "recommendations": recommendations,
             "metadata": {
                 "user_id": user_id,
-                "total_recommendations": len(recommendations)
+                "total_recommendations": len(recommendations),
+                "total_orders": len(user_orders)
             }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error getting recommendations for user {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting recommendations: {str(e)}"
+        )
 
 # Registrar eventos de usuario
 @router.post("/events/user/{user_id}")
