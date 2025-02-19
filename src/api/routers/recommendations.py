@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, Header
 from typing import List, Optional, Dict
 from src.api.security import get_current_user
-from src.api.core.recommenders import hybrid_recommender
+from src.api.core.recommenders import hybrid_recommender, content_recommender
 from src.api.core.store import get_shopify_client
 import math
 import logging
@@ -71,41 +71,41 @@ async def get_recommendations(
         client = get_shopify_client()
         if not client:
             raise HTTPException(status_code=500, detail="Shopify client not initialized")
-            
-        logging.info(f"Checking if product {product_id} exists")
+        
+        # Obtener productos
         all_products = client.get_products()
-        logging.info(f"Total products found: {len(all_products)}")
         
-        # Mostrar IDs de productos disponibles
-        product_ids = [str(p.get('id')) for p in all_products]
-        logging.info(f"Available product IDs: {product_ids}")
+        # Encontrar el producto específico
+        product = next(
+            (p for p in all_products if str(p.get('id')) == str(product_id)),
+            None
+        )
         
-        # Verificar si el ID existe
-        product_exists = any(str(p.get('id')) == product_id for p in all_products)
-        logging.info(f"Product {product_id} exists: {product_exists}")
+        if not product:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Product ID {product_id} not found"
+            )
+            
+        # Entrenar el recomendador si es necesario
+        content_recommender.fit(all_products)
         
-        if not product_exists:
-            logging.error(f"Product {product_id} not found in Shopify products")
-            raise HTTPException(status_code=404, detail=f"Product ID {product_id} not found")
-
-        # Obtener el producto específico para los logs
-        product = next((p for p in all_products if str(p.get('id')) == product_id), None)
-        logging.info(f"Found product details: {product}")
-
-        # Continuar con las recomendaciones...
+        # Obtener recomendaciones
         hybrid_recommender.content_weight = content_weight
         recommendations = await hybrid_recommender.get_recommendations(
             user_id=user_id or "anonymous",
-            product_id=product_id,
+            product_id=str(product_id),
             n_recommendations=n
         )
         
         return {
+            "product": {
+                "id": product.get('id'),
+                "title": product.get('title')
+            },
             "recommendations": recommendations,
             "metadata": {
                 "content_weight": content_weight,
-                "retail_weight": 1 - content_weight,
-                "user_id": user_id or "anonymous",
                 "total_recommendations": len(recommendations)
             }
         }

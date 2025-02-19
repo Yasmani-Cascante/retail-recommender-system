@@ -10,16 +10,9 @@ class ContentBasedRecommender:
         self.product_data = None
     
     def fit(self, products):
-        """
-        Entrena el recomendador con los datos de productos.
-        
-        Args:
-            products (list): Lista de diccionarios con información de productos.
-                            Cada diccionario debe tener 'id', 'name', 'description'
-        """
         self.product_data = products
-        self.product_ids = [p['id'] for p in products]
-        descriptions = [f"{p['name']}. {p['description']}" for p in products]
+        self.product_ids = [str(p.get('id')) for p in products]
+        descriptions = [f"{p.get('title', '')}. {p.get('body_html', '')}" for p in products]
         self.product_embeddings = self.model.encode(descriptions)
         
     def recommend(self, product_id, n_recommendations=5):

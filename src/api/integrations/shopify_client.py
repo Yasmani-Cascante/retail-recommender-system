@@ -21,11 +21,19 @@ class ShopifyIntegration:
         try:
             url = f"{self.api_url}/products.json"
             logging.info(f"Fetching products from: {url}")
-            logging.info(f"Using headers: {self.headers}")
             
             response = requests.get(url, headers=self.headers)
             response.raise_for_status()
-            products = response.json().get('products', [])
+            
+            # Log de la respuesta completa
+            data = response.json()
+            logging.info(f"Response structure: {list(data.keys())}")
+            
+            products = data.get('products', [])
+            if products:
+                sample = products[0]
+                logging.info(f"Sample product: {sample}")
+            
             return products
         except Exception as e:
             logging.error(f"Error fetching products: {str(e)}")
