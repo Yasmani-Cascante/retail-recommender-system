@@ -6,6 +6,7 @@ from src.api.core.recommenders import content_recommender, retail_recommender
 from src.api.core.store import init_shopify, get_shopify_client
 import os
 from dotenv import load_dotenv
+load_dotenv()
 import logging
 
 # Configurar logging con más detalle

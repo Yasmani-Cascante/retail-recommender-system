@@ -23,6 +23,40 @@ class RetailAPIRecommender:
         self.predict_client = retail_v2.PredictionServiceClient()
         self.product_client = retail_v2.ProductServiceClient()
         
+        self.placement = f"projects/{project_number}/locations/{location}/catalogs/{catalog}/servingConfigs/{serving_config_id}"
+    
+    def _process_predictions(self, response) -> List[Dict]:
+        recommendations = []
+        try:
+            for result in response.results:
+                if result.product:
+                    recommendations.append({
+                        "id": result.product.id,
+                        "title": result.product.title,
+                        "description": result.product.description or "",
+                        "price": result.product.price_info.price if result.product.price_info else 0.0,
+                        "category": result.product.categories[0] if result.product.categories else "",
+                        "score": float(result.metadata.get("predictScore", 0.0))
+                    })
+            return recommendations
+        except Exception as e:
+            logging.error(f"Error processing predictions: {str(e)}")
+            return []
+    def __init__(
+        self,
+        project_number: str,
+        location: str,
+        catalog: str = "default_catalog",
+        serving_config_id: str = "default_config"
+    ):
+        self.project_number = project_number
+        self.location = location
+        self.catalog = catalog
+        self.serving_config_id = serving_config_id
+        
+        self.predict_client = retail_v2.PredictionServiceClient()
+        self.product_client = retail_v2.ProductServiceClient()
+        
         self.placement = (
             f"projects/{project_number}/locations/{location}"
             f"/catalogs/{catalog}/servingConfigs/{serving_config_id}"
@@ -121,39 +155,43 @@ class RetailAPIRecommender:
         n_recommendations: int = 5
     ) -> List[Dict]:
         try:
-            user_event = retail_v2.UserEvent(
-                user_info=retail_v2.UserInfo(user_id=user_id),
-                event_type="detail-page-view" if product_id else "home-page-view",
-                product_details=[{"product": {"id": product_id}}] if product_id else []
-            )
+            parent = f"projects/{self.project_number}/locations/{self.location}/catalogs/{self.catalog}"
             
+            user_event = retail_v2.UserEvent(
+                event_type="home-page-view",
+                visitor_id=str(user_id),
+                event_time=datetime.utcnow()
+            )
+
+            logging.info(f"User event: {str(user_event)}")
+            logging.info(f"Placement: {self.placement}")
+
             request = retail_v2.PredictRequest(
                 placement=self.placement,
                 user_event=user_event,
                 page_size=n_recommendations,
-                params={"returnProduct": True}
+                validate_only=True
             )
-            
-            response = self.predict_client.predict(request)
-            
-            recommendations = []
-            for result in response.results:
-                product = result.product
-                recommendations.append({
-                    "id": product.id,
-                    "name": product.title,
-                    "description": product.description,
-                    "price": product.price_info.price,
-                    "category": product.categories[0] if product.categories else "",
-                    "attributes": {
-                        "material": product.attributes.get("material", {}).get("text", []),
-                        "style": product.attributes.get("style", {}).get("text", []),
-                        "occasion": product.attributes.get("occasions", {}).get("text", [])
-                    },
-                    "score": result.metadata.get("score", 0.0)
-                })
+
+            logging.info(f"Request: {str(request)}")
+
+            try:
+                response = self.predict_client.predict(request)
+                logging.info(f"Validation successful")
                 
-            return recommendations
+                request.validate_only = False
+                response = self.predict_client.predict(request)
+                
+                return self._process_predictions(response)
+            except Exception as e:
+                logging.error(f"API Error: {str(e)}")
+                if hasattr(e, 'details'):
+                    logging.error(f"Error details: {e.details}")
+                return []
+
+        except Exception as e:
+            logging.error(f"Error in get_recommendations: {str(e)}")
+            return []
             
         except Exception as e:
             logging.error(f"Error getting recommendations: {str(e)}")
