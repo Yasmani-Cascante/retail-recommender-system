@@ -11,8 +11,8 @@ COPY requirements.txt .
 # Instalar torch primero (versión CPU para reducir tamaño)
 RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Instalar transformers y sentence-transformers
-RUN pip install --no-cache-dir transformers sentence-transformers
+# Instalar transformers, sentence-transformers y scipy específicamente
+RUN pip install --no-cache-dir transformers sentence-transformers scipy==1.13.1
 
 # Instalar el resto de dependencias
 RUN pip install --no-cache-dir -r requirements.txt

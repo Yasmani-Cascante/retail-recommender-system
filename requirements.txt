@@ -45,7 +45,8 @@ requests==2.32.3
 rsa==4.9
 safetensors==0.5.2
 scikit-learn==1.6.1
-scipy==1.13.1
+# scipy==1.15.1  # Versión original causando problemas
+scipy==1.13.1  # Versión compatible disponible en PyPI
 # Estas dependencias se instalarán por separado en el Dockerfile
 # sentence-transformers==3.4.1
 # tokenizers==0.21.0
