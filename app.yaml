@@ -9,12 +9,11 @@ automatic_scaling:
   max_instances: 10
 
 env_variables:
-  API_KEY: "2fed9999056fab6dac5654238f0cae1c"
-  GOOGLE_PROJECT_NUMBER: "178362262166"
-  GOOGLE_LOCATION: "us-central1"
+  API_KEY: "2fed9999056fab6dac5654238f0cae1c"  # Set this in GCP Console
+  GOOGLE_PROJECT_NUMBER: "178362262166"  # Set this in GCP Console
+  GOOGLE_LOCATION: us-central1
   GOOGLE_CATALOG: "default_catalog"
   GOOGLE_SERVING_CONFIG: "D:/Projects/AI/retail-recommender/service-account-key.json"
-  ENABLE_EXTERNAL_SERVICES: "False"
 
 handlers:
 - url: /.*
