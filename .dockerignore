@@ -1,4 +1,7 @@
+.env
+.env.example
 .git
+.gitignore
 __pycache__/
 *.py[cod]
 *$py.class
@@ -7,7 +10,7 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
-.env
 .idea/
 .vscode/
 *.log
+*.sqlite3
