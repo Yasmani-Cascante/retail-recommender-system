@@ -2,17 +2,26 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
+# Actualizar pip e instalar herramientas básicas
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
 # Copiar requirements primero para aprovechar la caché de Docker
 COPY requirements.txt .
+
+# Instalar torch primero (versión CPU para reducir tamaño)
+RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu
+
+# Instalar transformers y sentence-transformers
+RUN pip install --no-cache-dir transformers sentence-transformers
+
+# Instalar el resto de dependencias
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar el resto del código
 COPY . .
 
-# Puerto por defecto para FastAPI
-# EXPOSE 8000
+# Puerto por defecto
 EXPOSE 8080
 
 # Comando para ejecutar la aplicación
-# CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 CMD exec uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8080}

@@ -1,10 +1,13 @@
 steps:
-# Build the container image
+# Build the container image con más memoria y timeout
 - name: 'gcr.io/cloud-builders/docker'
   args: ['build', '-t', 'gcr.io/$PROJECT_ID/retail-recommender', '.']
+  timeout: '3600s'  # 1 hora
+
 # Push the container image to Container Registry
 - name: 'gcr.io/cloud-builders/docker'
   args: ['push', 'gcr.io/$PROJECT_ID/retail-recommender']
+
 # Deploy container image to Cloud Run
 - name: 'gcr.io/cloud-builders/gcloud'
   args:
@@ -18,5 +21,15 @@ steps:
   - '--platform'
   - 'managed'
   - '--allow-unauthenticated'
+  - '--memory'
+  - '2Gi'  # Aumentar la memoria para el servicio
+  - '--cpu'
+  - '1'    # Asignar 1 CPU completa
+
 images:
 - 'gcr.io/$PROJECT_ID/retail-recommender'
+
+timeout: '3600s'  # Timeout general de 1 hora
+
+options:
+  machineType: 'E2_HIGHCPU_8'  # Usar máquina con más recursos
