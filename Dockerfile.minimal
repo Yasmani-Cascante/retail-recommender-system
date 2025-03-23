@@ -1,0 +1,15 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Instalar solo dependencias mínimas
+RUN pip install --no-cache-dir fastapi uvicorn
+
+# Copiar solo el archivo principal
+COPY src/api/main_minimal.py ./main_minimal.py
+
+# Exponer el puerto
+EXPOSE 8080
+
+# Comando para ejecutar la aplicación (usando directamente el archivo)
+CMD exec python main_minimal.py

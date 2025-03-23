@@ -12,8 +12,8 @@ env_variables:
   API_KEY: "2fed9999056fab6dac5654238f0cae1c"  # Set this in GCP Console
   GOOGLE_PROJECT_NUMBER: "178362262166"  # Set this in GCP Console
   GOOGLE_LOCATION: us-central1
-  GOOGLE_CATALOG: "default_catalog"
-  GOOGLE_SERVING_CONFIG: "D:/Projects/AI/retail-recommender/service-account-key.json"
+  GOOGLE_CATALOG: "retail_178362262166"
+  GOOGLE_SERVING_CONFIG: "D:/Projects/AI/retail-recommender/retail-recommendations-449216-7b5ce579bbfc.json"
 
 handlers:
 - url: /.*
