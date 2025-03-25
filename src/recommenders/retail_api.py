@@ -1,6 +1,8 @@
 from google.cloud import retail_v2
-from google.cloud.retail_v2 import ProductServiceClient, ServingConfig
+from google.cloud.retail_v2 import ProductServiceClient
 from google.cloud.retail_v2.types import Product, PredictRequest, PredictResponse
+from google.cloud.retail_v2.types.import_config import ProductInputConfig, ProductInlineSource
+from google.cloud.retail_v2.types import ImportProductsRequest
 from typing import List, Dict, Optional
 from datetime import datetime
 import asyncio
@@ -80,80 +82,200 @@ class RetailAPIRecommender:
             return {"status": "error", "error": str(e)}
         
     def _convert_product_to_retail(self, product: Dict) -> Product:
-        # Extracción segura de datos con valores predeterminados
-        product_id = str(product.get("id", ""))
-        title = product.get("title", "")
-        description = product.get("body_html", "").replace("<p>", "").replace("</p>", "")
+        """
+        Convierte un producto de Shopify al formato de Google Retail API.
         
-        # Extracción de precio del primer variante si existe
-        price = 0.0
-        if product.get("variants") and len(product["variants"]) > 0:
-            price_str = product["variants"][0].get("price", "0")
-            try:
-                price = float(price_str)
-            except (ValueError, TypeError):
-                price = 0.0
-        
-        # Categoría del producto
-        category = product.get("product_type", "")
-        
-        # Construcción del objeto Product
-        return Product(
-            id=product_id,
-            title=title,
-            description=description,
-            price_info={
-                "price": price,
-                "currency_code": "COP"
-            },
-            categories=[category] if category else [],
-            # Atributos opcionales basados en etiquetas
-            attributes={
-                "tags": {"text": product.get("tags", "").split(", ") if isinstance(product.get("tags", ""), str) else []}
-            } if product.get("tags") else None
-        )
+        Args:
+            product: Diccionario con datos del producto de Shopify
+            
+        Returns:
+            Product: Objeto Product de Google Retail API
+        """
+        try:
+            # Extracción segura de datos con valores predeterminados
+            product_id = str(product.get("id", ""))
+            title = product.get("title", "")
+            
+            # Limpiar HTML de la descripción
+            description = product.get("body_html", "")
+            if description:
+                # Eliminar etiquetas HTML comunes
+                for tag in ["<p>", "</p>", "<br>", "<ul>", "</ul>", "<li>", "</li>", "<span>", "</span>", "<strong>", "</strong>"]:
+                    description = description.replace(tag, " ")
+                # Eliminar atributos HTML
+                import re
+                description = re.sub(r'\s+', ' ', description).strip()
+            
+            # Extracción de precio del primer variante si existe
+            price = 0.0
+            if product.get("variants") and len(product["variants"]) > 0:
+                price_str = product["variants"][0].get("price", "0")
+                try:
+                    price = float(price_str)
+                except (ValueError, TypeError):
+                    price = 0.0
+            
+            # Categoría del producto
+            category = product.get("product_type", "")
+            
+            # Asegurar que el ID sea válido
+            if not product_id:
+                logging.warning(f"Producto sin ID válido: {title}")
+                return None
+            
+            # Construcción del objeto Product con valores mínimos requeridos
+            retail_product = Product(
+                id=product_id,
+                title=title,
+                availability="IN_STOCK"
+            )
+            
+            # Agregar campos opcionales solo si tienen valores
+            if description:
+                retail_product.description = description
+                
+            if price > 0:
+                retail_product.price_info = retail_v2.PriceInfo(
+                    price=price,
+                    original_price=price,
+                    currency_code="COP"
+                )
+                
+            if category:
+                retail_product.categories = [category]
+                
+            # Agregar imágenes si están disponibles
+            if product.get("images") and len(product["images"]) > 0:
+                retail_product.images = [
+                    retail_v2.Image(uri=img.get("src"))
+                    for img in product["images"]
+                    if img.get("src")
+                ][:10]  # Limitar a 10 imágenes
+                
+            # Agregar etiquetas como atributos
+            if product.get("tags"):
+                tags = product["tags"]
+                if isinstance(tags, str):
+                    tags = [tag.strip() for tag in tags.split(",")]
+                
+                if tags:
+                    retail_product.attributes = {
+                        "tags": retail_v2.CustomAttribute(text=tags)
+                    }
+                    
+            # Agregar información de variantes si está disponible
+            if product.get("variants") and len(product["variants"]) > 0:
+                variant = product["variants"][0]
+                if variant.get("sku"):
+                    retail_product.attributes = retail_product.attributes or {}
+                    retail_product.attributes["sku"] = retail_v2.CustomAttribute(
+                        text=[variant.get("sku")]
+                    )
+                    
+            return retail_product
+            
+        except Exception as e:
+            logging.error(f"Error al convertir producto {product.get('id', 'unknown')}: {str(e)}")
+            return None
         
     async def import_catalog(self, products: List[Dict]):
+        """
+        Importa productos al catálogo de Google Retail API
+        
+        Args:
+            products: Lista de productos en formato Shopify
+            
+        Returns:
+            Dict: Resultado de la importación
+        """
         try:
             # Agregamos log para depuración
             logging.info(f"Importando {len(products)} productos al catálogo de Google Retail API")
             if products and len(products) > 0:
-                logging.debug(f"Estructura del primer producto: {products[0].keys()}")
+                logging.debug(f"Estructura del primer producto: {list(products[0].keys())}")
+            else:
+                logging.error("No hay productos para importar")
+                return {"status": "error", "error": "No hay productos para importar"}
             
+            # Convertir productos al formato de Google Retail API
             retail_products = []
+            skipped_products = 0
+            
             for product in products:
                 try:
                     retail_product = self._convert_product_to_retail(product)
-                    retail_products.append(retail_product)
+                    if retail_product:
+                        retail_products.append(retail_product)
+                    else:
+                        skipped_products += 1
                 except Exception as e:
                     logging.error(f"Error al convertir producto {product.get('id', 'unknown')}: {str(e)}")
-                    # Continuamos con el siguiente producto
+                    skipped_products += 1
                     continue
             
+            if not retail_products:
+                logging.error("No se pudo convertir ningún producto al formato de Google Retail API")
+                return {
+                    "status": "error", 
+                    "error": "No se pudo convertir ningún producto",
+                    "total_products": len(products),
+                    "skipped_products": skipped_products
+                }
+            
+            logging.info(f"Se convirtieron {len(retail_products)} productos correctamente (ignorados: {skipped_products})")
+            
+            # Construir la ruta del catálogo
             parent = (
                 f"projects/{self.project_number}/locations/{self.location}"
-                f"/catalogs/{self.catalog}"
+                f"/catalogs/{self.catalog}/branches/default_branch"
             )
             
-            import_request = retail_v2.ImportProductsRequest(
-                parent=parent,
-                input_config=retail_v2.ImportProductsRequest.InputConfig(
-                    product_inline_source=retail_v2.ProductInlineSource(
-                        products=retail_products
+            logging.info(f"Importando productos a: {parent}")
+            
+            # Importar en lotes si hay muchos productos
+            batch_size = 100  # Google recomienda no más de 100 productos por lote
+            success_count = 0
+            batches = [retail_products[i:i+batch_size] for i in range(0, len(retail_products), batch_size)]
+            
+            for i, batch in enumerate(batches):
+                try:
+                    logging.info(f"Importando lote {i+1}/{len(batches)} ({len(batch)} productos)...")
+                    
+                    # Crear objeto ProductInlineSource
+                    product_inline_source = ProductInlineSource(products=batch)
+                    
+                    # Crear InputConfig usando la estructura anidada correcta
+                    input_config = ProductInputConfig(
+                        product_inline_source=product_inline_source
                     )
-                )
-            )
-            
-            operation = self.product_client.import_products(request=import_request)
-            result = operation.result()
+                    
+                    # Crear solicitud con el modo de reconciliación correcto
+                    import_request = ImportProductsRequest(
+                        parent=parent,
+                        input_config=input_config,
+                        reconciliation_mode=retail_v2.types.ImportProductsRequest.ReconciliationMode.INCREMENTAL
+                    )
+                    
+                    operation = self.product_client.import_products(request=import_request)
+                    result = operation.result()
+                    
+                    success_count += len(batch)
+                    logging.info(f"Lote {i+1} importado correctamente")
+                    
+                except Exception as e:
+                    logging.error(f"Error al importar lote {i+1}: {str(e)}")
             
             return {
-                "status": "success",
-                "products_imported": len(retail_products),
-                "operation_details": str(result)
+                "status": "success" if success_count > 0 else "partial_error",
+                "products_imported": success_count,
+                "products_converted": len(retail_products),
+                "total_products": len(products),
+                "skipped_products": skipped_products,
+                "error_batches": len(batches) - (success_count // batch_size) - (1 if success_count % batch_size > 0 else 0)
             }
             
         except Exception as e:
+            logging.error(f"Error general en import_catalog: {str(e)}")
             return {
                 "status": "error",
                 "error": str(e)

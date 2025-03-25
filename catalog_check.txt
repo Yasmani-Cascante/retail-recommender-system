@@ -1,0 +1,268 @@
+2025-03-25 17:17:01,337 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 17:17:01,384 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 17:17:01,464 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 17:18:03,347 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 17:18:03,388 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 17:18:03,463 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 17:40:05,084 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 17:40:05,134 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 17:40:05,220 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 17:40:05,697 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 18:14:51,799 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:14:51,857 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 18:14:51,943 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 18:14:52,405 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 18:20:50,227 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:20:50,273 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 18:20:50,355 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 18:20:50,818 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 18:27:35,905 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:27:35,951 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 18:27:36,033 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 18:27:36,606 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 18:42:45,763 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:42:45,823 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 18:42:45,922 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 18:42:46,381 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 18:45:50,414 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:45:50,470 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 18:45:50,558 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 18:45:51,017 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 18:48:43,466 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:48:43,511 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 18:48:43,582 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 18:48:44,043 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 18:53:12,631 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:53:12,674 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 18:53:12,757 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 18:53:13,317 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 18:55:05,134 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:55:05,177 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 18:55:05,253 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 18:55:05,714 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 18:57:30,767 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:57:30,815 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 18:57:30,898 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 18:57:31,371 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 19:06:55,532 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:06:55,574 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 19:06:55,649 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 19:06:56,134 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 19:23:12,037 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:23:12,083 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 19:23:12,161 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 19:23:12,650 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 19:24:40,322 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:24:40,368 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 19:24:40,458 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 19:24:40,951 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 19:27:30,912 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:27:30,960 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 19:27:31,055 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 19:27:31,544 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 19:27:56,735 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:27:56,781 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 19:27:56,851 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 19:27:57,312 - WARNING - No se encontraron productos en el catálogo
+2025-03-25 19:32:47,772 - INFO - Verificando productos en: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:32:47,816 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 19:32:47,891 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 19:32:49,690 - INFO - Se encontraron 49 productos en el catálogo
+2025-03-25 19:32:49,690 - INFO - Producto 1:
+2025-03-25 19:32:49,690 - INFO - - ID: 9978480853301
+2025-03-25 19:32:49,691 - INFO - - Nombre: Aros Ada Dorado
+2025-03-25 19:32:49,691 - INFO - ---
+2025-03-25 19:32:49,691 - INFO - Producto 2:
+2025-03-25 19:32:49,691 - INFO - - ID: 9978481901877
+2025-03-25 19:32:49,691 - INFO - - Nombre: Aros Ada Plateado
+2025-03-25 19:32:49,692 - INFO - ---
+2025-03-25 19:32:49,692 - INFO - Producto 3:
+2025-03-25 19:32:49,692 - INFO - - ID: 9978502938933
+2025-03-25 19:32:49,692 - INFO - - Nombre: Aros Aitana Piedras y Strass Dorado
+2025-03-25 19:32:49,692 - INFO - ---
+2025-03-25 19:32:49,692 - INFO - Producto 4:
+2025-03-25 19:32:49,693 - INFO - - ID: 9978503037237
+2025-03-25 19:32:49,693 - INFO - - Nombre: Aros Aitana Piedras y Strass Plateado
+2025-03-25 19:32:49,693 - INFO - ---
+2025-03-25 19:32:49,693 - INFO - Producto 5:
+2025-03-25 19:32:49,693 - INFO - - ID: 9978551370037
+2025-03-25 19:32:49,693 - INFO - - Nombre: AROS ACRÍLICOS AMANDA LILA
+2025-03-25 19:32:49,693 - INFO - ---
+2025-03-25 19:32:49,694 - INFO - Producto 6:
+2025-03-25 19:32:49,694 - INFO - - ID: 9978555695413
+2025-03-25 19:32:49,694 - INFO - - Nombre: Aros Abigail Flor Dorado
+2025-03-25 19:32:49,694 - INFO - ---
+2025-03-25 19:32:49,694 - INFO - Producto 7:
+2025-03-25 19:32:49,694 - INFO - - ID: 9978559070517
+2025-03-25 19:32:49,695 - INFO - - Nombre: Aros Abigail Flores Plateado
+2025-03-25 19:32:49,695 - INFO - ---
+2025-03-25 19:32:49,695 - INFO - Producto 8:
+2025-03-25 19:32:49,695 - INFO - - ID: 9978579812661
+2025-03-25 19:32:49,695 - INFO - - Nombre: Aros Abril Plateado
+2025-03-25 19:32:49,695 - INFO - ---
+2025-03-25 19:32:49,695 - INFO - Producto 9:
+2025-03-25 19:32:49,696 - INFO - - ID: 9978580762933
+2025-03-25 19:32:49,696 - INFO - - Nombre: Aros Abanico de Rafia Verde /Turquesa
+2025-03-25 19:32:49,696 - INFO - ---
+2025-03-25 19:32:49,696 - INFO - Producto 10:
+2025-03-25 19:32:49,696 - INFO - - ID: 9978601275701
+2025-03-25 19:32:49,696 - INFO - - Nombre: Aros Abanico y Piedra Tornasol Plateado
+2025-03-25 19:32:49,697 - INFO - ---
+2025-03-25 19:32:49,697 - INFO - Producto 11:
+2025-03-25 19:32:49,697 - INFO - - ID: 9978601308469
+2025-03-25 19:32:49,697 - INFO - - Nombre: Aros Abanico y Piedra Tornasol Dorado
+2025-03-25 19:32:49,697 - INFO - ---
+2025-03-25 19:32:49,697 - INFO - Producto 12:
+2025-03-25 19:32:49,698 - INFO - - ID: 9978621428021
+2025-03-25 19:32:49,698 - INFO - - Nombre: AROS ABANICO DE RAFIA NEGRO
+2025-03-25 19:32:49,698 - INFO - ---
+2025-03-25 19:32:49,698 - INFO - Producto 13:
+2025-03-25 19:32:49,698 - INFO - - ID: 9978624475445
+2025-03-25 19:32:49,698 - INFO - - Nombre: AROS ABANICO DE 
+RAFIA MORADO
+2025-03-25 19:32:49,699 - INFO - ---
+2025-03-25 19:32:49,699 - INFO - Producto 14:
+2025-03-25 19:32:49,699 - INFO - - ID: 9978624573749
+2025-03-25 19:32:49,699 - INFO - - Nombre: AROS ABANICO DE 
+RAFIA VERDE OLIVO
+2025-03-25 19:32:49,700 - INFO - ---
+2025-03-25 19:32:49,700 - INFO - Producto 15:
+2025-03-25 19:32:49,700 - INFO - - ID: 9978625458485
+2025-03-25 19:32:49,700 - INFO - - Nombre: AROS ABANICO DE RAFIA CREMA
+2025-03-25 19:32:49,700 - INFO - ---
+2025-03-25 19:32:49,701 - INFO - Producto 16:
+2025-03-25 19:32:49,701 - INFO - - ID: 9978654982453
+2025-03-25 19:32:49,701 - INFO - - Nombre: AROS ACRÍLICO ROCIO LILA
+2025-03-25 19:32:49,701 - INFO - ---
+2025-03-25 19:32:49,701 - INFO - Producto 17:
+2025-03-25 19:32:49,701 - INFO - - ID: 9978666647861
+2025-03-25 19:32:49,702 - INFO - - Nombre: AROS ABANICO Y PIEDRA VERDE
+2025-03-25 19:32:49,702 - INFO - ---
+2025-03-25 19:32:49,702 - INFO - Producto 18:
+2025-03-25 19:32:49,702 - INFO - - ID: 9978666713397
+2025-03-25 19:32:49,702 - INFO - - Nombre: AROS ABANICO Y PIEDRA ROSADO
+2025-03-25 19:32:49,702 - INFO - ---
+2025-03-25 19:32:49,703 - INFO - Producto 19:
+2025-03-25 19:32:49,703 - INFO - - ID: 9978666778933
+2025-03-25 19:32:49,703 - INFO - - Nombre: AROS ABANICO Y PIEDRA BLANCO
+2025-03-25 19:32:49,703 - INFO - ---
+2025-03-25 19:32:49,703 - INFO - Producto 20:
+2025-03-25 19:32:49,703 - INFO - - ID: 9978689487157
+2025-03-25 19:32:49,703 - INFO - - Nombre: 5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE
+2025-03-25 19:32:49,704 - INFO - ---
+2025-03-25 19:32:49,704 - INFO - Producto 21:
+2025-03-25 19:32:49,704 - INFO - - ID: 9978690568501
+2025-03-25 19:32:49,704 - INFO - - Nombre: AROS ACERO ATRAPASUEÑOS
+2025-03-25 19:32:49,704 - INFO - ---
+2025-03-25 19:32:49,704 - INFO - Producto 22:
+2025-03-25 19:32:49,704 - INFO - - ID: 9978733691189
+2025-03-25 19:32:49,705 - INFO - - Nombre: AROS AGUSTINA CARACOL PLATEADO
+2025-03-25 19:32:49,705 - INFO - ---
+2025-03-25 19:32:49,705 - INFO - Producto 23:
+2025-03-25 19:32:49,705 - INFO - - ID: 9978741031221
+2025-03-25 19:32:49,705 - INFO - - Nombre: 5 PARES DE PEZONERAS DE TELA REDONDA NEGRA
+2025-03-25 19:32:49,705 - INFO - ---
+2025-03-25 19:32:49,705 - INFO - Producto 24:
+2025-03-25 19:32:49,706 - INFO - - ID: 9978741129525
+2025-03-25 19:32:49,706 - INFO - - Nombre: 5 PARES DE PEZONERAS DE TELA FLOR NEGRA
+2025-03-25 19:32:49,706 - INFO - ---
+2025-03-25 19:32:49,706 - INFO - Producto 25:
+2025-03-25 19:32:49,706 - INFO - - ID: 9978743193909
+2025-03-25 19:32:49,706 - INFO - - Nombre: AROS ACRILICOS AMANDA FUCSIA
+2025-03-25 19:32:49,706 - INFO - ---
+2025-03-25 19:32:49,707 - INFO - Producto 26:
+2025-03-25 19:32:49,707 - INFO - - ID: 9978808434997
+2025-03-25 19:32:49,707 - INFO - - Nombre: AROS ACRÍLICO ROCIO VERDE OSCURO TORNASOL
+2025-03-25 19:32:49,707 - INFO - ---
+2025-03-25 19:32:49,707 - INFO - Producto 27:
+2025-03-25 19:32:49,707 - INFO - - ID: 9978808631605
+2025-03-25 19:32:49,707 - INFO - - Nombre: AROS ACRÍLICO ROCIO FUCSIA
+2025-03-25 19:32:49,707 - INFO - ---
+2025-03-25 19:32:49,708 - INFO - Producto 28:
+2025-03-25 19:32:49,708 - INFO - - ID: 9978815971637
+2025-03-25 19:32:49,708 - INFO - - Nombre: ARO FIESTA PLUS CASCADA PLATEADO
+2025-03-25 19:32:49,708 - INFO - ---
+2025-03-25 19:32:49,708 - INFO - Producto 29:
+2025-03-25 19:32:49,708 - INFO - - ID: 9978816528693
+2025-03-25 19:32:49,708 - INFO - - Nombre: ARO CORAZÓN PLATEADO
+2025-03-25 19:32:49,708 - INFO - ---
+2025-03-25 19:32:49,708 - INFO - Producto 30:
+2025-03-25 19:32:49,709 - INFO - - ID: 9978817020213
+2025-03-25 19:32:49,709 - INFO - - Nombre: ARO MANUELA PLATEADO
+2025-03-25 19:32:49,709 - INFO - ---
+2025-03-25 19:32:49,709 - INFO - Producto 31:
+2025-03-25 19:32:49,709 - INFO - - ID: 9978817151285
+2025-03-25 19:32:49,709 - INFO - - Nombre: ARO MANUELA NEGRO
+2025-03-25 19:32:49,709 - INFO - ---
+2025-03-25 19:32:49,709 - INFO - Producto 32:
+2025-03-25 19:32:49,710 - INFO - - ID: 9978826293557
+2025-03-25 19:32:49,710 - INFO - - Nombre: ARO MINI HOJAS Y GOTA GRIS
+2025-03-25 19:32:49,710 - INFO - ---
+2025-03-25 19:32:49,710 - INFO - Producto 33:
+2025-03-25 19:32:49,710 - INFO - - ID: 9978826424629
+2025-03-25 19:32:49,710 - INFO - - Nombre: ARO MINI DIAMANTES
+2025-03-25 19:32:49,710 - INFO - ---
+2025-03-25 19:32:49,710 - INFO - Producto 34:
+2025-03-25 19:32:49,711 - INFO - - ID: 9978826588469
+2025-03-25 19:32:49,711 - INFO - - Nombre: ARO PIEDRA Y STRASS JACINTA GRIS
+2025-03-25 19:32:49,711 - INFO - ---
+2025-03-25 19:32:49,711 - INFO - Producto 35:
+2025-03-25 19:32:49,711 - INFO - - ID: 9978826752309
+2025-03-25 19:32:49,711 - INFO - - Nombre: AROMA FRUTOS ROJOS 100 ml
+2025-03-25 19:32:49,711 - INFO - ---
+2025-03-25 19:32:49,712 - INFO - Producto 36:
+2025-03-25 19:32:49,712 - INFO - - ID: 9978829111605
+2025-03-25 19:32:49,712 - INFO - - Nombre: ARO MINI HOJAS DORADO
+2025-03-25 19:32:49,712 - INFO - ---
+2025-03-25 19:32:49,712 - INFO - Producto 37:
+2025-03-25 19:32:49,712 - INFO - - ID: 9978835403061
+2025-03-25 19:32:49,712 - INFO - - Nombre: ARO ESTANDAR FLOR CORTA PLATEADO
+2025-03-25 19:32:49,712 - INFO - ---
+2025-03-25 19:32:49,713 - INFO - Producto 38:
+2025-03-25 19:32:49,713 - INFO - - ID: 9978836222261
+2025-03-25 19:32:49,713 - INFO - - Nombre: ARO RAMAS BRILLOS
+2025-03-25 19:32:49,713 - INFO - ---
+2025-03-25 19:32:49,713 - INFO - Producto 39:
+2025-03-25 19:32:49,713 - INFO - - ID: 9978836255029
+2025-03-25 19:32:49,713 - INFO - - Nombre: ARO FIESTA PREMIUM FLORES ROSADAS
+2025-03-25 19:32:49,713 - INFO - ---
+2025-03-25 19:32:49,714 - INFO - Producto 40:
+2025-03-25 19:32:49,714 - INFO - - ID: 9978836353333
+2025-03-25 19:32:49,714 - INFO - - Nombre: ARO FIESTA PREMIUM FLORES PLATEADAS
+2025-03-25 19:32:49,714 - INFO - ---
+2025-03-25 19:32:49,714 - INFO - Producto 41:
+2025-03-25 19:32:49,714 - INFO - - ID: 9978838516021
+2025-03-25 19:32:49,714 - INFO - - Nombre: ARO NAIRA ESTRELLA DORADO
+2025-03-25 19:32:49,714 - INFO - ---
+2025-03-25 19:32:49,715 - INFO - Producto 42:
+2025-03-25 19:32:49,715 - INFO - - ID: 9978838647093
+2025-03-25 19:32:49,715 - INFO - - Nombre: ARO NAIRA ESTRELLA PLATEADO
+2025-03-25 19:32:49,715 - INFO - ---
+2025-03-25 19:32:49,715 - INFO - Producto 43:
+2025-03-25 19:32:49,715 - INFO - - ID: 9978839630133
+2025-03-25 19:32:49,716 - INFO - - Nombre: ARO RAMA CORTA DORADO
+2025-03-25 19:32:49,716 - INFO - ---
+2025-03-25 19:32:49,716 - INFO - Producto 44:
+2025-03-25 19:32:49,716 - INFO - - ID: 9978839662901
+2025-03-25 19:32:49,716 - INFO - - Nombre: ARO RAMA CORTA PLATEADO
+2025-03-25 19:32:49,716 - INFO - ---
+2025-03-25 19:32:49,716 - INFO - Producto 45:
+2025-03-25 19:32:49,717 - INFO - - ID: 9978844905781
+2025-03-25 19:32:49,717 - INFO - - Nombre: ARO ESTANDAR FLOR CORTA DORADO
+2025-03-25 19:32:49,717 - INFO - ---
+2025-03-25 19:32:49,717 - INFO - Producto 46:
+2025-03-25 19:32:49,717 - INFO - - ID: 9978851262773
+2025-03-25 19:32:49,717 - INFO - - Nombre: ARO FIESTA PIEDRA PLATEADOS HOJAS AZULES
+2025-03-25 19:32:49,718 - INFO - ---
+2025-03-25 19:32:49,718 - INFO - Producto 47:
+2025-03-25 19:32:49,718 - INFO - - ID: 9978851328309
+2025-03-25 19:32:49,718 - INFO - - Nombre: 5 PARES DE PEZONERAS DE TELA FLOR BEIGE
+2025-03-25 19:32:49,718 - INFO - ---
+2025-03-25 19:32:49,718 - INFO - Producto 48:
+2025-03-25 19:32:49,718 - INFO - - ID: 9978854015285
+2025-03-25 19:32:49,719 - INFO - - Nombre: AROS ACRÍLICO ROCIO NEGRO
+2025-03-25 19:32:49,719 - INFO - ---
+2025-03-25 19:32:49,719 - INFO - Producto 49:
+2025-03-25 19:32:49,719 - INFO - - ID: 9978854048053
+2025-03-25 19:32:49,719 - INFO - - Nombre: AROS ACRÍLICOS AMANDA NEGRO
+2025-03-25 19:32:49,719 - INFO - ---

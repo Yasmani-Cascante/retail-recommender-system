@@ -1,10 +1,11 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, Header
 from typing import List, Optional, Dict
 from src.api.security import get_current_user
-from src.api.core.recommenders import hybrid_recommender, content_recommender
+from src.api.core.recommenders import hybrid_recommender, content_recommender, retail_recommender
 from src.api.core.store import get_shopify_client
 import math
 import logging
+
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -168,7 +169,16 @@ async def get_user_recommendations(
         # Entrenar el recomendador con productos actuales
         content_recommender.fit(all_products)
         
+        # Importar productos a Google Cloud Retail API
+        try:
+            logging.info("Importing products to Google Cloud Retail API")
+            import_result = await retail_recommender.import_catalog(all_products)
+            logging.info(f"Import result: {import_result}")
+        except Exception as e:
+            logging.error(f"Error importing products: {e}")
+        
         # Obtener recomendaciones
+        logging.info("Getting recommendations from hybrid recommender")
         recommendations = await hybrid_recommender.get_recommendations(
             user_id=user_id,
             n_recommendations=n

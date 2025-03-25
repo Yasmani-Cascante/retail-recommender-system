@@ -1,0 +1,700 @@
+2025-03-25 17:40:02,575 - DEBUG - Using proactor: IocpProactor
+2025-03-25 17:40:02,577 - INFO - Initializing Shopify client with:
+2025-03-25 17:40:02,577 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 17:40:02,577 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 17:40:02,577 - INFO - Access Token: shpa...
+2025-03-25 17:40:02,577 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 17:40:02,577 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 17:40:02,578 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 17:40:02,579 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 17:40:02,855 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 17:40:02,981 - INFO - Response structure: ['products']
+2025-03-25 17:40:02,981 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 17:40:02,983 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 17:40:03,863 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 17:40:03,864 - INFO - Se convirtieron 50 productos correctamente
+2025-03-25 17:40:03,864 - INFO - Importando lote 1/1 (50 productos)...
+2025-03-25 17:40:03,864 - ERROR - Error al importar lote 1: type object 'ImportProductsRequest' has no attribute 'InputConfig'
+2025-03-25 17:40:03,864 - ERROR - Traceback (most recent call last):
+  File "C:\Users\yasma\Desktop\retail-recommender-system\test_import_final.py", line 79, in import_products
+    import_config = retail_v2.types.ImportProductsRequest.InputConfig(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'ImportProductsRequest' has no attribute 'InputConfig'
+
+2025-03-25 17:40:03,865 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 18:14:49,429 - DEBUG - Using proactor: IocpProactor
+2025-03-25 18:14:49,430 - INFO - Initializing Shopify client with:
+2025-03-25 18:14:49,431 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 18:14:49,431 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 18:14:49,431 - INFO - Access Token: shpa...
+2025-03-25 18:14:49,431 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 18:14:49,431 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 18:14:49,432 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 18:14:49,433 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 18:14:49,679 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 18:14:49,804 - INFO - Response structure: ['products']
+2025-03-25 18:14:49,805 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 18:14:49,806 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 18:14:50,596 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:14:50,597 - INFO - Se convirtieron 50 productos correctamente
+2025-03-25 18:14:50,597 - INFO - Importando lote 1/1 (50 productos)...
+2025-03-25 18:14:50,597 - ERROR - Error al importar lote 1: type object 'ImportProductsRequest' has no attribute 'InputConfig'
+2025-03-25 18:14:50,598 - ERROR - Traceback (most recent call last):
+  File "C:\Users\yasma\Desktop\retail-recommender-system\test_import_final.py", line 79, in import_products
+    import_config = retail_v2.types.ImportProductsRequest.InputConfig(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'ImportProductsRequest' has no attribute 'InputConfig'
+
+2025-03-25 18:14:50,598 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 18:20:47,815 - DEBUG - Using proactor: IocpProactor
+2025-03-25 18:20:47,817 - INFO - Initializing Shopify client with:
+2025-03-25 18:20:47,817 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 18:20:47,817 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 18:20:47,817 - INFO - Access Token: shpa...
+2025-03-25 18:20:47,817 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 18:20:47,817 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 18:20:47,817 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 18:20:47,819 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 18:20:48,062 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 18:20:48,195 - INFO - Response structure: ['products']
+2025-03-25 18:20:48,195 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 18:20:48,197 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 18:20:49,004 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:20:49,004 - INFO - Se convirtieron 50 productos correctamente
+2025-03-25 18:20:49,004 - INFO - Importando lote 1/1 (50 productos)...
+2025-03-25 18:20:49,005 - ERROR - Error al importar lote 1: module 'google.cloud.retail_v2.types' has no attribute 'InputConfig'
+2025-03-25 18:20:49,005 - ERROR - Traceback (most recent call last):
+  File "C:\Users\yasma\Desktop\retail-recommender-system\test_import_final.py", line 79, in import_products
+    import_config = retail_v2.types.InputConfig(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'google.cloud.retail_v2.types' has no attribute 'InputConfig'
+
+2025-03-25 18:20:49,006 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 18:27:33,502 - DEBUG - Using proactor: IocpProactor
+2025-03-25 18:27:33,504 - INFO - Initializing Shopify client with:
+2025-03-25 18:27:33,504 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 18:27:33,504 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 18:27:33,504 - INFO - Access Token: shpa...
+2025-03-25 18:27:33,504 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 18:27:33,505 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 18:27:33,505 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 18:27:33,507 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 18:27:33,769 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 18:27:33,896 - INFO - Response structure: ['products']
+2025-03-25 18:27:33,897 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 18:27:33,898 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 18:27:34,689 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:27:34,689 - INFO - Se convirtieron 50 productos correctamente
+2025-03-25 18:27:34,689 - INFO - Importando lote 1/1 (50 productos)...
+2025-03-25 18:27:34,690 - ERROR - Error al importar lote 1: type object 'ImportProductsRequest' has no attribute 'ProductInputConfig'
+2025-03-25 18:27:34,690 - ERROR - Traceback (most recent call last):
+  File "C:\Users\yasma\Desktop\retail-recommender-system\test_import_final.py", line 79, in import_products
+    import_config = retail_v2.types.ImportProductsRequest.ProductInputConfig(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'ImportProductsRequest' has no attribute 'ProductInputConfig'
+
+2025-03-25 18:27:34,691 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 18:42:43,216 - DEBUG - Using proactor: IocpProactor
+2025-03-25 18:42:43,218 - INFO - Initializing Shopify client with:
+2025-03-25 18:42:43,218 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 18:42:43,219 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 18:42:43,219 - INFO - Access Token: shpa...
+2025-03-25 18:42:43,219 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 18:42:43,219 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 18:42:43,219 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 18:42:43,221 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 18:42:43,488 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 18:42:43,619 - INFO - Response structure: ['products']
+2025-03-25 18:42:43,619 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 18:42:43,622 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 18:42:44,549 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:42:44,550 - INFO - Se convirtieron 50 productos correctamente
+2025-03-25 18:42:44,550 - INFO - Importando lote 1/1 (50 productos)...
+2025-03-25 18:42:44,550 - ERROR - Error al importar lote 1: module 'google.cloud.retail_v2' has no attribute 'InputConfig'
+2025-03-25 18:42:44,551 - ERROR - Traceback (most recent call last):
+  File "C:\Users\yasma\Desktop\retail-recommender-system\test_import_final.py", line 79, in import_products
+    import_config = retail_v2.InputConfig(
+                    ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'google.cloud.retail_v2' has no attribute 'InputConfig'
+
+2025-03-25 18:42:44,551 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 18:45:47,796 - DEBUG - Using proactor: IocpProactor
+2025-03-25 18:45:47,798 - INFO - Initializing Shopify client with:
+2025-03-25 18:45:47,798 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 18:45:47,798 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 18:45:47,799 - INFO - Access Token: shpa...
+2025-03-25 18:45:47,799 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 18:45:47,799 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 18:45:47,799 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 18:45:47,801 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 18:45:48,071 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 18:45:48,191 - INFO - Response structure: ['products']
+2025-03-25 18:45:48,191 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 18:45:48,193 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 18:45:49,147 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:45:49,147 - INFO - Se convirtieron 50 productos correctamente
+2025-03-25 18:45:49,147 - INFO - Importando lote 1/1 (50 productos)...
+2025-03-25 18:45:49,148 - ERROR - Error al importar lote 1: type object 'ImportProductsRequest' has no attribute 'InputConfig'
+2025-03-25 18:45:49,148 - ERROR - Traceback (most recent call last):
+  File "C:\Users\yasma\Desktop\retail-recommender-system\test_import_final.py", line 80, in import_products
+    import_config = ImportProductsRequest.InputConfig(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'ImportProductsRequest' has no attribute 'InputConfig'
+
+2025-03-25 18:45:49,149 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 18:48:41,057 - DEBUG - Using proactor: IocpProactor
+2025-03-25 18:48:41,058 - INFO - Initializing Shopify client with:
+2025-03-25 18:48:41,059 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 18:48:41,059 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 18:48:41,059 - INFO - Access Token: shpa...
+2025-03-25 18:48:41,060 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 18:48:41,060 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 18:48:41,060 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 18:48:41,062 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 18:48:41,320 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 18:48:41,449 - INFO - Response structure: ['products']
+2025-03-25 18:48:41,450 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 18:48:41,451 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 18:48:42,237 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:48:42,238 - INFO - Se convirtieron 50 productos correctamente
+2025-03-25 18:48:42,238 - INFO - Importando lote 1/1 (50 productos)...
+2025-03-25 18:48:42,238 - ERROR - Error al importar lote 1: type object 'ImportProductsRequest' has no attribute 'InputConfig'
+2025-03-25 18:48:42,239 - ERROR - Traceback (most recent call last):
+  File "C:\Users\yasma\Desktop\retail-recommender-system\test_import_final.py", line 81, in import_products
+    import_config = retail_v2.types.ImportProductsRequest.InputConfig(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: type object 'ImportProductsRequest' has no attribute 'InputConfig'
+
+2025-03-25 18:48:42,239 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 18:53:10,240 - DEBUG - Using proactor: IocpProactor
+2025-03-25 18:53:10,241 - INFO - Initializing Shopify client with:
+2025-03-25 18:53:10,241 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 18:53:10,242 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 18:53:10,242 - INFO - Access Token: shpa...
+2025-03-25 18:53:10,242 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 18:53:10,242 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 18:53:10,242 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 18:53:10,244 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 18:53:10,498 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 18:53:10,624 - INFO - Response structure: ['products']
+2025-03-25 18:53:10,625 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 18:53:10,626 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 18:53:11,438 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 18:53:11,439 - INFO - Se convirtieron 50 productos correctamente
+2025-03-25 18:53:11,439 - INFO - Importando lote 1/1 (50 productos)...
+2025-03-25 18:53:11,439 - ERROR - Error al importar lote 1: module 'google.cloud.retail_v2.types.import_config' has no attribute 'InputConfig'
+2025-03-25 18:53:11,440 - ERROR - Traceback (most recent call last):
+  File "C:\Users\yasma\Desktop\retail-recommender-system\test_import_final.py", line 81, in import_products
+    import_config = retail_v2.types.import_config.InputConfig(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: module 'google.cloud.retail_v2.types.import_config' has no attribute 'InputConfig'
+
+2025-03-25 18:53:11,440 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 19:06:52,450 - DEBUG - Using proactor: IocpProactor
+2025-03-25 19:06:52,452 - INFO - Initializing Shopify client with:
+2025-03-25 19:06:52,452 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 19:06:52,452 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 19:06:52,452 - INFO - Access Token: shpa...
+2025-03-25 19:06:52,453 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 19:06:52,453 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 19:06:52,453 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 19:06:52,456 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 19:06:52,741 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 19:06:52,867 - INFO - Response structure: ['products']
+2025-03-25 19:06:52,867 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 19:06:52,869 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 19:06:53,687 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:06:53,688 - INFO - Se convirtieron 50 productos correctamente
+2025-03-25 19:06:53,688 - INFO - Importando lote 1/1 (50 productos)...
+2025-03-25 19:06:53,737 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 19:06:53,820 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 19:06:54,341 - INFO - Lote 1 importado correctamente: error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+error_samples {
+  code: 3
+  message: "Field \"product.categories\" is a required field, but no value is found."
+}
+
+2025-03-25 19:06:54,355 - INFO - Resultado de importación: {'status': 'success', 'products_imported': 50, 'total_products': 50}
+2025-03-25 19:23:09,611 - DEBUG - Using proactor: IocpProactor
+2025-03-25 19:23:09,612 - INFO - Initializing Shopify client with:
+2025-03-25 19:23:09,612 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 19:23:09,612 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 19:23:09,612 - INFO - Access Token: shpa...
+2025-03-25 19:23:09,612 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 19:23:09,613 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 19:23:09,613 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 19:23:09,615 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 19:23:09,897 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 19:23:10,026 - INFO - Response structure: ['products']
+2025-03-25 19:23:10,026 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 19:23:10,029 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 19:23:10,846 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:23:10,846 - WARNING - Producto 9978689487157 sin categorías. Se omite.
+2025-03-25 19:23:10,846 - WARNING - Producto 9978851328309 sin categorías. Se omite.
+2025-03-25 19:23:10,846 - WARNING - Producto 9978741129525 sin categorías. Se omite.
+2025-03-25 19:23:10,847 - WARNING - Producto 9978741031221 sin categorías. Se omite.
+2025-03-25 19:23:10,847 - WARNING - Producto 9978540327221 sin categorías. Se omite.
+2025-03-25 19:23:10,847 - WARNING - Producto 9978816528693 sin categorías. Se omite.
+2025-03-25 19:23:10,847 - WARNING - Producto 9978844905781 sin categorías. Se omite.
+2025-03-25 19:23:10,847 - WARNING - Producto 9978835403061 sin categorías. Se omite.
+2025-03-25 19:23:10,847 - WARNING - Producto 9978851262773 sin categorías. Se omite.
+2025-03-25 19:23:10,848 - WARNING - Producto 9978815971637 sin categorías. Se omite.
+2025-03-25 19:23:10,848 - WARNING - Producto 9978836353333 sin categorías. Se omite.
+2025-03-25 19:23:10,848 - WARNING - Producto 9978836255029 sin categorías. Se omite.
+2025-03-25 19:23:10,848 - WARNING - Producto 9978817151285 sin categorías. Se omite.
+2025-03-25 19:23:10,848 - WARNING - Producto 9978817020213 sin categorías. Se omite.
+2025-03-25 19:23:10,848 - WARNING - Producto 9978826424629 sin categorías. Se omite.
+2025-03-25 19:23:10,849 - WARNING - Producto 9978829111605 sin categorías. Se omite.
+2025-03-25 19:23:10,849 - WARNING - Producto 9978826293557 sin categorías. Se omite.
+2025-03-25 19:23:10,849 - WARNING - Producto 9978838516021 sin categorías. Se omite.
+2025-03-25 19:23:10,849 - WARNING - Producto 9978838647093 sin categorías. Se omite.
+2025-03-25 19:23:10,849 - WARNING - Producto 9978826588469 sin categorías. Se omite.
+2025-03-25 19:23:10,849 - WARNING - Producto 9978839630133 sin categorías. Se omite.
+2025-03-25 19:23:10,850 - WARNING - Producto 9978839662901 sin categorías. Se omite.
+2025-03-25 19:23:10,850 - WARNING - Producto 9978836222261 sin categorías. Se omite.
+2025-03-25 19:23:10,850 - WARNING - Producto 9978826752309 sin categorías. Se omite.
+2025-03-25 19:23:10,850 - WARNING - Producto 9978624475445 sin categorías. Se omite.
+2025-03-25 19:23:10,850 - WARNING - Producto 9978624573749 sin categorías. Se omite.
+2025-03-25 19:23:10,850 - WARNING - Producto 9978625458485 sin categorías. Se omite.
+2025-03-25 19:23:10,850 - WARNING - Producto 9978621428021 sin categorías. Se omite.
+2025-03-25 19:23:10,851 - WARNING - Producto 9978580762933 sin categorías. Se omite.
+2025-03-25 19:23:10,851 - WARNING - Producto 9978666778933 sin categorías. Se omite.
+2025-03-25 19:23:10,851 - WARNING - Producto 9978666713397 sin categorías. Se omite.
+2025-03-25 19:23:10,851 - WARNING - Producto 9978601308469 sin categorías. Se omite.
+2025-03-25 19:23:10,851 - WARNING - Producto 9978601275701 sin categorías. Se omite.
+2025-03-25 19:23:10,851 - WARNING - Producto 9978666647861 sin categorías. Se omite.
+2025-03-25 19:23:10,852 - WARNING - Producto 9978555695413 sin categorías. Se omite.
+2025-03-25 19:23:10,852 - WARNING - Producto 9978559070517 sin categorías. Se omite.
+2025-03-25 19:23:10,852 - WARNING - Producto 9978579812661 sin categorías. Se omite.
+2025-03-25 19:23:10,852 - WARNING - Producto 9978690568501 sin categorías. Se omite.
+2025-03-25 19:23:10,852 - WARNING - Producto 9978808631605 sin categorías. Se omite.
+2025-03-25 19:23:10,852 - WARNING - Producto 9978654982453 sin categorías. Se omite.
+2025-03-25 19:23:10,853 - WARNING - Producto 9978854015285 sin categorías. Se omite.
+2025-03-25 19:23:10,853 - WARNING - Producto 9978808434997 sin categorías. Se omite.
+2025-03-25 19:23:10,853 - WARNING - Producto 9978743193909 sin categorías. Se omite.
+2025-03-25 19:23:10,853 - WARNING - Producto 9978551370037 sin categorías. Se omite.
+2025-03-25 19:23:10,853 - WARNING - Producto 9978854048053 sin categorías. Se omite.
+2025-03-25 19:23:10,853 - WARNING - Producto 9978480853301 sin categorías. Se omite.
+2025-03-25 19:23:10,853 - WARNING - Producto 9978481901877 sin categorías. Se omite.
+2025-03-25 19:23:10,854 - WARNING - Producto 9978733691189 sin categorías. Se omite.
+2025-03-25 19:23:10,854 - WARNING - Producto 9978502938933 sin categorías. Se omite.
+2025-03-25 19:23:10,854 - WARNING - Producto 9978503037237 sin categorías. Se omite.
+2025-03-25 19:23:10,854 - INFO - Se convirtieron 0 productos correctamente
+2025-03-25 19:23:10,854 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 19:24:37,994 - DEBUG - Using proactor: IocpProactor
+2025-03-25 19:24:37,996 - INFO - Initializing Shopify client with:
+2025-03-25 19:24:37,996 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 19:24:37,996 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 19:24:37,997 - INFO - Access Token: shpa...
+2025-03-25 19:24:37,997 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 19:24:37,997 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 19:24:37,997 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 19:24:37,999 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 19:24:38,245 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 19:24:38,372 - INFO - Response structure: ['products']
+2025-03-25 19:24:38,372 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 19:24:38,374 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 19:24:39,139 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:24:39,139 - WARNING - Producto 9978689487157 sin categorías. Se omite.
+2025-03-25 19:24:39,140 - WARNING - Producto 9978851328309 sin categorías. Se omite.
+2025-03-25 19:24:39,140 - WARNING - Producto 9978741129525 sin categorías. Se omite.
+2025-03-25 19:24:39,140 - WARNING - Producto 9978741031221 sin categorías. Se omite.
+2025-03-25 19:24:39,140 - WARNING - Producto 9978540327221 sin categorías. Se omite.
+2025-03-25 19:24:39,140 - WARNING - Producto 9978816528693 sin categorías. Se omite.
+2025-03-25 19:24:39,141 - WARNING - Producto 9978844905781 sin categorías. Se omite.
+2025-03-25 19:24:39,141 - WARNING - Producto 9978835403061 sin categorías. Se omite.
+2025-03-25 19:24:39,141 - WARNING - Producto 9978851262773 sin categorías. Se omite.
+2025-03-25 19:24:39,141 - WARNING - Producto 9978815971637 sin categorías. Se omite.
+2025-03-25 19:24:39,141 - WARNING - Producto 9978836353333 sin categorías. Se omite.
+2025-03-25 19:24:39,141 - WARNING - Producto 9978836255029 sin categorías. Se omite.
+2025-03-25 19:24:39,141 - WARNING - Producto 9978817151285 sin categorías. Se omite.
+2025-03-25 19:24:39,141 - WARNING - Producto 9978817020213 sin categorías. Se omite.
+2025-03-25 19:24:39,142 - WARNING - Producto 9978826424629 sin categorías. Se omite.
+2025-03-25 19:24:39,142 - WARNING - Producto 9978829111605 sin categorías. Se omite.
+2025-03-25 19:24:39,142 - WARNING - Producto 9978826293557 sin categorías. Se omite.
+2025-03-25 19:24:39,142 - WARNING - Producto 9978838516021 sin categorías. Se omite.
+2025-03-25 19:24:39,142 - WARNING - Producto 9978838647093 sin categorías. Se omite.
+2025-03-25 19:24:39,142 - WARNING - Producto 9978826588469 sin categorías. Se omite.
+2025-03-25 19:24:39,142 - WARNING - Producto 9978839630133 sin categorías. Se omite.
+2025-03-25 19:24:39,143 - WARNING - Producto 9978839662901 sin categorías. Se omite.
+2025-03-25 19:24:39,143 - WARNING - Producto 9978836222261 sin categorías. Se omite.
+2025-03-25 19:24:39,143 - WARNING - Producto 9978826752309 sin categorías. Se omite.
+2025-03-25 19:24:39,143 - WARNING - Producto 9978624475445 sin categorías. Se omite.
+2025-03-25 19:24:39,143 - WARNING - Producto 9978624573749 sin categorías. Se omite.
+2025-03-25 19:24:39,143 - WARNING - Producto 9978625458485 sin categorías. Se omite.
+2025-03-25 19:24:39,143 - WARNING - Producto 9978621428021 sin categorías. Se omite.
+2025-03-25 19:24:39,144 - WARNING - Producto 9978580762933 sin categorías. Se omite.
+2025-03-25 19:24:39,144 - WARNING - Producto 9978666778933 sin categorías. Se omite.
+2025-03-25 19:24:39,144 - WARNING - Producto 9978666713397 sin categorías. Se omite.
+2025-03-25 19:24:39,144 - WARNING - Producto 9978601308469 sin categorías. Se omite.
+2025-03-25 19:24:39,144 - WARNING - Producto 9978601275701 sin categorías. Se omite.
+2025-03-25 19:24:39,144 - WARNING - Producto 9978666647861 sin categorías. Se omite.
+2025-03-25 19:24:39,144 - WARNING - Producto 9978555695413 sin categorías. Se omite.
+2025-03-25 19:24:39,145 - WARNING - Producto 9978559070517 sin categorías. Se omite.
+2025-03-25 19:24:39,145 - WARNING - Producto 9978579812661 sin categorías. Se omite.
+2025-03-25 19:24:39,145 - WARNING - Producto 9978690568501 sin categorías. Se omite.
+2025-03-25 19:24:39,145 - WARNING - Producto 9978808631605 sin categorías. Se omite.
+2025-03-25 19:24:39,145 - WARNING - Producto 9978654982453 sin categorías. Se omite.
+2025-03-25 19:24:39,145 - WARNING - Producto 9978854015285 sin categorías. Se omite.
+2025-03-25 19:24:39,146 - WARNING - Producto 9978808434997 sin categorías. Se omite.
+2025-03-25 19:24:39,146 - WARNING - Producto 9978743193909 sin categorías. Se omite.
+2025-03-25 19:24:39,146 - WARNING - Producto 9978551370037 sin categorías. Se omite.
+2025-03-25 19:24:39,146 - WARNING - Producto 9978854048053 sin categorías. Se omite.
+2025-03-25 19:24:39,146 - WARNING - Producto 9978480853301 sin categorías. Se omite.
+2025-03-25 19:24:39,146 - WARNING - Producto 9978481901877 sin categorías. Se omite.
+2025-03-25 19:24:39,146 - WARNING - Producto 9978733691189 sin categorías. Se omite.
+2025-03-25 19:24:39,147 - WARNING - Producto 9978502938933 sin categorías. Se omite.
+2025-03-25 19:24:39,147 - WARNING - Producto 9978503037237 sin categorías. Se omite.
+2025-03-25 19:24:39,147 - INFO - Se convirtieron 0 productos correctamente
+2025-03-25 19:24:39,147 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 19:27:28,564 - DEBUG - Using proactor: IocpProactor
+2025-03-25 19:27:28,566 - INFO - Initializing Shopify client with:
+2025-03-25 19:27:28,566 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 19:27:28,566 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 19:27:28,566 - INFO - Access Token: shpa...
+2025-03-25 19:27:28,566 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 19:27:28,567 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 19:27:28,567 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 19:27:28,568 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 19:27:28,834 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 19:27:28,961 - INFO - Response structure: ['products']
+2025-03-25 19:27:28,961 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 19:27:28,963 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 19:27:29,736 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:27:29,736 - WARNING - Producto 9978689487157 sin categorías. Se omite.
+2025-03-25 19:27:29,736 - WARNING - Producto 9978851328309 sin categorías. Se omite.
+2025-03-25 19:27:29,736 - WARNING - Producto 9978741129525 sin categorías. Se omite.
+2025-03-25 19:27:29,736 - WARNING - Producto 9978741031221 sin categorías. Se omite.
+2025-03-25 19:27:29,737 - WARNING - Producto 9978540327221 sin categorías. Se omite.
+2025-03-25 19:27:29,737 - WARNING - Producto 9978816528693 sin categorías. Se omite.
+2025-03-25 19:27:29,737 - WARNING - Producto 9978844905781 sin categorías. Se omite.
+2025-03-25 19:27:29,737 - WARNING - Producto 9978835403061 sin categorías. Se omite.
+2025-03-25 19:27:29,737 - WARNING - Producto 9978851262773 sin categorías. Se omite.
+2025-03-25 19:27:29,737 - WARNING - Producto 9978815971637 sin categorías. Se omite.
+2025-03-25 19:27:29,738 - WARNING - Producto 9978836353333 sin categorías. Se omite.
+2025-03-25 19:27:29,738 - WARNING - Producto 9978836255029 sin categorías. Se omite.
+2025-03-25 19:27:29,738 - WARNING - Producto 9978817151285 sin categorías. Se omite.
+2025-03-25 19:27:29,738 - WARNING - Producto 9978817020213 sin categorías. Se omite.
+2025-03-25 19:27:29,738 - WARNING - Producto 9978826424629 sin categorías. Se omite.
+2025-03-25 19:27:29,738 - WARNING - Producto 9978829111605 sin categorías. Se omite.
+2025-03-25 19:27:29,739 - WARNING - Producto 9978826293557 sin categorías. Se omite.
+2025-03-25 19:27:29,739 - WARNING - Producto 9978838516021 sin categorías. Se omite.
+2025-03-25 19:27:29,739 - WARNING - Producto 9978838647093 sin categorías. Se omite.
+2025-03-25 19:27:29,739 - WARNING - Producto 9978826588469 sin categorías. Se omite.
+2025-03-25 19:27:29,739 - WARNING - Producto 9978839630133 sin categorías. Se omite.
+2025-03-25 19:27:29,739 - WARNING - Producto 9978839662901 sin categorías. Se omite.
+2025-03-25 19:27:29,740 - WARNING - Producto 9978836222261 sin categorías. Se omite.
+2025-03-25 19:27:29,740 - WARNING - Producto 9978826752309 sin categorías. Se omite.
+2025-03-25 19:27:29,740 - WARNING - Producto 9978624475445 sin categorías. Se omite.
+2025-03-25 19:27:29,740 - WARNING - Producto 9978624573749 sin categorías. Se omite.
+2025-03-25 19:27:29,740 - WARNING - Producto 9978625458485 sin categorías. Se omite.
+2025-03-25 19:27:29,740 - WARNING - Producto 9978621428021 sin categorías. Se omite.
+2025-03-25 19:27:29,740 - WARNING - Producto 9978580762933 sin categorías. Se omite.
+2025-03-25 19:27:29,740 - WARNING - Producto 9978666778933 sin categorías. Se omite.
+2025-03-25 19:27:29,741 - WARNING - Producto 9978666713397 sin categorías. Se omite.
+2025-03-25 19:27:29,741 - WARNING - Producto 9978601308469 sin categorías. Se omite.
+2025-03-25 19:27:29,741 - WARNING - Producto 9978601275701 sin categorías. Se omite.
+2025-03-25 19:27:29,741 - WARNING - Producto 9978666647861 sin categorías. Se omite.
+2025-03-25 19:27:29,741 - WARNING - Producto 9978555695413 sin categorías. Se omite.
+2025-03-25 19:27:29,741 - WARNING - Producto 9978559070517 sin categorías. Se omite.
+2025-03-25 19:27:29,742 - WARNING - Producto 9978579812661 sin categorías. Se omite.
+2025-03-25 19:27:29,742 - WARNING - Producto 9978690568501 sin categorías. Se omite.
+2025-03-25 19:27:29,742 - WARNING - Producto 9978808631605 sin categorías. Se omite.
+2025-03-25 19:27:29,742 - WARNING - Producto 9978654982453 sin categorías. Se omite.
+2025-03-25 19:27:29,742 - WARNING - Producto 9978854015285 sin categorías. Se omite.
+2025-03-25 19:27:29,742 - WARNING - Producto 9978808434997 sin categorías. Se omite.
+2025-03-25 19:27:29,743 - WARNING - Producto 9978743193909 sin categorías. Se omite.
+2025-03-25 19:27:29,743 - WARNING - Producto 9978551370037 sin categorías. Se omite.
+2025-03-25 19:27:29,743 - WARNING - Producto 9978854048053 sin categorías. Se omite.
+2025-03-25 19:27:29,743 - WARNING - Producto 9978480853301 sin categorías. Se omite.
+2025-03-25 19:27:29,743 - WARNING - Producto 9978481901877 sin categorías. Se omite.
+2025-03-25 19:27:29,743 - WARNING - Producto 9978733691189 sin categorías. Se omite.
+2025-03-25 19:27:29,744 - WARNING - Producto 9978502938933 sin categorías. Se omite.
+2025-03-25 19:27:29,744 - WARNING - Producto 9978503037237 sin categorías. Se omite.
+2025-03-25 19:27:29,744 - INFO - Se convirtieron 0 productos correctamente
+2025-03-25 19:27:29,744 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 19:27:54,359 - DEBUG - Using proactor: IocpProactor
+2025-03-25 19:27:54,360 - INFO - Initializing Shopify client with:
+2025-03-25 19:27:54,361 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 19:27:54,361 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 19:27:54,361 - INFO - Access Token: shpa...
+2025-03-25 19:27:54,361 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 19:27:54,361 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 19:27:54,362 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 19:27:54,363 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 19:27:54,624 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 19:27:54,752 - INFO - Response structure: ['products']
+2025-03-25 19:27:54,752 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 19:27:54,754 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 19:27:55,536 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:27:55,536 - WARNING - Producto 9978689487157 sin categorías. Se omite.
+2025-03-25 19:27:55,536 - WARNING - Producto 9978851328309 sin categorías. Se omite.
+2025-03-25 19:27:55,536 - WARNING - Producto 9978741129525 sin categorías. Se omite.
+2025-03-25 19:27:55,536 - WARNING - Producto 9978741031221 sin categorías. Se omite.
+2025-03-25 19:27:55,537 - WARNING - Producto 9978540327221 sin categorías. Se omite.
+2025-03-25 19:27:55,537 - WARNING - Producto 9978816528693 sin categorías. Se omite.
+2025-03-25 19:27:55,537 - WARNING - Producto 9978844905781 sin categorías. Se omite.
+2025-03-25 19:27:55,537 - WARNING - Producto 9978835403061 sin categorías. Se omite.
+2025-03-25 19:27:55,537 - WARNING - Producto 9978851262773 sin categorías. Se omite.
+2025-03-25 19:27:55,537 - WARNING - Producto 9978815971637 sin categorías. Se omite.
+2025-03-25 19:27:55,537 - WARNING - Producto 9978836353333 sin categorías. Se omite.
+2025-03-25 19:27:55,537 - WARNING - Producto 9978836255029 sin categorías. Se omite.
+2025-03-25 19:27:55,537 - WARNING - Producto 9978817151285 sin categorías. Se omite.
+2025-03-25 19:27:55,538 - WARNING - Producto 9978817020213 sin categorías. Se omite.
+2025-03-25 19:27:55,538 - WARNING - Producto 9978826424629 sin categorías. Se omite.
+2025-03-25 19:27:55,538 - WARNING - Producto 9978829111605 sin categorías. Se omite.
+2025-03-25 19:27:55,538 - WARNING - Producto 9978826293557 sin categorías. Se omite.
+2025-03-25 19:27:55,538 - WARNING - Producto 9978838516021 sin categorías. Se omite.
+2025-03-25 19:27:55,538 - WARNING - Producto 9978838647093 sin categorías. Se omite.
+2025-03-25 19:27:55,538 - WARNING - Producto 9978826588469 sin categorías. Se omite.
+2025-03-25 19:27:55,539 - WARNING - Producto 9978839630133 sin categorías. Se omite.
+2025-03-25 19:27:55,539 - WARNING - Producto 9978839662901 sin categorías. Se omite.
+2025-03-25 19:27:55,539 - WARNING - Producto 9978836222261 sin categorías. Se omite.
+2025-03-25 19:27:55,539 - WARNING - Producto 9978826752309 sin categorías. Se omite.
+2025-03-25 19:27:55,539 - WARNING - Producto 9978624475445 sin categorías. Se omite.
+2025-03-25 19:27:55,539 - WARNING - Producto 9978624573749 sin categorías. Se omite.
+2025-03-25 19:27:55,539 - WARNING - Producto 9978625458485 sin categorías. Se omite.
+2025-03-25 19:27:55,540 - WARNING - Producto 9978621428021 sin categorías. Se omite.
+2025-03-25 19:27:55,540 - WARNING - Producto 9978580762933 sin categorías. Se omite.
+2025-03-25 19:27:55,540 - WARNING - Producto 9978666778933 sin categorías. Se omite.
+2025-03-25 19:27:55,540 - WARNING - Producto 9978666713397 sin categorías. Se omite.
+2025-03-25 19:27:55,540 - WARNING - Producto 9978601308469 sin categorías. Se omite.
+2025-03-25 19:27:55,540 - WARNING - Producto 9978601275701 sin categorías. Se omite.
+2025-03-25 19:27:55,541 - WARNING - Producto 9978666647861 sin categorías. Se omite.
+2025-03-25 19:27:55,541 - WARNING - Producto 9978555695413 sin categorías. Se omite.
+2025-03-25 19:27:55,541 - WARNING - Producto 9978559070517 sin categorías. Se omite.
+2025-03-25 19:27:55,541 - WARNING - Producto 9978579812661 sin categorías. Se omite.
+2025-03-25 19:27:55,541 - WARNING - Producto 9978690568501 sin categorías. Se omite.
+2025-03-25 19:27:55,542 - WARNING - Producto 9978808631605 sin categorías. Se omite.
+2025-03-25 19:27:55,542 - WARNING - Producto 9978654982453 sin categorías. Se omite.
+2025-03-25 19:27:55,542 - WARNING - Producto 9978854015285 sin categorías. Se omite.
+2025-03-25 19:27:55,542 - WARNING - Producto 9978808434997 sin categorías. Se omite.
+2025-03-25 19:27:55,542 - WARNING - Producto 9978743193909 sin categorías. Se omite.
+2025-03-25 19:27:55,542 - WARNING - Producto 9978551370037 sin categorías. Se omite.
+2025-03-25 19:27:55,543 - WARNING - Producto 9978854048053 sin categorías. Se omite.
+2025-03-25 19:27:55,543 - WARNING - Producto 9978480853301 sin categorías. Se omite.
+2025-03-25 19:27:55,543 - WARNING - Producto 9978481901877 sin categorías. Se omite.
+2025-03-25 19:27:55,543 - WARNING - Producto 9978733691189 sin categorías. Se omite.
+2025-03-25 19:27:55,543 - WARNING - Producto 9978502938933 sin categorías. Se omite.
+2025-03-25 19:27:55,544 - WARNING - Producto 9978503037237 sin categorías. Se omite.
+2025-03-25 19:27:55,544 - INFO - Se convirtieron 0 productos correctamente
+2025-03-25 19:27:55,544 - INFO - Resultado de importación: {'status': 'error', 'products_imported': 0, 'total_products': 50}
+2025-03-25 19:32:43,861 - DEBUG - Using proactor: IocpProactor
+2025-03-25 19:32:43,863 - INFO - Initializing Shopify client with:
+2025-03-25 19:32:43,863 - INFO - Shop URL: ai-shoppings.myshopify.com
+2025-03-25 19:32:43,864 - INFO - API URL: https://ai-shoppings.myshopify.com/admin/api/2024-01
+2025-03-25 19:32:43,864 - INFO - Access Token: shpa...
+2025-03-25 19:32:43,864 - INFO - Shopify client initialized for ai-shoppings.myshopify.com
+2025-03-25 19:32:43,864 - INFO - Cliente Shopify inicializado correctamente
+2025-03-25 19:32:43,864 - INFO - Fetching products from: https://ai-shoppings.myshopify.com/admin/api/2024-01/products.json
+2025-03-25 19:32:43,866 - DEBUG - Starting new HTTPS connection (1): ai-shoppings.myshopify.com:443
+2025-03-25 19:32:44,144 - DEBUG - https://ai-shoppings.myshopify.com:443 "GET /admin/api/2024-01/products.json HTTP/1.1" 200 None
+2025-03-25 19:32:44,269 - INFO - Response structure: ['products']
+2025-03-25 19:32:44,269 - INFO - Sample product: {'id': 9978689487157, 'title': '5 PARES DE PEZONERAS DE TELA CORAZÓN BEIGE', 'body_html': '<p><span data-mce-fragment="1">5 pares de cubre pezones reutilizables en forma de corazón, color beige.</span></p>\n<ul>\n<li>Perfecto cuando necesitas utilizar una prenda con escote pronunciado o sin brasier.</li>\n<li><span data-mce-fragment="1">Fáciles de utilizar.</span></li>\n<li>No lastiman.</li>\n</ul>\n<p>\xa0Estos nipple covers están especialmente diseñados para utilizarse debajo de blusas, sostenes deportivos y por supuesto, vestidos. Compleméntalos con nuestras cintas de tela adhesiva modeladoras de busto.</p>\n<p><br data-mce-fragment="1"><span data-mce-fragment="1">88% Nailon, 12% Elastano</span></p>', 'vendor': 'LENCERÍA INVISIBLE', 'product_type': 'LENCERIA', 'created_at': '2025-02-10T12:00:27-05:00', 'handle': '5-pares-de-pezoneras-de-tela-flor-beige', 'updated_at': '2025-02-14T11:06:37-05:00', 'published_at': '2025-02-10T12:00:24-05:00', 'template_suffix': None, 'published_scope': 'global', 'tags': 'BEIGE, BOOB TAPE, BUSTO, FIESTA, LENCERIA INVISIBLE, LENCERÍA, OUTLET, SIN CAMBIO, TALLA ÚNICA', 'status': 'active', 'admin_graphql_api_id': 'gid://shopify/Product/9978689487157', 'variants': [{'id': 50562343207221, 'product_id': 9978689487157, 'title': 'TALLA ÚNICA / BEIGE', 'price': '4990', 'position': 1, 'inventory_policy': 'deny', 'compare_at_price': None, 'option1': 'TALLA ÚNICA', 'option2': 'BEIGE', 'option3': None, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'taxable': False, 'barcode': None, 'fulfillment_service': 'manual', 'grams': 100, 'inventory_management': 'shopify', 'requires_shipping': True, 'sku': 'LE007-10-19-U', 'weight': 0.1, 'weight_unit': 'kg', 'inventory_item_id': 52603476902197, 'inventory_quantity': 0, 'old_inventory_quantity': 0, 'admin_graphql_api_id': 'gid://shopify/ProductVariant/50562343207221', 'image_id': None}], 'options': [{'id': 12425531883829, 'product_id': 9978689487157, 'name': 'TALLA', 'position': 1, 'values': ['TALLA ÚNICA']}, {'id': 12425531916597, 'product_id': 9978689487157, 'name': 'COLOR', 'position': 2, 'values': ['BEIGE']}], 'images': [{'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}, {'id': 59245239075125, 'alt': None, 'position': 2, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239075125', 'width': 1400, 'height': 1738, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/70_993e6d0b-f480-4df8-9f98-3c4e3daedc3c.jpg?v=1739206827', 'variant_ids': []}], 'image': {'id': 59245239042357, 'alt': None, 'position': 1, 'product_id': 9978689487157, 'created_at': '2025-02-10T12:00:27-05:00', 'updated_at': '2025-02-10T12:00:27-05:00', 'admin_graphql_api_id': 'gid://shopify/ProductImage/59245239042357', 'width': 1381, 'height': 1722, 'src': 'https://cdn.shopify.com/s/files/1/0933/1700/5621/files/71_dcffa00e-6216-48f9-951e-bc2791aa620f.jpg?v=1739206827', 'variant_ids': []}}
+2025-03-25 19:32:44,272 - INFO - Obtenidos 50 productos de Shopify
+2025-03-25 19:32:45,041 - INFO - Importando 50 productos a: projects/178362262166/locations/global/catalogs/default_catalog/branches/default_branch
+2025-03-25 19:32:45,041 - INFO - Se convirtieron 50 productos correctamente
+2025-03-25 19:32:45,041 - INFO - Importando lote 1/1 (50 productos)...
+2025-03-25 19:32:45,089 - DEBUG - Starting new HTTPS connection (1): oauth2.googleapis.com:443
+2025-03-25 19:32:45,205 - DEBUG - https://oauth2.googleapis.com:443 "POST /token HTTP/1.1" 200 None
+2025-03-25 19:32:46,623 - INFO - Lote 1 importado correctamente: error_samples {
+  code: 3
+  message: "\"product.categories\" cannot be empty or contain only whitespaces, control characters or non-characters. Received:  ."
+}
+
+2025-03-25 19:32:46,624 - INFO - Resultado de importación: {'status': 'success', 'products_imported': 50, 'total_products': 50}

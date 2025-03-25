@@ -17,7 +17,7 @@ gcloud run deploy retail-recommender-system `
     --region us-central1 `
     --memory 1Gi `
     --timeout 300 `
-    --set-env-vars "GOOGLE_PROJECT_NUMBER=178362262166,GOOGLE_LOCATION=us-central1,GOOGLE_CATALOG=retail_178362262166,GOOGLE_SERVING_CONFIG=default_recommendation_config,API_KEY=2fed9999056fab6dac5654238f0cae1c" `
+    --set-env-vars "GOOGLE_PROJECT_NUMBER=178362262166,GOOGLE_LOCATION=global,GOOGLE_CATALOG=default_catalog,GOOGLE_SERVING_CONFIG=default_recommendation_config,API_KEY=2fed9999056fab6dac5654238f0cae1c" `
     --allow-unauthenticated
 
 Write-Host "Proceso de despliegue completado." -ForegroundColor Green
