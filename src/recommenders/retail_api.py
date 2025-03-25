@@ -23,7 +23,10 @@ class RetailAPIRecommender:
         self.predict_client = retail_v2.PredictionServiceClient()
         self.product_client = retail_v2.ProductServiceClient()
         
-        self.placement = f"projects/{project_number}/locations/{location}/catalogs/{catalog}/servingConfigs/{serving_config_id}"
+        self.placement = (
+            f"projects/{project_number}/locations/{location}"
+            f"/catalogs/{catalog}/servingConfigs/{serving_config_id}"
+        )
     
     def _process_predictions(self, response) -> List[Dict]:
         recommendations = []
@@ -42,25 +45,6 @@ class RetailAPIRecommender:
         except Exception as e:
             logging.error(f"Error processing predictions: {str(e)}")
             return []
-    def __init__(
-        self,
-        project_number: str,
-        location: str,
-        catalog: str = "default_catalog",
-        serving_config_id: str = "default_config"
-    ):
-        self.project_number = project_number
-        self.location = location
-        self.catalog = catalog
-        self.serving_config_id = serving_config_id
-        
-        self.predict_client = retail_v2.PredictionServiceClient()
-        self.product_client = retail_v2.ProductServiceClient()
-        
-        self.placement = (
-            f"projects/{project_number}/locations/{location}"
-            f"/catalogs/{catalog}/servingConfigs/{serving_config_id}"
-        )
 
     async def process_shopify_orders(self, orders: List[Dict], user_id: str):
         """
@@ -96,28 +80,55 @@ class RetailAPIRecommender:
             return {"status": "error", "error": str(e)}
         
     def _convert_product_to_retail(self, product: Dict) -> Product:
+        # Extracción segura de datos con valores predeterminados
+        product_id = str(product.get("id", ""))
+        title = product.get("title", "")
+        description = product.get("body_html", "").replace("<p>", "").replace("</p>", "")
+        
+        # Extracción de precio del primer variante si existe
+        price = 0.0
+        if product.get("variants") and len(product["variants"]) > 0:
+            price_str = product["variants"][0].get("price", "0")
+            try:
+                price = float(price_str)
+            except (ValueError, TypeError):
+                price = 0.0
+        
+        # Categoría del producto
+        category = product.get("product_type", "")
+        
+        # Construcción del objeto Product
         return Product(
-            id=product["id"],
-            title=product["name"],
-            description=product["description"],
+            id=product_id,
+            title=title,
+            description=description,
             price_info={
-                "price": product["price"],
-                "currency_code": "EUR"
+                "price": price,
+                "currency_code": "COP"
             },
-            categories=[product["category"]],
+            categories=[category] if category else [],
+            # Atributos opcionales basados en etiquetas
             attributes={
-                "material": {"text": [product["attributes"]["material"]]},
-                "style": {"text": [product["attributes"]["style"]]},
-                "occasions": {"text": product["attributes"]["occasion"]}
-            }
+                "tags": {"text": product.get("tags", "").split(", ") if isinstance(product.get("tags", ""), str) else []}
+            } if product.get("tags") else None
         )
         
     async def import_catalog(self, products: List[Dict]):
         try:
-            retail_products = [
-                self._convert_product_to_retail(product)
-                for product in products
-            ]
+            # Agregamos log para depuración
+            logging.info(f"Importando {len(products)} productos al catálogo de Google Retail API")
+            if products and len(products) > 0:
+                logging.debug(f"Estructura del primer producto: {products[0].keys()}")
+            
+            retail_products = []
+            for product in products:
+                try:
+                    retail_product = self._convert_product_to_retail(product)
+                    retail_products.append(retail_product)
+                except Exception as e:
+                    logging.error(f"Error al convertir producto {product.get('id', 'unknown')}: {str(e)}")
+                    # Continuamos con el siguiente producto
+                    continue
             
             parent = (
                 f"projects/{self.project_number}/locations/{self.location}"
@@ -155,6 +166,17 @@ class RetailAPIRecommender:
         n_recommendations: int = 5
     ) -> List[Dict]:
         try:
+            # Verificamos parámetros de configuración
+            if not self.project_number or not self.location or not self.catalog or not self.serving_config_id:
+                logging.error("Faltan parámetros de configuración para Google Retail API")
+                logging.error(f"Project: {self.project_number}, Location: {self.location}, Catalog: {self.catalog}, Serving Config: {self.serving_config_id}")
+                return []
+                
+            # Verificamos que el serving_config_id no sea una ruta de archivo
+            if self.serving_config_id.endswith('.json') or '/' in self.serving_config_id or '\\' in self.serving_config_id:
+                logging.error(f"El valor de serving_config_id parece ser una ruta de archivo: {self.serving_config_id}")
+                return []
+
             parent = f"projects/{self.project_number}/locations/{self.location}/catalogs/{self.catalog}"
             
             user_event = retail_v2.UserEvent(
@@ -176,25 +198,27 @@ class RetailAPIRecommender:
             logging.info(f"Request: {str(request)}")
 
             try:
+                # Intentar validar la solicitud
                 response = self.predict_client.predict(request)
-                logging.info(f"Validation successful")
+                logging.info(f"Validación exitosa")
                 
+                # Si la validación es exitosa, hacer la solicitud real
                 request.validate_only = False
                 response = self.predict_client.predict(request)
                 
-                return self._process_predictions(response)
+                # Procesar y devolver resultados
+                results = self._process_predictions(response)
+                logging.info(f"Se obtuvieron {len(results)} recomendaciones para el usuario {user_id}")
+                return results
             except Exception as e:
-                logging.error(f"API Error: {str(e)}")
+                logging.error(f"Error en API de Google Retail: {str(e)}")
                 if hasattr(e, 'details'):
-                    logging.error(f"Error details: {e.details}")
+                    logging.error(f"Detalles del error: {e.details}")
+                # Si falla la API de Google, intentar usar recomendaciones basadas en contenido
                 return []
 
         except Exception as e:
-            logging.error(f"Error in get_recommendations: {str(e)}")
-            return []
-            
-        except Exception as e:
-            logging.error(f"Error getting recommendations: {str(e)}")
+            logging.error(f"Error en get_recommendations: {str(e)}")
             return []
             
     async def record_user_event(

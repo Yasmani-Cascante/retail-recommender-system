@@ -39,29 +39,45 @@ class HybridRecommender:
             List[Dict]: Lista de productos recomendados
         """
         # Obtener recomendaciones de ambos sistemas
-        content_recs = (
-            self.content_recommender.recommend(product_id, n_recommendations)
-            if product_id else []
-        )
+        content_recs = []
+        retail_recs = []
         
-        retail_recs = await self.retail_recommender.get_recommendations(
-            user_id=user_id,
-            product_id=product_id,
-            n_recommendations=n_recommendations
-        )
+        # Si hay un product_id, obtener recomendaciones basadas en contenido
+        if product_id:
+            try:
+                content_recs = self.content_recommender.recommend(product_id, n_recommendations)
+                print(f"Obtenidas {len(content_recs)} recomendaciones basadas en contenido para producto {product_id}")
+            except Exception as e:
+                print(f"Error al obtener recomendaciones basadas en contenido: {str(e)}")
         
-        # Si no hay producto_id, usar solo recomendaciones de Retail API
-        if not product_id:
-            return retail_recs
+        # Intentar obtener recomendaciones de Retail API
+        try:
+            retail_recs = await self.retail_recommender.get_recommendations(
+                user_id=user_id,
+                product_id=product_id,
+                n_recommendations=n_recommendations
+            )
+            print(f"Obtenidas {len(retail_recs)} recomendaciones de Retail API para usuario {user_id}")
+        except Exception as e:
+            print(f"Error al obtener recomendaciones de Retail API: {str(e)}")
+        
+        # Si no hay producto_id y tampoco recomendaciones de Retail API,
+        # usar recomendaciones basadas en productos populares o aleatorios
+        if not product_id and not retail_recs:
+            print("Usando recomendaciones de fallback")
+            return self._get_fallback_recommendations(n_recommendations)
             
-        # Si hay producto_id, combinar ambas recomendaciones
-        recommendations = self._combine_recommendations(
-            content_recs,
-            retail_recs,
-            n_recommendations
-        )
+        # Si hay product_id, combinar ambas recomendaciones
+        if product_id:
+            recommendations = self._combine_recommendations(
+                content_recs,
+                retail_recs,
+                n_recommendations
+            )
+            return recommendations
         
-        return recommendations
+        # Si no hay product_id, usar solo recomendaciones de Retail API
+        return retail_recs
         
     def _combine_recommendations(
         self,
@@ -112,6 +128,53 @@ class HybridRecommender:
         )
         
         return sorted_recs[:n_recommendations]
+    
+    def _get_fallback_recommendations(self, n_recommendations: int = 5) -> List[Dict]:
+        """
+        Proporciona recomendaciones de respaldo cuando no es posible obtener recomendaciones
+        de Google Cloud Retail API ni del recomendador basado en contenido.
+        
+        Args:
+            n_recommendations: Número de recomendaciones a devolver
+            
+        Returns:
+            List[Dict]: Lista de productos recomendados
+        """
+        # Verificar si hay productos disponibles
+        if not hasattr(self.content_recommender, 'product_data') or not self.content_recommender.product_data:
+            # Si no hay datos, devolver lista vacía
+            return []
+        
+        # Obtener todos los productos disponibles
+        all_products = self.content_recommender.product_data
+        
+        # Lógica para seleccionar productos (podría ser por popularidad, fecha, etc.)
+        # Por ahora, simplemente tomamos los primeros 'n'
+        selected_products = all_products[:min(n_recommendations, len(all_products))]
+        
+        # Convertir a formato de respuesta
+        recommendations = []
+        for product in selected_products:
+            # Extraer precio del primer variante si está disponible
+            price = 0.0
+            if product.get("variants") and len(product["variants"]) > 0:
+                price_str = product["variants"][0].get("price", "0")
+                try:
+                    price = float(price_str)
+                except (ValueError, TypeError):
+                    price = 0.0
+            
+            recommendations.append({
+                "id": str(product.get("id", "")),
+                "title": product.get("title", ""),
+                "description": product.get("body_html", "").replace("<p>", "").replace("</p>", ""),
+                "price": price,
+                "category": product.get("product_type", ""),
+                "score": 0.5,  # Score arbitrario
+                "recommendation_type": "fallback"  # Indicar que es una recomendación de respaldo
+            })
+        
+        return recommendations
         
     async def record_user_event(
         self,
