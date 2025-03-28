@@ -1,0 +1,51 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Actualizar pip e instalar herramientas básicas
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+# Copiar requirements primero para aprovechar la caché de Docker
+COPY requirements.txt .
+
+# Instalar torch primero (versión CPU para reducir tamaño)
+RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu
+
+# Instalar transformers, sentence-transformers y scipy específicamente
+RUN pip install --no-cache-dir transformers sentence-transformers scipy==1.13.1
+
+# Instalar el resto de dependencias
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copiar el resto del código
+COPY . .
+
+# Puerto por defecto
+EXPOSE 8080
+
+# Script de inicio mejorado con mejor manejo de errores y logging
+RUN echo '#!/bin/bash\n\
+echo "===================================================="\n\
+echo "Starting Retail Recommender System (Optimized)..."\n\
+echo "===================================================="\n\
+echo "Environment:"\n\
+echo " - PORT: ${PORT:-8080}"\n\
+echo " - GOOGLE_LOCATION: ${GOOGLE_LOCATION:-not_set}"\n\
+echo " - GOOGLE_CATALOG: ${GOOGLE_CATALOG:-not_set}"\n\
+echo " - GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-not_set}"\n\
+echo " - USE_GCS_IMPORT: ${USE_GCS_IMPORT:-not_set}"\n\
+echo "===================================================="\n\
+\n\
+# Verificar que las variables de entorno necesarias están configuradas\n\
+if [ -z "$GOOGLE_PROJECT_NUMBER" ]; then\n\
+  echo "ERROR: GOOGLE_PROJECT_NUMBER no está configurado"\n\
+  exit 1\n\
+fi\n\
+\n\
+# Ejecutar la aplicación\n\
+echo "Starting FastAPI application..."\n\
+exec uvicorn src.api.main_optimized:app --host 0.0.0.0 --port ${PORT:-8080}\n\
+' > /app/start.sh && chmod +x /app/start.sh
+
+# Comando para ejecutar la aplicación (formato JSON array recomendado)
+CMD ["/app/start.sh"]

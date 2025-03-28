@@ -1,0 +1,29 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Instalar dependencias para la versión progresiva
+RUN pip install --no-cache-dir fastapi uvicorn
+
+# Copiar solo el archivo necesario
+COPY src/api/main_progressive.py ./main_progressive.py
+
+# Exponer el puerto
+EXPOSE 8080
+
+# Script de inicio que muestra información importante
+RUN echo '#!/bin/bash\n\
+echo "===================================================="\n\
+echo "Starting Progressive Retail Recommender System..."\n\
+echo "===================================================="\n\
+echo "Environment:"\n\
+echo " - PORT: ${PORT:-8080}"\n\
+echo "===================================================="\n\
+\n\
+# Ejecutar la aplicación\n\
+echo "Starting FastAPI application..."\n\
+exec python main_progressive.py\n\
+' > /app/start.sh && chmod +x /app/start.sh
+
+# Comando para ejecutar la aplicación (formato JSON array recomendado)
+CMD ["/app/start.sh"]

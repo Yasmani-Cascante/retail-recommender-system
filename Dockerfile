@@ -1,3 +1,4 @@
+# Modifica el Dockerfile
 FROM python:3.9-slim
 
 WORKDIR /app
@@ -23,5 +24,12 @@ COPY . .
 # Puerto por defecto
 EXPOSE 8080
 
-# Comando para ejecutar la aplicación
-CMD exec uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8080}
+# Script de inicio con mejor manejo de errores y logging
+RUN echo '#!/bin/bash\n\
+echo "Starting application..."\n\
+echo "Using PORT: ${PORT:-8080}"\n\
+exec uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8080} --timeout-keep-alive 120\n\
+' > /app/start.sh && chmod +x /app/start.sh
+
+# Comando para ejecutar la aplicación (formato JSON array recomendado)
+CMD ["/app/start.sh"]
