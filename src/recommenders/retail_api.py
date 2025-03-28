@@ -1,13 +1,16 @@
 from google.cloud import retail_v2
 from google.cloud.retail_v2 import ProductServiceClient
-from google.cloud.retail_v2.types import Product, PredictRequest, PredictResponse
-from google.cloud.retail_v2.types.import_config import ProductInputConfig, ProductInlineSource
-from google.cloud.retail_v2.types import ImportProductsRequest
+from google.cloud.retail_v2.types import Product, PredictRequest, PredictResponse, ImportProductsRequest
+from google.cloud.retail_v2.types.import_config import GcsSource, ProductInputConfig, ProductInlineSource, ImportErrorsConfig
 from typing import List, Dict, Optional
 from datetime import datetime
 import asyncio
 import os
 import logging
+from google.cloud import storage
+import json
+import tempfile
+import traceback
 
 class RetailAPIRecommender:
     def __init__(
@@ -94,19 +97,27 @@ class RetailAPIRecommender:
         try:
             # Extracción segura de datos con valores predeterminados
             product_id = str(product.get("id", ""))
+            
+            # Intentar obtener el título de diferentes campos posibles
             title = product.get("title", "")
+            if not title:
+                title = product.get("name", "")
             
-            # Limpiar HTML de la descripción
+            # Intentar obtener la descripción de diferentes campos posibles
             description = product.get("body_html", "")
-            if description:
-                # Eliminar etiquetas HTML comunes
-                for tag in ["<p>", "</p>", "<br>", "<ul>", "</ul>", "<li>", "</li>", "<span>", "</span>", "<strong>", "</strong>"]:
-                    description = description.replace(tag, " ")
-                # Eliminar atributos HTML
-                import re
-                description = re.sub(r'\s+', ' ', description).strip()
+            if not description:
+                description = product.get("description", "")
             
-            # Extracción de precio del primer variante si existe
+            # Validar campos obligatorios
+            if not product_id:
+                logging.warning(f"Producto sin ID válido: {title}")
+                return None
+                
+            if not title:
+                logging.warning(f"Producto sin título válido (ID: {product_id})")
+                title = f"Producto {product_id}"  # Título predeterminado
+            
+            # Extracción de precio - intentar diferentes campos
             price = 0.0
             if product.get("variants") and len(product["variants"]) > 0:
                 price_str = product["variants"][0].get("price", "0")
@@ -114,14 +125,25 @@ class RetailAPIRecommender:
                     price = float(price_str)
                 except (ValueError, TypeError):
                     price = 0.0
-            
-            # Categoría del producto
+            # Si no hay variantes, buscar precio directo
+            if price == 0.0 and product.get("price"):
+                try:
+                    price = float(product.get("price", 0.0))
+                except (ValueError, TypeError):
+                    price = 0.0
+                    
+            # Categoría del producto - intentar diferentes campos
             category = product.get("product_type", "")
+            if not category:
+                category = product.get("category", "General")
             
-            # Asegurar que el ID sea válido
-            if not product_id:
-                logging.warning(f"Producto sin ID válido: {title}")
-                return None
+            # La categoría es muy importante para la API, forzar un valor por defecto
+            if not category:
+                category = "General"
+                
+            # Asegurar que siempre haya categoría
+            if not category:
+                category = "General"
             
             # Construcción del objeto Product con valores mínimos requeridos
             retail_product = Product(
@@ -141,8 +163,8 @@ class RetailAPIRecommender:
                     currency_code="COP"
                 )
                 
-            if category:
-                retail_product.categories = [category]
+            # Siempre añadir la categoría al producto
+            retail_product.categories = [category]
                 
             # Agregar imágenes si están disponibles
             if product.get("images") and len(product["images"]) > 0:
@@ -177,6 +199,206 @@ class RetailAPIRecommender:
         except Exception as e:
             logging.error(f"Error al convertir producto {product.get('id', 'unknown')}: {str(e)}")
             return None
+
+    async def import_catalog_via_gcs(self, products: List[Dict]):
+        """
+        Importa productos al catálogo de Google Retail API usando GCS como intermediario
+        para manejar catálogos de gran tamaño de manera eficiente.
+        
+        Args:
+            products: Lista de productos en formato Shopify
+            
+        Returns:
+            Dict: Resultado de la importación
+        """
+        try:
+            # Verificamos que existan productos
+            if not products:
+                logging.error("No hay productos para importar")
+                return {"status": "error", "error": "No hay productos para importar"}
+            
+            logging.info(f"Iniciando importación vía GCS de {len(products)} productos")
+            
+            # Convertir productos al formato de Google Retail API
+            retail_products = []
+            skipped_products = 0
+            
+            for product in products:
+                try:
+                    retail_product = self._convert_product_to_retail(product)
+                    if retail_product:
+                        # Convertir el objeto Product a diccionario para JSON
+                        # Asegurarnos de incluir TODOS los campos requeridos y que sean serializables
+                        retail_product_dict = {
+                            "id": retail_product.id,
+                            "title": retail_product.title,  # Campo obligatorio
+                            "availability": str(retail_product.availability),
+                            # Convertir Repeated a lista estándar para JSON
+                            "categories": list(retail_product.categories) if hasattr(retail_product, 'categories') else ["General"],
+                        }
+                        
+                        # Campos opcionales adicionales - convertidos a formatos JSON serializables
+                        if hasattr(retail_product, 'description') and retail_product.description:
+                            retail_product_dict["description"] = retail_product.description
+                            
+                        # Las categorías ya se han añadido arriba
+                            
+                        if hasattr(retail_product, 'price_info') and retail_product.price_info:
+                            retail_product_dict["price_info"] = {
+                                "price": retail_product.price_info.price,
+                                "original_price": retail_product.price_info.original_price,
+                                "currency_code": retail_product.price_info.currency_code
+                            }
+                            
+                        if hasattr(retail_product, 'images') and retail_product.images:
+                            # Convertir objetos Image a diccionarios serializables
+                            retail_product_dict["images"] = [
+                                {"uri": img.uri} for img in retail_product.images
+                            ]
+                        
+                        retail_products.append(retail_product_dict)
+                    else:
+                        skipped_products += 1
+                except Exception as e:
+                    logging.error(f"Error al convertir producto {product.get('id', 'unknown')}: {str(e)}")
+                    skipped_products += 1
+                    continue
+            
+            if not retail_products:
+                logging.error("No se pudo convertir ningún producto al formato de Google Retail API")
+                return {
+                    "status": "error", 
+                    "error": "No se pudo convertir ningún producto",
+                    "total_products": len(products),
+                    "skipped_products": skipped_products
+                }
+            
+            logging.info(f"Se convirtieron {len(retail_products)} productos correctamente (ignorados: {skipped_products})")
+            
+            # Determinar el directorio temporal apropiado (que funcione en todos los entornos)
+            temp_dir = tempfile.gettempdir()
+            import_filename = f"retail_products_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+            local_path = os.path.join(temp_dir, import_filename)
+            
+            logging.info(f"Creando archivo JSONL en: {local_path}")
+            
+            # Verificar que el directorio existe y tiene permisos
+            try:
+                os.makedirs(temp_dir, exist_ok=True)
+                
+                # Función para manejar objetos que no son serializables directamente
+                def json_serializer(obj):
+                    # Intentar convertir a un tipo serializable
+                    if hasattr(obj, "to_json"):
+                        return obj.to_json()
+                    elif hasattr(obj, "__dict__"):
+                        return obj.__dict__
+                    else:
+                        return str(obj)  # Última opción: convertir a string
+                
+                with open(local_path, 'w') as f:
+                    for product in retail_products:
+                        # Los productos ya deberían ser diccionarios serializables ahora
+                        f.write(json.dumps(product) + '\n')
+                logging.info(f"Archivo JSONL creado correctamente: {local_path}")
+            except (IOError, PermissionError) as e:
+                logging.error(f"Error al crear archivo temporal: {str(e)}")
+                # Intento alternativo en directorio actual
+                local_path = import_filename
+                logging.info(f"Intentando crear archivo en directorio actual: {local_path}")
+                with open(local_path, 'w') as f:
+                    for product in retail_products:
+                        f.write(json.dumps(product) + '\n')
+            
+            # Verificar que el archivo existe
+            if not os.path.exists(local_path):
+                raise FileNotFoundError(f"No se pudo crear el archivo temporal: {local_path}")
+                
+            # Subir archivo a GCS
+            bucket_name = os.getenv("GCS_BUCKET_NAME")
+            if not bucket_name:
+                raise ValueError("GCS_BUCKET_NAME no está configurado en las variables de entorno")
+                
+            blob_name = f"imports/{import_filename}"
+            
+            logging.info(f"Iniciando conexión con Google Cloud Storage...")
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+            
+            logging.info(f"Subiendo archivo {local_path} a GCS: gs://{bucket_name}/{blob_name}")
+            blob.upload_from_filename(local_path)
+            gcs_uri = f"gs://{bucket_name}/{blob_name}"
+            logging.info(f"Archivo subido a GCS: {gcs_uri}")
+            
+            # Iniciar importación desde GCS usando Google Retail API
+            gcs_source = GcsSource(input_uris=[gcs_uri])
+            
+            # Crear InputConfig para GCS
+            input_config = ProductInputConfig(gcs_source=gcs_source)
+            
+            # Ruta del catálogo correcta (branch 0)
+            parent = f"projects/{self.project_number}/locations/{self.location}/catalogs/{self.catalog}/branches/0"
+            
+            logging.info(f"Usando ruta del catálogo: {parent}")
+            
+            # Crear la configuración de errores
+            bucket_name = os.getenv("GCS_BUCKET_NAME")
+            errors_config = ImportErrorsConfig(
+                gcs_prefix=f"gs://{bucket_name}/errors/"
+            )
+            
+            # Crear la solicitud de importación
+            import_request = ImportProductsRequest(
+                parent=parent,
+                input_config=input_config,
+                errors_config=errors_config,
+                # El modo de reconciliación es un enum del mensaje ImportProductsRequest
+                reconciliation_mode=ImportProductsRequest.ReconciliationMode.INCREMENTAL
+            )
+            
+            logging.info(f"Iniciando importación desde GCS: {gcs_uri}")
+            
+            # Ejecutar la operación
+            operation = self.product_client.import_products(request=import_request)
+            
+            # Crear un ID para la operación para poder consultarla después si es necesario
+            operation_id = operation.operation.name
+            logging.info(f"Operación de importación iniciada: {operation_id}")
+            
+            # Esperar a que termine la operación
+            try:
+                logging.info("Esperando a que la operación de importación finalice...")
+                result = operation.result(timeout=300)  # Timeout de 5 minutos
+                logging.info(f"Importación completada: {result}")
+            except Exception as e:
+                logging.warning(f"La operación de importación sigue en progreso, pero no esperaremos: {str(e)}")
+                logging.info(f"Puedes verificar el estado más tarde con el ID: {operation_id}")
+                
+            # Eliminar archivo temporal
+            try:
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                    logging.info(f"Archivo temporal eliminado: {local_path}")
+            except Exception as e:
+                logging.warning(f"No se pudo eliminar el archivo temporal {local_path}: {str(e)}")
+                
+            return {
+                "status": "success",
+                "products_imported": len(retail_products),
+                "total_products": len(products),
+                "skipped_products": skipped_products,
+                "gcs_uri": gcs_uri,
+                "operation_id": operation_id
+            }
+            
+        except Exception as e:
+            logging.error(f"Error general en import_catalog_via_gcs: {str(e)}")
+            logging.error(f"Traceback: {traceback.format_exc()}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
         
     async def import_catalog(self, products: List[Dict]):
         """
@@ -189,6 +411,20 @@ class RetailAPIRecommender:
             Dict: Resultado de la importación
         """
         try:
+            # Verificar si debemos usar el método de importación vía GCS
+            # basado en el tamaño del catálogo o configuración
+            use_gcs = os.getenv("USE_GCS_IMPORT", "False").lower() == "true"
+            products_count = len(products) if products else 0
+            
+            # Si hay muchos productos o se configura explícitamente, usar GCS
+            # Reducimos el umbral a 50 productos para probar más fácilmente
+            if products_count >= 50 or use_gcs:
+                logging.info(f"Utilizando importación vía GCS para {products_count} productos")
+                return await self.import_catalog_via_gcs(products)
+                
+            # Para catálogos pequeños, usar el método directo original
+            logging.info(f"Utilizando importación directa para {products_count} productos")
+            
             # Agregamos log para depuración
             logging.info(f"Importando {len(products)} productos al catálogo de Google Retail API")
             if products and len(products) > 0:
@@ -224,11 +460,8 @@ class RetailAPIRecommender:
             
             logging.info(f"Se convirtieron {len(retail_products)} productos correctamente (ignorados: {skipped_products})")
             
-            # Construir la ruta del catálogo
-            parent = (
-                f"projects/{self.project_number}/locations/{self.location}"
-                f"/catalogs/{self.catalog}/branches/default_branch"
-            )
+            # Construir la ruta del catálogo (branch 0)
+            parent = f"projects/{self.project_number}/locations/{self.location}/catalogs/{self.catalog}/branches/0"
             
             logging.info(f"Importando productos a: {parent}")
             
@@ -253,7 +486,7 @@ class RetailAPIRecommender:
                     import_request = ImportProductsRequest(
                         parent=parent,
                         input_config=input_config,
-                        reconciliation_mode=retail_v2.types.ImportProductsRequest.ReconciliationMode.INCREMENTAL
+                        reconciliation_mode=ImportProductsRequest.ReconciliationMode.INCREMENTAL
                     )
                     
                     operation = self.product_client.import_products(request=import_request)

@@ -48,8 +48,14 @@ async def startup_event():
         shop_url = os.getenv("SHOPIFY_SHOP_URL")
         access_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
         
+        # Verificar configuración de GCS
+        gcs_bucket = os.getenv("GCS_BUCKET_NAME")
+        use_gcs = os.getenv("USE_GCS_IMPORT", "False").lower() == "true"
+        
         logging.debug(f"SHOPIFY_SHOP_URL: {'configurado' if shop_url else 'no configurado'}")
         logging.debug(f"SHOPIFY_ACCESS_TOKEN: {'configurado' if access_token else 'no configurado'}")
+        logging.info(f"GCS_BUCKET_NAME: {'configurado' if gcs_bucket else 'no configurado'}")
+        logging.info(f"USE_GCS_IMPORT: {use_gcs}")
 
         client = init_shopify()
         
@@ -82,13 +88,24 @@ async def startup_event():
         except Exception as e:
             logging.error(f"❌ Error training content recommender: {str(e)}")
 
-        # Importar productos a Retail API
+        # Importar productos a Retail API - ahora con soporte para GCS
         try:
-            await retail_recommender.import_catalog(products)
-            logging.info("✅ Products imported to Retail API successfully")
+            import_result = await retail_recommender.import_catalog(products)
+            if import_result.get("status") == "success":
+                if "gcs_uri" in import_result:
+                    logging.info(f"✅ Products imported to Retail API via GCS: {import_result['gcs_uri']}")
+                else:
+                    logging.info("✅ Products imported to Retail API successfully via direct import")
+                
+                logging.info(f"✅ Imported {import_result.get('products_imported', 0)} products out of {import_result.get('total_products', 0)}")
+            else:
+                logging.warning(f"⚠️ Partial import to Retail API: {import_result}")
         except Exception as e:
             logging.error(f"❌ Error importing to Retail API: {str(e)}")
 
+        # Registrar tiempo total de startup
+        end_time = time.time()
+        logging.info(f"✅ Startup completed in {end_time - start_time:.2f} seconds")
 
     except Exception as e:
         logging.error(f"❌ Critical error during startup: {str(e)}")

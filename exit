@@ -1,0 +1,30 @@
+[33mbdf2a7e[m[33m ([m[1;36mHEAD -> [m[1;32mdevelopment[m[33m, [m[1;31morigin/development[m[33m)[m Revert "feat: agregar scripts para diagnóstico y verificación de la API de Google Cloud Retail"
+[33me94de3d[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m feat: agregar scripts para diagnóstico y verificación de la API de Google Cloud Retail
+[33mf0076ab[m[33m ([m[1;32mmain[m[33m)[m feat:  scripts para la importacion de datos hacia Google Retail API
+[33mc7d99c8[m feat: actualizar configuración de despliegue y agregar scripts de verificación para Google Cloud Retail API
+[33m4ce5d79[m feat: agregar versión minimalista de la API para despliegue gradual en Cloud Run
+[33md758b43[m fix: Descartando cambios locales no comprometidos
+[33m2f893ca[m fix: optimizar startup para evitar timeouts en Cloud Run
+[33m38ab0c1[m fix: forzar uso de scipy 1.13.1 compatible con PyPI
+[33m4f2b43c[m Merge branch 'main' of https://github.com/Yasmani-Cascante/retail-recommender-system
+[33mde7aac6[m fix: asegurar compatibilidad de versiones en requirements.txt
+[33m2364767[m fix: actualizar versiones de numpy y pandas a versiones disponibles en PyPI
+[33m1e57730[m fix: actualizar versión de networkx en requirements.txt
+[33m552e204[m feat: update Docker configuration for improved build performance and resource allocation
+[33ma373354[m fix: Eliminar la dependencia circular de requirements.txt
+[33m9f6ffe2[m feat: enhance prediction processing and logging in RetailAPIRecommender
+[33mfa52457[m feat: add customer retrieval endpoint and enhance recommendation logging
+[33me23418f[m feat: fixed error in the recommendations by product
+[33m3e86f2e[m feat: improved logging and error handling for products and categories research
+[33m02a721a[m feat: enhance logging and error handling in product search and Shopify order processing
+[33mc038882[m feat: implement Shopify client integration for product retrieval and enhance error handling
+[33m64e09cc[m feat: integrate Shopify API for product retrieval and update environment configuration
+[33ma960787[m fix: update Dockerfile to change default port to 8080 and modify CMD for flexibility
+[33m1840de9[m chore: update app.yaml for GCP configuration and add .dockerignore
+[33m0a25f8b[m feat: prepare for GCP deployment
+[33m331ac5b[m Merge branch 'main' of https://github.com/Yasmani-Cascante/retail-recommender-system
+[33m446bf35[m Integration with Google Cloud Retail API
+[33mc46f77b[m Update README with new installation instructions
+[33mbdc127b[m Add root level run.py for easier execution
+[33m0c202a4[m Add setup.py for better package management
+[33m3d4220c[m Initial commit: Implementación base del sistema de recomendaciones

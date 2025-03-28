@@ -14,6 +14,9 @@ env_variables:
   GOOGLE_LOCATION: global
   GOOGLE_CATALOG: "default_catalog"
   GOOGLE_SERVING_CONFIG: "default_recommendation_config"
+  # Nuevas variables para importación GCS
+  GCS_BUCKET_NAME: "retail-recommendations-449216_cloudbuild"  # Ajustar al nombre real del bucket
+  USE_GCS_IMPORT: "true"  # Activar importación via GCS
 
 handlers:
 - url: /.*
