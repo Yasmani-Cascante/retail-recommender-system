@@ -8,14 +8,8 @@ RUN pip install --no-cache-dir --upgrade pip wheel setuptools
 # Copiar requirements primero para aprovechar la caché de Docker
 COPY requirements.txt .
 
-# Instalar torch primero (versión CPU para reducir tamaño)
-RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu
-
-# Instalar transformers, sentence-transformers y scipy específicamente
-RUN pip install --no-cache-dir transformers sentence-transformers scipy==1.13.1
-
-# Instalar el resto de dependencias
-RUN pip install --no-cache-dir -r requirements.txt
+# Instalar solo dependencias básicas (no ML pesadas para esta etapa)
+RUN pip install --no-cache-dir fastapi uvicorn pydantic python-dotenv starlette
 
 # Copiar el resto del código
 COPY . .
@@ -32,11 +26,11 @@ import logging\n\
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")\n\
 \n\
 # Importar app después de configurar logging\n\
-from src.api.main_optimized import app\n\
+from src.api.main_stage1 import app\n\
 \n\
 if __name__ == "__main__":\n\
     port = int(os.environ.get("PORT", "8080"))\n\
-    logging.info(f"Starting server on port {port} - Cloud Run optimized version")\n\
+    logging.info(f"Starting server on port {port} - Stage 1 version")\n\
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")\n\
 ' > /app/main_docker.py
 

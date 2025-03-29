@@ -8,13 +8,18 @@ RUN pip install --no-cache-dir --upgrade pip wheel setuptools
 # Copiar requirements primero para aprovechar la caché de Docker
 COPY requirements.txt .
 
-# Instalar torch primero (versión CPU para reducir tamaño)
-RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu
+# Instalar dependencias por capas para mejor caché
+# 1. Primero las básicas
+RUN pip install --no-cache-dir fastapi uvicorn pydantic python-dotenv starlette
 
-# Instalar transformers, sentence-transformers y scipy específicamente
+# 2. Luego dependencias de Google Cloud
+RUN pip install --no-cache-dir google-cloud-core google-cloud-retail google-cloud-storage
+
+# 3. Instalación por separado para ML (permite caché por capas)
+RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir transformers sentence-transformers scipy==1.13.1
 
-# Instalar el resto de dependencias
+# 4. Dependencias restantes
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar el resto del código
@@ -32,11 +37,12 @@ import logging\n\
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")\n\
 \n\
 # Importar app después de configurar logging\n\
-from src.api.main_optimized import app\n\
+logging.info("Iniciando aplicación - Versión Final")\n\
+from src.api.main_final import app\n\
 \n\
 if __name__ == "__main__":\n\
     port = int(os.environ.get("PORT", "8080"))\n\
-    logging.info(f"Starting server on port {port} - Cloud Run optimized version")\n\
+    logging.info(f"Starting server on port {port} - Final version")\n\
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")\n\
 ' > /app/main_docker.py
 

@@ -1,7 +1,6 @@
 """
-Versión optimizada del punto de entrada principal con carga diferida.
-Implementa un enfoque de inicio progresivo para mejorar la fiabilidad del despliegue
-en Cloud Run y otros entornos serverless.
+Versión Stage 1 con carga parcial de funcionalidades.
+Implementa un enfoque progresivo para añadir capas de funcionalidad.
 """
 import os
 import time
@@ -11,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from dotenv import load_dotenv
+from typing import List, Dict, Optional
 
 # Cargar variables de entorno
 load_dotenv()
@@ -34,7 +34,7 @@ app = FastAPI(
     version="0.3.0"
 )
 
-# Configurar CORS
+# Configurar CORS (añadido al inicio)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -43,13 +43,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Definir datos de muestra
+SAMPLE_PRODUCTS = [
+    {
+        "id": "1",
+        "title": "T-Shirt",
+        "description": "Basic cotton t-shirt",
+        "price": 19.99,
+        "category": "Clothing"
+    },
+    {
+        "id": "2",
+        "title": "Jeans",
+        "description": "Comfortable denim jeans",
+        "price": 49.99,
+        "category": "Clothing"
+    },
+    {
+        "id": "3",
+        "title": "Sneakers",
+        "description": "Casual sneakers",
+        "price": 79.99,
+        "category": "Footwear"
+    }
+]
+
+# Middleware de logging (añadido al inicio)
+try:
+    # En la versión stage1 no importamos el middleware real para evitar dependencias
+    # from src.api.middleware.logging import LoggingMiddleware
+    # app.add_middleware(LoggingMiddleware)
+    logging.info("Middleware de logging omitido en versión Stage 1")
+except Exception as e:
+    logging.warning(f"⚠️ Error con middleware: {str(e)}")
+
 # Ruta básica que siempre responde (para health checks)
 @app.get("/health")
 def health_check():
     """
     Endpoint para health checks que siempre responde rápidamente.
-    Esto permite que Cloud Run considere la aplicación como disponible
-    mientras se cargan los modelos en segundo plano.
     """
     return {
         "status": "healthy", 
@@ -98,31 +130,24 @@ def api_root():
         return {
             "status": "error", 
             "message": "Error durante inicialización", 
-            "error": str(startup_exception),
-            "model_loaded": model_loaded
+            "error": str(startup_exception)
         }
     
     if not model_loaded:
-        if is_loading:
-            return {
-                "status": "initializing", 
-                "message": "El sistema está cargando los modelos de ML...",
-                "startup_time": startup_time if startup_time else "not_started"
-            }
-        else:
-            # Iniciar carga en background si aún no se ha iniciado
-            thread = threading.Thread(target=load_models_background)
-            thread.daemon = True
-            thread.start()
-            return {"status": "starting", "message": "Iniciando carga de modelos de ML..."}
+        return {
+            "status": "initializing", 
+            "message": "El sistema está cargando, por favor intente más tarde."
+        }
     
-    return {"status": "ready", "message": "API lista para recibir solicitudes"}
+    return {
+        "status": "ready",
+        "message": "API lista para recibir solicitudes"
+    }
 
 # Verifica si el modelo está cargado para las rutas que lo requieren
 def check_model_loaded():
     """
     Dependencia para verificar si el modelo está cargado.
-    Se utiliza en rutas que requieren que el modelo esté disponible.
     """
     if not model_loaded:
         if startup_exception:
@@ -140,26 +165,60 @@ def check_model_loaded():
 def load_models_background():
     """
     Carga los modelos y realiza la inicialización en segundo plano.
-    Esto permite que la aplicación responda a los health checks mientras
-    se realiza la carga pesada de modelos y datos.
+    Stage 1: Carga real de middleware y routers, pero usa datos de muestra.
     """
     global model_loaded, is_loading, startup_exception, startup_time
     
     try:
         is_loading = True
         startup_time = time.time()
-        logging.info("Iniciando carga de modelos y configuración...")
+        logging.info("Iniciando carga de modelos y configuración (Stage 1)...")
         
-        # Simulamos solo la carga básica para permitir que Cloud Run inicie correctamente
-        # En una versión posterior implementaremos la carga real de modelos
-        logging.info("Simulando carga de modelos para despliegue inicial...")
+        # Importar los módulos
+        try:
+            # Middleware ya está cargado, solo simular la carga de routers
+            logging.info("✅ Simulando carga de módulos para versión Stage 1")
+            
+            # No importamos los routers reales para evitar dependencias ML
+            # from src.api.routers import recommendations
+            
+            # En su lugar, registramos algunos endpoints básicos directamente
+            @app.get("/v1/products/")
+            def get_products_direct(loaded: bool = Depends(check_model_loaded)):
+                """Obtiene la lista de productos (versión simplificada directa)."""
+                return {"products": SAMPLE_PRODUCTS}
+                
+            @app.get("/v1/recommendations/simple/{product_id}")
+            def get_simple_recommendations_direct(product_id: str, loaded: bool = Depends(check_model_loaded)):
+                """Obtiene recomendaciones simples (versión directa)."""
+                # Simular recomendaciones sin usar modelos pesados
+                recommendations = [p for p in SAMPLE_PRODUCTS if p["id"] != product_id][:2]
+                
+                return {
+                    "product_id": product_id,
+                    "recommendations": recommendations,
+                    "message": "These are mock recommendations (Stage 1)"
+                }
+                
+            logging.info("✅ Endpoints básicos registrados correctamente")
+            
+        except Exception as e:
+            logging.error(f"❌ Error cargando módulos básicos: {str(e)}")
+            raise
+            
+        # Cargar datos de muestra en lugar de conectar con servicios externos
+        try:
+            from src.api.core.sample_data import SAMPLE_PRODUCTS
+            logging.info(f"✅ Datos de muestra cargados: {len(SAMPLE_PRODUCTS)} productos")
+        except Exception as e:
+            logging.error(f"❌ Error cargando datos de muestra: {str(e)}")
+            raise
         
-        # Marcamos como cargado para fines de prueba
-        time.sleep(2)  # Breve pausa para simular algún trabajo
+        # Completamos la carga simulada para Stage 1
         model_loaded = True
         end_time = time.time()
         startup_time = end_time - startup_time
-        logging.info(f"✅ Sistema inicializado (modo simulado) en {startup_time:.2f}s")
+        logging.info(f"✅ Sistema Stage 1 inicializado en {startup_time:.2f}s")
         
     except Exception as e:
         logging.error(f"❌ Error fatal durante la inicialización: {str(e)}")
@@ -171,6 +230,5 @@ def load_models_background():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", "8080"))
-    # Asegurarse de que el servidor responda inmediatamente
     logging.info(f"Iniciando servidor en puerto {port}...")
-    uvicorn.run("main_optimized:app", host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run("main_stage1:app", host="0.0.0.0", port=port, log_level="info")
