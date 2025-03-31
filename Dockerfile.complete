@@ -1,0 +1,74 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Actualizar pip e instalar herramientas básicas
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+# Instalar dependencias requeridas para Google Cloud
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Instalar dependencias por capas para mejor caché
+# 1. Primero las básicas
+RUN pip install --no-cache-dir fastapi==0.115.7 uvicorn==0.34.0 pydantic==2.10.6 python-dotenv==1.0.1 starlette==0.45.3
+
+# 2. Dependencias para Google Cloud
+RUN pip install --no-cache-dir google-cloud-core==2.4.1 google-cloud-retail==1.25.1 google-cloud-storage==2.19.0
+
+# 3. Otras dependencias
+RUN pip install --no-cache-dir aiohttp==3.9.3 requests==2.32.3
+
+# Copiar el resto del código
+COPY . .
+
+# Puerto por defecto
+EXPOSE 8080
+
+# Crear un archivo main_docker.py específico para ejecutar la versión completa
+RUN echo 'import os\n\
+import uvicorn\n\
+import logging\n\
+import asyncio\n\
+import sys\n\
+\n\
+# Configurar logging\n\
+logging.basicConfig(\n\
+    level=logging.INFO,\n\
+    format="%(asctime)s - %(levelname)s - %(message)s",\n\
+    handlers=[\n\
+        logging.StreamHandler(sys.stdout)\n\
+    ]\n\
+)\n\
+\n\
+# Importar app después de configurar logging\n\
+logging.info("Iniciando aplicación - Versión Completa")\n\
+\n\
+try:\n\
+    from src.api.main_complete import app\n\
+    \n\
+    if __name__ == "__main__":\n\
+        # Necesario para funciones async en la carga de modelos\n\
+        async def setup():\n\
+            # No hacer nada, solo para que el evento loop esté listo\n\
+            pass\n\
+        \n\
+        # Inicializar event loop\n\
+        loop = asyncio.get_event_loop()\n\
+        loop.run_until_complete(setup())\n\
+        \n\
+        # Iniciar servidor\n\
+        port = int(os.environ.get("PORT", "8080"))\n\
+        logging.info(f"Starting server on port {port} - Complete version")\n\
+        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")\n\
+except Exception as e:\n\
+    logging.error(f"Error iniciando la aplicación: {str(e)}")\n\
+    import traceback\n\
+    logging.error(traceback.format_exc())\n\
+    raise\n\
+' > /app/main_docker.py
+
+# Comando para ejecutar la aplicación
+CMD ["python", "main_docker.py"]

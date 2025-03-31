@@ -1,0 +1,45 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Actualizar pip e instalar herramientas básicas
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+# Instalar dependencias de sistema necesarias para Google Cloud
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Instalar dependencias requeridas para esta versión
+RUN pip install --no-cache-dir fastapi==0.115.7 uvicorn==0.34.0 pydantic==2.10.6 python-dotenv==1.0.1 starlette==0.45.3
+RUN pip install --no-cache-dir google-cloud-core==2.4.1 google-cloud-retail==1.25.1 google-cloud-storage==2.19.0
+RUN pip install --no-cache-dir asyncio==3.4.3 aiohttp==3.9.3
+
+# Copiar el código (solo lo necesario)
+COPY src /app/src
+COPY requirements.txt /app/
+
+# Configurar entorno
+ENV PYTHONUNBUFFERED=1
+
+# Puerto por defecto
+EXPOSE 8080
+
+# Crear un archivo para ejecutar la aplicación
+RUN echo '#!/bin/bash\n\
+echo "Starting Retail Recommender API (Retail API Version)"\n\
+echo "PORT=${PORT:-8080}"\n\
+echo "GOOGLE_PROJECT_NUMBER=${GOOGLE_PROJECT_NUMBER:-not_set}"\n\
+echo "GOOGLE_LOCATION=${GOOGLE_LOCATION:-global}"\n\
+echo "GOOGLE_CATALOG=${GOOGLE_CATALOG:-default_catalog}"\n\
+echo "GOOGLE_SERVING_CONFIG=${GOOGLE_SERVING_CONFIG:-default_recommendation_config}"\n\
+echo "GCS_BUCKET_NAME=${GCS_BUCKET_NAME:-not_set}"\n\
+python -m uvicorn src.api.main_retail:app --host 0.0.0.0 --port ${PORT:-8080}\n\
+' > /app/start.sh
+
+# Hacer el script ejecutable
+RUN chmod +x /app/start.sh
+
+# Comando para ejecutar la aplicación
+CMD ["/app/start.sh"]
