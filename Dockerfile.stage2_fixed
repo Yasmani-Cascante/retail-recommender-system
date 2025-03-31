@@ -1,0 +1,66 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Actualizar pip e instalar herramientas básicas
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+# Instalar dependencias por capas para mejor caché
+# 1. Primero las básicas
+RUN pip install --no-cache-dir fastapi==0.115.7 uvicorn==0.34.0 pydantic==2.10.6 python-dotenv==1.0.1 starlette==0.45.3
+
+# 2. Dependencias para ML (cada una por separado para mejor debugging)
+RUN pip install --no-cache-dir scikit-learn==1.6.1
+RUN pip install --no-cache-dir numpy==2.0.2
+RUN pip install --no-cache-dir scipy==1.13.1
+
+# 3. Instalar PyTorch (CPU version para contenedores ligeros)
+RUN pip install --no-cache-dir torch==2.5.1 --extra-index-url https://download.pytorch.org/whl/cpu
+
+# 4. Instalar sentence-transformers explícitamente
+RUN pip install --no-cache-dir sentence-transformers==3.4.1
+
+# Verificar las instalaciones
+RUN pip list
+
+# Copiar el resto del código
+COPY . .
+
+# Puerto por defecto
+EXPOSE 8080
+
+# Crear un archivo main_docker.py específico para el contenedor
+RUN echo 'import os\n\
+import uvicorn\n\
+import logging\n\
+import sys\n\
+\n\
+# Configurar logging\n\
+logging.basicConfig(\n\
+    level=logging.INFO,\n\
+    format="%(asctime)s - %(levelname)s - %(message)s",\n\
+    handlers=[\n\
+        logging.StreamHandler(sys.stdout)\n\
+    ]\n\
+)\n\
+\n\
+# Verificar módulos instalados\n\
+logging.info("Verificando módulos instalados...")\n\
+try:\n\
+    import sentence_transformers\n\
+    logging.info(f"✅ sentence_transformers instalado correctamente (versión {sentence_transformers.__version__})")\n\
+except ImportError as e:\n\
+    logging.error(f"❌ Error al importar sentence_transformers: {str(e)}")\n\
+\n\
+# Importar app después de verificar dependencias\n\
+logging.info("Iniciando aplicación - Versión Stage 2 (Content-Based)")\n\
+from src.api.main_stage2 import app\n\
+\n\
+if __name__ == "__main__":\n\
+    port = int(os.environ.get("PORT", "8080"))\n\
+    logging.info(f"Starting server on port {port} - Stage 2 version")\n\
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")\n\
+' > /app/main_docker.py
+
+# Comando para ejecutar la aplicación directamente
+CMD ["python", "main_docker.py"]

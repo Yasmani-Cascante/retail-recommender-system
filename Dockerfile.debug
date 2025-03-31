@@ -1,0 +1,51 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Instalar solo dependencias básicas
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+RUN pip install --no-cache-dir fastapi uvicorn pydantic python-dotenv starlette
+
+# Copiar el resto del código
+COPY . .
+
+# Configurar variables de entorno
+ENV PYTHONUNBUFFERED=1
+
+# Puerto por defecto
+EXPOSE 8080
+
+# Crear un archivo main_docker.py específico para el contenedor
+RUN echo 'import os\n\
+import uvicorn\n\
+import logging\n\
+import sys\n\
+\n\
+# Configurar logging con salida a stdout\n\
+logging.basicConfig(\n\
+    level=logging.DEBUG,\n\
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",\n\
+    handlers=[\n\
+        logging.StreamHandler(sys.stdout)\n\
+    ]\n\
+)\n\
+\n\
+# Importar app después de configurar logging\n\
+logging.info("Iniciando aplicación en modo depuración...")\n\
+try:\n\
+    from src.api.main_stage2_debug import app\n\
+    logging.info("Aplicación importada correctamente")\n\
+except Exception as e:\n\
+    logging.error(f"Error al importar la aplicación: {str(e)}")\n\
+    import traceback\n\
+    logging.error(traceback.format_exc())\n\
+    raise\n\
+\n\
+if __name__ == "__main__":\n\
+    port = int(os.environ.get("PORT", "8080"))\n\
+    logging.info(f"Starting server on port {port} - Debug mode")\n\
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="debug")\n\
+' > /app/main_docker.py
+
+# Comando para ejecutar la aplicación directamente
+CMD ["python", "main_docker.py"]

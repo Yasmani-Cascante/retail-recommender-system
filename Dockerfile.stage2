@@ -1,0 +1,45 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Actualizar pip e instalar herramientas básicas
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+# Copiar requirements primero para aprovechar la caché de Docker
+COPY requirements.txt .
+
+# Instalar dependencias por capas para mejor caché
+# 1. Primero las básicas
+RUN pip install --no-cache-dir fastapi uvicorn pydantic python-dotenv starlette
+
+# 2. Dependencias para ML (necesarias para el recomendador basado en contenido)
+RUN pip install --no-cache-dir scikit-learn==1.6.1 numpy==2.0.2
+RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir sentence-transformers scipy==1.13.1
+
+# Copiar el resto del código
+COPY . .
+
+# Puerto por defecto
+EXPOSE 8080
+
+# Crear un archivo main_docker.py específico para el contenedor
+RUN echo 'import os\n\
+import uvicorn\n\
+import logging\n\
+\n\
+# Configurar logging\n\
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")\n\
+\n\
+# Importar app después de configurar logging\n\
+logging.info("Iniciando aplicación - Versión Stage 2 (Content-Based)")\n\
+from src.api.main_stage2 import app\n\
+\n\
+if __name__ == "__main__":\n\
+    port = int(os.environ.get("PORT", "8080"))\n\
+    logging.info(f"Starting server on port {port} - Stage 2 version")\n\
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")\n\
+' > /app/main_docker.py
+
+# Comando para ejecutar la aplicación directamente
+CMD ["python", "main_docker.py"]
