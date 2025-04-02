@@ -1,0 +1,67 @@
+
+syntax = "proto3";
+
+package recommendation;
+
+// Servicio principal de recomendaciones
+service RecommendationService {
+  // Recomendaciones basadas en contenido
+  rpc GetContentBasedRecommendations(ProductRequest) returns (RecommendationsResponse);
+  
+  // Recomendaciones de Retail API
+  rpc GetRetailRecommendations(UserProductRequest) returns (RecommendationsResponse);
+  
+  // Recomendaciones híbridas (combinación de content-based y Retail API)
+  rpc GetHybridRecommendations(UserProductRequest) returns (RecommendationsResponse);
+  
+  // Registro de eventos de usuario
+  rpc RecordUserEvent(UserEventRequest) returns (StatusResponse);
+}
+
+// Solicitud para recomendaciones basadas en producto
+message ProductRequest {
+  string product_id = 1;  // ID del producto base
+  int32 count = 2;        // Número de recomendaciones a devolver (por defecto: 5)
+}
+
+// Solicitud para recomendaciones personalizadas
+message UserProductRequest {
+  string user_id = 1;        // ID del usuario
+  string product_id = 2;     // ID del producto (opcional)
+  int32 count = 3;           // Número de recomendaciones a devolver (por defecto: 5)
+  float content_weight = 4;  // Peso para recomendaciones content-based (0-1) (por defecto: 0.5)
+}
+
+// Representación de un producto
+message Product {
+  string id = 1;                  // ID único del producto
+  string title = 2;               // Título o nombre del producto
+  string description = 3;         // Descripción del producto
+  float price = 4;                // Precio del producto
+  string category = 5;            // Categoría del producto
+  float score = 6;                // Score de recomendación
+  string recommendation_type = 7;  // Tipo de recomendación (content, retail, hybrid)
+}
+
+// Respuesta con recomendaciones
+message RecommendationsResponse {
+  string product_id = 1;             // ID del producto base (si aplica)
+  repeated Product recommendations = 2;  // Lista de productos recomendados
+  int32 count = 3;                  // Cantidad de recomendaciones
+  string status = 4;                // Estado de la operación (success, error)
+  string error = 5;                 // Mensaje de error (si status=error)
+}
+
+// Solicitud para registrar evento de usuario
+message UserEventRequest {
+  string user_id = 1;     // ID del usuario
+  string event_type = 2;  // Tipo de evento (view, add-to-cart, purchase)
+  string product_id = 3;  // ID del producto (opcional)
+}
+
+// Respuesta con estado de operación
+message StatusResponse {
+  string status = 1;   // Estado de la operación (success, error)
+  string message = 2;  // Mensaje descriptivo
+  string error = 3;    // Mensaje de error (si status=error)
+}

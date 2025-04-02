@@ -1,0 +1,50 @@
+
+# Primera etapa: Generar embeddings
+FROM python:3.9-slim AS builder
+
+WORKDIR /build
+
+# Copiar requirements
+COPY requirements.txt .
+
+# Actualizar pip e instalar herramientas básicas
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+# Instalar torch primero (versión CPU para reducir tamaño)
+RUN pip install --no-cache-dir torch --extra-index-url https://download.pytorch.org/whl/cpu
+
+# Instalar transformers, sentence-transformers y scipy específicamente
+RUN pip install --no-cache-dir transformers sentence-transformers scipy==1.13.1
+
+# Instalar el resto de dependencias
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copiar el código fuente
+COPY . .
+
+# Ejecutar script de pre-computación
+RUN python precompute_embeddings.py
+
+# Segunda etapa: Imagen final más ligera
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Actualizar pip
+RUN pip install --no-cache-dir --upgrade pip wheel setuptools
+
+# Instalar solo las dependencias necesarias para la API (sin sentence-transformers)
+RUN pip install --no-cache-dir fastapi uvicorn scikit-learn numpy==1.24.3
+
+# Copiar solo lo necesario de la etapa de build
+COPY --from=builder /build/embeddings /app/embeddings
+COPY --from=builder /build/src /app/src
+
+# Exponer el puerto de la API
+EXPOSE 8080
+
+# Variables de entorno
+ENV PYTHONUNBUFFERED=1
+
+# Comando para ejecutar la API usando el main_precomputed
+CMD ["uvicorn", "src.api.main_precomputed:app", "--host", "0.0.0.0", "--port", "8080"]
