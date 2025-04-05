@@ -1,26 +1,38 @@
+"""
+API principal para el sistema de recomendaciones con embeddings pre-computados.
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+Esta versión de la API utiliza embeddings pre-computados para ofrecer recomendaciones
+basadas en contenido sin necesidad de cargar modelos ML completos en runtime,
+permitiendo un arranque rápido y eficiente en entornos cloud.
+"""
+
 import os
-import logging
 import time
-from typing import List, Dict, Optional
-import json
+import logging
+import asyncio
+from typing import Dict, List, Optional, Any
+from fastapi import FastAPI, Header, Query, HTTPException, BackgroundTasks, Response
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+# Importar el recomendador pre-computado
+from src.recommenders.precomputed_embedding_recommender import PrecomputedEmbeddingRecommender
 
 # Configurar logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Importar recomendador precomputado
-from src.recommenders.precomputed_recommender import PrecomputedEmbeddingRecommender
-
-# Inicializar app
+# Crear aplicación FastAPI
 app = FastAPI(
-    title="Retail Recommender API (Precomputed)",
-    description="API para sistema de recomendaciones con embeddings pre-computados",
+    title="Retail Recommender API",
+    description="API para sistema de recomendaciones de retail usando embeddings pre-computados",
     version="0.4.0"
 )
 
-# Configurar CORS
+# Agregar middleware CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,87 +41,152 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inicializar recomendador
+# Crear instancia del recomendador
 recommender = PrecomputedEmbeddingRecommender()
+
+# Carga inicial
+loading_complete = False
+loading_in_progress = False
+
+async def load_recommender_background():
+    """Carga el recomendador en segundo plano."""
+    global loading_complete, loading_in_progress
+    
+    if loading_complete or loading_in_progress:
+        return
+    
+    loading_in_progress = True
+    
+    try:
+        logger.info("🚀 Iniciando carga de recomendador en segundo plano...")
+        start_time = time.time()
+        success = await recommender.load()
+        elapsed = time.time() - start_time
+        
+        if success:
+            logger.info(f"✓ Recomendador cargado exitosamente en {elapsed:.2f} segundos")
+            loading_complete = True
+        else:
+            logger.error(f"✗ Error cargando recomendador ({elapsed:.2f} segundos)")
+    except Exception as e:
+        logger.error(f"Error inesperado cargando recomendador: {e}")
+    finally:
+        loading_in_progress = False
 
 @app.on_event("startup")
 async def startup_event():
-    start_time = time.time()
+    """Evento de inicio de la aplicación."""
+    logger.info("🚀 Iniciando API de recomendaciones...")
     
-    # Cargar embeddings precomputados
-    logging.info("Cargando embeddings precomputados...")
-    success = recommender.fit()
-    
-    if success:
-        logging.info("✅ Embeddings precomputados cargados correctamente")
-    else:
-        logging.error("❌ Error cargando embeddings precomputados")
-    
-    end_time = time.time()
-    logging.info(f"Startup completado en {end_time - start_time:.2f} segundos")
+    # Iniciar carga en segundo plano
+    asyncio.create_task(load_recommender_background())
 
-@app.get("/health")
-def health_check():
+# Modelos de datos
+class ProductModel(BaseModel):
+    id: str
+    title: str
+    similarity_score: Optional[float] = None
+    product_data: Dict[str, Any]
+
+class RecommendationResponse(BaseModel):
+    recommendations: List[ProductModel]
+    loading_complete: bool = Field(description="Indica si la carga del recomendador ha finalizado")
+    source: str = Field(description="Fuente de las recomendaciones")
+    took_ms: float = Field(description="Tiempo de procesamiento en milisegundos")
+
+class HealthStatus(BaseModel):
+    status: str = Field(description="Estado general del servicio")
+    recommender: Dict[str, Any] = Field(description="Estado del recomendador")
+    uptime_seconds: float = Field(description="Tiempo de funcionamiento en segundos")
+    loading_complete: bool = Field(description="Indica si la carga inicial ha finalizado")
+
+# Variables para uptime
+start_time = time.time()
+
+@app.get("/health", response_model=HealthStatus)
+async def health_check():
+    """Endpoint de verificación de salud del servicio."""
+    recommender_status = await recommender.health_check()
+    
     return {
-        "status": "healthy", 
-        "precomputed_recommender": recommender.embeddings is not None,
-        "product_count": len(recommender.product_ids) if recommender.product_ids else 0
+        "status": "operational" if recommender_status["loaded"] else "initializing",
+        "recommender": recommender_status,
+        "uptime_seconds": time.time() - start_time,
+        "loading_complete": loading_complete
     }
 
-@app.get("/")
-def read_root():
+@app.get("/v1/recommendations/content/{product_id}", response_model=RecommendationResponse)
+async def get_content_recommendations(
+    product_id: str,
+    n: int = Query(5, gt=0, le=20, description="Número de recomendaciones"),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Obtiene recomendaciones basadas en similitud de contenido para un producto.
+    
+    Si el recomendador no ha terminado de cargar, inicia la carga en segundo plano
+    y devuelve un mensaje indicando que las recomendaciones estarán disponibles pronto.
+    """
+    start_processing = time.time()
+    
+    # Si no está cargado, iniciar carga en segundo plano
+    if not loading_complete and not loading_in_progress:
+        if background_tasks:
+            background_tasks.add_task(load_recommender_background)
+        else:
+            asyncio.create_task(load_recommender_background())
+    
+    # Obtener recomendaciones
+    recommendations = []
+    if loading_complete:
+        recommendations = await recommender.get_recommendations(product_id, n)
+    
+    # Calcular tiempo de procesamiento
+    processing_time_ms = (time.time() - start_processing) * 1000
+    
     return {
-        "message": "Retail Recommender API con embeddings precomputados",
-        "version": "0.4.0",
-        "status": "ready" if recommender.embeddings is not None else "initializing"
+        "recommendations": recommendations,
+        "loading_complete": loading_complete,
+        "source": "precomputed_embeddings",
+        "took_ms": processing_time_ms
     }
 
-@app.get("/v1/")
-def api_root():
-    return {
-        "message": "V1 API con embeddings precomputados",
-        "version": "0.4.0"
-    }
-
-@app.get("/v1/recommendations/content/{product_id}")
-def get_content_recommendations(product_id: str, n: int = 5):
-    try:
-        recommendations = recommender.recommend(product_id, n)
+@app.get("/v1/products/", response_model=Dict)
+async def get_products(
+    page: int = Query(1, gt=0, description="Número de página"),
+    page_size: int = Query(50, gt=0, le=100, description="Resultados por página")
+):
+    """
+    Obtiene la lista de productos con paginación.
+    """
+    if not loading_complete:
         return {
-            "product_id": product_id,
-            "recommendations": recommendations,
-            "count": len(recommendations)
+            "products": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "loading_complete": loading_complete,
+            "message": "El catálogo de productos está cargando. Intente más tarde."
         }
-    except Exception as e:
-        logging.error(f"Error en recomendaciones: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/v1/products/")
-def get_products(page: int = 1, page_size: int = 10):
-    if not recommender.product_metadata:
-        return {"products": [], "total": 0, "page": page, "page_size": page_size}
     
+    # Calcular índices de paginación
     start_idx = (page - 1) * page_size
     end_idx = start_idx + page_size
     
-    products_page = recommender.product_metadata[start_idx:end_idx]
+    # Obtener productos del recomendador
+    all_products = recommender.product_data if recommender.product_data else []
+    paginated_products = all_products[start_idx:end_idx]
     
     return {
-        "products": products_page,
-        "total": len(recommender.product_metadata),
+        "products": paginated_products,
+        "total": len(all_products),
         "page": page,
-        "page_size": page_size
+        "page_size": page_size,
+        "loading_complete": loading_complete
     }
 
-@app.get("/v1/products/{product_id}")
-def get_product(product_id: str):
-    product = recommender.get_product_by_id(product_id)
-    if not product:
-        raise HTTPException(status_code=404, detail="Producto no encontrado")
-    return product
-
-# Punto de inicio para ejecución directa (útil para desarrollo local)
+# Configuración para ejecutar con uvicorn
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", "8080"))
-    uvicorn.run("main_precomputed:app", host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main_precomputed:app", host="0.0.0.0", port=port, reload=True)

@@ -1,0 +1,39 @@
+# Imagen base
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Instalar dependencias del sistema necesarias
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar archivos de dependencias
+COPY requirements.txt ./
+
+# Instalar dependencias básicas
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir numpy==1.23.5 scipy==1.10.1 scikit-learn==1.2.2
+
+# Copiar código fuente
+COPY src/ /app/src/
+
+# Crear directorio data
+RUN mkdir -p data
+
+# Variables de entorno y configuración
+ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
+ENV LOG_LEVEL=INFO
+
+# Exponer puerto
+EXPOSE ${PORT}
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# Comando de inicio
+CMD uvicorn src.api.main_tfidf:app --host 0.0.0.0 --port ${PORT} --log-level ${LOG_LEVEL}

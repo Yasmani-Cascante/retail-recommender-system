@@ -1,0 +1,61 @@
+# Etapa de construcción con todas las dependencias
+FROM python:3.9-slim AS builder
+
+WORKDIR /app
+
+# Instalar dependencias del sistema necesarias
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Instalar Poetry
+RUN pip install poetry==1.7.1
+
+# Copiar archivos de configuración de dependencias
+COPY pyproject.toml ./
+
+# Configurar Poetry para no usar entornos virtuales en Docker
+RUN poetry config virtualenvs.create false
+
+# Instalar dependencias completas para precomputación
+RUN poetry install --no-interaction --no-ansi
+
+# Copiar código fuente
+COPY . .
+
+# Crear directorios necesarios
+RUN mkdir -p data
+
+# Pre-computar embeddings
+RUN python scripts/precompute_embeddings.py
+
+# Etapa de imagen final con dependencias mínimas
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Instalar Poetry
+RUN pip install poetry==1.7.1
+
+# Copiar archivos de configuración de dependencias
+COPY pyproject.toml ./
+
+# Configurar Poetry para no usar entornos virtuales
+RUN poetry config virtualenvs.create false
+
+# Instalar solo dependencias de runtime
+RUN poetry install --only runtime --no-interaction --no-ansi
+
+# Copiar solo los archivos necesarios
+COPY --from=builder /app/data/embeddings.pkl /app/data/
+COPY --from=builder /app/data/product_data.pkl /app/data/
+COPY src/ /app/src/
+
+# Variables de entorno y configuración
+ENV PORT=8080
+EXPOSE ${PORT}
+
+# Comando de inicio
+CMD uvicorn src.api.main_precomputed:app --host 0.0.0.0 --port ${PORT}

@@ -1,0 +1,77 @@
+# Etapa de construcción con todas las dependencias
+FROM python:3.9-slim AS builder
+
+WORKDIR /app
+
+# Instalar dependencias del sistema necesarias
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar archivos de dependencias
+COPY pyproject.toml ./
+
+# Instalar Poetry
+RUN pip install poetry==1.7.1
+
+# Configurar Poetry para no usar entornos virtuales en Docker
+RUN poetry config virtualenvs.create false
+
+# Instalar dependencias completas para precomputación
+RUN poetry install --no-interaction --no-ansi --no-root
+
+# Copiar código fuente
+COPY . .
+
+# Crear directorio data y asegurar permisos
+RUN mkdir -p data && chmod -R 755 data
+
+# Pre-computar embeddings
+RUN cd scripts && python precompute_embeddings.py
+
+# Verificar que los archivos se generaron correctamente
+RUN ls -la data && \
+    if [ ! -f data/embeddings.pkl ] || [ ! -f data/product_data.pkl ]; then \
+        echo "Error: Archivos de embeddings no generados correctamente"; \
+        exit 1; \
+    fi
+
+# Etapa de imagen final con dependencias mínimas
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Copiar archivos de dependencias
+COPY pyproject.toml ./
+
+# Instalar Poetry
+RUN pip install poetry==1.7.1
+
+# Configurar Poetry para no usar entornos virtuales
+RUN poetry config virtualenvs.create false
+
+# Instalar solo dependencias de runtime
+RUN poetry install --only runtime --no-interaction --no-ansi --no-root
+
+# Copiar solo los archivos necesarios
+COPY --from=builder /app/data/*.pkl /app/data/
+COPY src/ /app/src/
+COPY scripts/precompute_embeddings.py /app/scripts/
+
+# Variables de entorno y configuración
+ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
+ENV LOG_LEVEL=INFO
+
+# Exponer puerto
+EXPOSE ${PORT}
+
+# Health check para Docker y Cloud Run
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# Comando de inicio
+CMD uvicorn src.api.main_precomputed:app --host 0.0.0.0 --port ${PORT} --log-level ${LOG_LEVEL}
