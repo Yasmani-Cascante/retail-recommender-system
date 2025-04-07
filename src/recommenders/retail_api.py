@@ -1,5 +1,5 @@
 from google.cloud import retail_v2
-from google.cloud.retail_v2 import ProductServiceClient
+from google.cloud.retail_v2 import ProductServiceClient, PredictionServiceClient, UserEventServiceClient
 from google.cloud.retail_v2.types import Product, PredictRequest, PredictResponse, ImportProductsRequest
 from google.cloud.retail_v2.types.import_config import GcsSource, ProductInputConfig, ProductInlineSource, ImportErrorsConfig
 from typing import List, Dict, Optional
@@ -25,8 +25,10 @@ class RetailAPIRecommender:
         self.catalog = catalog
         self.serving_config_id = serving_config_id
         
-        self.predict_client = retail_v2.PredictionServiceClient()
-        self.product_client = retail_v2.ProductServiceClient()
+        # Inicializar los diferentes clientes para Retail API
+        self.predict_client = PredictionServiceClient()
+        self.product_client = ProductServiceClient()
+        self.user_event_client = UserEventServiceClient()
         
         self.placement = (
             f"projects/{project_number}/locations/{location}"
@@ -60,9 +62,10 @@ class RetailAPIRecommender:
             for order in orders:
                 # Registrar evento de compra
                 for item in order.get('products', []):
+                    # Registrar evento de compra
                     await self.record_user_event(
                         user_id=user_id,
-                        event_type='purchase',
+                        event_type='purchase-complete',  # Actualizado al tipo correcto
                         product_id=str(item.get('product_id'))
                     )
                     events_recorded += 1
@@ -70,7 +73,7 @@ class RetailAPIRecommender:
                     # Registrar evento de vista
                     await self.record_user_event(
                         user_id=user_id,
-                        event_type='detail-page-view',
+                        event_type='detail-page-view',  # Actualizado al tipo correcto
                         product_id=str(item.get('product_id'))
                     )
                     events_recorded += 1
@@ -399,6 +402,70 @@ class RetailAPIRecommender:
                 "status": "error",
                 "error": str(e)
             }
+            
+    async def get_user_events(self, user_id: str, limit: int = 50) -> List[Dict]:
+        """
+        Obtiene los eventos de un usuario específico.
+        
+        Args:
+            user_id: ID del usuario
+            limit: Número máximo de eventos a obtener
+            
+        Returns:
+            List[Dict]: Lista de eventos del usuario
+        """
+        try:
+            logging.info(f"Obteniendo eventos para usuario {user_id}")
+            
+            parent = f"projects/{self.project_number}/locations/{self.location}/catalogs/{self.catalog}"
+            
+            # Crear el request para list_user_events
+            request = retail_v2.ListUserEventsRequest(
+                parent=parent,
+                filter=f"visitorId=\"{{user_id}}\"",
+                page_size=limit
+            )
+            
+            # Obtener eventos
+            events = []
+            try:
+                # Intentar obtener los eventos
+                response = self.user_event_client.list_user_events(request=request)
+                
+                # Procesar eventos
+                for event in response.user_events:
+                    event_dict = {
+                        "event_type": event.event_type,
+                        "visitor_id": event.visitor_id,
+                        "event_time": event.event_time.isoformat() if event.event_time else None,
+                    }
+                    
+                    # Agregar detalles del producto si están disponibles
+                    if event.product_details and len(event.product_details) > 0:
+                        product_detail = event.product_details[0]
+                        event_dict["product_id"] = product_detail.product.id if product_detail.product else None
+                        event_dict["quantity"] = product_detail.quantity
+                    
+                    # Agregar atributos personalizados si están disponibles
+                    if event.attributes:
+                        for key, value in event.attributes.items():
+                            if hasattr(value, 'text') and value.text:
+                                event_dict[key] = value.text[0] if value.text else None
+                    
+                    events.append(event_dict)
+                    
+                logging.info(f"Se obtuvieron {len(events)} eventos para el usuario {user_id}")
+                return events
+                
+            except Exception as api_error:
+                logging.warning(f"Error al obtener eventos desde Google Retail API: {str(api_error)}")
+                # Si hay un error específico de la API, podemos intentar otra estrategia
+                # o simplemente devolver una lista vacía
+                return []
+                
+        except Exception as e:
+            logging.error(f"Error general al obtener eventos de usuario: {str(e)}")
+            return []
         
     async def import_catalog(self, products: List[Dict]):
         """
@@ -580,34 +647,93 @@ class RetailAPIRecommender:
         self,
         user_id: str,
         event_type: str,
-        product_id: Optional[str] = None
+        product_id: Optional[str] = None,
+        recommendation_id: Optional[str] = None
     ):
         try:
-            event = {
-                "event_type": event_type,
-                "visitor_id": user_id,
-                "event_time": datetime.utcnow().isoformat() + "Z"
+            # Validar el tipo de evento
+            valid_event_types = [
+                "add-to-cart", 
+                "category-page-view", 
+                "detail-page-view", 
+                "home-page-view", 
+                "purchase-complete",
+                "search"
+            ]
+            
+            # Convertir tipos alternativos a los aceptados por la API
+            event_type_map = {
+                "view": "detail-page-view",
+                "detail-page": "detail-page-view",
+                "add": "add-to-cart",
+                "cart": "add-to-cart",
+                "buy": "purchase-complete",
+                "purchase": "purchase-complete",
+                "checkout": "purchase-complete",
+                "home": "home-page-view",
+                "category": "category-page-view",
+                "promo": "category-page-view"
             }
             
+            # Mapear el tipo de evento si es necesario
+            if event_type in event_type_map:
+                actual_event_type = event_type_map[event_type]
+                logging.info(f"Tipo de evento '{event_type}' mapeado a '{actual_event_type}'")
+                event_type = actual_event_type
+            
+            # Verificar tipo de evento
+            if event_type not in valid_event_types:
+                logging.warning(f"Tipo de evento '{event_type}' no reconocido. Cambiando a 'detail-page-view'")
+                event_type = "detail-page-view"
+            
+            # Construir el objeto UserEvent correctamente
+            parent = f"projects/{self.project_number}/locations/{self.location}/catalogs/{self.catalog}"
+            
+            # Crear el objeto UserEvent
+            user_event = retail_v2.UserEvent(
+                event_type=event_type,
+                visitor_id=user_id,
+                event_time=datetime.utcnow()
+            )
+            
+            # Agregar detalles del producto si está disponible
             if product_id:
-                event["product_details"] = [{
-                    "product": {"id": product_id},
-                    "quantity": 1
-                }]
+                product_detail = retail_v2.ProductDetail()
+                product_detail.product.id = product_id
+                product_detail.quantity = 1
+                user_event.product_details = [product_detail]
                 
-            parent = (
-                f"projects/{self.project_number}/locations/{self.location}"
-                f"/catalogs/{self.catalog}"
-            )
+                # Si el evento viene de una recomendación, agregar atributos personalizados
+                if recommendation_id:
+                    # Agregar atributos para tracking de recomendaciones
+                    user_event.attributes = {
+                        "recommendation_id": retail_v2.CustomAttribute(
+                            text=[recommendation_id]
+                        ),
+                        "recommendation_source": retail_v2.CustomAttribute(
+                            text=["api"]
+                        )
+                    }
+                    logging.info(f"Evento asociado a recomendación: {recommendation_id}")
             
-            request = retail_v2.UserEvent(
+            # Registrar el evento
+            logging.info(f"Registrando evento: usuario={user_id}, tipo={event_type}, producto={product_id or 'N/A'}")
+            
+            # Crear el request para write_user_event
+            request = retail_v2.WriteUserEventRequest(
                 parent=parent,
-                **event
+                user_event=user_event
             )
             
-            self.predict_client.write_user_event(user_event=request)
+            # Usar el cliente correcto (UserEventServiceClient) para registrar eventos
+            response = self.user_event_client.write_user_event(request=request)
             
-            return {"status": "success", "message": "Event recorded"}
+            return {
+                "status": "success", 
+                "message": "Event recorded", 
+                "event_type": event_type,
+                "recommendation_tracked": recommendation_id is not None
+            }
             
         except Exception as e:
             logging.error(f"Error recording user event: {str(e)}")

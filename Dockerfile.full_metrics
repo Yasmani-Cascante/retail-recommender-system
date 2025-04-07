@@ -1,0 +1,42 @@
+﻿# Imagen base
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Instalar dependencias del sistema necesarias
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar archivos de dependencias
+COPY requirements.tfidf.txt ./
+
+# Instalar dependencias
+RUN pip install --no-cache-dir -r requirements.tfidf.txt
+
+# Copiar cÃ³digo fuente
+COPY src/ /app/src/
+
+# Crear directorio data para almacenar el modelo TF-IDF y logs
+RUN mkdir -p data
+RUN mkdir -p logs
+
+# Variables de entorno y configuraciÃ³n
+ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
+ENV LOG_LEVEL=INFO
+ENV DEBUG=true
+ENV METRICS_ENABLED=true
+
+# Exponer puerto
+EXPOSE ${PORT}
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# Comando de inicio - usando la versiÃ³n con mÃ©tricas integrada
+CMD ["uvicorn", "src.api.main_tfidf_shopify_with_metrics:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]

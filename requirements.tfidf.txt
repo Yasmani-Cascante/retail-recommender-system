@@ -1,0 +1,19 @@
+# Dependencias básicas
+fastapi==0.115.0
+uvicorn==0.34.0
+pydantic==2.10.0
+python-dotenv==1.0.0
+
+# ML y procesamiento de datos
+numpy==1.23.5
+scipy==1.10.1
+scikit-learn==1.2.2
+
+# Integraciones con Google Cloud
+google-cloud-retail==1.24.0
+google-cloud-storage==2.19.0
+google-cloud-core==2.4.1
+
+# Utilidades
+tqdm==4.67.0
+requests==2.32.0
