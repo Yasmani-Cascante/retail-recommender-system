@@ -4,6 +4,7 @@ from google.cloud.retail_v2.types import Product, PredictRequest, PredictRespons
 from google.cloud.retail_v2.types.import_config import GcsSource, ProductInputConfig, ProductInlineSource, ImportErrorsConfig
 from typing import List, Dict, Optional
 from datetime import datetime
+import time
 import asyncio
 import os
 import logging
@@ -38,19 +39,66 @@ class RetailAPIRecommender:
     def _process_predictions(self, response) -> List[Dict]:
         recommendations = []
         try:
+            # Log detallado de la estructura de respuesta para diagnóstico
+            logging.info(f"Tipo de respuesta: {type(response)}")
+            logging.info(f"Atributos disponibles en respuesta: {dir(response)}")
+            
+            # Verificar si tiene el campo 'results'
+            if not hasattr(response, 'results') or not response.results:
+                logging.warning("La respuesta no contiene resultados")
+                return []
+                
             for result in response.results:
-                if result.product:
+                logging.debug(f"Tipo de resultado: {type(result)}")
+                logging.debug(f"Atributos disponibles en resultado: {dir(result)}")
+                
+                # Método más seguro para extraer información
+                # Primero verificamos si result tiene el atributo 'product' directamente
+                if hasattr(result, 'product') and result.product:
+                    # Estructura original esperada
                     recommendations.append({
                         "id": result.product.id,
                         "title": result.product.title,
                         "description": result.product.description or "",
-                        "price": result.product.price_info.price if result.product.price_info else 0.0,
-                        "category": result.product.categories[0] if result.product.categories else "",
-                        "score": float(result.metadata.get("predictScore", 0.0))
+                        "price": result.product.price_info.price if hasattr(result.product, 'price_info') and result.product.price_info else 0.0,
+                        "category": result.product.categories[0] if hasattr(result.product, 'categories') and result.product.categories else "",
+                        "score": float(result.metadata.get("predictScore", 0.0)) if hasattr(result, 'metadata') else 0.0,
+                        "source": "retail_api"
                     })
+                # Alternativa: verificar si el resultado contiene un ID directamente 
+                elif hasattr(result, 'id'):
+                    # Estructura alternativa
+                    recommendations.append({
+                        "id": result.id,
+                        "title": getattr(result, 'title', "Producto"),
+                        "description": getattr(result, 'description', ""),
+                        "price": getattr(result, 'price', 0.0),
+                        "category": getattr(result, 'category', ""),
+                        "score": getattr(result, 'score', 0.0),
+                        "source": "retail_api"
+                    })
+                # Si es un diccionario, extraer campos directamente
+                elif hasattr(result, 'to_dict'):
+                    result_dict = result.to_dict()
+                    logging.debug(f"Campos disponibles en diccionario de resultado: {result_dict.keys()}")
+                    
+                    # Intentar extraer campos conocidos
+                    if 'id' in result_dict:
+                        recommendations.append({
+                            "id": str(result_dict.get('id', '')),
+                            "title": result_dict.get('title', "Producto"),
+                            "description": result_dict.get('description', ""),
+                            "price": float(result_dict.get('price', 0.0)),
+                            "category": result_dict.get('category', ""),
+                            "score": float(result_dict.get('score', 0.0)),
+                            "source": "retail_api"
+                        })
+                        
+            logging.info(f"Procesadas {len(recommendations)} recomendaciones")
             return recommendations
         except Exception as e:
             logging.error(f"Error processing predictions: {str(e)}")
+            logging.error(f"Traceback: {traceback.format_exc()}")
             return []
 
     async def process_shopify_orders(self, orders: List[Dict], user_id: str):
@@ -62,11 +110,29 @@ class RetailAPIRecommender:
             for order in orders:
                 # Registrar evento de compra
                 for item in order.get('products', []):
+                    # Extraer el precio si está disponible
+                    price = 0.0
+                    try:
+                        price = float(item.get('price', 0.0))
+                    except (ValueError, TypeError):
+                        # Si no podemos convertir el precio, usar valor por defecto
+                        price = 1.0
+                        
+                    # Multiplicar por la cantidad si está disponible
+                    quantity = 1
+                    try:
+                        quantity = int(item.get('quantity', 1))
+                    except (ValueError, TypeError):
+                        quantity = 1
+                        
+                    total_price = price * quantity
+                    
                     # Registrar evento de compra
                     await self.record_user_event(
                         user_id=user_id,
                         event_type='purchase-complete',  # Actualizado al tipo correcto
-                        product_id=str(item.get('product_id'))
+                        product_id=str(item.get('product_id')),
+                        purchase_amount=total_price
                     )
                     events_recorded += 1
                     
@@ -648,7 +714,8 @@ class RetailAPIRecommender:
         user_id: str,
         event_type: str,
         product_id: Optional[str] = None,
-        recommendation_id: Optional[str] = None
+        recommendation_id: Optional[str] = None,
+        purchase_amount: Optional[float] = None
     ):
         try:
             # Validar el tipo de evento
@@ -715,6 +782,22 @@ class RetailAPIRecommender:
                         )
                     }
                     logging.info(f"Evento asociado a recomendación: {recommendation_id}")
+            
+            # CORRECCIÓN: Agregar campo obligatorio purchaseTransaction para eventos de compra
+            # Este es el cambio clave que corrige el error
+            if event_type == "purchase-complete":
+                transaction_id = f"transaction_{int(time.time())}_{user_id[-5:] if len(user_id) >= 5 else user_id}"
+                
+                # Utilizar el valor proporcionado o un valor predeterminado
+                revenue = purchase_amount if purchase_amount is not None else 1.0
+                
+                # Crear el objeto PurchaseTransaction requerido
+                user_event.purchase_transaction = retail_v2.PurchaseTransaction(
+                    id=transaction_id,
+                    revenue=revenue
+                )
+                
+                logging.info(f"Evento de compra con transaction_id={transaction_id}, revenue={revenue}")
             
             # Registrar el evento
             logging.info(f"Registrando evento: usuario={user_id}, tipo={event_type}, producto={product_id or 'N/A'}")

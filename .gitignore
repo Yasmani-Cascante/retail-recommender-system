@@ -35,6 +35,8 @@ ENV/
 .env
 .env.local
 .env.*.local
+.env.secrets
+*.env.secrets
 
 # GCP
 *.json

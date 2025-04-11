@@ -1,6 +1,16 @@
 # PowerShell script para desplegar la versión TF-IDF con Shopify a Cloud Run
 
+# Importar funciones comunes
+. .\deploy_common.ps1
+
 Write-Host "Iniciando despliegue de la versión TF-IDF con Shopify..." -ForegroundColor Green
+
+# Cargar variables secretas
+$SecretsLoaded = Load-SecretVariables
+if (-not $SecretsLoaded) {
+    Write-Host "Error: No se pudieron cargar las variables secretas. Abortando despliegue." -ForegroundColor Red
+    exit 1
+}
 
 # Configuración
 $ProjectID = "retail-recommendations-449216"
@@ -87,6 +97,10 @@ if (-not $?) {
 
 # Desplegar en Cloud Run
 Write-Host "Desplegando a Cloud Run..." -ForegroundColor Yellow
+
+# Generar string de variables de entorno
+$EnvVars = Get-EnvVarsString
+
 gcloud run deploy $ServiceName `
     --image $ImageName `
     --platform managed `
@@ -96,7 +110,7 @@ gcloud run deploy $ServiceName `
     --min-instances 0 `
     --max-instances 10 `
     --timeout 300 `
-    --set-env-vars "GOOGLE_PROJECT_NUMBER=178362262166,GOOGLE_LOCATION=global,GOOGLE_CATALOG=default_catalog,GOOGLE_SERVING_CONFIG=default_recommendation_config,API_KEY=2fed9999056fab6dac5654238f0cae1c,SHOPIFY_SHOP_URL=ai-shoppings.myshopify.com,SHOPIFY_ACCESS_TOKEN=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,GCS_BUCKET_NAME=retail-recommendations-449216_cloudbuild,USE_GCS_IMPORT=true,DEBUG=true" `
+    --set-env-vars "$EnvVars" `
     --allow-unauthenticated
 
 # Verificar si el despliegue fue exitoso

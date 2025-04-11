@@ -45,15 +45,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Crear aplicaciÃ³n FastAPI
+# Crear aplicación FastAPI correctamente
 app = FastAPI(
-    # Incluir el router de mÃ©tricas
-    app.include_router(metrics_router)
-
     title="Retail Recommender API",
-    description="API para sistema de recomendaciones de retail usando vectorizaciÃ³n TF-IDF con conexiÃ³n a Shopify",
+    description="API para sistema de recomendaciones de retail usando vectorización TF-IDF con conexión a Shopify",
     version="0.5.0"
 )
+
+# Incluir el router de métricas DESPUÉS de crear app
+app.include_router(metrics_router)
 
 # Agregar middleware CORS
 app.add_middleware(
@@ -286,7 +286,8 @@ class HybridRecommender:
         self,
         user_id: str,
         event_type: str,
-        product_id: Optional[str] = None
+        product_id: Optional[str] = None,
+        purchase_amount: Optional[float] = None
     ) -> Dict:
         """
         Registra eventos de usuario para mejorar las recomendaciones futuras.
@@ -299,11 +300,12 @@ class HybridRecommender:
         Returns:
             Dict: Resultado del registro del evento
         """
-        logger.info(f"Registrando evento de usuario: user_id={user_id}, event_type={event_type}, product_id={product_id}")
+        logger.info(f"Registrando evento de usuario: user_id={user_id}, event_type={event_type}, product_id={product_id}, purchase_amount={purchase_amount}")
         return await self.retail_recommender.record_user_event(
             user_id=user_id,
             event_type=event_type,
-            product_id=product_id
+            product_id=product_id,
+            purchase_amount=purchase_amount 
         )
 
 # Crear instancia del recomendador hÃ­brido
@@ -619,6 +621,7 @@ async def record_user_event(
     user_id: str,
     event_type: str = Query(..., description="Tipo de evento (detail-page-view, add-to-cart, purchase-complete, etc.)"),
     product_id: Optional[str] = Query(None, description="ID del producto relacionado con el evento"),
+    purchase_amount: Optional[float] = Query(None, description="Monto de la compra para eventos de tipo purchase-complete"),
     current_user: str = Depends(get_current_user)
 ):
     """
@@ -658,7 +661,8 @@ async def record_user_event(
         result = await hybrid_recommender.record_user_event(
             user_id=user_id,
             event_type=event_type,
-            product_id=product_id
+            product_id=product_id,
+            purchase_amount=purchase_amount
         )
         
         # AÃ±adir informaciÃ³n adicional a la respuesta

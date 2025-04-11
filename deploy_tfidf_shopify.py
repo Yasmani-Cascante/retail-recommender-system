@@ -13,6 +13,7 @@ import subprocess
 import logging
 import json
 from datetime import datetime
+import configparser
 
 # Configurar logging
 log_filename = f"deploy_tfidf_shopify_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -33,19 +34,66 @@ SERVICE_NAME = "retail-recommender-tfidf-shopify"
 IMAGE_NAME = f"gcr.io/{PROJECT_ID}/retail-recommender-tfidf-shopify:latest"
 DOCKERFILE = "Dockerfile.tfidf.shopify"
 
+# Función para cargar secretos desde .env.secrets
+def load_secrets():
+    """Carga variables de entorno desde archivo .env.secrets"""
+    secrets_file = ".env.secrets"
+    env_vars = {
+        "GOOGLE_PROJECT_NUMBER": os.environ.get("GOOGLE_PROJECT_NUMBER", "178362262166"),
+        "GOOGLE_LOCATION": os.environ.get("GOOGLE_LOCATION", "global"),
+        "GOOGLE_CATALOG": os.environ.get("GOOGLE_CATALOG", "default_catalog"),
+        "GOOGLE_SERVING_CONFIG": os.environ.get("GOOGLE_SERVING_CONFIG", "default_recommendation_config"),
+        "GCS_BUCKET_NAME": os.environ.get("GCS_BUCKET_NAME", "retail-recommendations-449216_cloudbuild"),
+        "USE_GCS_IMPORT": "true",
+        "DEBUG": os.environ.get("DEBUG", "true")
+    }
+    
+    # Intentar cargar desde .env.secrets
+    if os.path.exists(secrets_file):
+        logger.info(f"Cargando secretos desde {secrets_file}")
+        try:
+            with open(secrets_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        env_vars[key.strip()] = value.strip()
+            logger.info(f"Secretos cargados correctamente desde {secrets_file}")
+        except Exception as e:
+            logger.error(f"Error cargando secretos desde {secrets_file}: {str(e)}")
+            logger.warning("Usando valores predeterminados o de variables de entorno")
+    else:
+        logger.warning(f"Archivo {secrets_file} no encontrado, usando valores predeterminados o de variables de entorno")
+        create_example_secrets()
+    
+    return env_vars
+
+def create_example_secrets():
+    """Crea un archivo de ejemplo para .env.secrets"""
+    example_file = ".env.secrets.example"
+    if not os.path.exists(example_file):
+        logger.info(f"Creando archivo de ejemplo {example_file}")
+        with open(example_file, 'w') as f:
+            f.write("""# Secretos para el sistema de recomendaciones
+# Copia este archivo como .env.secrets y actualiza los valores
+
+# Google Cloud Project
+GOOGLE_PROJECT_NUMBER=178362262166
+API_KEY=your_api_key_here
+
+# Shopify
+SHOPIFY_SHOP_URL=ai-shoppings.myshopify.com
+SHOPIFY_ACCESS_TOKEN=your_access_token_here
+
+# Google Cloud Storage
+GCS_BUCKET_NAME=retail-recommendations-449216_cloudbuild
+""")
+        logger.info(f"Archivo de ejemplo {example_file} creado. Cópialo como .env.secrets y actualiza los valores.")
+
 # Variables de entorno para configuración del servicio
-ENV_VARS = {
-    "GOOGLE_PROJECT_NUMBER": os.environ.get("GOOGLE_PROJECT_NUMBER", "178362262166"),
-    "GOOGLE_LOCATION": os.environ.get("GOOGLE_LOCATION", "global"),
-    "GOOGLE_CATALOG": os.environ.get("GOOGLE_CATALOG", "default_catalog"),
-    "GOOGLE_SERVING_CONFIG": os.environ.get("GOOGLE_SERVING_CONFIG", "default_recommendation_config"),
-    "API_KEY": os.environ.get("API_KEY", "2fed9999056fab6dac5654238f0cae1c"),
-    "SHOPIFY_SHOP_URL": os.environ.get("SHOPIFY_SHOP_URL", "ai-shoppings.myshopify.com"),
-    "SHOPIFY_ACCESS_TOKEN": os.environ.get("SHOPIFY_ACCESS_TOKEN", "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"),
-    "GCS_BUCKET_NAME": os.environ.get("GCS_BUCKET_NAME", "retail-recommendations-449216_cloudbuild"),
-    "USE_GCS_IMPORT": "true",
-    "DEBUG": os.environ.get("DEBUG", "true")
-}
+ENV_VARS = load_secrets()
 
 def run_command(cmd):
     """Ejecuta un comando del sistema y registra su salida."""
