@@ -1,9 +1,9 @@
-# PowerShell script para desplegar la versión completa con métricas
+﻿# PowerShell script para desplegar la versiÃ³n completa con mÃ©tricas
 
 # Importar funciones comunes
 . .\deploy_common.ps1
 
-Write-Host "Iniciando despliegue de la versión completa con métricas y exclusión de productos vistos..." -ForegroundColor Green
+Write-Host "Iniciando despliegue de la versiÃ³n completa con mÃ©tricas y exclusiÃ³n de productos vistos..." -ForegroundColor Green
 
 # Cargar variables secretas
 $SecretsLoaded = Load-SecretVariables
@@ -12,7 +12,7 @@ if (-not $SecretsLoaded) {
     exit 1
 }
 
-# Configuración
+# ConfiguraciÃ³n
 $ProjectID = "retail-recommendations-449216"
 $Region = "us-central1"
 $ServiceName = "retail-recommender-full-metrics"
@@ -25,13 +25,13 @@ if (-not (Test-Path $MetricsRouterPath)) {
     exit 1
 }
 
-# Incluir el router de métricas en el archivo principal
+# Incluir el router de mÃ©tricas en el archivo principal
 $MainPath = "src\api\main_tfidf_shopify.py"
 $MetricsMainPath = "src\api\main_metrics.py"
 
-# Modificar main_tfidf_shopify.py para incluir el router de métricas
+# Modificar main_tfidf_shopify.py para incluir el router de mÃ©tricas
 $MainContent = Get-Content $MainPath -Raw
-$MetricsInclude = '# Importar el router de métricas
+$MetricsInclude = '# Importar el router de mÃ©tricas
 from src.api.metrics_router import router as metrics_router'
 $IncludeRouter = 'app.include_router(metrics_router)'
 
@@ -39,11 +39,11 @@ $IncludeRouter = 'app.include_router(metrics_router)'
 $AlreadyModified = $MainContent -match "from src.api.metrics_router import router as metrics_router"
 
 if (-not $AlreadyModified) {
-    # Insertar la importación después de las importaciones principales
+    # Insertar la importaciÃ³n despuÃ©s de las importaciones principales
     $MainContent = $MainContent -replace "from src.api.startup_helper import StartupManager", "from src.api.startup_helper import StartupManager`n$MetricsInclude"
     
-    # Insertar la inclusión del router después de la creación de la app
-    $MainContent = $MainContent -replace "app = FastAPI\(", "app = FastAPI(`n    # Incluir el router de métricas`n    $IncludeRouter`n"
+    # Insertar la inclusiÃ³n del router despuÃ©s de la creaciÃ³n de la app
+    $MainContent = $MainContent -replace "app = FastAPI\(", "app = FastAPI(`n    # Incluir el router de mÃ©tricas`n    $IncludeRouter`n"
     
     # Guardar el archivo modificado con un nombre diferente
     $ModifiedMainPath = "src\api\main_tfidf_shopify_with_metrics.py"
@@ -51,11 +51,11 @@ if (-not $AlreadyModified) {
     
     Write-Host "Archivo principal modificado guardado como $ModifiedMainPath" -ForegroundColor Green
 } else {
-    Write-Host "El archivo principal ya ha sido modificado para incluir el router de métricas." -ForegroundColor Yellow
+    Write-Host "El archivo principal ya ha sido modificado para incluir el router de mÃ©tricas." -ForegroundColor Yellow
     $ModifiedMainPath = $MainPath
 }
 
-# Crear Dockerfile temporal para esta versión
+# Crear Dockerfile temporal para esta versiÃ³n
 $DockerfileContent = @"
 # Imagen base
 FROM python:3.9-slim
@@ -76,14 +76,14 @@ COPY requirements.tfidf.txt ./
 # Instalar dependencias
 RUN pip install --no-cache-dir -r requirements.tfidf.txt
 
-# Copiar código fuente
+# Copiar cÃ³digo fuente
 COPY src/ /app/src/
 
 # Crear directorio data para almacenar el modelo TF-IDF y logs
 RUN mkdir -p data
 RUN mkdir -p logs
 
-# Variables de entorno y configuración
+# Variables de entorno y configuraciÃ³n
 ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
 ENV LOG_LEVEL=INFO
@@ -97,7 +97,7 @@ EXPOSE `${PORT}
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:`${PORT}/health || exit 1
 
-# Comando de inicio - usando la versión con métricas integrada
+# Comando de inicio - usando la versiÃ³n con mÃ©tricas integrada
 CMD ["uvicorn", "src.api.main_tfidf_shopify_with_metrics:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]
 "@
 
@@ -105,8 +105,8 @@ CMD ["uvicorn", "src.api.main_tfidf_shopify_with_metrics:app", "--host", "0.0.0.
 $DockerfilePath = "Dockerfile.full_metrics"
 $DockerfileContent | Out-File -FilePath $DockerfilePath -Encoding utf8
 
-# Verificar configuración de GCloud
-Write-Host "Verificando configuración de GCloud..." -ForegroundColor Yellow
+# Verificar configuraciÃ³n de GCloud
+Write-Host "Verificando configuraciÃ³n de GCloud..." -ForegroundColor Yellow
 $CurrentProject = gcloud config get-value project
 Write-Host "Proyecto actual: $CurrentProject" -ForegroundColor Cyan
 
@@ -115,11 +115,11 @@ if ($CurrentProject -ne $ProjectID) {
     Write-Host "Configurando proyecto: $ProjectID" -ForegroundColor Yellow
     gcloud config set project $ProjectID
 } else {
-    Write-Host "Ya está configurado el proyecto correcto: $ProjectID" -ForegroundColor Green
+    Write-Host "Ya estÃ¡ configurado el proyecto correcto: $ProjectID" -ForegroundColor Green
 }
 
-# Configurar región
-Write-Host "Configurando región: $Region" -ForegroundColor Yellow
+# Configurar regiÃ³n
+Write-Host "Configurando regiÃ³n: $Region" -ForegroundColor Yellow
 gcloud config set run/region $Region
 
 # Construir imagen Docker
@@ -194,12 +194,12 @@ if ($ServiceUrl) {
         Write-Host "Estado del servicio: $($Response.status)" -ForegroundColor Green
         
         if ($Response.components -and $Response.components.metrics) {
-            Write-Host "Estado de métricas: $($Response.components.metrics.status)" -ForegroundColor Green
-            Write-Host "Métricas habilitadas: $($Response.components.metrics.enabled)" -ForegroundColor Green
+            Write-Host "Estado de mÃ©tricas: $($Response.components.metrics.status)" -ForegroundColor Green
+            Write-Host "MÃ©tricas habilitadas: $($Response.components.metrics.enabled)" -ForegroundColor Green
         }
     } catch {
         Write-Host "Error verificando estado del servicio: $_" -ForegroundColor Red
-        Write-Host "El servicio podría necesitar más tiempo para inicializarse completamente." -ForegroundColor Yellow
+        Write-Host "El servicio podrÃ­a necesitar mÃ¡s tiempo para inicializarse completamente." -ForegroundColor Yellow
     }
 
     # Mostrar instrucciones para pruebas manuales
@@ -207,7 +207,7 @@ if ($ServiceUrl) {
     Write-Host "                  INSTRUCCIONES PARA PROBAR LAS NUEVAS FUNCIONALIDADES" -ForegroundColor Cyan
     Write-Host "=======================================================================================" -ForegroundColor Cyan
     
-    Write-Host "`n1. Acceder al endpoint de métricas:" -ForegroundColor White
+    Write-Host "`n1. Acceder al endpoint de mÃ©tricas:" -ForegroundColor White
     Write-Host "   GET $ServiceUrl/v1/metrics" -ForegroundColor Gray
     
     Write-Host "`n2. Registrar eventos para un usuario real:" -ForegroundColor White
@@ -221,13 +221,16 @@ if ($ServiceUrl) {
 }
 
 Write-Host "`nProceso de despliegue completado." -ForegroundColor Green
-Write-Host "Esta versión incluye:" -ForegroundColor Yellow
-Write-Host "- Sistema de métricas para evaluar la calidad de las recomendaciones" -ForegroundColor Yellow
-Write-Host "- Exclusión automática de productos ya vistos en las recomendaciones" -ForegroundColor Yellow
-Write-Host "- Endpoint /v1/metrics para obtener información de rendimiento" -ForegroundColor Yellow
+Write-Host "Esta versiÃ³n incluye:" -ForegroundColor Yellow
+Write-Host "- Sistema de mÃ©tricas para evaluar la calidad de las recomendaciones" -ForegroundColor Yellow
+Write-Host "- ExclusiÃ³n automÃ¡tica de productos ya vistos en las recomendaciones" -ForegroundColor Yellow
+Write-Host "- Endpoint /v1/metrics para obtener informaciÃ³n de rendimiento" -ForegroundColor Yellow
 
 # Eliminar el Dockerfile temporal
 if (Test-Path $DockerfilePath) {
     Remove-Item $DockerfilePath
     Write-Host "Dockerfile temporal eliminado." -ForegroundColor Gray
 }
+
+
+

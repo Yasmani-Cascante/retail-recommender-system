@@ -1,94 +1,177 @@
-# PowerShell script para limpiar secretos del historial de Git
+# Script para limpiar secretos del historial de Git
+# Este script te ayudará a eliminar secretos y credenciales sensibles de la historia de Git
 
-Write-Host "⚠️ ADVERTENCIA: Este script modificará el historial de Git" -ForegroundColor Red
-Write-Host "⚠️ Solo utilízalo en repositorios donde puedas reescribir la historia" -ForegroundColor Red
-Write-Host "⚠️ Se requiere hacer force push después de ejecutar este script" -ForegroundColor Red
+Write-Host "====================================================================" -ForegroundColor Yellow
+Write-Host "          HERRAMIENTA DE LIMPIEZA DE SECRETOS DE GIT" -ForegroundColor Yellow
+Write-Host "====================================================================" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "Este script reemplazará las claves de API y tokens en archivos de scripts de despliegue." -ForegroundColor Yellow
-Write-Host "Asegúrate de haber creado y configurado el archivo .env.secrets antes de continuar." -ForegroundColor Yellow
+Write-Host "Este script te ayudará a eliminar secretos y credenciales sensibles" -ForegroundColor Cyan
+Write-Host "del historial de Git, para que puedas hacer push sin que GitHub" -ForegroundColor Cyan
+Write-Host "bloquee la operación debido a la detección de secretos." -ForegroundColor Cyan
+Write-Host ""
+Write-Host "IMPORTANTE: Este proceso modificará el historial de Git y requerirá" -ForegroundColor Red
+Write-Host "un push forzado. Si estás colaborando con otros desarrolladores," -ForegroundColor Red
+Write-Host "asegúrate de coordinar con ellos antes de ejecutar este script." -ForegroundColor Red
 Write-Host ""
 
-$Confirmation = Read-Host "¿Deseas continuar? (S/N)"
-if ($Confirmation -ne "S") {
-    Write-Host "Operación cancelada por el usuario." -ForegroundColor Yellow
-    exit 0
+# Verificar si BFG Repo-Cleaner está instalado
+$BfgExists = $false
+try {
+    $BfgVersion = java -jar bfg.jar --version 2>&1
+    $BfgExists = $true
+} catch {
+    Write-Host "BFG Repo-Cleaner no está instalado o no es accesible." -ForegroundColor Yellow
+    Write-Host "Vamos a usar un enfoque alternativo para limpiar los secretos." -ForegroundColor Yellow
 }
 
-# Patrón para buscar y reemplazar
-$ShopifyTokenPattern = "SHOPIFY_ACCESS_TOKEN=shpat_[a-zA-Z0-9]+"
-$ApiKeyPattern = "API_KEY=[a-zA-Z0-9]+"
-
-# Archivos a procesar
-$FilesToProcess = @(
-    "deploy_tfidf_events_final.ps1",
-    "deploy_tfidf_full_metrics.ps1",
-    "deploy_tfidf_shopify.ps1",
-    "deploy_tfidf_shopify.py",
-    "deploy_tfidf_shopify_improved.ps1",
-    "deploy_prediction_fix.ps1"
-)
-
-# 1. Crear un archivo temporal con los reemplazos
-Write-Host "Generando script para BFG Repo-Cleaner..." -ForegroundColor Yellow
-
-$ReplacementContent = @"
-SHOPIFY_ACCESS_TOKEN=***REMOVED***
-API_KEY=***REMOVED***
-"@
-
-$ReplacementContent | Out-File -FilePath "replacements.txt" -Encoding utf8
-
-# 2. Instrucciones para el usuario
-Write-Host "`nPara limpiar los secretos del historial de Git, sigue estos pasos:" -ForegroundColor Cyan
-Write-Host "1. Descarga BFG Repo-Cleaner desde: https://rtyley.github.io/bfg-repo-cleaner/" -ForegroundColor White
-Write-Host "2. Coloca el archivo JAR descargado en este directorio" -ForegroundColor White
-Write-Host "3. Ejecuta los siguientes comandos:" -ForegroundColor White
-Write-Host "`n   git clone --mirror https://github.com/Yasmani-Cascante/retail-recommender-system.git repo-mirror.git" -ForegroundColor Gray
-Write-Host "   java -jar bfg-1.14.0.jar --replace-text replacements.txt repo-mirror.git" -ForegroundColor Gray
-Write-Host "   cd repo-mirror.git" -ForegroundColor Gray
-Write-Host "   git reflog expire --expire=now --all" -ForegroundColor Gray
-Write-Host "   git gc --prune=now --aggressive" -ForegroundColor Gray
-Write-Host "   git push" -ForegroundColor Gray
-Write-Host "`n4. Luego, actualiza tu repositorio local:" -ForegroundColor White
-Write-Host "   cd .." -ForegroundColor Gray
-Write-Host "   git pull origin" -ForegroundColor Gray
-
-# 3. Como medida inmediata, actualizar los archivos localmente
-Write-Host "`nActualizando archivos localmente para futuros commits..." -ForegroundColor Yellow
-
-# Cargar la configuración de secretos
-. .\deploy_common.ps1
-$SecretsLoaded = Load-SecretVariables
-if (-not $SecretsLoaded) {
-    Write-Host "Error: No se pudieron cargar las variables secretas." -ForegroundColor Red
-    exit 1
-}
-
-foreach ($File in $FilesToProcess) {
-    if (Test-Path $File) {
-        Write-Host "Procesando archivo: $File" -ForegroundColor Cyan
+# Función para reemplazar secretos en archivos
+function Replace-Secret {
+    param (
+        [string]$FilePath,
+        [string]$SecretPattern,
+        [string]$Replacement
+    )
+    
+    if (Test-Path $FilePath) {
+        $content = Get-Content $FilePath -Raw
         
-        # Leer contenido
-        $Content = Get-Content $File -Raw
-        
-        # Reemplazar patrones
-        $Content = $Content -replace $ShopifyTokenPattern, "SHOPIFY_ACCESS_TOKEN=***REMOVED***"
-        $Content = $Content -replace $ApiKeyPattern, "API_KEY=***REMOVED***"
-        
-        # Guardar cambios
-        $Content | Out-File -FilePath $File -Encoding utf8
-        
-        Write-Host "  ✅ Archivo actualizado" -ForegroundColor Green
+        if ($content -match $SecretPattern) {
+            $newContent = $content -replace $SecretPattern, $Replacement
+            Set-Content -Path $FilePath -Value $newContent
+            return $true
+        }
+        return $false
     } else {
-        Write-Host "  ⚠️ Archivo no encontrado: $File" -ForegroundColor Yellow
+        Write-Host "El archivo $FilePath no existe." -ForegroundColor Yellow
+        return $false
     }
 }
 
-Write-Host "`nPara otros archivos de despliegue, se recomienda actualizarlos para usar deploy_common.ps1" -ForegroundColor Cyan
-Write-Host "Ejemplo:" -ForegroundColor Cyan
-Write-Host '. .\deploy_common.ps1' -ForegroundColor Gray
-Write-Host '$SecretsLoaded = Load-SecretVariables' -ForegroundColor Gray
-Write-Host '$EnvVars = Get-EnvVarsString' -ForegroundColor Gray
-Write-Host 'gcloud run deploy ... --set-env-vars "$EnvVars" ...' -ForegroundColor Gray
+# Lista de archivos con secretos y patrones a reemplazar
+$FilesToClean = @(
+    @{
+        Path = "deploy_tfidf_events_final.ps1"
+        Pattern = "SHOPIFY_ACCESS_TOKEN=shpat_[a-zA-Z0-9]+"
+        Replacement = "SHOPIFY_ACCESS_TOKEN=`"REMOVED_FOR_SECURITY`""
+    },
+    @{
+        Path = "deploy_tfidf_full_metrics.ps1"
+        Pattern = "SHOPIFY_ACCESS_TOKEN=shpat_[a-zA-Z0-9]+"
+        Replacement = "SHOPIFY_ACCESS_TOKEN=`"REMOVED_FOR_SECURITY`""
+    },
+    @{
+        Path = "deploy_tfidf_shopify.ps1"
+        Pattern = "SHOPIFY_ACCESS_TOKEN=shpat_[a-zA-Z0-9]+"
+        Replacement = "SHOPIFY_ACCESS_TOKEN=`"REMOVED_FOR_SECURITY`""
+    },
+    @{
+        Path = "deploy_tfidf_shopify.py"
+        Pattern = "SHOPIFY_ACCESS_TOKEN=shpat_[a-zA-Z0-9]+"
+        Replacement = "SHOPIFY_ACCESS_TOKEN=`"REMOVED_FOR_SECURITY`""
+    },
+    @{
+        Path = "deploy_tfidf_shopify_improved.ps1"
+        Pattern = "SHOPIFY_ACCESS_TOKEN=shpat_[a-zA-Z0-9]+"
+        Replacement = "SHOPIFY_ACCESS_TOKEN=`"REMOVED_FOR_SECURITY`""
+    }
+)
 
-Write-Host "`n✅ Archivos actualizados localmente. Sigue los pasos anteriores para limpiar el historial de Git." -ForegroundColor Green
+# Opción 1: Usar BFG si está disponible
+if ($BfgExists) {
+    Write-Host "Usando BFG Repo-Cleaner para eliminar secretos del historial..." -ForegroundColor Green
+    
+    # Crear un repositorio espejo para trabajar con BFG
+    Write-Host "Creando un repositorio espejo..." -ForegroundColor Yellow
+    git clone --mirror . repo-mirror.git
+    
+    # Cambiar al directorio del repositorio espejo
+    Set-Location repo-mirror.git
+    
+    # Usar BFG para eliminar secretos
+    Write-Host "Ejecutando BFG para eliminar secretos..." -ForegroundColor Yellow
+    java -jar ../bfg.jar --replace-text ../replacements.txt
+    
+    # Limpiar y actualizar el repositorio
+    Write-Host "Limpiando y actualizando el repositorio..." -ForegroundColor Yellow
+    git reflog expire --expire=now --all
+    git gc --prune=now --aggressive
+    
+    # Volver al directorio original
+    Set-Location ..
+    
+    Write-Host "BFG ha terminado de limpiar los secretos." -ForegroundColor Green
+    Write-Host "Ahora necesitas actualizar tu repositorio local con estos cambios." -ForegroundColor Yellow
+    
+    # Preguntar si se quiere actualizar el repositorio local
+    $UpdateLocal = Read-Host "¿Quieres actualizar tu repositorio local con estos cambios? (S/N)"
+    if ($UpdateLocal -eq "S" -or $UpdateLocal -eq "s") {
+        Write-Host "Actualizando repositorio local..." -ForegroundColor Yellow
+        
+        # Guardar el estado actual (stash)
+        git stash
+        
+        # Forzar actualización desde el repositorio espejo
+        git fetch repo-mirror.git refs/heads/*:refs/heads/*
+        
+        # Aplicar stash
+        git stash pop
+        
+        Write-Host "Repositorio local actualizado. Ahora puedes hacer push forzado." -ForegroundColor Green
+    }
+    
+    Write-Host "Para completar el proceso, debes hacer un push forzado:" -ForegroundColor Yellow
+    Write-Host "git push --force" -ForegroundColor Cyan
+} 
+# Opción 2: Solución manual si BFG no está disponible
+else {
+    Write-Host "Iniciando limpieza manual de archivos con secretos..." -ForegroundColor Green
+    
+    $FilesCleared = 0
+    foreach ($FileInfo in $FilesToClean) {
+        Write-Host "Procesando $($FileInfo.Path)..." -ForegroundColor Yellow
+        $Result = Replace-Secret -FilePath $FileInfo.Path -SecretPattern $FileInfo.Pattern -Replacement $FileInfo.Replacement
+        
+        if ($Result) {
+            Write-Host "  ✅ Secretos reemplazados exitosamente en $($FileInfo.Path)" -ForegroundColor Green
+            $FilesCleared++
+        } else {
+            Write-Host "  ℹ️ No se encontraron coincidencias del patrón de secretos en $($FileInfo.Path)" -ForegroundColor Cyan
+        }
+    }
+    
+    Write-Host ""
+    Write-Host "Se han limpiado $FilesCleared archivos." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "IMPORTANTE: Esta limpieza solo afecta a los archivos locales, pero los secretos" -ForegroundColor Yellow
+    Write-Host "todavía están en el historial de Git. Para una solución completa, necesitas:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "1. Crear un nuevo commit con estos cambios:" -ForegroundColor Cyan
+    Write-Host "   git add -A" -ForegroundColor White
+    Write-Host "   git commit -m \"Removed sensitive information\"" -ForegroundColor White
+    Write-Host ""
+    Write-Host "2. Desbloquear el push en GitHub siguiendo el enlace que te proporciona" -ForegroundColor Cyan
+    Write-Host "   cuando intentas hacer push, o revisar y aprobar el push bloqueado" -ForegroundColor Cyan
+    Write-Host "   en la configuración de seguridad del repositorio." -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "3. Hacer push de tus cambios:" -ForegroundColor Cyan
+    Write-Host "   git push" -ForegroundColor White
+    Write-Host ""
+    Write-Host "Para una solución más completa que elimine los secretos del historial," -ForegroundColor Yellow
+    Write-Host "te recomendamos utilizar BFG Repo-Cleaner:" -ForegroundColor Yellow
+    Write-Host "https://rtyley.github.io/bfg-repo-cleaner/" -ForegroundColor White
+}
+
+Write-Host ""
+Write-Host "====================================================================" -ForegroundColor Yellow
+Write-Host "                 SIGUIENTE PASO IMPORTANTE" -ForegroundColor Yellow
+Write-Host "====================================================================" -ForegroundColor Yellow
+Write-Host "Asegúrate de actualizar tu archivo .env.secrets con las credenciales correctas:" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "GOOGLE_PROJECT_NUMBER=178362262166" -ForegroundColor White
+Write-Host "API_KEY=2fed9999056fab6dac5654238f0cae1c" -ForegroundColor White
+Write-Host "SHOPIFY_SHOP_URL=ai-shoppings.myshopify.com" -ForegroundColor White
+Write-Host "SHOPIFY_ACCESS_TOKEN=[tu token de acceso real]" -ForegroundColor White
+Write-Host "GCS_BUCKET_NAME=retail-recommendations-449216_cloudbuild" -ForegroundColor White
+Write-Host ""
+Write-Host "El archivo .env.secrets está configurado para ser ignorado por Git," -ForegroundColor Yellow
+Write-Host "por lo que no se subirá al repositorio y tus secretos estarán seguros." -ForegroundColor Yellow

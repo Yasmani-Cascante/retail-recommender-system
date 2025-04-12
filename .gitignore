@@ -1,3 +1,37 @@
+# Archivos de secretos
+.env.secrets
+*.env
+
+# Logs
+logs/
+*.log
+
+# Archivos de caché
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Archivos de entorno virtual
+venv/
+env/
+ENV/
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Archivos de construcción
+build/
+dist/
+*.egg-info/
+
 # Python
 __pycache__/
 *.py[cod]

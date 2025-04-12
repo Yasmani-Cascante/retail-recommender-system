@@ -1,9 +1,9 @@
-# PowerShell script para desplegar la versión final con eventos corregidos
+﻿# PowerShell script para desplegar la versiÃ³n final con eventos corregidos
 
 # Importar funciones comunes
 . .\deploy_common.ps1
 
-Write-Host "Iniciando despliegue de la versión TF-IDF con eventos de usuario finalmente corregidos..." -ForegroundColor Green
+Write-Host "Iniciando despliegue de la versiÃ³n TF-IDF con eventos de usuario finalmente corregidos..." -ForegroundColor Green
 
 # Cargar variables secretas
 $SecretsLoaded = Load-SecretVariables
@@ -12,15 +12,15 @@ if (-not $SecretsLoaded) {
     exit 1
 }
 
-# Configuración
+# ConfiguraciÃ³n
 $ProjectID = "retail-recommendations-449216"
 $Region = "us-central1"
 $ServiceName = "retail-recommender-tfidf-events"
 $ImageName = "gcr.io/$ProjectID/$ServiceName`:latest"
 $Dockerfile = "Dockerfile.tfidf.shopify.improved"
 
-# Verificar configuración de GCloud
-Write-Host "Verificando configuración de GCloud..." -ForegroundColor Yellow
+# Verificar configuraciÃ³n de GCloud
+Write-Host "Verificando configuraciÃ³n de GCloud..." -ForegroundColor Yellow
 $CurrentProject = gcloud config get-value project
 Write-Host "Proyecto actual: $CurrentProject" -ForegroundColor Cyan
 
@@ -29,11 +29,11 @@ if ($CurrentProject -ne $ProjectID) {
     Write-Host "Configurando proyecto: $ProjectID" -ForegroundColor Yellow
     gcloud config set project $ProjectID
 } else {
-    Write-Host "Ya está configurado el proyecto correcto: $ProjectID" -ForegroundColor Green
+    Write-Host "Ya estÃ¡ configurado el proyecto correcto: $ProjectID" -ForegroundColor Green
 }
 
-# Configurar región
-Write-Host "Configurando región: $Region" -ForegroundColor Yellow
+# Configurar regiÃ³n
+Write-Host "Configurando regiÃ³n: $Region" -ForegroundColor Yellow
 gcloud config set run/region $Region
 
 # Construir imagen Docker
@@ -114,11 +114,11 @@ if ($ServiceUrl) {
         }
     } catch {
         Write-Host "Error verificando estado del servicio: $_" -ForegroundColor Red
-        Write-Host "El servicio podría necesitar más tiempo para inicializarse completamente." -ForegroundColor Yellow
+        Write-Host "El servicio podrÃ­a necesitar mÃ¡s tiempo para inicializarse completamente." -ForegroundColor Yellow
     }
 
     # Probar registrar un evento de usuario
-    Write-Host "Probando el registro de eventos de usuario con la nueva implementación..." -ForegroundColor Yellow
+    Write-Host "Probando el registro de eventos de usuario con la nueva implementaciÃ³n..." -ForegroundColor Yellow
     try {
         $Headers = @{
             "X-API-Key" = "$API_KEY"
@@ -140,19 +140,19 @@ if ($ServiceUrl) {
                 $TestResponse = Invoke-RestMethod -Uri $TestUrl -Method Post -Headers $Headers
                 
                 if ($TestResponse.status -eq "success") {
-                    Write-Host "    ✅ Éxito: $($TestResponse.detail.note)" -ForegroundColor Green
+                    Write-Host "    âœ… Ã‰xito: $($TestResponse.detail.note)" -ForegroundColor Green
                 } else {
-                    Write-Host "    ⚠️ Advertencia: $($TestResponse.status)" -ForegroundColor Yellow
+                    Write-Host "    âš ï¸ Advertencia: $($TestResponse.status)" -ForegroundColor Yellow
                 }
             } catch {
-                Write-Host "    ❌ Error: $_" -ForegroundColor Red
+                Write-Host "    âŒ Error: $_" -ForegroundColor Red
             }
             
-            # Pequeña pausa entre peticiones
+            # PequeÃ±a pausa entre peticiones
             Start-Sleep -Milliseconds 500
         }
     } catch {
-        Write-Host "❌ Error general en pruebas de eventos: $_" -ForegroundColor Red
+        Write-Host "âŒ Error general en pruebas de eventos: $_" -ForegroundColor Red
     }
 
     # Instrucciones para probar con IDs reales
@@ -164,22 +164,24 @@ if ($ServiceUrl) {
 }
 
 Write-Host "Proceso de despliegue de TF-IDF con eventos corregidos completado." -ForegroundColor Green
-Write-Host "NOTA: Esta versión corrige definitivamente el problema con el registro de eventos de usuario" -ForegroundColor Yellow
+Write-Host "NOTA: Esta versiÃ³n corrige definitivamente el problema con el registro de eventos de usuario" -ForegroundColor Yellow
 Write-Host "      con el uso correcto de WriteUserEventRequest para Google Cloud Retail API." -ForegroundColor Yellow
 
-Write-Host "      Los tipos de eventos válidos según Google Cloud Retail API son:" -ForegroundColor Yellow
-Write-Host "      - add-to-cart: Cuando un usuario añade un producto al carrito" -ForegroundColor Yellow
-Write-Host "      - category-page-view: Cuando un usuario ve páginas especiales (ofertas, promociones)" -ForegroundColor Yellow
-Write-Host "      - detail-page-view: Cuando un usuario ve la página de detalle de un producto" -ForegroundColor Yellow
-Write-Host "      - home-page-view: Cuando un usuario visita la página de inicio" -ForegroundColor Yellow
+Write-Host "      Los tipos de eventos vÃ¡lidos segÃºn Google Cloud Retail API son:" -ForegroundColor Yellow
+Write-Host "      - add-to-cart: Cuando un usuario aÃ±ade un producto al carrito" -ForegroundColor Yellow
+Write-Host "      - category-page-view: Cuando un usuario ve pÃ¡ginas especiales (ofertas, promociones)" -ForegroundColor Yellow
+Write-Host "      - detail-page-view: Cuando un usuario ve la pÃ¡gina de detalle de un producto" -ForegroundColor Yellow
+Write-Host "      - home-page-view: Cuando un usuario visita la pÃ¡gina de inicio" -ForegroundColor Yellow
 Write-Host "      - purchase-complete: Cuando un usuario completa una compra" -ForegroundColor Yellow
-Write-Host "      - search: Cuando un usuario realiza una búsqueda" -ForegroundColor Yellow
+Write-Host "      - search: Cuando un usuario realiza una bÃºsqueda" -ForegroundColor Yellow
 Write-Host "" -ForegroundColor Yellow
-Write-Host "      El sistema también acepta nombres alternativos simplificados:" -ForegroundColor Yellow
-Write-Host "      - 'view' o 'detail-page' → detail-page-view" -ForegroundColor Yellow
-Write-Host "      - 'add' o 'cart' → add-to-cart" -ForegroundColor Yellow
-Write-Host "      - 'buy', 'purchase' o 'checkout' → purchase-complete" -ForegroundColor Yellow
-Write-Host "      - 'home' → home-page-view" -ForegroundColor Yellow
-Write-Host "      - 'category' o 'promo' → category-page-view" -ForegroundColor Yellow
+Write-Host "      El sistema tambiÃ©n acepta nombres alternativos simplificados:" -ForegroundColor Yellow
+Write-Host "      - 'view' o 'detail-page' â†’ detail-page-view" -ForegroundColor Yellow
+Write-Host "      - 'add' o 'cart' â†’ add-to-cart" -ForegroundColor Yellow
+Write-Host "      - 'buy', 'purchase' o 'checkout' â†’ purchase-complete" -ForegroundColor Yellow
+Write-Host "      - 'home' â†’ home-page-view" -ForegroundColor Yellow
+Write-Host "      - 'category' o 'promo' â†’ category-page-view" -ForegroundColor Yellow
 
 Read-Host "Presiona Enter para salir"
+
+

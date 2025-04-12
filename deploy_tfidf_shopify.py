@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Script de despliegue para la versión TF-IDF con conexión a Shopify.
+Script de despliegue para la versiÃ³n TF-IDF con conexiÃ³n a Shopify.
 
 Este script implementa el despliegue del sistema completo de recomendaciones
 utilizando el recomendador TF-IDF, que no depende de modelos transformer,
@@ -27,14 +27,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuración del proyecto
+# ConfiguraciÃ³n del proyecto
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "retail-recommendations-449216")
 REGION = os.environ.get("GCP_REGION", "us-central1")
 SERVICE_NAME = "retail-recommender-tfidf-shopify"
 IMAGE_NAME = f"gcr.io/{PROJECT_ID}/retail-recommender-tfidf-shopify:latest"
 DOCKERFILE = "Dockerfile.tfidf.shopify"
 
-# Función para cargar secretos desde .env.secrets
+# FunciÃ³n para cargar secretos desde .env.secrets
 def load_secrets():
     """Carga variables de entorno desde archivo .env.secrets"""
     secrets_file = ".env.secrets"
@@ -43,6 +43,9 @@ def load_secrets():
         "GOOGLE_LOCATION": os.environ.get("GOOGLE_LOCATION", "global"),
         "GOOGLE_CATALOG": os.environ.get("GOOGLE_CATALOG", "default_catalog"),
         "GOOGLE_SERVING_CONFIG": os.environ.get("GOOGLE_SERVING_CONFIG", "default_recommendation_config"),
+        "API_KEY": os.environ.get("API_KEY", ""),
+        "SHOPIFY_SHOP_URL": os.environ.get("SHOPIFY_SHOP_URL", ""),
+        "SHOPIFY_ACCESS_TOKEN": os.environ.get("SHOPIFY_ACCESS_TOKEN", ""),
         "GCS_BUCKET_NAME": os.environ.get("GCS_BUCKET_NAME", "retail-recommendations-449216_cloudbuild"),
         "USE_GCS_IMPORT": "true",
         "DEBUG": os.environ.get("DEBUG", "true")
@@ -90,9 +93,9 @@ SHOPIFY_ACCESS_TOKEN=your_access_token_here
 # Google Cloud Storage
 GCS_BUCKET_NAME=retail-recommendations-449216_cloudbuild
 """)
-        logger.info(f"Archivo de ejemplo {example_file} creado. Cópialo como .env.secrets y actualiza los valores.")
+        logger.info(f"Archivo de ejemplo {example_file} creado. CÃ³pialo como .env.secrets y actualiza los valores.")
 
-# Variables de entorno para configuración del servicio
+# Variables de entorno para configuraciÃ³n del servicio
 ENV_VARS = load_secrets()
 
 def run_command(cmd):
@@ -120,7 +123,7 @@ def run_command(cmd):
                 logger.warning(f"STDERR: {line}")
     
     if process.returncode != 0:
-        logger.error(f"Comando falló con código: {process.returncode}")
+        logger.error(f"Comando fallÃ³ con cÃ³digo: {process.returncode}")
         return False
     
     return True
@@ -241,15 +244,15 @@ def verify_deployment():
     try:
         response = requests.get(health_url, timeout=30)
         if response.status_code == 200:
-            logger.info("✅ Endpoint de salud responde correctamente")
+            logger.info("âœ… Endpoint de salud responde correctamente")
             health_data = response.json()
             logger.info(f"Estado del servicio: {health_data.get('status', 'desconocido')}")
             return True
         else:
-            logger.error(f"❌ Endpoint de salud devolvió código de estado: {response.status_code}")
+            logger.error(f"âŒ Endpoint de salud devolviÃ³ cÃ³digo de estado: {response.status_code}")
             return False
     except Exception as e:
-        logger.error(f"❌ Error verificando endpoint de salud: {str(e)}")
+        logger.error(f"âŒ Error verificando endpoint de salud: {str(e)}")
         return False
 
 def get_current_env_vars():
@@ -291,23 +294,23 @@ def get_current_env_vars():
         return {}
 
 def main():
-    """Función principal del script de despliegue."""
-    logger.info(f"Iniciando despliegue del sistema de recomendaciones TF-IDF con conexión a Shopify")
+    """FunciÃ³n principal del script de despliegue."""
+    logger.info(f"Iniciando despliegue del sistema de recomendaciones TF-IDF con conexiÃ³n a Shopify")
     logger.info(f"  Proyecto: {PROJECT_ID}")
-    logger.info(f"  Región: {REGION}")
+    logger.info(f"  RegiÃ³n: {REGION}")
     logger.info(f"  Servicio: {SERVICE_NAME}")
     
-    # Verificar que gcloud está configurado
-    logger.info("Verificando configuración de gcloud...")
+    # Verificar que gcloud estÃ¡ configurado
+    logger.info("Verificando configuraciÃ³n de gcloud...")
     success = run_command([
         "gcloud", "config", "get-value", "project"
     ])
     
     if not success:
-        logger.error("Error verificando configuración de gcloud")
+        logger.error("Error verificando configuraciÃ³n de gcloud")
         return 1
     
-    # Configurar proyecto y región
+    # Configurar proyecto y regiÃ³n
     logger.info(f"Configurando proyecto: {PROJECT_ID}")
     success = run_command([
         "gcloud", "config", "set", "project", PROJECT_ID
@@ -317,13 +320,13 @@ def main():
         logger.error(f"Error configurando proyecto: {PROJECT_ID}")
         return 1
     
-    logger.info(f"Configurando región: {REGION}")
+    logger.info(f"Configurando regiÃ³n: {REGION}")
     success = run_command([
         "gcloud", "config", "set", "run/region", REGION
     ])
     
     if not success:
-        logger.error(f"Error configurando región: {REGION}")
+        logger.error(f"Error configurando regiÃ³n: {REGION}")
         return 1
     
     # Obtener variables de entorno actuales (si el servicio ya existe)
@@ -353,11 +356,14 @@ def main():
     # Verificar despliegue
     logger.info("Verificando despliegue...")
     if not verify_deployment():
-        logger.warning("⚠️ La verificación del despliegue falló, pero el servicio podría estar funcionando")
+        logger.warning("âš ï¸ La verificaciÃ³n del despliegue fallÃ³, pero el servicio podrÃ­a estar funcionando")
     
-    logger.info("✅ Despliegue completado exitosamente")
-    logger.info("La API estará disponible en unos minutos en la URL proporcionada arriba")
+    logger.info("âœ… Despliegue completado exitosamente")
+    logger.info("La API estarÃ¡ disponible en unos minutos en la URL proporcionada arriba")
     return 0
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+

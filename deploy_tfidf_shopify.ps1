@@ -1,9 +1,9 @@
-# PowerShell script para desplegar la versión TF-IDF con Shopify a Cloud Run
+﻿# PowerShell script para desplegar la versiÃ³n TF-IDF con Shopify a Cloud Run
 
 # Importar funciones comunes
 . .\deploy_common.ps1
 
-Write-Host "Iniciando despliegue de la versión TF-IDF con Shopify..." -ForegroundColor Green
+Write-Host "Iniciando despliegue de la versiÃ³n TF-IDF con Shopify..." -ForegroundColor Green
 
 # Cargar variables secretas
 $SecretsLoaded = Load-SecretVariables
@@ -12,15 +12,15 @@ if (-not $SecretsLoaded) {
     exit 1
 }
 
-# Configuración
+# ConfiguraciÃ³n
 $ProjectID = "retail-recommendations-449216"
 $Region = "us-central1"
 $ServiceName = "retail-recommender-tfidf-shopify"
 $ImageName = "gcr.io/$ProjectID/$ServiceName`:latest"
 $Dockerfile = "Dockerfile.tfidf.shopify"
 
-# Verificar configuración de GCloud
-Write-Host "Verificando configuración de GCloud..." -ForegroundColor Yellow
+# Verificar configuraciÃ³n de GCloud
+Write-Host "Verificando configuraciÃ³n de GCloud..." -ForegroundColor Yellow
 $CurrentProject = gcloud config get-value project
 Write-Host "Proyecto actual: $CurrentProject" -ForegroundColor Cyan
 
@@ -29,11 +29,11 @@ if ($CurrentProject -ne $ProjectID) {
     Write-Host "Configurando proyecto: $ProjectID" -ForegroundColor Yellow
     gcloud config set project $ProjectID
 } else {
-    Write-Host "Ya está configurado el proyecto correcto: $ProjectID" -ForegroundColor Green
+    Write-Host "Ya estÃ¡ configurado el proyecto correcto: $ProjectID" -ForegroundColor Green
 }
 
-# Configurar región
-Write-Host "Configurando región: $Region" -ForegroundColor Yellow
+# Configurar regiÃ³n
+Write-Host "Configurando regiÃ³n: $Region" -ForegroundColor Yellow
 gcloud config set run/region $Region
 
 # Construir imagen Docker
@@ -57,9 +57,9 @@ try {
         $modified = $false
         
         foreach ($line in $content) {
-            # Quitar línea que copia .env si existe
+            # Quitar lÃ­nea que copia .env si existe
             if ($line -match "COPY .env") {
-                Write-Host "Eliminando línea problemática: $line" -ForegroundColor Yellow
+                Write-Host "Eliminando lÃ­nea problemÃ¡tica: $line" -ForegroundColor Yellow
                 $modified = $true
                 continue
             }
@@ -146,18 +146,18 @@ if ($ServiceUrl) {
         }
     } catch {
         Write-Host "Error verificando estado del servicio: $_" -ForegroundColor Red
-        Write-Host "El servicio podría necesitar más tiempo para inicializarse completamente." -ForegroundColor Yellow
+        Write-Host "El servicio podrÃ­a necesitar mÃ¡s tiempo para inicializarse completamente." -ForegroundColor Yellow
     }
 }
 
 Write-Host "Proceso de despliegue de TF-IDF con Shopify completado." -ForegroundColor Green
-Write-Host "NOTA: Esta versión implementa un recomendador TF-IDF en lugar de transformer" -ForegroundColor Yellow
-Write-Host "      e incluye integración con Shopify y Google Cloud Retail API." -ForegroundColor Yellow
-Write-Host "      Si el sistema no puede conectarse a Shopify, utilizará datos de muestra." -ForegroundColor Yellow
+Write-Host "NOTA: Esta versiÃ³n implementa un recomendador TF-IDF en lugar de transformer" -ForegroundColor Yellow
+Write-Host "      e incluye integraciÃ³n con Shopify y Google Cloud Retail API." -ForegroundColor Yellow
+Write-Host "      Si el sistema no puede conectarse a Shopify, utilizarÃ¡ datos de muestra." -ForegroundColor Yellow
 Write-Host "      Endpoints disponibles:" -ForegroundColor Yellow
 Write-Host "      - /v1/products/ (listado de productos)" -ForegroundColor Yellow
-Write-Host "      - /v1/products/category/{category} (productos por categoría)" -ForegroundColor Yellow
-Write-Host "      - /v1/products/search/ (búsqueda de productos)" -ForegroundColor Yellow
+Write-Host "      - /v1/products/category/{category} (productos por categorÃ­a)" -ForegroundColor Yellow
+Write-Host "      - /v1/products/search/ (bÃºsqueda de productos)" -ForegroundColor Yellow
 Write-Host "      - /v1/recommendations/{product_id} (recomendaciones basadas en producto)" -ForegroundColor Yellow
 Write-Host "      - /v1/recommendations/user/{user_id} (recomendaciones personalizadas)" -ForegroundColor Yellow
 Write-Host "      - /v1/events/user/{user_id} (registro de eventos de usuario)" -ForegroundColor Yellow
@@ -165,3 +165,5 @@ Write-Host "      - /v1/customers/ (listado de clientes)" -ForegroundColor Yello
 Write-Host "      - /health (estado del servicio)" -ForegroundColor Yellow
 
 Read-Host "Presiona Enter para salir"
+
+

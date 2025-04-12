@@ -1,16 +1,26 @@
-# PowerShell script para desplegar la versión TF-IDF mejorada con generación de eventos
+﻿# PowerShell script para desplegar la versiÃ³n TF-IDF mejorada con generaciÃ³n de eventos
 
-Write-Host "Iniciando despliegue de la versión TF-IDF mejorada con Shopify..." -ForegroundColor Green
+# Importar funciones comunes
+. .\deploy_common.ps1
 
-# Configuración
+Write-Host "Iniciando despliegue de la versiÃ³n TF-IDF mejorada con Shopify..." -ForegroundColor Green
+
+# Cargar variables secretas
+$SecretsLoaded = Load-SecretVariables
+if (-not $SecretsLoaded) {
+    Write-Host "Error: No se pudieron cargar las variables secretas. Abortando despliegue." -ForegroundColor Red
+    exit 1
+}
+
+# ConfiguraciÃ³n
 $ProjectID = "retail-recommendations-449216"
 $Region = "us-central1"
 $ServiceName = "retail-recommender-tfidf-improved"
 $ImageName = "gcr.io/$ProjectID/$ServiceName`:latest"
 $Dockerfile = "Dockerfile.tfidf.shopify.improved"
 
-# Verificar configuración de GCloud
-Write-Host "Verificando configuración de GCloud..." -ForegroundColor Yellow
+# Verificar configuraciÃ³n de GCloud
+Write-Host "Verificando configuraciÃ³n de GCloud..." -ForegroundColor Yellow
 $CurrentProject = gcloud config get-value project
 Write-Host "Proyecto actual: $CurrentProject" -ForegroundColor Cyan
 
@@ -19,11 +29,11 @@ if ($CurrentProject -ne $ProjectID) {
     Write-Host "Configurando proyecto: $ProjectID" -ForegroundColor Yellow
     gcloud config set project $ProjectID
 } else {
-    Write-Host "Ya está configurado el proyecto correcto: $ProjectID" -ForegroundColor Green
+    Write-Host "Ya estÃ¡ configurado el proyecto correcto: $ProjectID" -ForegroundColor Green
 }
 
-# Configurar región
-Write-Host "Configurando región: $Region" -ForegroundColor Yellow
+# Configurar regiÃ³n
+Write-Host "Configurando regiÃ³n: $Region" -ForegroundColor Yellow
 gcloud config set run/region $Region
 
 # Construir imagen Docker
@@ -64,7 +74,7 @@ gcloud run deploy $ServiceName `
     --min-instances 0 `
     --max-instances 10 `
     --timeout 300 `
-    --set-env-vars "GOOGLE_PROJECT_NUMBER=178362262166,GOOGLE_LOCATION=global,GOOGLE_CATALOG=default_catalog,GOOGLE_SERVING_CONFIG=default_recommendation_config,API_KEY=2fed9999056fab6dac5654238f0cae1c,SHOPIFY_SHOP_URL=ai-shoppings.myshopify.com,SHOPIFY_ACCESS_TOKEN=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,GCS_BUCKET_NAME=retail-recommendations-449216_cloudbuild,USE_GCS_IMPORT=true,DEBUG=true" `
+    --set-env-vars "$(Get-EnvVarsString)" `
     --allow-unauthenticated
 
 # Verificar si el despliegue fue exitoso
@@ -100,19 +110,19 @@ if ($ServiceUrl) {
         }
     } catch {
         Write-Host "Error verificando estado del servicio: $_" -ForegroundColor Red
-        Write-Host "El servicio podría necesitar más tiempo para inicializarse completamente." -ForegroundColor Yellow
+        Write-Host "El servicio podrÃ­a necesitar mÃ¡s tiempo para inicializarse completamente." -ForegroundColor Yellow
     }
 }
 
 Write-Host "Proceso de despliegue de TF-IDF mejorado completado." -ForegroundColor Green
-Write-Host "NOTA: Esta versión implementa un recomendador TF-IDF con estrategias de fallback mejoradas" -ForegroundColor Yellow
-Write-Host "      y generación automática de datos de prueba para entrenar el sistema." -ForegroundColor Yellow
-Write-Host "      Si el sistema no puede conectarse a Google Cloud Retail API, utilizará" -ForegroundColor Yellow
-Write-Host "      recomendaciones inteligentes basadas en popularidad, diversidad o personalización." -ForegroundColor Yellow
+Write-Host "NOTA: Esta versiÃ³n implementa un recomendador TF-IDF con estrategias de fallback mejoradas" -ForegroundColor Yellow
+Write-Host "      y generaciÃ³n automÃ¡tica de datos de prueba para entrenar el sistema." -ForegroundColor Yellow
+Write-Host "      Si el sistema no puede conectarse a Google Cloud Retail API, utilizarÃ¡" -ForegroundColor Yellow
+Write-Host "      recomendaciones inteligentes basadas en popularidad, diversidad o personalizaciÃ³n." -ForegroundColor Yellow
 Write-Host "      Endpoints disponibles:" -ForegroundColor Yellow
 Write-Host "      - /v1/products/ (listado de productos)" -ForegroundColor Yellow
-Write-Host "      - /v1/products/category/{category} (productos por categoría)" -ForegroundColor Yellow
-Write-Host "      - /v1/products/search/ (búsqueda de productos)" -ForegroundColor Yellow
+Write-Host "      - /v1/products/category/{category} (productos por categorÃ­a)" -ForegroundColor Yellow
+Write-Host "      - /v1/products/search/ (bÃºsqueda de productos)" -ForegroundColor Yellow
 Write-Host "      - /v1/recommendations/{product_id} (recomendaciones basadas en producto)" -ForegroundColor Yellow
 Write-Host "      - /v1/recommendations/user/{user_id} (recomendaciones personalizadas)" -ForegroundColor Yellow
 Write-Host "      - /v1/events/user/{user_id} (registro de eventos de usuario)" -ForegroundColor Yellow
@@ -123,3 +133,6 @@ Write-Host "IMPORTANTE: Para probar recomendaciones personalizadas, use IDs de u
 Write-Host "             por ejemplo: 'test_user_1', 'synthetic_user_3', etc." -ForegroundColor Cyan
 
 Read-Host "Presiona Enter para salir"
+
+
+
