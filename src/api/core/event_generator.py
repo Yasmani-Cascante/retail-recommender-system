@@ -64,7 +64,7 @@ class EventGenerator:
             products_by_category[category].append(product)
         
         # Tipos de eventos a generar
-        event_types = ["detail-page-view", "add-to-cart", "purchase"]
+        event_types = ["detail-page-view", "add-to-cart", "purchase-complete"]
         event_weights = [0.7, 0.2, 0.1]  # Probabilidades de cada tipo (sum = 1.0)
         
         # Generar eventos
@@ -222,8 +222,9 @@ class EventGenerator:
                         # Registrar evento de compra
                         result = await self.retail_recommender.record_user_event(
                             user_id=user_id,
-                            event_type="purchase",
-                            product_id=product_id
+                            event_type="purchase-complete",
+                            product_id=product_id,
+                            purchase_amount=random.uniform(10.0, 200.0)  # Añadir monto de compra aleatorio
                         )
                         
                         if result.get("status") == "success":
@@ -352,8 +353,9 @@ class EventGenerator:
                 # Registrar evento de compra
                 result = await self.retail_recommender.record_user_event(
                     user_id=user_id,
-                    event_type="purchase",
-                    product_id=str(product_id)
+                    event_type="purchase-complete",
+                    product_id=str(product_id),
+                    purchase_amount=random.uniform(10.0, 200.0)  # Añadir monto de compra aleatorio
                 )
                 
                 if result.get("status") == "success":

@@ -63,7 +63,7 @@ GCS_BUCKET_NAME=your_bucket_name
     $MissingVars = $RequiredVars | Where-Object { -not $Secrets.ContainsKey($_) }
     
     if ($MissingVars.Count -gt 0) {
-        Write-Host "❌ Faltan las siguientes variables requeridas en $SecretsFile:" -ForegroundColor Red
+        Write-Host "❌ Faltan las siguientes variables requeridas en ${SecretsFile}:" -ForegroundColor Red
         foreach ($Var in $MissingVars) {
             Write-Host "   - $Var" -ForegroundColor Red
         }

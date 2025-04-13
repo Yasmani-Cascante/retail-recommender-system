@@ -128,11 +128,15 @@ class RetailAPIRecommender:
                     total_price = price * quantity
                     
                     # Registrar evento de compra
+                    # Intentar obtener el código de moneda de la orden si está disponible
+                    order_currency = order.get('currency', 'COP')
+                    
                     await self.record_user_event(
                         user_id=user_id,
                         event_type='purchase-complete',  # Actualizado al tipo correcto
                         product_id=str(item.get('product_id')),
-                        purchase_amount=total_price
+                        purchase_amount=total_price,
+                        currency_code=order_currency  # Pasar el código de moneda de la orden
                     )
                     events_recorded += 1
                     
@@ -301,7 +305,8 @@ class RetailAPIRecommender:
                         retail_product_dict = {
                             "id": retail_product.id,
                             "title": retail_product.title,  # Campo obligatorio
-                            "availability": str(retail_product.availability),
+                            # "availability": str(retail_product.availability),
+                            "availability": "IN_STOCK",  # Campo obligatorio
                             # Convertir Repeated a lista estándar para JSON
                             "categories": list(retail_product.categories) if hasattr(retail_product, 'categories') else ["General"],
                         }
@@ -715,7 +720,8 @@ class RetailAPIRecommender:
         event_type: str,
         product_id: Optional[str] = None,
         recommendation_id: Optional[str] = None,
-        purchase_amount: Optional[float] = None
+        purchase_amount: Optional[float] = None,
+        currency_code: Optional[str] = None
     ):
         try:
             # Validar el tipo de evento
@@ -791,13 +797,44 @@ class RetailAPIRecommender:
                 # Utilizar el valor proporcionado o un valor predeterminado
                 revenue = purchase_amount if purchase_amount is not None else 1.0
                 
+                # Obtener el código de moneda de parámetros, configuración o valor por defecto
+                # 1. Usar el valor proporcionado en el parámetro
+                # 2. Intentar obtener de variables de entorno
+                # 3. Usar "COP" como valor predeterminado
+                used_currency_code = currency_code or os.getenv("DEFAULT_CURRENCY", "COP")
+                
+                # Validar que el código de moneda sea válido (ISO 4217)
+                valid_currency_codes = [
+                    "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN",
+                    "BAM", "BBD", "BDT", "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BRL",
+                    "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHF", "CLP", "CNY",
+                    "COP", "CRC", "CUC", "CUP", "CVE", "CZK", "DJF", "DKK", "DOP", "DZD",
+                    "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS", "GIP",
+                    "GMD", "GNF", "GTQ", "GYD", "HKD", "HNL", "HRK", "HTG", "HUF", "IDR",
+                    "ILS", "INR", "IQD", "IRR", "ISK", "JMD", "JOD", "JPY", "KES", "KGS",
+                    "KHR", "KMF", "KPW", "KRW", "KWD", "KYD", "KZT", "LAK", "LBP", "LKR",
+                    "LRD", "LSL", "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP",
+                    "MRU", "MUR", "MVR", "MWK", "MXN", "MYR", "MZN", "NAD", "NGN", "NIO",
+                    "NOK", "NPR", "NZD", "OMR", "PAB", "PEN", "PGK", "PHP", "PKR", "PLN",
+                    "PYG", "QAR", "RON", "RSD", "RUB", "RWF", "SAR", "SBD", "SCR", "SDG",
+                    "SEK", "SGD", "SHP", "SLL", "SOS", "SRD", "SSP", "STN", "SVC", "SYP",
+                    "SZL", "THB", "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS",
+                    "UAH", "UGX", "USD", "UYU", "UZS", "VES", "VND", "VUV", "WST", "XAF",
+                    "XCD", "XDR", "XOF", "XPF", "YER", "ZAR", "ZMW", "ZWL"
+                ]
+                
+                if used_currency_code not in valid_currency_codes:
+                    logging.warning(f"Código de moneda proporcionado '{used_currency_code}' no es válido. Usando 'COP' por defecto.")
+                    used_currency_code = "COP"
+                
                 # Crear el objeto PurchaseTransaction requerido
                 user_event.purchase_transaction = retail_v2.PurchaseTransaction(
                     id=transaction_id,
-                    revenue=revenue
+                    revenue=revenue,
+                    currency_code=used_currency_code  # Usar el código de moneda validado
                 )
                 
-                logging.info(f"Evento de compra con transaction_id={transaction_id}, revenue={revenue}")
+                logging.info(f"Evento de compra con transaction_id={transaction_id}, revenue={revenue}, currency_code={used_currency_code}")
             
             # Registrar el evento
             logging.info(f"Registrando evento: usuario={user_id}, tipo={event_type}, producto={product_id or 'N/A'}")
@@ -811,12 +848,20 @@ class RetailAPIRecommender:
             # Usar el cliente correcto (UserEventServiceClient) para registrar eventos
             response = self.user_event_client.write_user_event(request=request)
             
-            return {
+            response = {
                 "status": "success", 
                 "message": "Event recorded", 
                 "event_type": event_type,
                 "recommendation_tracked": recommendation_id is not None
             }
+            
+            # Añadir información de moneda si es un evento de compra
+            if event_type == "purchase-complete":
+                response["currency_used"] = used_currency_code
+                response["transaction_id"] = transaction_id
+                response["revenue"] = revenue
+                
+            return response
             
         except Exception as e:
             logging.error(f"Error recording user event: {str(e)}")

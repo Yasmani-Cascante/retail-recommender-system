@@ -156,7 +156,7 @@ class HybridRecommender:
                     for i in range(num_events):
                         user_events.append({
                             "user_id": user_id,
-                            "event_type": random.choice(["detail-page-view", "add-to-cart", "purchase"]),
+                            "event_type": random.choice(["detail-page-view", "add-to-cart", "purchase-complete"]),
                             "product_id": str(random.choice(self.content_recommender.product_data).get("id", ""))
                         })
             except Exception as e:

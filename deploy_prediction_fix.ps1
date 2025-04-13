@@ -1,7 +1,11 @@
 # PowerShell script para desplegar la versión con corrección del procesamiento de predicciones
 
 # Importar funciones comunes
-. .\deploy_common.ps1
+$scriptPath = $PSScriptRoot
+if (-not $scriptPath) {
+    $scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+. "$scriptPath\deploy_common.ps1"
 
 Write-Host "Iniciando despliegue de la versión corregida con mejoras en el procesamiento de predicciones..." -ForegroundColor Green
 
