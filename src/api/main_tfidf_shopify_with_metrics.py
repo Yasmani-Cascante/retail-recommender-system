@@ -431,6 +431,14 @@ async def startup_event():
     """Evento de inicio de la aplicaciÃ³n."""
     logger.info("ðŸš€ Iniciando API de recomendaciones con conexiÃ³n a Shopify...")
     
+    # NUEVO: Verificar estructura del catálogo en Retail API
+    try:
+        logger.info("Verificando estructura del catálogo en Google Cloud Retail API...")
+        await retail_recommender.ensure_catalog_branches()
+    except Exception as e:
+        logger.warning(f"Error al verificar estructura del catálogo: {str(e)}")
+        logger.warning("Continuando con la inicialización a pesar del error en la verificación de ramas")
+    
     # Registrar componentes en el gestor de arranque
     startup_manager.register_component(
         name="recommender",

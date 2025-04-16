@@ -2,7 +2,7 @@ from google.cloud import retail_v2
 from google.cloud.retail_v2 import ProductServiceClient, PredictionServiceClient, UserEventServiceClient
 from google.cloud.retail_v2.types import Product, PredictRequest, PredictResponse, ImportProductsRequest
 from google.cloud.retail_v2.types.import_config import GcsSource, ProductInputConfig, ProductInlineSource, ImportErrorsConfig
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 import time
 import asyncio
@@ -12,6 +12,14 @@ from google.cloud import storage
 import json
 import tempfile
 import traceback
+
+# Importar el gestor de catálogos (si existe)
+try:
+    from src.api.core.catalog_manager import CatalogManager
+    CATALOG_MANAGER_AVAILABLE = True
+except ImportError:
+    CATALOG_MANAGER_AVAILABLE = False
+    logging.warning("CatalogManager no disponible. Las funciones de gestión de ramas pueden no funcionar correctamente.")
 
 class RetailAPIRecommender:
     def __init__(
@@ -35,6 +43,15 @@ class RetailAPIRecommender:
             f"projects/{project_number}/locations/{location}"
             f"/catalogs/{catalog}/servingConfigs/{serving_config_id}"
         )
+        
+        # Inicializar gestor de catálogos si está disponible
+        self.catalog_manager = None
+        if CATALOG_MANAGER_AVAILABLE:
+            self.catalog_manager = CatalogManager(
+                project_number=project_number,
+                location=location,
+                catalog=catalog
+            )
     
     def _process_predictions(self, response) -> List[Dict]:
         recommendations = []
@@ -538,6 +555,26 @@ class RetailAPIRecommender:
             logging.error(f"Error general al obtener eventos de usuario: {str(e)}")
             return []
         
+    async def ensure_catalog_branches(self) -> bool:
+        """
+        Asegura que las ramas del catálogo existen y están correctamente configuradas.
+        
+        Returns:
+            bool: True si las ramas están correctamente configuradas, False en caso contrario
+        """
+        try:
+            # Verificar si el gestor de catálogos está disponible
+            if not self.catalog_manager:
+                logging.warning("CatalogManager no disponible. No se pueden verificar/crear ramas.")
+                return False
+                
+            # Verificar ramas del catálogo
+            branches_ok = await self.catalog_manager.ensure_default_branches()
+            return branches_ok
+        except Exception as e:
+            logging.error(f"Error al asegurar ramas del catálogo: {str(e)}")
+            return False
+    
     async def import_catalog(self, products: List[Dict]):
         """
         Importa productos al catálogo de Google Retail API
@@ -549,6 +586,11 @@ class RetailAPIRecommender:
             Dict: Resultado de la importación
         """
         try:
+            # NUEVO: Asegurar que las ramas del catálogo están correctamente configuradas
+            if self.catalog_manager:
+                await self.ensure_catalog_branches()
+            else:
+                logging.warning("CatalogManager no disponible. Continuando sin verificar ramas.")
             # Verificar si debemos usar el método de importación vía GCS
             # basado en el tamaño del catálogo o configuración
             use_gcs = os.getenv("USE_GCS_IMPORT", "False").lower() == "true"
