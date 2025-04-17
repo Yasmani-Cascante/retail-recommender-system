@@ -197,6 +197,28 @@ class RetailAPIRecommender:
             description = product.get("body_html", "")
             if not description:
                 description = product.get("description", "")
+                
+            # Limitar la descripción a 5000 caracteres Unicode (requisito de Google Retail API)
+            # Esta parte ahora debería ser manejada por el validador de productos, pero mantenemos
+            # este código como respaldo para garantizar el cumplimiento de los requisitos
+            if description and len(description) > 5000:
+                try:
+                    # Intentar usar el método de resumen inteligente
+                    from src.api.core.product_validator import ProductValidator
+                    validator = ProductValidator()
+                    
+                    original_length = len(description)
+                    description = validator._summarize_description(description)
+                    
+                    logging.info(f"Descripción del producto {product_id} resumida inteligentemente de {original_length} a {len(description)} caracteres")
+                except ImportError:
+                    # Si no está disponible el validador, usar el método simple
+                    logging.warning(f"Truncando descripción del producto {product_id} de {len(description)} a 5000 caracteres")
+                    description = description[:4997] + "..."
+                except Exception as e:
+                    # En caso de error, usar el método simple
+                    logging.error(f"Error al resumir descripción: {str(e)}. Usando truncamiento simple.")
+                    description = description[:4997] + "..."
             
             # Validar campos obligatorios
             if not product_id:
@@ -330,7 +352,27 @@ class RetailAPIRecommender:
                         
                         # Campos opcionales adicionales - convertidos a formatos JSON serializables
                         if hasattr(retail_product, 'description') and retail_product.description:
-                            retail_product_dict["description"] = retail_product.description
+                            description = retail_product.description
+                            # Asegurar nuevamente que la descripción no exceda 5000 caracteres
+                            if len(description) > 5000:
+                                try:
+                                    # Intentar usar el método de resumen inteligente
+                                    from src.api.core.product_validator import ProductValidator
+                                    validator = ProductValidator()
+                                    
+                                    original_length = len(description)
+                                    description = validator._summarize_description(description)
+                                    
+                                    logging.info(f"Descripción del producto {retail_product.id} resumida inteligentemente en serialización JSON de {original_length} a {len(description)} caracteres")
+                                except ImportError:
+                                    # Si no está disponible el validador, usar el método simple
+                                    logging.warning(f"Truncando descripción del producto {retail_product.id} en la serialización JSON de {len(description)} a 5000 caracteres")
+                                    description = description[:4997] + "..."
+                                except Exception as e:
+                                    # En caso de error, usar el método simple
+                                    logging.error(f"Error al resumir descripción: {str(e)}. Usando truncamiento simple.")
+                                    description = description[:4997] + "..."
+                            retail_product_dict["description"] = description
                             
                         # Las categorías ya se han añadido arriba
                             
@@ -591,6 +633,33 @@ class RetailAPIRecommender:
                 await self.ensure_catalog_branches()
             else:
                 logging.warning("CatalogManager no disponible. Continuando sin verificar ramas.")
+                
+            # NUEVO: Validar productos antes de la importación
+            try:
+                from src.api.core.product_validator import ProductValidator
+                validator = ProductValidator()
+                logging.info(f"Validando {len(products)} productos antes de la importación")
+                
+                validated_products, validation_stats = validator.validate_products(products)
+                validation_report = validator.get_validation_report()
+                
+                logging.info(f"Validación completada: {validation_stats['valid_products']} válidos, "
+                           f"{validation_stats['modified_products']} modificados, "
+                           f"{validation_stats['invalid_products']} inválidos")
+                
+                if validation_stats['modified_products'] > 0:
+                    logging.warning(f"Se han modificado {validation_stats['modified_products']} productos. "
+                                f"Ver detalles en: {validator.modified_products_log}")
+                
+                # Usar productos validados para la importación
+                products = validated_products
+                
+            except ImportError:
+                logging.warning("ProductValidator no disponible. Continuando sin validación de productos.")
+            except Exception as validation_error:
+                logging.error(f"Error durante la validación de productos: {str(validation_error)}")
+                logging.warning("Continuando con productos sin validar")
+                
             # Verificar si debemos usar el método de importación vía GCS
             # basado en el tamaño del catálogo o configuración
             use_gcs = os.getenv("USE_GCS_IMPORT", "False").lower() == "true"
