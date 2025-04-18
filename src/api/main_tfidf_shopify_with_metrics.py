@@ -321,6 +321,15 @@ class ProductModel(BaseModel):
     similarity_score: Optional[float] = None
     product_data: Dict[str, Any]
 
+# Modelo para la respuesta de productos con paginación
+class ProductsResponse(BaseModel):
+    products: List[Dict[str, Any]]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    loading_complete: bool = True
+
 class RecommendationResponse(BaseModel):
     recommendations: List[Dict]
     loading_complete: bool = Field(description="Indica si la carga del recomendador ha finalizado")
@@ -720,15 +729,27 @@ async def get_customers(
     except Exception as e:
         logger.error(f"Error fetching customers: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+# Modelo para la respuesta de productos
+class ProductsResponse(BaseModel):
+    products: List[Dict[str, Any]]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+    loading_complete: bool = True
 
-@app.get("/v1/products/", response_model=Dict)
+@app.get("/v1/products/", response_model=ProductsResponse)
 async def get_products(
-    page: int = Query(1, gt=0, description="NÃºmero de pÃ¡gina"),
-    page_size: int = Query(50, gt=0, le=100, description="Resultados por pÃ¡gina")
+    page: int = Query(1, gt=0, description="Número de página"),
+    page_size: int = Query(50, gt=0, le=100, description="Resultados por página")
 ):
     """
     Obtiene la lista de productos con paginaciÃ³n.
     """
+    # Log del valor recibido para debugging
+    logger.info(f"get_products: Parámetros recibidos - page={page}, page_size={page_size}")
+
     # Verificar estado de carga
     is_healthy, reason = startup_manager.is_healthy()
     if not is_healthy:
@@ -744,35 +765,51 @@ async def get_products(
             all_products = tfidf_recommender.product_data
             logger.info(f"Obtenidos {len(all_products)} productos desde el recomendador")
         else:
-            return {
-                "products": [],
-                "total": 0,
-                "page": page,
-                "page_size": page_size,
-                "loading_complete": False,
-                "message": "El catÃ¡logo de productos estÃ¡ cargando. Intente mÃ¡s tarde."
-            }
+            # Si no hay productos disponibles, devolver respuesta vacía
+            return ProductsResponse(
+                products=[],
+                total=0,
+                page=page,
+                page_size=page_size,
+                total_pages=0,
+                loading_complete=False
+            )
         
-        # Calcular Ã­ndices de paginaciÃ³n
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
+         # Validar explícitamente page_size para asegurar que se respeta el valor
+        actual_page_size = min(page_size, 100)  # Asegurar que no exceda 100
+        logger.info(f"Usando page_size={actual_page_size}")
         
-        # Obtener total de pÃ¡ginas
-        total_pages = math.ceil(len(all_products) / page_size)
+        # Calcular índices de paginación
+        start_idx = (page - 1) * actual_page_size
+        end_idx = start_idx + actual_page_size
+        
+        # Calcular total de páginas
+        total_products = len(all_products)
+        total_pages = math.ceil(total_products / actual_page_size)
+
+        # Verificar que los índices están dentro de límites
+        if start_idx >= total_products:
+            # Si página fuera de rango, devolver última página
+            page = total_pages
+            start_idx = (page - 1) * actual_page_size
+            end_idx = total_products
         
         # Obtener productos paginados
         paginated_products = all_products[start_idx:end_idx]
+        logger.info(f"Devolviendo {len(paginated_products)} productos (page={page}, page_size={actual_page_size})")
         
-        return {
-            "products": paginated_products,
-            "total": len(all_products),
-            "page": page,
-            "page_size": page_size,
-            "total_pages": total_pages,
-            "loading_complete": True
-        }
+        # Construir y devolver respuesta usando el modelo definido
+        return ProductsResponse(
+            products=paginated_products,
+            total=total_products,
+            page=page,
+            page_size=actual_page_size,
+            total_pages=total_pages,
+            loading_complete=True
+        )
     except Exception as e:
         logger.error(f"Error obteniendo productos: {e}")
+        logger.error("Stack trace:", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error obteniendo productos: {str(e)}")
 
 @app.get("/v1/products/category/{category}")
