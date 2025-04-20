@@ -6,7 +6,8 @@ que lee variables de entorno y proporciona valores por defecto cuando es necesar
 """
 
 import os
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 from typing import Dict, Any, Optional, List
 from functools import lru_cache
 

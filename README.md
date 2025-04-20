@@ -1,50 +1,5 @@
 # Retail Recommender System
 
-Sistema de recomendaciones para retail con integración a Shopify y Google Cloud Retail API.
-
-## Gestión Segura de Secretos
-
-El sistema utiliza variables de entorno para gestionar de forma segura las credenciales y secretos. Estos valores **NO** deben guardarse en el repositorio.
-
-### Configuración de Variables Secretas
-
-1. Crea un archivo `.env.secrets` en la raíz del proyecto (este archivo está en `.gitignore` y no se subirá al repositorio)
-2. Añade las siguientes variables con sus valores reales:
-
-```
-# Google Cloud Project
-GOOGLE_PROJECT_NUMBER=your_project_number
-API_KEY=your_api_key
-
-# Shopify
-SHOPIFY_SHOP_URL=your_shop_url
-SHOPIFY_ACCESS_TOKEN=your_access_token
-
-# Google Cloud Storage
-GCS_BUCKET_NAME=your_bucket_name
-```
-
-3. Para los scripts PowerShell, las variables se cargan automáticamente desde `.env.secrets`
-4. Para los scripts Python, puedes configurar las variables de entorno en tu sistema o usar el archivo `.env.secrets`
-
-### Importante: Protección de Secretos
-
-- **NUNCA** incluyas valores secretos directamente en los scripts
-- **NUNCA** subas el archivo `.env.secrets` al repositorio
-- Si necesitas compartir la configuración con otros desarrolladores, utiliza un canal seguro o un gestor de secretos
-- Considera utilizar Google Secret Manager o AWS Secrets Manager para entornos de producción
-
-## Despliegue
-
-Los scripts de despliegue cargan automáticamente las variables secretas desde `.env.secrets`. Si este archivo no existe o faltan variables, el script fallará y mostrará instrucciones.
-
-```powershell
-# Ejemplo de despliegue
-.\deploy_tfidf_shopify.ps1
-```
-
-# Retail Recommender System
-
 Sistema de recomendaciones para retail que combina recomendaciones basadas en contenido con la API de Google Cloud Retail.
 
 ## Características
@@ -55,6 +10,7 @@ Sistema de recomendaciones para retail que combina recomendaciones basadas en co
 - Autenticación y autorización
 - Logging y monitoreo
 - Despliegue en Google Cloud Platform
+- Arquitectura unificada y modular
 
 ## Requisitos
 
@@ -93,6 +49,63 @@ cp .env.example .env
 python run.py
 ```
 
+## Pruebas Unitarias y de Integración
+
+### Ejecutar Pruebas Unitarias
+
+Hemos implementado un conjunto completo de pruebas unitarias para los componentes principales del sistema:
+
+```bash
+# En Linux/Mac
+./run_unit_tests.sh
+
+# En Windows
+.\run_unit_tests.ps1
+```
+
+También puedes ejecutar pruebas específicas:
+
+```bash
+pytest tests/unit/test_config.py -v          # Probar solo el sistema de configuración
+pytest tests/unit/test_factories.py -v       # Probar solo las fábricas
+pytest tests/unit/test_hybrid_recommender.py -v  # Probar solo el recomendador híbrido
+pytest tests/unit/test_extensions.py -v      # Probar solo el sistema de extensiones
+```
+
+Para más detalles sobre las pruebas, consulte [tests/unit/README.md](tests/unit/README.md).
+
+## Gestión Segura de Secretos
+
+El sistema utiliza variables de entorno para gestionar de forma segura las credenciales y secretos. Estos valores **NO** deben guardarse en el repositorio.
+
+### Configuración de Variables Secretas
+
+1. Crea un archivo `.env.secrets` en la raíz del proyecto (este archivo está en `.gitignore` y no se subirá al repositorio)
+2. Añade las siguientes variables con sus valores reales:
+
+```
+# Google Cloud Project
+GOOGLE_PROJECT_NUMBER=your_project_number
+API_KEY=your_api_key
+
+# Shopify
+SHOPIFY_SHOP_URL=your_shop_url
+SHOPIFY_ACCESS_TOKEN=your_access_token
+
+# Google Cloud Storage
+GCS_BUCKET_NAME=your_bucket_name
+```
+
+3. Para los scripts PowerShell, las variables se cargan automáticamente desde `.env.secrets`
+4. Para los scripts Python, puedes configurar las variables de entorno en tu sistema o usar el archivo `.env.secrets`
+
+### Importante: Protección de Secretos
+
+- **NUNCA** incluyas valores secretos directamente en los scripts
+- **NUNCA** subas el archivo `.env.secrets` al repositorio
+- Si necesitas compartir la configuración con otros desarrolladores, utiliza un canal seguro o un gestor de secretos
+- Considera utilizar Google Secret Manager o AWS Secrets Manager para entornos de producción
+
 ## Despliegue en Google Cloud Platform
 
 1. Configurar Google Cloud SDK:
@@ -119,6 +132,12 @@ gcloud run services update retail-recommender \
 gcloud builds submit --config cloudbuild.yaml
 ```
 
+5. Desplegar la versión unificada:
+```powershell
+# En Windows
+.\deploy_unified.ps1
+```
+
 ## Documentación API
 
 La documentación de la API está disponible en:
@@ -132,12 +151,25 @@ La documentación de la API está disponible en:
 - `POST /v1/events/user/{user_id}`: Registra eventos de usuario
 - `GET /v1/products/category/{category}`: Lista productos por categoría
 - `GET /v1/products/search/`: Busca productos
+- `GET /v1/metrics`: Obtiene métricas del sistema de recomendaciones
+
+## Arquitectura Unificada
+
+El sistema utiliza una arquitectura unificada con:
+
+- **Configuración centralizada**: Sistema basado en Pydantic
+- **Fábricas de componentes**: Creación flexible de instancias
+- **Sistema de extensiones**: Funcionalidades modulares activables/desactivables
+- **Recomendador híbrido unificado**: Combinación de diferentes estrategias
+
+Para más detalles, consulte la documentación en la carpeta `docs/`.
 
 ## Monitoreo
 
 - Logs: Google Cloud Logging
 - Métricas: Google Cloud Monitoring
 - Trazabilidad: Google Cloud Trace
+- Sistema interno de métricas: `/v1/metrics`
 
 ## Seguridad
 
