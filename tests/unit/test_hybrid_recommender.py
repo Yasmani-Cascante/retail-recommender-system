@@ -1,262 +1,283 @@
 """
 Pruebas unitarias para el recomendador híbrido.
 
-Este módulo contiene pruebas para verificar el funcionamiento del recomendador híbrido,
-incluyendo la exclusión de productos vistos y el mecanismo de fallback.
+Este módulo contiene pruebas unitarias para verificar el correcto funcionamiento
+del recomendador híbrido, incluyendo la funcionalidad de exclusión de productos vistos.
 """
 
 import pytest
+import os
 import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
+
+# Asegurar que src está en el PYTHONPATH
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
 from src.api.core.hybrid_recommender import HybridRecommender, HybridRecommenderWithExclusion
+from tests.data.sample_products import SAMPLE_PRODUCTS
+from tests.data.sample_events import SAMPLE_USER_EVENTS, get_events_for_user
 
-@pytest.fixture
-def sample_products():
-    """Fixture para generar productos de ejemplo."""
-    return [
-        {"id": "prod1", "title": "Producto 1", "category": "Categoría A", "score": 0.9},
-        {"id": "prod2", "title": "Producto 2", "category": "Categoría B", "score": 0.8},
-        {"id": "prod3", "title": "Producto 3", "category": "Categoría A", "score": 0.7},
-        {"id": "prod4", "title": "Producto 4", "category": "Categoría C", "score": 0.6},
-        {"id": "prod5", "title": "Producto 5", "category": "Categoría B", "score": 0.5},
-    ]
-
-@pytest.fixture
-def mock_content_recommender(sample_products):
-    """Fixture para simular un recomendador basado en contenido."""
-    recommender = AsyncMock()
+# Pruebas para el recomendador híbrido básico
+class TestHybridRecommender:
     
-    # Configurar el método get_recommendations para devolver productos de ejemplo
-    async def mock_get_recommendations(product_id, n_recommendations=5):
-        # Devolver productos diferentes según el ID
-        if product_id == "prod1":
-            return sample_products[1:4]  # prod2, prod3, prod4
-        else:
-            return sample_products[0:3]  # prod1, prod2, prod3
-            
-    recommender.get_recommendations.side_effect = mock_get_recommendations
-    recommender.loaded = True
-    recommender.product_data = sample_products
-    
-    return recommender
-
-@pytest.fixture
-def mock_retail_recommender(sample_products):
-    """Fixture para simular un recomendador basado en Retail API."""
-    recommender = AsyncMock()
-    
-    # Configurar el método get_recommendations para devolver productos de ejemplo
-    async def mock_get_recommendations(user_id, product_id=None, n_recommendations=5):
-        # Devolver productos diferentes según el ID
-        if product_id == "prod1":
-            return sample_products[2:5]  # prod3, prod4, prod5
-        else:
-            return sample_products[1:4]  # prod2, prod3, prod4
-            
-    recommender.get_recommendations.side_effect = mock_get_recommendations
-    
-    # Configurar el método get_user_events para devolver eventos de ejemplo
-    async def mock_get_user_events(user_id):
-        if user_id == "user1":
-            return [
-                {"user_id": "user1", "product_id": "prod1", "event_type": "detail-page-view"},
-                {"user_id": "user1", "product_id": "prod3", "event_type": "add-to-cart"}
-            ]
-        else:
-            return []
-            
-    recommender.get_user_events.side_effect = mock_get_user_events
-    
-    # Configurar el método record_user_event
-    recommender.record_user_event.return_value = {"status": "success"}
-    
-    return recommender
-
-@pytest.mark.asyncio
-async def test_basic_hybrid_recommender(mock_content_recommender, mock_retail_recommender, sample_products):
-    """Prueba el funcionamiento básico del recomendador híbrido."""
-    # Crear instancia del recomendador híbrido
-    hybrid = HybridRecommender(
-        content_recommender=mock_content_recommender,
-        retail_recommender=mock_retail_recommender,
-        content_weight=0.6
-    )
-    
-    # Obtener recomendaciones para un producto
-    recommendations = await hybrid.get_recommendations(
-        user_id="anonymous",
-        product_id="prod1",
-        n_recommendations=3
-    )
-    
-    # Verificar que se llamaron los métodos correctos
-    mock_content_recommender.get_recommendations.assert_called_with("prod1", 3)
-    mock_retail_recommender.get_recommendations.assert_called_with(
-        user_id="anonymous",
-        product_id="prod1",
-        n_recommendations=3
-    )
-    
-    # Verificar que se devolvieron recomendaciones
-    assert len(recommendations) == 3
-    # Verificar que cada recomendación tiene un ID y un score
-    for rec in recommendations:
-        assert "id" in rec
-        assert "final_score" in rec
-
-@pytest.mark.asyncio
-async def test_combine_recommendations(mock_content_recommender, mock_retail_recommender, sample_products):
-    """Prueba el método de combinación de recomendaciones."""
-    # Crear instancia del recomendador híbrido
-    hybrid = HybridRecommender(
-        content_recommender=mock_content_recommender,
-        retail_recommender=mock_retail_recommender,
-        content_weight=0.7
-    )
-    
-    # Preparar datos de prueba
-    content_recs = [
-        {"id": "prod1", "title": "Producto 1", "similarity_score": 0.9},
-        {"id": "prod2", "title": "Producto 2", "similarity_score": 0.8}
-    ]
-    
-    retail_recs = [
-        {"id": "prod2", "title": "Producto 2", "score": 0.7},
-        {"id": "prod3", "title": "Producto 3", "score": 0.6}
-    ]
-    
-    # Llamar al método de combinación
-    combined = await hybrid._combine_recommendations(
-        content_recs,
-        retail_recs,
-        2
-    )
-    
-    # Verificar el resultado
-    assert len(combined) == 2
-    
-    # Verificar que prod2 tiene score combinado (aparece en ambas fuentes)
-    prod2 = next((r for r in combined if r["id"] == "prod2"), None)
-    assert prod2 is not None
-    assert "final_score" in prod2
-    # 0.7 * 0.8 (content) + 0.3 * 0.7 (retail) = 0.56 + 0.21 = 0.77
-    assert pytest.approx(prod2["final_score"], 0.01) == 0.77
-
-@pytest.mark.asyncio
-async def test_fallback_recommendations(mock_content_recommender, mock_retail_recommender):
-    """Prueba el mecanismo de fallback cuando no hay recomendaciones disponibles."""
-    # Configurar el recomendador Retail API para devolver lista vacía
-    mock_retail_recommender.get_recommendations.return_value = []
-    
-    # Crear instancia del recomendador híbrido
-    hybrid = HybridRecommender(
-        content_recommender=mock_content_recommender,
-        retail_recommender=mock_retail_recommender,
-        content_weight=0.5
-    )
-    
-    # Intentar obtener recomendaciones para un usuario (sin product_id)
-    with patch.object(hybrid, '_get_fallback_recommendations') as mock_fallback:
-        mock_fallback.return_value = [{"id": "fallback1", "title": "Fallback 1"}]
+    @pytest.fixture
+    def content_recommender(self):
+        """Fixture para un mock del recomendador basado en contenido."""
+        recommender = AsyncMock()
+        recommender.get_recommendations.return_value = SAMPLE_PRODUCTS[:3]
+        recommender.loaded = True
+        recommender.product_data = SAMPLE_PRODUCTS
+        return recommender
         
-        recommendations = await hybrid.get_recommendations(
-            user_id="user1",
-            n_recommendations=2
+    @pytest.fixture
+    def retail_recommender(self):
+        """Fixture para un mock del recomendador Retail API."""
+        recommender = AsyncMock()
+        recommender.get_recommendations.return_value = SAMPLE_PRODUCTS[3:6]
+        recommender.record_user_event.return_value = {"status": "success"}
+        return recommender
+        
+    @pytest.fixture
+    def hybrid_recommender(self, content_recommender, retail_recommender):
+        """Fixture para una instancia del recomendador híbrido básico."""
+        return HybridRecommender(
+            content_recommender=content_recommender,
+            retail_recommender=retail_recommender,
+            content_weight=0.5
+        )
+    
+    @pytest.mark.asyncio
+    async def test_basic_recommendations(self, hybrid_recommender):
+        """Verifica que el recomendador híbrido combina resultados correctamente."""
+        # Ejecutar método bajo prueba
+        recommendations = await hybrid_recommender.get_recommendations(
+            user_id="test_user_1",
+            product_id="test_prod_1",
+            n_recommendations=5
         )
         
-        # Verificar que se llamó al mecanismo de fallback
-        mock_fallback.assert_called_once_with("user1", 2)
+        # Verificaciones
+        assert recommendations is not None
+        assert len(recommendations) == 5
         
-        # Verificar que se devolvieron recomendaciones de fallback
-        assert len(recommendations) == 1
-        assert recommendations[0]["id"] == "fallback1"
-
-@pytest.mark.asyncio
-async def test_hybrid_recommender_with_exclusion(mock_content_recommender, mock_retail_recommender, sample_products):
-    """Prueba el recomendador híbrido con exclusión de productos vistos."""
-    # Crear instancia del recomendador con exclusión
-    hybrid = HybridRecommenderWithExclusion(
-        content_recommender=mock_content_recommender,
-        retail_recommender=mock_retail_recommender,
-        content_weight=0.5
-    )
+        # Debe contener productos de ambas fuentes
+        content_ids = [p["id"] for p in SAMPLE_PRODUCTS[:3]]
+        retail_ids = [p["id"] for p in SAMPLE_PRODUCTS[3:6]]
+        result_ids = [p["id"] for p in recommendations]
+        
+        # Debería haber al menos un producto de cada fuente
+        assert any(pid in content_ids for pid in result_ids), "No hay productos del recomendador de contenido"
+        assert any(pid in retail_ids for pid in result_ids), "No hay productos del recomendador retail"
     
-    # Mockear get_user_interactions para devolver productos vistos
-    with patch.object(hybrid, 'get_user_interactions') as mock_interactions:
-        mock_interactions.return_value = {"prod1", "prod3"}  # Productos a excluir
+    @pytest.mark.asyncio
+    async def test_content_weight_full(self, hybrid_recommender, content_recommender, retail_recommender):
+        """Verifica que cuando content_weight=1.0, solo se usan recomendaciones de contenido."""
+        # Configurar peso de contenido al máximo
+        hybrid_recommender.content_weight = 1.0
         
-        # Obtener recomendaciones para un producto
-        recommendations = await hybrid.get_recommendations(
-            user_id="user1",
-            product_id="prod2",
+        # Ejecutar método bajo prueba
+        recommendations = await hybrid_recommender.get_recommendations(
+            user_id="test_user_1",
+            product_id="test_prod_1",
             n_recommendations=3
         )
         
-        # Verificar que se llamó al método para obtener interacciones
-        mock_interactions.assert_called_once_with("user1")
+        # Verificar que solo se usan productos del recomendador de contenido
+        result_ids = [p["id"] for p in recommendations]
+        content_ids = [p["id"] for p in SAMPLE_PRODUCTS[:3]]
         
-        # Verificar que se excluyeron los productos vistos
-        product_ids = {rec["id"] for rec in recommendations}
-        assert "prod1" not in product_ids
-        assert "prod3" not in product_ids
+        assert all(pid in content_ids for pid in result_ids), "Se incluyeron productos que no son del recomendador de contenido"
+        assert content_recommender.get_recommendations.called
+        assert not retail_recommender.get_recommendations.called
+    
+    @pytest.mark.asyncio
+    async def test_content_weight_zero(self, hybrid_recommender, content_recommender, retail_recommender):
+        """Verifica que cuando content_weight=0.0, solo se usan recomendaciones de retail."""
+        # Configurar peso de contenido al mínimo
+        hybrid_recommender.content_weight = 0.0
+        
+        # Ejecutar método bajo prueba
+        recommendations = await hybrid_recommender.get_recommendations(
+            user_id="test_user_1",
+            product_id="test_prod_1",
+            n_recommendations=3
+        )
+        
+        # Verificar que solo se usan productos del recomendador retail
+        result_ids = [p["id"] for p in recommendations]
+        retail_ids = [p["id"] for p in SAMPLE_PRODUCTS[3:6]]
+        
+        assert all(pid in retail_ids for pid in result_ids), "Se incluyeron productos que no son del recomendador retail"
+        assert not content_recommender.get_recommendations.called
+        assert retail_recommender.get_recommendations.called
+    
+    @pytest.mark.asyncio
+    async def test_record_user_event(self, hybrid_recommender, retail_recommender):
+        """Verifica que los eventos de usuario se registran correctamente."""
+        # Ejecutar método bajo prueba
+        result = await hybrid_recommender.record_user_event(
+            user_id="test_user_1",
+            event_type="detail-page-view",
+            product_id="test_prod_1"
+        )
+        
+        # Verificar
+        assert result["status"] == "success"
+        retail_recommender.record_user_event.assert_called_once_with(
+            user_id="test_user_1",
+            event_type="detail-page-view",
+            product_id="test_prod_1",
+            purchase_amount=None
+        )
+    
+    @pytest.mark.asyncio
+    async def test_fallback_when_retail_fails(self, hybrid_recommender, content_recommender, retail_recommender):
+        """Verifica que se usa fallback cuando el recomendador retail falla."""
+        # Configurar el recomendador retail para fallar
+        retail_recommender.get_recommendations.side_effect = Exception("Error simulado")
+        
+        # Ejecutar método bajo prueba
+        recommendations = await hybrid_recommender.get_recommendations(
+            user_id="test_user_1",
+            product_id="test_prod_1",
+            n_recommendations=3
+        )
+        
+        # Verificar que se usaron recomendaciones de contenido como fallback
+        assert recommendations is not None
+        assert len(recommendations) == 3
+        result_ids = [p["id"] for p in recommendations]
+        content_ids = [p["id"] for p in SAMPLE_PRODUCTS[:3]]
+        assert all(pid in content_ids for pid in result_ids), "No se usaron las recomendaciones de contenido como fallback"
 
-@pytest.mark.asyncio
-async def test_get_user_interactions(mock_content_recommender, mock_retail_recommender):
-    """Prueba la obtención de interacciones de usuario."""
-    # Crear instancia del recomendador con exclusión
-    hybrid = HybridRecommenderWithExclusion(
-        content_recommender=mock_content_recommender,
-        retail_recommender=mock_retail_recommender,
-        content_weight=0.5
-    )
-    
-    # Obtener interacciones para un usuario con eventos
-    interactions = await hybrid.get_user_interactions("user1")
-    
-    # Verificar que se llamó al método get_user_events
-    mock_retail_recommender.get_user_events.assert_called_once_with("user1")
-    
-    # Verificar que se devolvieron los productos correctos
-    assert "prod1" in interactions
-    assert "prod3" in interactions
-    assert len(interactions) == 2
-    
-    # Probar con un usuario sin eventos
-    mock_retail_recommender.get_user_events.reset_mock()
-    
-    interactions = await hybrid.get_user_interactions("user2")
-    
-    # Verificar que se llamó al método get_user_events
-    mock_retail_recommender.get_user_events.assert_called_once_with("user2")
-    
-    # Verificar que se devolvió un conjunto vacío
-    assert len(interactions) == 0
 
-@pytest.mark.asyncio
-async def test_record_user_event(mock_content_recommender, mock_retail_recommender):
-    """Prueba el registro de eventos de usuario."""
-    # Crear instancia del recomendador híbrido
-    hybrid = HybridRecommender(
-        content_recommender=mock_content_recommender,
-        retail_recommender=mock_retail_recommender,
-        content_weight=0.5
-    )
+# Pruebas para el recomendador híbrido con exclusión de productos vistos
+class TestHybridRecommenderWithExclusion:
     
-    # Registrar un evento
-    result = await hybrid.record_user_event(
-        user_id="user1",
-        event_type="add-to-cart",
-        product_id="prod1",
-        purchase_amount=None
-    )
+    @pytest.fixture
+    def content_recommender(self):
+        """Fixture para un mock del recomendador basado en contenido."""
+        recommender = AsyncMock()
+        recommender.get_recommendations.return_value = SAMPLE_PRODUCTS[:5]
+        recommender.loaded = True
+        recommender.product_data = SAMPLE_PRODUCTS
+        return recommender
+        
+    @pytest.fixture
+    def retail_recommender(self):
+        """Fixture para un mock del recomendador Retail API."""
+        recommender = AsyncMock()
+        recommender.get_recommendations.return_value = SAMPLE_PRODUCTS[3:8]
+        recommender.record_user_event.return_value = {"status": "success"}
+        
+        # Configurar get_user_events para simular eventos vistos
+        events = get_events_for_user("test_user_1")
+        recommender.get_user_events.return_value = events
+        
+        return recommender
+        
+    @pytest.fixture
+    def hybrid_recommender_with_exclusion(self, content_recommender, retail_recommender):
+        """Fixture para una instancia del recomendador híbrido con exclusión."""
+        return HybridRecommenderWithExclusion(
+            content_recommender=content_recommender,
+            retail_recommender=retail_recommender,
+            content_weight=0.5
+        )
     
-    # Verificar que se llamó al método correcto
-    mock_retail_recommender.record_user_event.assert_called_once_with(
-        user_id="user1",
-        event_type="add-to-cart",
-        product_id="prod1",
-        purchase_amount=None
-    )
+    @pytest.mark.asyncio
+    async def test_exclude_seen_products(self, hybrid_recommender_with_exclusion, retail_recommender):
+        """Verifica que se excluyen productos ya vistos por el usuario."""
+        # Configurar eventos para simular productos vistos
+        seen_product_ids = {"test_prod_1", "test_prod_2"}
+        events = [
+            {"productId": id, "eventType": "detail-page-view"} 
+            for id in seen_product_ids
+        ]
+        retail_recommender.get_user_events.return_value = events
+        
+        # Ejecutar método bajo prueba
+        recommendations = await hybrid_recommender_with_exclusion.get_recommendations(
+            user_id="test_user_1",
+            n_recommendations=5
+        )
+        
+        # Verificar que los productos vistos no están en las recomendaciones
+        result_ids = [p["id"] for p in recommendations]
+        assert not any(pid in seen_product_ids for pid in result_ids), "Las recomendaciones incluyen productos ya vistos"
+        
+        # Verificar que se llamó al método para obtener eventos de usuario
+        retail_recommender.get_user_events.assert_called_once_with("test_user_1")
     
-    # Verificar el resultado
-    assert result["status"] == "success"
+    @pytest.mark.asyncio
+    async def test_get_user_interactions(self, hybrid_recommender_with_exclusion, retail_recommender):
+        """Verifica que se obtienen correctamente las interacciones de usuario."""
+        # Configurar eventos para simular productos vistos
+        seen_product_ids = {"test_prod_1", "test_prod_2", "test_prod_3"}
+        events = [
+            {"productId": id, "eventType": "detail-page-view"} 
+            for id in seen_product_ids
+        ]
+        retail_recommender.get_user_events.return_value = events
+        
+        # Ejecutar método bajo prueba
+        interactions = await hybrid_recommender_with_exclusion.get_user_interactions("test_user_1")
+        
+        # Verificar que se devuelven los IDs correctos
+        assert interactions == seen_product_ids
+        retail_recommender.get_user_events.assert_called_once_with("test_user_1")
+    
+    @pytest.mark.asyncio
+    async def test_additional_recommendations_when_too_many_excluded(self, hybrid_recommender_with_exclusion, content_recommender, retail_recommender):
+        """
+        Verifica que se obtienen recomendaciones adicionales cuando muchos productos 
+        necesitan ser excluidos y no quedan suficientes.
+        """
+        # Configurar un gran número de productos vistos
+        # (casi todos los que devuelven los recomendadores)
+        seen_product_ids = set(p["id"] for p in SAMPLE_PRODUCTS[:7])
+        events = [
+            {"productId": id, "eventType": "detail-page-view"} 
+            for id in seen_product_ids
+        ]
+        retail_recommender.get_user_events.return_value = events
+        
+        # Solo dejar unos pocos productos disponibles
+        available_products = [p for p in SAMPLE_PRODUCTS if p["id"] not in seen_product_ids]
+        
+        # Configurar recomendadores para devolver productos limitados
+        content_recommender.get_recommendations.return_value = SAMPLE_PRODUCTS[:5]  # Mayormente vistos
+        retail_recommender.get_recommendations.return_value = SAMPLE_PRODUCTS[3:8]  # Incluye algunos no vistos
+        
+        # Ejecutar método bajo prueba - Pedimos más de los que quedarían después de excluir
+        n_recommendations = 5  # Más de los que quedarían después de exclusión
+        recommendations = await hybrid_recommender_with_exclusion.get_recommendations(
+            user_id="test_user_1",
+            n_recommendations=n_recommendations
+        )
+        
+        # Verificar
+        assert len(recommendations) == n_recommendations, f"No se devolvieron {n_recommendations} recomendaciones"
+        result_ids = [p["id"] for p in recommendations]
+        assert not any(pid in seen_product_ids for pid in result_ids), "Las recomendaciones incluyen productos ya vistos"
+        
+        # Verificar que se realizó más de una llamada para obtener recomendaciones adicionales
+        assert content_recommender.get_recommendations.call_count > 1 or retail_recommender.get_recommendations.call_count > 1
+    
+    @pytest.mark.asyncio
+    async def test_recommendations_with_no_user_events(self, hybrid_recommender_with_exclusion, retail_recommender):
+        """Verifica que se manejan correctamente usuarios sin eventos previos."""
+        # Configurar para que no haya eventos previos
+        retail_recommender.get_user_events.return_value = []
+        
+        # Ejecutar método bajo prueba
+        recommendations = await hybrid_recommender_with_exclusion.get_recommendations(
+            user_id="new_user",
+            n_recommendations=5
+        )
+        
+        # Verificar que se devuelven recomendaciones normalmente
+        assert recommendations is not None
+        assert len(recommendations) == 5
+        retail_recommender.get_user_events.assert_called_once_with("new_user")

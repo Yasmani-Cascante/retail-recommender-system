@@ -61,24 +61,26 @@ class HybridRecommender:
         content_recs = []
         retail_recs = []
         
-        # Si hay un product_id, obtener recomendaciones basadas en contenido
-        if product_id:
+        # Optimización: si content_weight=0, no llamar al recomendador de contenido
+        if product_id and self.content_weight > 0:
             try:
                 content_recs = await self.content_recommender.get_recommendations(product_id, n_recommendations)
                 logger.info(f"Obtenidas {len(content_recs)} recomendaciones basadas en contenido para producto {product_id}")
             except Exception as e:
                 logger.error(f"Error al obtener recomendaciones basadas en contenido: {str(e)}")
         
-        # Intentar obtener recomendaciones de Retail API
-        try:
-            retail_recs = await self.retail_recommender.get_recommendations(
-                user_id=user_id,
-                product_id=product_id,
-                n_recommendations=n_recommendations
-            )
-            logger.info(f"Obtenidas {len(retail_recs)} recomendaciones de Retail API para usuario {user_id}")
-        except Exception as e:
-            logger.error(f"Error al obtener recomendaciones de Retail API: {str(e)}")
+        # Optimización: si content_weight=1, no llamar al recomendador retail
+        if self.content_weight < 1.0:
+            # Intentar obtener recomendaciones de Retail API
+            try:
+                retail_recs = await self.retail_recommender.get_recommendations(
+                    user_id=user_id,
+                    product_id=product_id,
+                    n_recommendations=n_recommendations
+                )
+                logger.info(f"Obtenidas {len(retail_recs)} recomendaciones de Retail API para usuario {user_id}")
+            except Exception as e:
+                logger.error(f"Error al obtener recomendaciones de Retail API: {str(e)}")
         
         # Si no hay producto_id y tampoco recomendaciones de Retail API,
         # usar recomendaciones inteligentes de fallback
@@ -281,15 +283,15 @@ class HybridRecommenderWithExclusion(HybridRecommender):
         # Si se proporcionan eventos, usarlos directamente
         if user_events:
             for event in user_events:
-                if event.get("product_id"):
-                    interacted_products.add(str(event.get("product_id")))
+                if event.get("productId"):
+                    interacted_products.add(str(event.get("productId")))
         else:
             # Intentar obtener eventos del usuario desde Retail API
             try:
                 events = await self.retail_recommender.get_user_events(user_id)
                 for event in events:
-                    if event.get("product_id"):
-                        interacted_products.add(str(event.get("product_id")))
+                    if event.get("productId"):
+                        interacted_products.add(str(event.get("productId")))
             except Exception as e:
                 logger.warning(f"Error al obtener eventos del usuario {user_id}: {str(e)}")
         

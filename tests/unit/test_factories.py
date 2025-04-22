@@ -65,7 +65,7 @@ def test_create_hybrid_recommender_with_exclusion(mock_settings):
     mock_settings.exclude_seen_products = True
     
     # Crear mocks para los módulos y clases importados
-    with patch('src.api.factories.HybridRecommenderWithExclusion') as mock_hybrid_with_exclusion:
+    with patch('src.api.core.hybrid_recommender.HybridRecommenderWithExclusion') as mock_hybrid_with_exclusion:
         # Configurar el mock para que devuelva una instancia específica
         mock_instance = MagicMock()
         mock_hybrid_with_exclusion.return_value = mock_instance
@@ -93,7 +93,7 @@ def test_create_hybrid_recommender_without_exclusion(mock_settings):
     mock_settings.exclude_seen_products = False
     
     # Crear mocks para los módulos y clases importados
-    with patch('src.api.factories.HybridRecommender') as mock_hybrid:
+    with patch('src.api.core.hybrid_recommender.HybridRecommender') as mock_hybrid:
         # Configurar el mock para que devuelva una instancia específica
         mock_instance = MagicMock()
         mock_hybrid.return_value = mock_instance
@@ -118,9 +118,8 @@ def test_create_hybrid_recommender_without_exclusion(mock_settings):
 def test_create_hybrid_recommender_fallback(mock_settings):
     """Verifica el comportamiento fallback cuando falla la importación."""
     # Simular un error de importación
-    with patch('src.api.factories.HybridRecommenderWithExclusion', side_effect=ImportError()), \
-         patch('src.api.factories.HybridRecommender', side_effect=ImportError()), \
-         patch('src.api.factories.HybridRecommender', new=None), \
+    with patch('src.api.core.hybrid_recommender.HybridRecommenderWithExclusion', side_effect=ImportError()), \
+         patch('src.api.core.hybrid_recommender.HybridRecommender', side_effect=ImportError()), \
          patch('src.recommenders.hybrid.HybridRecommender') as mock_hybrid_fallback:
         
         # Configurar el mock para que devuelva una instancia específica
