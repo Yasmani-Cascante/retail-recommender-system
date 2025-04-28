@@ -35,8 +35,9 @@ class ImprovedFallbackStrategies:
             return interacted_products
             
         for event in user_events:
-            if event.get("product_id"):
-                interacted_products.add(str(event.get("product_id")))
+            product_id = event.get("productId") or event.get("product_id")
+            if product_id:
+                interacted_products.add(str(product_id))
                 
         logger.info(f"Usuario {user_id} ha interactuado con {len(interacted_products)} productos")
         if interacted_products:
@@ -300,7 +301,7 @@ class ImprovedFallbackStrategies:
             product_views = Counter()
             
             for event in user_events:
-                product_id = event.get("product_id")
+                product_id = event.get("productId") or event.get("product_id")
                 if product_id:
                     product_views[product_id] += 1
                     

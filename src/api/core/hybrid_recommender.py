@@ -283,15 +283,17 @@ class HybridRecommenderWithExclusion(HybridRecommender):
         # Si se proporcionan eventos, usarlos directamente
         if user_events:
             for event in user_events:
-                if event.get("productId"):
-                    interacted_products.add(str(event.get("productId")))
+                product_id = event.get("productId") or event.get("product_id")
+                if product_id:
+                    interacted_products.add(str(product_id))
         else:
             # Intentar obtener eventos del usuario desde Retail API
             try:
                 events = await self.retail_recommender.get_user_events(user_id)
                 for event in events:
-                    if event.get("productId"):
-                        interacted_products.add(str(event.get("productId")))
+                    product_id = event.get("productId") or event.get("product_id")
+                    if product_id:
+                        interacted_products.add(str(product_id))
             except Exception as e:
                 logger.warning(f"Error al obtener eventos del usuario {user_id}: {str(e)}")
         

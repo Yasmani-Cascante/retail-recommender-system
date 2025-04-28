@@ -82,40 +82,45 @@ class TestMetricsExtension:
         settings.use_metrics = True
         settings.api_key = "test-api-key-123"  # Añadir API key para autenticación
         
-        # Mockear security.py para permitir solicitudes de prueba
-        with patch('src.api.security.get_api_key') as mock_get_api_key:
-            # Configurar el mock para no requerir autenticación
-            mock_get_api_key.return_value = "test-api-key-123"
+        # Mockear la función get_current_user para que siempre devuelva un usuario
+        async def mock_get_current_user():
+            return "test_user"
+        
+        # Crear mock para metrics
+        metrics_data = {
+            "total_requests": 10,
+            "avg_response_time_ms": 50.0,
+            "success_rate": 0.95,
+        }
+        
+        # Utilizar mock para recommendation_metrics completo
+        mock_recommendation_metrics = MagicMock()
+        mock_recommendation_metrics.get_aggregated_metrics.return_value = metrics_data
+        
+        # Aplicar parches para mocks
+        with patch('src.api.security.get_current_user', side_effect=mock_get_current_user), \
+             patch('src.api.security.API_KEY', "test-api-key-123"), \
+             patch('src.api.core.metrics.recommendation_metrics', mock_recommendation_metrics), \
+             patch('src.api.core.metrics.analyze_metrics_file', return_value={"status": "success"}):
             
-            # Mockear recommendation_metrics
-            mock_metrics = MagicMock()
-            mock_metrics.get_aggregated_metrics.return_value = {
-                "total_requests": 10,
-                "avg_response_time_ms": 50.0,
-                "success_rate": 0.95,
-            }
+            # Crear y configurar la extensión
+            metrics_extension = MetricsExtension(app, settings)
+            metrics_extension.setup()
             
-            # Utilizar patch para reemplazar el import de recommendation_metrics
-            with patch('src.api.core.metrics.recommendation_metrics', mock_metrics):
-                # Crear y configurar la extensión
-                metrics_extension = MetricsExtension(app, settings)
-                metrics_extension.setup()
-                
-                # Crear cliente de prueba
-                client = TestClient(app)
-                # Añadir header de autenticación
-                client.headers = {"X-API-Key": "test-api-key-123"}
-                
-                # Realiza solicitud al endpoint de métricas
-                response = client.get("/v1/metrics")
-                
-                # Verificar respuesta
-                assert response.status_code == 200
-                data = response.json()
-                assert "total_requests" in data
-                assert data["total_requests"] == 10
-                assert "avg_response_time_ms" in data
-                assert data["avg_response_time_ms"] == 50.0
+            # Crear cliente de prueba
+            client = TestClient(app)
+            # Añadir header de autenticación
+            headers = {"X-API-Key": "test-api-key-123"}
+            
+            # Realiza solicitud al endpoint de métricas
+            response = client.get("/v1/metrics", headers=headers)
+            
+            # Verificar respuesta
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "success"
+            assert "realtime_metrics" in data
+            assert data["realtime_metrics"] == metrics_data
     
     def test_custom_metrics_context_manager(self, metrics_extension):
         """Verifica que el context manager para medir tiempo funciona correctamente."""

@@ -7,7 +7,29 @@ carga correctamente variables de entorno y proporciona valores por defecto adecu
 
 import os
 import pytest
-from src.api.core.config import get_settings, RecommenderSettings
+from src.api.core.config import get_settings, get_test_settings, RecommenderSettings
+
+@pytest.fixture(autouse=True)
+def clean_environment():
+    """Fixture para limpiar el entorno antes y después de cada test."""
+    # Guardar variables de entorno originales
+    original_env = dict(os.environ)
+    
+    # Limpiar variables relevantes para evitar interferencias
+    for key in list(os.environ.keys()):
+        if any(key.startswith(prefix) for prefix in [
+            'APP_', 'GOOGLE_', 'DEBUG', 'METRICS_', 
+            'EXCLUDE_', 'VALIDATE_', 'USE_', 'API_KEY',
+            'DEFAULT_', 'CONTENT_'
+        ]):
+            del os.environ[key]
+    
+    # Ejecutar el test
+    yield
+    
+    # Restaurar variables de entorno
+    os.environ.clear()
+    os.environ.update(original_env)
 
 def test_config_default_values():
     """Verifica que los valores por defecto se cargan correctamente."""
@@ -18,8 +40,8 @@ def test_config_default_values():
     os.environ.clear()
     
     # Obtener configuración con valores por defecto
-    # Nota: Como get_settings usa lru_cache, debemos reinstanciar directamente para pruebas
-    settings = RecommenderSettings()
+    # Nota: Usamos get_test_settings para evitar el cache
+    settings = get_test_settings()
     
     # Verificar valores por defecto
     assert settings.app_name == "Retail Recommender API"
@@ -50,7 +72,7 @@ def test_config_from_environment():
     })
     
     # Forzar recarga de configuración (ya que está cacheada)
-    settings = RecommenderSettings()
+    settings = get_test_settings()
     
     # Verificar valores cargados desde variables de entorno
     assert settings.app_name == "Test App"
@@ -76,7 +98,7 @@ def test_required_settings():
     })
     
     # Obtener configuración
-    settings = RecommenderSettings()
+    settings = get_test_settings()
     
     # Verificar valores requeridos
     assert settings.google_project_number == "test-project-123"
@@ -100,14 +122,14 @@ def test_boolean_settings():
     for true_value in ["true", "True", "TRUE", "1", "yes", "Y"]:
         os.environ.clear()
         os.environ["DEBUG"] = true_value
-        settings = RecommenderSettings()
+        settings = get_test_settings()
         assert settings.debug is True, f"El valor '{true_value}' debería interpretarse como True"
         
     # Varios valores que deberían interpretarse como False
     for false_value in ["false", "False", "FALSE", "0", "no", "N"]:
         os.environ.clear()
         os.environ["DEBUG"] = false_value
-        settings = RecommenderSettings()
+        settings = get_test_settings()
         assert settings.debug is False, f"El valor '{false_value}' debería interpretarse como False"
     
     # Restaurar variables de entorno

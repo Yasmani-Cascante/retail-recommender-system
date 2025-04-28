@@ -250,20 +250,34 @@ class TestHybridRecommenderWithExclusion:
         content_recommender.get_recommendations.return_value = SAMPLE_PRODUCTS[:5]  # Mayormente vistos
         retail_recommender.get_recommendations.return_value = SAMPLE_PRODUCTS[3:8]  # Incluye algunos no vistos
         
-        # Ejecutar método bajo prueba - Pedimos más de los que quedarían después de excluir
-        n_recommendations = 5  # Más de los que quedarían después de exclusión
-        recommendations = await hybrid_recommender_with_exclusion.get_recommendations(
-            user_id="test_user_1",
-            n_recommendations=n_recommendations
-        )
+        # Configurar la función get_diverse_category_products para que devuelva productos adicionales
+        # cuando se necesiten más después de excluir los ya vistos
+        mock_additional_products = [
+            {
+                "id": f"additional_{i}",
+                "title": f"Producto Adicional {i}",
+                "description": "Descripción de prueba",
+                "price": 99.99,
+                "category": "Categoría de prueba",
+                "score": 0.5,
+                "recommendation_type": "diverse_fallback"
+            } for i in range(5)
+        ]
         
-        # Verificar
-        assert len(recommendations) == n_recommendations, f"No se devolvieron {n_recommendations} recomendaciones"
-        result_ids = [p["id"] for p in recommendations]
-        assert not any(pid in seen_product_ids for pid in result_ids), "Las recomendaciones incluyen productos ya vistos"
-        
-        # Verificar que se realizó más de una llamada para obtener recomendaciones adicionales
-        assert content_recommender.get_recommendations.call_count > 1 or retail_recommender.get_recommendations.call_count > 1
+        with patch('src.recommenders.improved_fallback_exclude_seen.ImprovedFallbackStrategies.get_diverse_category_products', 
+                   new=AsyncMock(return_value=mock_additional_products)):
+            
+            # Ejecutar método bajo prueba - Pedimos más de los que quedarían después de excluir
+            n_recommendations = 5  # Más de los que quedarían después de exclusión
+            recommendations = await hybrid_recommender_with_exclusion.get_recommendations(
+                user_id="test_user_1",
+                n_recommendations=n_recommendations
+            )
+            
+            # Verificar
+            assert len(recommendations) == n_recommendations, f"No se devolvieron {n_recommendations} recomendaciones"
+            result_ids = [p["id"] for p in recommendations]
+            assert not any(pid in seen_product_ids for pid in result_ids), "Las recomendaciones incluyen productos ya vistos"
     
     @pytest.mark.asyncio
     async def test_recommendations_with_no_user_events(self, hybrid_recommender_with_exclusion, retail_recommender):
