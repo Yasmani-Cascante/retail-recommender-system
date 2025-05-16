@@ -241,6 +241,32 @@ class TFIDFRecommender:
             logger.error(f"Error en búsqueda de productos: {e}")
             return []
     
+    def get_product_by_id(self, product_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Obtiene un producto del catálogo local por su ID.
+        
+        Args:
+            product_id: ID del producto a buscar
+            
+        Returns:
+            Dict con la información del producto, o None si no se encuentra
+        """
+        if not self.loaded or not self.product_data:
+            logger.warning("El recomendador TF-IDF no está cargado o no tiene datos de productos")
+            return None
+            
+        try:
+            # Buscar producto por ID
+            for product in self.product_data:
+                if str(product.get('id', '')) == str(product_id):
+                    return product
+            
+            logger.warning(f"Producto con ID {product_id} no encontrado en el catálogo local")
+            return None
+        except Exception as e:
+            logger.error(f"Error al buscar producto por ID: {e}")
+            return None
+
     async def health_check(self) -> Dict[str, Any]:
         """
         Verifica el estado del recomendador.

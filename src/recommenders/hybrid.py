@@ -1,6 +1,9 @@
 from typing import List, Dict, Optional
+import logging
 from .content_based import ContentBasedRecommender
 from .retail_api import RetailAPIRecommender
+
+logger = logging.getLogger(__name__)
 
 class HybridRecommender:
     def __init__(
@@ -38,6 +41,21 @@ class HybridRecommender:
         Returns:
             List[Dict]: Lista de productos recomendados
         """
+        logger.info(f"Solicitando recomendaciones híbridas: user_id={user_id}, product_id={product_id}, n={n_recommendations}")
+        
+        # Verificar disponibilidad del catálogo local
+        catalog_available = False
+        catalog_size = 0
+        
+        if hasattr(self.content_recommender, 'product_data') and self.content_recommender.product_data:
+            catalog_available = True
+            catalog_size = len(self.content_recommender.product_data)
+        
+        logger.info(f"Estado del catálogo local: Disponible={catalog_available}, Tamaño={catalog_size}")
+        if catalog_available and catalog_size > 0:
+            sample_product = self.content_recommender.product_data[0]
+            logger.info(f"Muestra de producto en catálogo: ID={sample_product.get('id')}, Título={sample_product.get('title')}")
+        
         # Obtener recomendaciones de ambos sistemas
         content_recs = []
         retail_recs = []
@@ -45,26 +63,80 @@ class HybridRecommender:
         # Si hay un product_id, obtener recomendaciones basadas en contenido
         if product_id:
             try:
-                content_recs = self.content_recommender.recommend(product_id, n_recommendations)
-                print(f"Obtenidas {len(content_recs)} recomendaciones basadas en contenido para producto {product_id}")
+                content_recs = await self.content_recommender.get_recommendations(product_id, n_recommendations)
+                logger.info(f"Obtenidas {len(content_recs)} recomendaciones basadas en contenido para producto {product_id}")
             except Exception as e:
-                print(f"Error al obtener recomendaciones basadas en contenido: {str(e)}")
+                logger.error(f"Error al obtener recomendaciones basadas en contenido: {str(e)}")
         
         # Intentar obtener recomendaciones de Retail API
         try:
+            logger.info(f"Solicitando recomendaciones a RetailAPIRecommender para usuario {user_id}")
+            
             retail_recs = await self.retail_recommender.get_recommendations(
                 user_id=user_id,
                 product_id=product_id,
                 n_recommendations=n_recommendations
             )
-            print(f"Obtenidas {len(retail_recs)} recomendaciones de Retail API para usuario {user_id}")
+            
+            logger.info(f"RetailAPIRecommender devolvió {len(retail_recs)} recomendaciones")
+            for i, rec in enumerate(retail_recs[:3]):  # Mostrar solo primeras 3 para no saturar logs
+                logger.info(f"Recomendación {i+1}: ID={rec.get('id')}, Título={rec.get('title')}, Categoría={rec.get('category')}")
         except Exception as e:
-            print(f"Error al obtener recomendaciones de Retail API: {str(e)}")
+            logger.error(f"Error al obtener recomendaciones de Retail API: {str(e)}")
+        
+        # Si estamos solicitando recomendaciones para un usuario (sin product_id) 
+        # y obtenemos recomendaciones de RetailAPI, enriquecerlas con catálogo local
+        if not product_id and retail_recs:
+            logger.info(f"Procesando {len(retail_recs)} recomendaciones para usuario {user_id} de RetailAPI")
+            
+            # Verificar si hay catálogo para enriquecimiento
+            if catalog_available:
+                # Intentar enriquecer recomendaciones con datos locales
+                logger.info("Intentando enriquecer recomendaciones con catálogo local")
+                enriched_recs = []
+                
+                for rec in retail_recs:
+                    product_id = rec.get("id")
+                    product = next((p for p in self.content_recommender.product_data 
+                                  if str(p.get('id', '')) == str(product_id)), None)
+                    
+                    if product:
+                        # Extraer precio si está disponible
+                        price = 0.0
+                        if product.get("variants") and len(product["variants"]) > 0:
+                            try:
+                                price = float(product["variants"][0].get("price", "0"))
+                            except (ValueError, TypeError):
+                                price = 0.0
+                        
+                        # Crear recomendación enriquecida
+                        enriched_rec = {
+                            "id": product_id,
+                            "title": product.get("title", rec.get("title", "Producto")),
+                            "description": product.get("body_html", "").replace("<p>", "").replace("</p>", ""),
+                            "price": price,
+                            "category": product.get("product_type", rec.get("category", "")),
+                            "score": rec.get("score", 0.0),
+                            "source": rec.get("source", "retail_api")
+                        }
+                        
+                        enriched_recs.append(enriched_rec)
+                        logger.info(f"Producto ID={product_id} enriquecido: Título={enriched_rec['title']}, Categoría={enriched_rec['category']}")
+                    else:
+                        logger.warning(f"Producto ID={product_id} no encontrado en catálogo local, usando datos originales")
+                        enriched_recs.append(rec)
+                        
+                logger.info(f"Enriquecidas {len(enriched_recs)} recomendaciones para usuario {user_id}")
+                return enriched_recs
+            else:
+                logger.warning("No hay catálogo local para enriquecimiento, devolviendo recomendaciones originales")
+            
+            return retail_recs
         
         # Si no hay producto_id y tampoco recomendaciones de Retail API,
         # usar recomendaciones basadas en productos populares o aleatorios
         if not product_id and not retail_recs:
-            print("Usando recomendaciones de fallback")
+            logger.info("Usando recomendaciones de fallback")
             return self._get_fallback_recommendations(n_recommendations)
             
         # Si hay product_id, combinar ambas recomendaciones
@@ -102,10 +174,40 @@ class HybridRecommender:
         # Procesar recomendaciones basadas en contenido
         for rec in content_recs:
             product_id = rec["id"]
-            combined_scores[product_id] = {
-                **rec,
-                "final_score": rec.get("similarity_score", 0) * self.content_weight
-            }
+            product_data = rec.get("product_data", {})
+            
+            # Si tenemos product_data, extraer información detallada
+            if product_data:
+                # Extraer precio si está disponible
+                price = 0.0
+                if product_data.get("variants") and len(product_data["variants"]) > 0:
+                    try:
+                        price = float(product_data["variants"][0].get("price", "0"))
+                    except (ValueError, TypeError):
+                        price = 0.0
+                        
+                # Crear recomendación con información enriquecida
+                enriched_rec = {
+                    "id": product_id,
+                    "title": product_data.get("title", rec.get("title", "Producto")),
+                    "description": product_data.get("body_html", "").replace("<p>", "").replace("</p>", ""),
+                    "price": price,
+                    "category": product_data.get("product_type", ""),
+                    "similarity_score": rec.get("similarity_score", 0),
+                    "score": rec.get("similarity_score", 0),  # Para compatibilidad
+                    "source": "tfidf"
+                }
+                
+                combined_scores[product_id] = {
+                    **enriched_rec,
+                    "final_score": rec.get("similarity_score", 0) * self.content_weight
+                }
+            else:
+                # Si no hay product_data, usar la recomendación original
+                combined_scores[product_id] = {
+                    **rec,
+                    "final_score": rec.get("similarity_score", 0) * self.content_weight
+                }
             
         # Procesar recomendaciones de Retail API
         for rec in retail_recs:
@@ -127,6 +229,11 @@ class HybridRecommender:
             reverse=True
         )
         
+        # Loguear las recomendaciones combinadas para depuración
+        logger.info(f"Combinados {len(sorted_recs)} resultados - Mostrando primeros 3:")
+        for i, rec in enumerate(sorted_recs[:3]):
+            logger.info(f"Recomendación combinada {i+1}: ID={rec.get('id')}, Título={rec.get('title')}, Score={rec.get('final_score')}")
+            
         return sorted_recs[:n_recommendations]
     
     def _get_fallback_recommendations(self, n_recommendations: int = 5) -> List[Dict]:
@@ -180,7 +287,8 @@ class HybridRecommender:
         self,
         user_id: str,
         event_type: str,
-        product_id: Optional[str] = None
+        product_id: Optional[str] = None,
+        purchase_amount: Optional[float] = None
     ):
         """
         Registra eventos de usuario para mejorar las recomendaciones futuras.
@@ -193,5 +301,6 @@ class HybridRecommender:
         return await self.retail_recommender.record_user_event(
             user_id=user_id,
             event_type=event_type,
-            product_id=product_id
+            product_id=product_id,
+            purchase_amount=purchase_amount
         )

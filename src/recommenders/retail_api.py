@@ -54,63 +54,162 @@ class RetailAPIRecommender:
             )
     
     def _process_predictions(self, response) -> List[Dict]:
+        """
+        Procesa la respuesta de la API de Google Cloud Retail y extrae las recomendaciones.
+        Maneja múltiples formatos de respuesta para diferentes tipos de consultas.
+        
+        Args:
+            response: Respuesta de la API de Google Cloud Retail
+            
+        Returns:
+            List[Dict]: Lista de productos recomendados con toda la información disponible
+        """
         recommendations = []
         try:
             # Log detallado de la estructura de respuesta para diagnóstico
             logging.info(f"Tipo de respuesta: {type(response)}")
-            logging.info(f"Atributos disponibles en respuesta: {dir(response)}")
+            logging.debug(f"Estructura completa de respuesta: {response}")
             
-            # Verificar si tiene el campo 'results'
-            if not hasattr(response, 'results') or not response.results:
-                logging.warning("La respuesta no contiene resultados")
-                return []
+            # Función auxiliar para extraer información de producto de diferentes estructuras
+            def extract_product_info(item, source_type):
+                product_info = {
+                    "id": "",
+                    "title": "Producto",  # Valor por defecto
+                    "description": "",
+                    "price": 0.0,
+                    "category": "",
+                    "score": 0.0,
+                    "source": "retail_api"
+                }
                 
-            for result in response.results:
-                logging.debug(f"Tipo de resultado: {type(result)}")
-                logging.debug(f"Atributos disponibles en resultado: {dir(result)}")
+                # Registrar tipo de estructura para diagnóstico
+                logging.debug(f"Extrayendo información de producto desde {source_type}: {type(item)}")
                 
-                # Método más seguro para extraer información
-                # Primero verificamos si result tiene el atributo 'product' directamente
-                if hasattr(result, 'product') and result.product:
-                    # Estructura original esperada
-                    recommendations.append({
-                        "id": result.product.id,
-                        "title": result.product.title,
-                        "description": result.product.description or "",
-                        "price": result.product.price_info.price if hasattr(result.product, 'price_info') and result.product.price_info else 0.0,
-                        "category": result.product.categories[0] if hasattr(result.product, 'categories') and result.product.categories else "",
-                        "score": float(result.metadata.get("predictScore", 0.0)) if hasattr(result, 'metadata') else 0.0,
-                        "source": "retail_api"
-                    })
-                # Alternativa: verificar si el resultado contiene un ID directamente 
-                elif hasattr(result, 'id'):
-                    # Estructura alternativa
-                    recommendations.append({
-                        "id": result.id,
-                        "title": getattr(result, 'title', "Producto"),
-                        "description": getattr(result, 'description', ""),
-                        "price": getattr(result, 'price', 0.0),
-                        "category": getattr(result, 'category', ""),
-                        "score": getattr(result, 'score', 0.0),
-                        "source": "retail_api"
-                    })
-                # Si es un diccionario, extraer campos directamente
-                elif hasattr(result, 'to_dict'):
-                    result_dict = result.to_dict()
-                    logging.debug(f"Campos disponibles en diccionario de resultado: {result_dict.keys()}")
+                # Extraer ID (obligatorio)
+                if hasattr(item, 'id'):
+                    product_info["id"] = item.id
+                elif hasattr(item, 'product') and hasattr(item.product, 'id'):
+                    product_info["id"] = item.product.id
+                
+                # Si no hay ID, no podemos procesar este item
+                if not product_info["id"]:
+                    logging.warning(f"No se pudo extraer ID de producto desde {source_type}")
+                    return None
                     
-                    # Intentar extraer campos conocidos
-                    if 'id' in result_dict:
-                        recommendations.append({
-                            "id": str(result_dict.get('id', '')),
-                            "title": result_dict.get('title', "Producto"),
-                            "description": result_dict.get('description', ""),
-                            "price": float(result_dict.get('price', 0.0)),
-                            "category": result_dict.get('category', ""),
-                            "score": float(result_dict.get('score', 0.0)),
-                            "source": "retail_api"
-                        })
+                # Extraer título
+                if hasattr(item, 'title') and item.title:
+                    product_info["title"] = item.title
+                elif hasattr(item, 'product') and hasattr(item.product, 'title') and item.product.title:
+                    product_info["title"] = item.product.title
+                elif hasattr(item, 'name') and item.name:
+                    name_parts = item.name.split('/')
+                    if name_parts:
+                        product_info["title"] = name_parts[-1]
+                elif hasattr(item, 'product') and hasattr(item.product, 'name') and item.product.name:
+                    name_parts = item.product.name.split('/')
+                    if name_parts:
+                        product_info["title"] = name_parts[-1]
+                    
+                # Extraer descripción
+                if hasattr(item, 'description') and item.description:
+                    product_info["description"] = item.description
+                elif hasattr(item, 'product') and hasattr(item.product, 'description') and item.product.description:
+                    product_info["description"] = item.product.description
+                    
+                # Extraer precio
+                price = 0.0
+                if hasattr(item, 'price') and item.price:
+                    try:
+                        price = float(item.price)
+                    except (ValueError, TypeError):
+                        pass
+                elif hasattr(item, 'product') and hasattr(item.product, 'price_info') and item.product.price_info:
+                    try:
+                        price = float(item.product.price_info.price)
+                    except (ValueError, TypeError):
+                        pass
+                product_info["price"] = price
+                    
+                # Extraer categoría
+                if hasattr(item, 'category') and item.category:
+                    product_info["category"] = item.category
+                elif hasattr(item, 'product') and hasattr(item.product, 'categories') and item.product.categories:
+                    product_info["category"] = item.product.categories[0] if len(item.product.categories) > 0 else ""
+                    
+                # Extraer score
+                if hasattr(item, 'score') and item.score:
+                    product_info["score"] = float(item.score)
+                elif hasattr(item, 'metadata') and hasattr(item.metadata, 'get'):
+                    product_info["score"] = float(item.metadata.get("predictScore", 0.0))
+                    
+                # Intentar extraer información adicional si está disponible
+                if hasattr(item, 'product'):
+                    # Extraer URLs de imágenes si están disponibles
+                    if hasattr(item.product, 'images') and item.product.images:
+                        image_uris = [img.uri for img in item.product.images if hasattr(img, 'uri')]
+                        if image_uris:
+                            product_info["images"] = image_uris
+                    
+                    # Extraer atributos adicionales si están disponibles
+                    if hasattr(item.product, 'attributes') and item.product.attributes:
+                        attributes = {}
+                        for key, value in item.product.attributes.items():
+                            if hasattr(value, 'text') and value.text:
+                                attributes[key] = value.text[0] if value.text else None
+                        if attributes:
+                            product_info["attributes"] = attributes
+                
+                return product_info
+                
+            # Verificar si tiene el campo 'results'
+            if hasattr(response, 'results') and response.results:
+                logging.info(f"Procesando respuesta con {len(response.results)} resultados en campo 'results'")
+                for result in response.results:
+                    product_info = extract_product_info(result, "results")
+                    if product_info:
+                        recommendations.append(product_info)
                         
+            # Verificar estructura alternativa (recomendaciones basadas en usuario)
+            elif hasattr(response, 'recommendations'):
+                logging.info(f"Procesando respuesta con {len(response.recommendations)} elementos en campo 'recommendations'")
+                
+                for rec in response.recommendations:
+                    product_info = extract_product_info(rec, "recommendations")
+                    if product_info:
+                        recommendations.append(product_info)
+            
+            # Verificar estructura con campo 'prediction_results' (nuevo formato posible)
+            elif hasattr(response, 'prediction_results'):
+                logging.info(f"Procesando respuesta con {len(response.prediction_results)} elementos en campo 'prediction_results'")
+                
+                for result in response.prediction_results:
+                    product_info = extract_product_info(result, "prediction_results")
+                    if product_info:
+                        recommendations.append(product_info)
+                        
+            else:
+                # Intentar procesar respuesta como diccionario
+                if hasattr(response, '__dict__') or isinstance(response, dict):
+                    response_dict = response.__dict__ if hasattr(response, '__dict__') else response
+                    logging.info(f"Intentando procesar respuesta como diccionario: {list(response_dict.keys())}")
+                    
+                    # Buscar campos que puedan contener recomendaciones
+                    possible_fields = ['results', 'recommendations', 'prediction_results', 'items']
+                    for field in possible_fields:
+                        if field in response_dict and response_dict[field]:
+                            logging.info(f"Encontrado campo '{field}' con {len(response_dict[field])} elementos")
+                            for item in response_dict[field]:
+                                product_info = extract_product_info(item, field)
+                                if product_info:
+                                    recommendations.append(product_info)
+                            break
+                
+                if not recommendations:
+                    logging.warning("La respuesta no contiene resultados en un formato reconocido")
+                    logging.debug(f"Contenido de respuesta: {response}")
+                    return []
+                        
+            # Log de resultados
             logging.info(f"Procesadas {len(recommendations)} recomendaciones")
             return recommendations
         except Exception as e:

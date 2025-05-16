@@ -222,7 +222,7 @@ if ($ServiceUrl) {
     
     Write-Host "`nProbando recomendaciones para usuario..." -ForegroundColor Cyan
     try {
-        $UserRecommendationUrl = "$ServiceUrl/v1/recommendations/user/test_user_fixed?n=5"
+        $UserRecommendationUrl = "$ServiceUrl/v1/recommendations/user/8831066177845?n=5"
         Write-Host "  Solicitando: $UserRecommendationUrl" -ForegroundColor Gray
         $UserRecommendationResponse = Invoke-RestMethod -Uri $UserRecommendationUrl -Method Get -Headers $Headers
         
