@@ -81,7 +81,8 @@ class HybridRecommender:
         self,
         content_recommender,
         retail_recommender,
-        content_weight: float = 0.5
+        content_weight: float = 0.5,
+        product_cache = None
     ):
         """
         Inicializa el recomendador hÃ­brido adaptado para TF-IDF.
@@ -90,11 +91,17 @@ class HybridRecommender:
             content_recommender: Instancia de TFIDFRecommender
             retail_recommender: Instancia de RetailAPIRecommender
             content_weight: Peso para las recomendaciones basadas en contenido (0-1)
+            product_cache: Caché de productos (opcional)
         """
         self.content_recommender = content_recommender
         self.retail_recommender = retail_recommender
         self.content_weight = content_weight
+        self.product_cache = product_cache
         logger.info(f"HybridRecommender inicializado con content_weight={content_weight}")
+        if product_cache:
+            logger.info("HybridRecommender utilizando sistema de caché de productos")
+        else:
+            logger.info("HybridRecommender sin sistema de caché de productos")
         
     async def get_recommendations(
         self,
@@ -171,16 +178,22 @@ class HybridRecommender:
             )
             
         # Si hay product_id, combinar ambas recomendaciones
+        combined_recs = None
         if product_id:
-            recommendations = await self._combine_recommendations(
+            combined_recs = await self._combine_recommendations(
                 content_recs,
                 retail_recs,
                 n_recommendations
             )
-            return recommendations
+        else:
+            # Si no hay product_id, usar solo recomendaciones de Retail API
+            combined_recs = retail_recs
         
-        # Si no hay product_id, usar solo recomendaciones de Retail API
-        return retail_recs
+        # Enriquecer recomendaciones si está disponible el sistema de caché
+        if self.product_cache:
+            return await self._enrich_recommendations(combined_recs, user_id)
+        else:
+            return combined_recs
         
     async def _combine_recommendations(
         self,
@@ -282,6 +295,104 @@ class HybridRecommender:
         logger.info(f"Generadas {len(recommendations)} recomendaciones de fallback")
         return recommendations
         
+    async def _enrich_recommendations(self, recommendations: List[Dict], user_id: str = None) -> List[Dict]:
+        """
+        Enriquece las recomendaciones con datos detallados de productos.
+        
+        Args:
+            recommendations: Lista de recomendaciones básicas
+            user_id: ID del usuario (para logging)
+            
+        Returns:
+            Lista de recomendaciones enriquecidas
+        """
+        if not recommendations:
+            return []
+            
+        logger.info(f"Enriqueciendo {len(recommendations)} recomendaciones para usuario {user_id or 'anonymous'}")
+        
+        # Verificar si tenemos caché de productos
+        if not self.product_cache:
+            logger.warning("No hay caché de productos disponible para enriquecer recomendaciones")
+            return recommendations
+            
+        # Extraer IDs de productos
+        product_ids = [rec.get("id") for rec in recommendations if rec.get("id")]
+        
+        # Precargar productos
+        await self.product_cache.preload_products(product_ids)
+        
+        enriched_recommendations = []
+        
+        for rec in recommendations:
+            product_id = rec.get("id")
+            if not product_id:
+                enriched_recommendations.append(rec)
+                continue
+                
+            enriched_rec = rec.copy()
+            
+            # Obtener información completa del producto usando la caché
+            product = await self.product_cache.get_product(product_id)
+            
+            if product:
+                # Enriquecer con datos del producto
+                enriched_rec["title"] = product.get("title", product.get("name", rec.get("title", "Producto")))
+                
+                # Extraer descripción
+                description = (
+                    product.get("body_html") or 
+                    product.get("description") or 
+                    product.get("body", "")
+                )
+                enriched_rec["description"] = description
+                
+                # Extraer precio
+                price = 0.0
+                if product.get("variants") and len(product["variants"]) > 0:
+                    try:
+                        price = float(product["variants"][0].get("price", 0.0))
+                    except (ValueError, TypeError):
+                        price = product.get("price", 0.0)
+                else:
+                    price = product.get("price", 0.0)
+                
+                enriched_rec["price"] = price
+                
+                # Extraer categoría
+                category = (
+                    product.get("product_type") or 
+                    product.get("category", "")
+                )
+                enriched_rec["category"] = category
+                
+                # Extraer imágenes si están disponibles
+                if product.get("images") and isinstance(product["images"], list) and len(product["images"]) > 0:
+                    enriched_rec["image_url"] = product["images"][0].get("src", "")
+                
+                logger.info(f"Producto ID={product_id} enriquecido: Título={enriched_rec['title'][:30]}..., Categoría={category}")
+            else:
+                # Si no se encuentra información completa
+                logger.warning(f"No se pudo obtener información completa para producto ID={product_id}")
+                
+                # Usar información existente o valores predeterminados
+                if not enriched_rec.get("title") or enriched_rec["title"] == "Producto":
+                    enriched_rec["title"] = f"Producto {product_id}"
+                    
+                # Marcar para diagnóstico
+                enriched_rec["_incomplete_data"] = True
+            
+            enriched_recommendations.append(enriched_rec)
+        
+        logger.info(f"Enriquecidas {len(enriched_recommendations)} recomendaciones")
+        
+        # Registrar estadísticas para monitoreo
+        if self.product_cache:
+            cache_stats = self.product_cache.get_stats()
+            logger.info(f"Estadísticas de caché: Hit ratio={cache_stats['hit_ratio']:.2f}")
+        
+        return enriched_recommendations
+    
     async def record_user_event(
         self,
         user_id: str,
@@ -438,7 +549,7 @@ async def load_recommender():
 @app.on_event("startup")
 async def startup_event():
     """Evento de inicio de la aplicaciÃ³n."""
-    logger.info("ðŸš€ Iniciando API de recomendaciones con conexiÃ³n a Shopify...")
+    logger.info("ðŸš€ Iniciando API de recomendaciones con conexiÃ³n a Shopify y Redis...")
     
     # NUEVO: Verificar estructura del catálogo en Retail API
     try:
@@ -447,6 +558,35 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"Error al verificar estructura del catálogo: {str(e)}")
         logger.warning("Continuando con la inicialización a pesar del error en la verificación de ramas")
+    
+    # NUEVO: Inicializar cliente Redis y caché de productos
+    from src.api.factories import RecommenderFactory
+    
+    # Crear cliente Redis
+    global redis_client
+    redis_client = RecommenderFactory.create_redis_client()
+    logger.info("Cliente Redis inicializado")
+    
+    # Crear caché de productos
+    global product_cache
+    product_cache = RecommenderFactory.create_product_cache(
+        content_recommender=tfidf_recommender,
+        shopify_client=get_shopify_client()
+    )
+    
+    if product_cache:
+        logger.info("Sistema de caché de productos inicializado correctamente")
+    else:
+        logger.warning("Sistema de caché de productos no disponible - usando modo sin caché")
+    
+    # Actualizar hybrid_recommender para usar la caché
+    global hybrid_recommender
+    hybrid_recommender = HybridRecommender(
+        tfidf_recommender,
+        retail_recommender,
+        content_weight=0.5,
+        product_cache=product_cache
+    )
     
     # Registrar componentes en el gestor de arranque
     startup_manager.register_component(
@@ -482,11 +622,37 @@ async def health_check():
     recommender_status = await tfidf_recommender.health_check()
     startup_status = startup_manager.get_status()
     
+    # Añadir estado de Redis/caché si está disponible
+    cache_status = {}
+    if 'product_cache' in globals() and product_cache:
+        try:
+            cache_stats = product_cache.get_stats()
+            # Obtener estado de conexión Redis
+            redis_status = "connected" if (product_cache.redis and product_cache.redis.connected) else "disconnected"
+            
+            cache_status = {
+                "status": "operational" if redis_status == "connected" else "degraded",
+                "redis_connection": redis_status,
+                "hit_ratio": cache_stats["hit_ratio"],
+                "stats": cache_stats
+            }
+        except Exception as e:
+            cache_status = {
+                "status": "error",
+                "error": str(e)
+            }
+    else:
+        cache_status = {
+            "status": "unavailable",
+            "message": "Product cache not initialized"
+        }
+    
     return {
         "status": startup_status["status"],
         "components": {
             "recommender": recommender_status,
-            "startup": startup_status
+            "startup": startup_status,
+            "cache": cache_status  # Añadir componente de caché
         },
         "uptime_seconds": time.time() - start_time
     }

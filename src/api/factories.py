@@ -6,6 +6,7 @@ del sistema de recomendaciones según la configuración.
 """
 
 import logging
+import asyncio
 from src.api.core.config import get_settings
 from src.recommenders.tfidf_recommender import TFIDFRecommender
 from src.recommenders.retail_api import RetailAPIRecommender
@@ -95,3 +96,92 @@ class RecommenderFactory:
                 retail_recommender=retail_recommender, 
                 content_weight=settings.content_weight
             )
+
+    @staticmethod
+    def create_redis_client():
+        """
+        Crea un cliente Redis según la configuración.
+        
+        Returns:
+            RedisClient: Cliente Redis configurado o None si está desactivado
+        """
+        settings = get_settings()
+        
+        if not settings.use_redis_cache:
+            logger.info("Caché Redis desactivada por configuración")
+            return None
+            
+        try:
+            from src.api.core.redis_client import RedisClient
+            
+            logger.info(f"Creando cliente Redis: {settings.redis_host}:{settings.redis_port}")
+            
+            redis_client = RedisClient(
+                host=settings.redis_host,
+                port=settings.redis_port,
+                db=settings.redis_db,
+                password=settings.redis_password,
+                ssl=settings.redis_ssl
+            )
+            
+            # Iniciar conexión en segundo plano
+            asyncio.create_task(redis_client.connect())
+            
+            return redis_client
+        except ImportError:
+            logger.error("No se pudo importar RedisClient. Asegúrate de que redis-py está instalado.")
+            return None
+        except Exception as e:
+            logger.error(f"Error creando cliente Redis: {str(e)}")
+            return None
+    
+    @staticmethod
+    def create_product_cache(content_recommender=None, shopify_client=None):
+        """
+        Crea un sistema de caché de productos.
+        
+        Args:
+            content_recommender: Recomendador TF-IDF para catálogo local
+            shopify_client: Cliente de Shopify para fallback
+            
+        Returns:
+            ProductCache: Sistema de caché configurado o None si está desactivado
+        """
+        settings = get_settings()
+        
+        if not settings.use_redis_cache:
+            logger.info("ProductCache desactivada por configuración")
+            return None
+            
+        try:
+            from src.api.core.product_cache import ProductCache
+            
+            # Crear cliente Redis
+            redis_client = RecommenderFactory.create_redis_client()
+            if not redis_client:
+                logger.warning("No se pudo crear cliente Redis, ProductCache desactivada")
+                return None
+            
+            logger.info(f"Creando ProductCache con TTL={settings.cache_ttl}s")
+            
+            # Crear caché de productos
+            cache = ProductCache(
+                redis_client=redis_client,
+                local_catalog=content_recommender,
+                shopify_client=shopify_client,
+                ttl_seconds=settings.cache_ttl,
+                prefix=settings.cache_prefix
+            )
+            
+            # Iniciar tareas en segundo plano si está configurado
+            if settings.cache_enable_background_tasks:
+                asyncio.create_task(cache.start_background_tasks())
+                logger.info("Tareas en segundo plano de ProductCache iniciadas")
+            
+            return cache
+        except ImportError:
+            logger.error("No se pudo importar ProductCache.")
+            return None
+        except Exception as e:
+            logger.error(f"Error creando ProductCache: {str(e)}")
+            return None

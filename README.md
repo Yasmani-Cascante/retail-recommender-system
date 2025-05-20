@@ -7,6 +7,7 @@ Sistema de recomendaciones para retail que combina recomendaciones basadas en co
 - API REST con FastAPI
 - Sistema de recomendaciones híbrido
 - Integración con Google Cloud Retail API
+- Sistema de caché híbrido con Redis
 - Autenticación y autorización
 - Logging y monitoreo
 - Despliegue en Google Cloud Platform
@@ -17,6 +18,7 @@ Sistema de recomendaciones para retail que combina recomendaciones basadas en co
 - Python 3.9+
 - Google Cloud Platform account
 - Google Cloud SDK
+- Redis (opcional, para caché distribuida)
 
 ## Configuración Local
 
@@ -42,11 +44,61 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 # Editar .env con tus configuraciones
+# Ejemplo de configuraciones adicionales para Redis:
+# REDIS_HOST=localhost
+# REDIS_PORT=6379
+# REDIS_PASSWORD=
+# REDIS_SSL=false
+# USE_REDIS_CACHE=true
+# CACHE_TTL=86400
+# CACHE_PREFIX=product:
+# CACHE_ENABLE_BACKGROUND_TASKS=true
 ```
 
 5. Ejecutar la aplicación:
 ```bash
 python run.py
+```
+
+## Sistema de Caché Híbrido con Redis
+
+El sistema implementa un mecanismo de caché híbrido que utiliza Redis para optimizar el rendimiento y resolver el problema de enriquecimiento de productos que no existen en el catálogo local:
+
+### Características del Sistema de Caché
+
+- **Caché centralizada con Redis**: Proporciona almacenamiento en caché rápido y distribuido
+- **Múltiples niveles de fallback**: Redis -> Catálogo local -> Shopify -> Gateway -> Producto mínimo
+- **Estadisticas y monitoreo**: Seguimiento de hit ratio, éxitos y fallos
+- **Invalidación de caché**: Soporte para invalidar productos individuales o grupos
+- **Precarga de productos**: Optimización para cargar múltiples productos en paralelo
+- **Resiliencia ante fallos**: Degradación elegante cuando Redis no está disponible
+
+### Activación del Sistema de Caché
+
+Para activar el sistema de caché, configura las siguientes variables de entorno:
+
+```
+USE_REDIS_CACHE=true
+REDIS_HOST=localhost  # O la dirección del servidor Redis
+REDIS_PORT=6379
+```
+
+Para desplegar con caché en Google Cloud:
+
+```powershell
+# Crear instancia de Redis en Google Cloud Memorystore
+.\create_redis.ps1
+
+# Desplegar versión con caché
+.\deploy_cached.ps1
+```
+
+### Verificación del Sistema de Caché
+
+Para verificar que el sistema de caché está correctamente implementado y configurado:
+
+```bash
+python verify_cache_system.py
 ```
 
 ## Pruebas Unitarias y de Integración
@@ -63,13 +115,16 @@ Hemos implementado un conjunto completo de pruebas unitarias para los componente
 .\run_unit_tests.ps1
 ```
 
-También puedes ejecutar pruebas específicas:
+También puedes ejecutar pruebas específicas para el sistema de caché:
 
 ```bash
-pytest tests/unit/test_config.py -v          # Probar solo el sistema de configuración
-pytest tests/unit/test_factories.py -v       # Probar solo las fábricas
-pytest tests/unit/test_hybrid_recommender.py -v  # Probar solo el recomendador híbrido
-pytest tests/unit/test_extensions.py -v      # Probar solo el sistema de extensiones
+# En Windows
+python tests\test_redis_connection.py  # Probar conexión a Redis
+python tests\test_product_cache.py     # Probar sistema de caché de productos
+python tests\test_hybrid_recommender_with_cache.py  # Probar integración del recomendador híbrido con caché
+
+# Script de verificación completa del sistema de caché
+python verify_cache_system.py
 ```
 
 Para más detalles sobre las pruebas, consulte [tests/unit/README.md](tests/unit/README.md).
@@ -94,6 +149,11 @@ SHOPIFY_ACCESS_TOKEN=your_access_token
 
 # Google Cloud Storage
 GCS_BUCKET_NAME=your_bucket_name
+
+# Redis (if using cloud Redis)
+REDIS_HOST=your_redis_host
+REDIS_PORT=your_redis_port
+REDIS_PASSWORD=your_redis_password
 ```
 
 3. Para los scripts PowerShell, las variables se cargan automáticamente desde `.env.secrets`
@@ -119,12 +179,13 @@ gcloud auth configure-docker
 gcloud services enable cloudbuild.googleapis.com
 gcloud services enable run.googleapis.com
 gcloud services enable retail.googleapis.com
+gcloud services enable redis.googleapis.com  # Para Redis Memorystore
 ```
 
 3. Configurar variables de entorno en GCP:
 ```bash
 gcloud run services update retail-recommender \
-  --update-env-vars "API_KEY=your-api-key,GOOGLE_PROJECT_NUMBER=your-project-number"
+  --update-env-vars "API_KEY=your-api-key,GOOGLE_PROJECT_NUMBER=your-project-number,USE_REDIS_CACHE=true,REDIS_HOST=your-redis-host,REDIS_PORT=your-redis-port"
 ```
 
 4. Desplegar con Cloud Build:
@@ -132,10 +193,13 @@ gcloud run services update retail-recommender \
 gcloud builds submit --config cloudbuild.yaml
 ```
 
-5. Desplegar la versión unificada:
+5. Desplegar la versión unificada o con caché:
 ```powershell
-# En Windows
+# Desplegar versión unificada en Windows
 .\deploy_unified.ps1
+
+# Desplegar versión con caché en Windows
+.\deploy_cached.ps1
 ```
 
 ## Documentación API
@@ -152,6 +216,7 @@ La documentación de la API está disponible en:
 - `GET /v1/products/category/{category}`: Lista productos por categoría
 - `GET /v1/products/search/`: Busca productos
 - `GET /v1/metrics`: Obtiene métricas del sistema de recomendaciones
+- `GET /health`: Comprueba el estado del sistema, incluyendo estado de caché
 
 ## Arquitectura Unificada
 
@@ -161,6 +226,7 @@ El sistema utiliza una arquitectura unificada con:
 - **Fábricas de componentes**: Creación flexible de instancias
 - **Sistema de extensiones**: Funcionalidades modulares activables/desactivables
 - **Recomendador híbrido unificado**: Combinación de diferentes estrategias
+- **Sistema de caché híbrido**: Múltiples niveles de caché con fallback automático
 
 Para más detalles, consulte la documentación en la carpeta `docs/`.
 
@@ -170,6 +236,7 @@ Para más detalles, consulte la documentación en la carpeta `docs/`.
 - Métricas: Google Cloud Monitoring
 - Trazabilidad: Google Cloud Trace
 - Sistema interno de métricas: `/v1/metrics`
+- Estado de caché: `/health` incluye información detallada de caché
 
 ## Seguridad
 

@@ -1,66 +1,68 @@
 """
 Configuración centralizada para el sistema de recomendaciones.
 
-Este módulo proporciona una configuración centralizada basada en Pydantic
-que lee variables de entorno y proporciona valores por defecto cuando es necesario.
+Este módulo proporciona una configuración centralizada utilizando Pydantic
+para validar y cargar variables de entorno.
 """
 
 import os
-from pydantic import Field, ConfigDict
-from pydantic_settings import BaseSettings
-from typing import Dict, Any, Optional, List
+from typing import Optional
+from pydantic import BaseSettings, Field
 from functools import lru_cache
 
 class RecommenderSettings(BaseSettings):
+    """Configuración centralizada para el sistema de recomendaciones."""
+    
     # Configuración general
     app_name: str = "Retail Recommender API"
-    app_version: str = "1.0.0"
-    debug: bool = Field(default=False)
+    app_version: str = "0.5.0"
+    debug: bool = Field(default=False, env="DEBUG")
     
     # Configuración de Google Cloud
-    google_project_number: str
-    google_location: str = Field(default="global")
-    google_catalog: str = Field(default="default_catalog")
+    google_project_number: str = Field(default="178362262166", env="GOOGLE_PROJECT_NUMBER")
+    google_location: str = Field(default="global", env="GOOGLE_LOCATION")
+    google_catalog: str = Field(default="default_catalog", env="GOOGLE_CATALOG")
     google_serving_config: str = Field(
-        default="default_recommendation_config"
+        default="default_recommendation_config", 
+        env="GOOGLE_SERVING_CONFIG"
     )
-    use_gcs_import: bool = Field(default=True)
-    gcs_bucket_name: Optional[str] = Field(default=None)
+    use_gcs_import: bool = Field(default=True, env="USE_GCS_IMPORT")
+    gcs_bucket_name: Optional[str] = Field(default=None, env="GCS_BUCKET_NAME")
     
     # Configuración de Shopify
-    shopify_shop_url: Optional[str] = Field(default=None)
-    shopify_access_token: Optional[str] = Field(default=None)
+    shopify_shop_url: Optional[str] = Field(default=None, env="SHOPIFY_SHOP_URL")
+    shopify_access_token: Optional[str] = Field(default=None, env="SHOPIFY_ACCESS_TOKEN")
     
     # Configuración de seguridad
-    api_key: str
+    api_key: Optional[str] = Field(default=None, env="API_KEY")
     
     # Configuración de recomendadores
-    content_weight: float = Field(default=0.5)
+    content_weight: float = Field(default=0.5, env="CONTENT_WEIGHT")
     
     # Características activables
-    use_metrics: bool = Field(default=True)
-    exclude_seen_products: bool = Field(default=True)
-    validate_products: bool = Field(default=True)
-    use_fallback: bool = Field(default=True)
+    metrics_enabled: bool = Field(default=True, env="METRICS_ENABLED")
+    exclude_seen_products: bool = Field(default=True, env="EXCLUDE_SEEN_PRODUCTS")
     
     # Configuración de moneda
-    default_currency: str = Field(default="COP")
+    default_currency: str = Field(default="COP", env="DEFAULT_CURRENCY")
     
     # Configuración de inicialización
-    startup_timeout: float = Field(default=300.0)
+    startup_timeout: float = Field(default=300.0, env="STARTUP_TIMEOUT")
     
-    # Configuración de cachés
-    use_redis_cache: bool = Field(default=False)
-    redis_url: Optional[str] = Field(default=None)
-    cache_ttl: int = Field(default=3600)
+    # Configuración de Redis Cache
+    use_redis_cache: bool = Field(default=False, env="USE_REDIS_CACHE")
+    redis_host: str = Field(default="localhost", env="REDIS_HOST")
+    redis_port: int = Field(default=6379, env="REDIS_PORT")
+    redis_db: int = Field(default=0, env="REDIS_DB")
+    redis_password: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
+    redis_ssl: bool = Field(default=False, env="REDIS_SSL")
+    cache_ttl: int = Field(default=3600, env="CACHE_TTL")  # 1 hora por defecto
+    cache_prefix: str = Field(default="product:", env="CACHE_PREFIX")
+    cache_enable_background_tasks: bool = Field(default=True, env="CACHE_ENABLE_BACKGROUND_TASKS")
     
-    model_config = ConfigDict(
-        env_file=".env",
-        case_sensitive=False,
-        env_prefix="",
-        extra="ignore",
-        env_nested_delimiter="_"
-    )
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
 
 @lru_cache()
 def get_settings() -> RecommenderSettings:
