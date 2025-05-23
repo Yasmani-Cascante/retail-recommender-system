@@ -8,7 +8,7 @@ entre el recomendador híbrido y el sistema de caché de productos.
 
 import pytest
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 import json
 import logging
 
@@ -72,7 +72,7 @@ def mock_product_cache():
         return products.get(product_id)
     
     cache.get_product = mock_get_product
-    cache.preload_products = MagicMock(return_value=None)
+    cache.preload_products = AsyncMock()  # Use AsyncMock instead of None
     cache.get_stats = MagicMock(return_value={"hit_ratio": 0.75})
     
     return cache
@@ -80,7 +80,8 @@ def mock_product_cache():
 @pytest.mark.asyncio
 async def test_hybrid_recommender_with_cache():
     """Prueba el recomendador híbrido con sistema de caché."""
-    from src.recommenders.hybrid import HybridRecommender
+    # from src.recommenders.hybrid import HybridRecommender
+    from src.api.main_tfidf_shopify_with_metrics import HybridRecommender
     
     # Crear mocks
     tfidf_recommender = MagicMock()
@@ -137,7 +138,7 @@ async def test_hybrid_recommender_with_cache():
         return products_db.get(product_id)
     
     product_cache.get_product = mock_get_product
-    product_cache.preload_products = MagicMock(return_value=None)
+    product_cache.preload_products = AsyncMock()  # Use AsyncMock instead of None
     product_cache.get_stats = MagicMock(return_value={"hit_ratio": 0.75})
     
     # Crear recomendador híbrido con caché
@@ -176,7 +177,8 @@ async def test_hybrid_recommender_with_cache():
 @pytest.mark.asyncio
 async def test_enrich_recommendations():
     """Prueba el método _enrich_recommendations del recomendador híbrido."""
-    from src.recommenders.hybrid import HybridRecommender
+    # from src.recommenders.hybrid import HybridRecommender
+    from src.api.main_tfidf_shopify_with_metrics import HybridRecommender
     
     # Crear mocks
     tfidf_recommender = MagicMock()
@@ -207,7 +209,7 @@ async def test_enrich_recommendations():
         return products_db.get(product_id)
     
     product_cache.get_product = mock_get_product
-    product_cache.preload_products = MagicMock(return_value=None)
+    product_cache.preload_products = AsyncMock()  # Use AsyncMock instead of None
     product_cache.get_stats = MagicMock(return_value={"hit_ratio": 0.75})
     
     # Crear recomendador híbrido con caché

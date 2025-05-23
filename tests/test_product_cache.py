@@ -8,7 +8,7 @@ verificando su funcionamiento con Redis y diferentes fuentes de datos.
 
 import pytest
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 import json
 import logging
 
@@ -22,10 +22,10 @@ def mock_redis_client():
     """Crea un mock del cliente Redis."""
     redis = MagicMock()
     redis.connected = True
-    redis.get = MagicMock(return_value=None)
-    redis.set = MagicMock(return_value=True)
-    redis.delete = MagicMock(return_value=True)
-    redis.health_check = MagicMock(return_value={"connected": True, "stats": {}})
+    redis.get = AsyncMock(return_value=None)
+    redis.set = AsyncMock(return_value=True)
+    redis.delete = AsyncMock(return_value=True)
+    redis.health_check = AsyncMock(return_value={"connected": True, "stats": {}})
     return redis
 
 @pytest.fixture
@@ -61,7 +61,8 @@ async def test_get_product_from_redis(product_cache, mock_redis_client):
     """Prueba la obtención de producto desde Redis."""
     # Configurar mock de Redis para devolver datos
     test_product = {"id": "123", "title": "Redis Product"}
-    mock_redis_client.get.return_value = json.dumps(test_product)
+    # Crear un nuevo AsyncMock con el valor de retorno correcto instead of modifying return_value directly
+    mock_redis_client.get = AsyncMock(return_value=json.dumps(test_product))
     
     # Obtener producto
     product = await product_cache.get_product("123")
@@ -75,7 +76,7 @@ async def test_get_product_from_redis(product_cache, mock_redis_client):
 async def test_get_product_from_local_catalog(product_cache, mock_redis_client, mock_local_catalog):
     """Prueba la obtención de producto desde el catálogo local cuando no está en Redis."""
     # Configurar mock de Redis para devolver None (no encontrado)
-    mock_redis_client.get.return_value = None
+    mock_redis_client.get = AsyncMock(return_value=None)
     
     # Obtener producto
     product = await product_cache.get_product("123")
@@ -93,11 +94,14 @@ async def test_get_product_from_local_catalog(product_cache, mock_redis_client, 
 async def test_get_product_from_shopify(product_cache, mock_redis_client, mock_local_catalog, mock_shopify_client):
     """Prueba la obtención de producto desde Shopify cuando no está en Redis ni catálogo local."""
     # Configurar mocks
-    mock_redis_client.get.return_value = None
-    mock_local_catalog.get_product_by_id.return_value = None
+    mock_redis_client.get = AsyncMock(return_value=None)
+    mock_local_catalog.get_product_by_id = MagicMock(return_value=None)
     
     # Configurar catálogo local para que no tenga el producto
     mock_local_catalog.product_data = []
+    
+    # Configurar Shopify client para ser async
+    mock_shopify_client.get_product_async = AsyncMock(return_value={"id": "123", "title": "Test Product"})
     
     # Obtener producto
     product = await product_cache.get_product("123")
@@ -114,10 +118,11 @@ async def test_get_product_from_shopify(product_cache, mock_redis_client, mock_l
 async def test_product_not_found(product_cache, mock_redis_client, mock_local_catalog, mock_shopify_client):
     """Prueba el comportamiento cuando un producto no se encuentra en ninguna fuente."""
     # Configurar mocks para que no encuentren el producto
-    mock_redis_client.get.return_value = None
-    mock_local_catalog.get_product_by_id.return_value = None
+    mock_redis_client.get = AsyncMock(return_value=None)
+    mock_local_catalog.get_product_by_id = MagicMock(return_value=None)
     mock_local_catalog.product_data = []
-    mock_shopify_client.get_product.return_value = None
+    mock_shopify_client.get_product = MagicMock(return_value=None)
+    mock_shopify_client.get_product_async = AsyncMock(return_value=None)
     
     # Obtener producto
     product = await product_cache.get_product("456")
@@ -132,7 +137,7 @@ async def test_product_not_found(product_cache, mock_redis_client, mock_local_ca
 async def test_preload_products(product_cache, mock_redis_client):
     """Prueba la precarga de múltiples productos."""
     # Configurar product_cache para espiar el método get_product
-    product_cache.get_product = MagicMock(return_value={"id": "test", "title": "Test"})
+    product_cache.get_product = AsyncMock(return_value={"id": "test", "title": "Test"})
     
     # Llamar a preload_products
     await product_cache.preload_products(["1", "2", "3"])
@@ -155,7 +160,7 @@ async def test_invalidate_multiple_products(product_cache):
     """Prueba la invalidación de múltiples productos."""
     # Configurar para espiar el método invalidate
     original_invalidate = product_cache.invalidate
-    product_cache.invalidate = MagicMock(return_value=True)
+    product_cache.invalidate = AsyncMock(return_value=True)
     
     # Invalidar múltiples productos
     result = await product_cache.invalidate_multiple(["1", "2", "3"])
@@ -173,7 +178,7 @@ async def test_redis_connection_failure(mock_local_catalog, mock_shopify_client)
     # Crear mock de Redis que simula fallo de conexión
     redis_client = MagicMock()
     redis_client.connected = False
-    redis_client.get = MagicMock(side_effect=Exception("Connection error"))
+    redis_client.get = AsyncMock(side_effect=Exception("Connection error"))
     
     # Crear ProductCache con este cliente
     cache = ProductCache(
@@ -197,7 +202,7 @@ async def test_redis_connection_failure(mock_local_catalog, mock_shopify_client)
 async def test_corrupted_cache_data(product_cache, mock_redis_client):
     """Prueba el comportamiento cuando los datos en Redis están corruptos."""
     # Configurar mock de Redis para devolver datos JSON inválidos
-    mock_redis_client.get.return_value = "{invalid json"
+    mock_redis_client.get = AsyncMock(return_value="{invalid json")
     
     # Obtener producto - debería fallar en Redis pero recuperar del catálogo local
     product = await product_cache.get_product("123")

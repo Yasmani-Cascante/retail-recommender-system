@@ -27,7 +27,7 @@ class RedisClient:
             password: Contraseña para autenticación (opcional)
             ssl: Si debe usar conexión SSL/TLS
         """
-        self.redis_url = f"redis{'s' if ssl else ''}://{':'.join([password, '@']) if password else ''}{host}:{port}/{db}"
+        self.redis_url = f"redis{'s' if ssl else ''}://{password + '@' if password else ''}{host}:{port}/{db}"
         self.client = None
         self.connected = False
         self.stats = {"connections": 0, "errors": 0, "operations": 0}

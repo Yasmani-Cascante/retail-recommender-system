@@ -10,21 +10,12 @@ from typing import Optional
 from pydantic import Field
 from functools import lru_cache
 
-# CORRECCIÓN: Importar BaseSettings desde el paquete correcto para Pydantic v2
+# Importar BaseSettings desde el paquete correcto según la versión de Pydantic
 try:
     from pydantic_settings import BaseSettings
-    PYDANTIC_SETTINGS_AVAILABLE = True
 except ImportError:
-    try:
-        # Fallback para versiones antiguas de Pydantic
-        from pydantic import BaseSettings
-        PYDANTIC_SETTINGS_AVAILABLE = False
-        print("⚠️ Usando pydantic.BaseSettings (versión antigua). Considera actualizar: pip install pydantic-settings")
-    except ImportError:
-        raise ImportError(
-            "No se pudo importar BaseSettings. "
-            "Para Pydantic v2, instala: pip install pydantic-settings"
-        )
+    # Fallback para versiones antiguas de Pydantic
+    from pydantic import BaseSettings
 
 class RecommenderSettings(BaseSettings):
     """Configuración centralizada para el sistema de recomendaciones."""
@@ -58,7 +49,6 @@ class RecommenderSettings(BaseSettings):
     # Características activables
     metrics_enabled: bool = Field(default=True, env="METRICS_ENABLED")
     exclude_seen_products: bool = Field(default=True, env="EXCLUDE_SEEN_PRODUCTS")
-    validate_products: bool = Field(default=True, env="VALIDATE_PRODUCTS")
     
     # Configuración de moneda
     default_currency: str = Field(default="COP", env="DEFAULT_CURRENCY")
@@ -77,19 +67,9 @@ class RecommenderSettings(BaseSettings):
     cache_prefix: str = Field(default="product:", env="CACHE_PREFIX")
     cache_enable_background_tasks: bool = Field(default=True, env="CACHE_ENABLE_BACKGROUND_TASKS")
     
-    # Configuración para diferentes versiones de Pydantic
-    if PYDANTIC_SETTINGS_AVAILABLE:
-        # Pydantic v2 con pydantic-settings
-        model_config = {
-            "env_file": ".env",
-            "case_sensitive": False,
-            "extra": "ignore"
-        }
-    else:
-        # Pydantic v1 o versiones anteriores
-        class Config:
-            env_file = ".env"
-            case_sensitive = False
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
 
 @lru_cache()
 def get_settings() -> RecommenderSettings:

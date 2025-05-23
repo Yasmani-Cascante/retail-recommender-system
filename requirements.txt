@@ -1,18 +1,40 @@
-# Dependencias básicas
+# === DEPENDENCIAS PRINCIPALES ===
 fastapi==0.115.0
 uvicorn==0.34.0
+
+# === PYDANTIC Y CONFIGURACIÓN ===
 pydantic==2.10.0
+pydantic-settings==2.5.2  # Requerido para BaseSettings en Pydantic v2
 python-dotenv==1.0.0
 
-# ML y procesamiento de datos
+# === MACHINE LEARNING Y ANÁLISIS DE DATOS ===
 numpy==1.23.5
 scipy==1.10.1
 scikit-learn==1.2.2
 
-# Caché distribuida
-redis==4.6.0
-aioredis==2.0.1
+# === INTEGRACIÓN CON GOOGLE CLOUD ===
+google-cloud-retail==1.25.1
+google-cloud-storage==2.19.0
+google-cloud-core==2.4.1
 
-# Utilidades
+# === INTEGRACIÓN CON SHOPIFY ===
+shopify-python-api==1.0.1
+
+# === SISTEMA DE CACHÉ DISTRIBUIDA ===
+redis>=4.6.0  # Incluye soporte asíncrono en redis.asyncio
+aioredis>=2.0.1  # Cliente asíncrono para Redis
+
+# === UTILIDADES ===
 tqdm==4.67.0
 requests==2.32.0
+jinja2==3.1.5
+
+# === DESARROLLO Y TESTING (opcional) ===
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+# pytest-cov>=4.0.0
+# locust>=2.15.0  # Para pruebas de carga
+
+# === NOTA ===
+# Para instalar dependencias de desarrollo:
+# pip install -r requirements.txt pytest pytest-asyncio pytest-cov locust

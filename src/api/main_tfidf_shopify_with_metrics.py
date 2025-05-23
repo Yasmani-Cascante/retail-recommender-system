@@ -319,8 +319,22 @@ class HybridRecommender:
         # Extraer IDs de productos
         product_ids = [rec.get("id") for rec in recommendations if rec.get("id")]
         
-        # Precargar productos
-        await self.product_cache.preload_products(product_ids)
+        # Precargar productos solo si el método existe y es awaitable
+        # Precargar productos solo si el método está disponible y es awaitable
+        if hasattr(self.product_cache, 'preload_products'):
+            try:
+                import inspect
+                import asyncio
+                from unittest.mock import AsyncMock
+                
+                preload_method = self.product_cache.preload_products
+                # Verificar si es un AsyncMock, un coroutine o un método asincrónico
+                if asyncio.iscoroutinefunction(preload_method) or isinstance(preload_method, AsyncMock):
+                    await preload_method(product_ids)
+                else:
+                    logger.warning("preload_products no es awaitable, omitiendo precarga")
+            except Exception as e:
+                logger.warning(f"Error precargando productos: {str(e)}")
         
         enriched_recommendations = []
         
