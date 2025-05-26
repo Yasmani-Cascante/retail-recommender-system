@@ -11,36 +11,26 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar archivos de dependencias
-COPY requirements.tfidf.txt ./
+# Copiar archivos de dependencias (usar versión mínima)
+COPY requirements.tfidf.txt ./requirements.txt
 
-# Instalar dependencias explícitamente incluyendo las dependencias críticas
-RUN pip install --no-cache-dir -r requirements.tfidf.txt && \
-    pip install --no-cache-dir starlette anyio
+# Instalar dependencias Python (con manejo de errores)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copiar código fuente
 COPY src/ /app/src/
 
 # Crear directorios necesarios
-RUN mkdir -p data
-RUN mkdir -p logs
+RUN mkdir -p data logs
 
-# Variables de entorno y configuración
-ENV PORT=8080
+# Variables de entorno críticas
 ENV PYTHONUNBUFFERED=1
 ENV LOG_LEVEL=INFO
 ENV DEBUG=true
-ENV METRICS_ENABLED=true
-# Variable para modo sin conexión/prueba
-ENV OFFLINE_MODE=false
+# ENV USE_REDIS_CACHE=false
+ENV USE_REDIS_CACHE=true
 
-# Exponer puerto
-EXPOSE ${PORT}
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
-
-# Comando de inicio usando la variable PORT del entorno
-# CMD uvicorn src.api.main_tfidf_shopify_with_metrics:app --host 0.0.0.0 --port ${PORT} --log-level ${LOG_LEVEL}
-CMD ["uvicorn", "src.api.main_tfidf_shopify_with_metrics:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]
+# USAR ARCHIVO SIMPLIFICADO PARA DEBUGGING
+# CMD ["uvicorn", "src.api.main_fixed_simple:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info", "--timeout-keep-alive", "300"] 
+CMD ["uvicorn", "src.api.main_tfidf_shopify_with_metrics_fixed:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info", "--timeout-keep-alive", "300"] 

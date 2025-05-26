@@ -31,6 +31,17 @@ SHOPIFY_ACCESS_TOKEN=your_access_token
 
 # Google Cloud Storage
 GCS_BUCKET_NAME=your_bucket_name
+
+# Redis Configuration
+USE_REDIS_CACHE=true
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+REDIS_DB=0
+REDIS_SSL=false
+CACHE_TTL=86400
+CACHE_PREFIX=product:
+CACHE_ENABLE_BACKGROUND_TASKS=true
 "@ | Out-File -FilePath "$SecretsFile.example" -Encoding utf8
         
         Write-Host "Por favor, crea el archivo $SecretsFile con tus secretos reales basándote en $SecretsFile.example" -ForegroundColor Red
@@ -59,6 +70,10 @@ GCS_BUCKET_NAME=your_bucket_name
         "SHOPIFY_SHOP_URL",
         "SHOPIFY_ACCESS_TOKEN",
         "GCS_BUCKET_NAME"
+        # Redis requeridas (puedes ajustar según tus necesidades)
+        "USE_REDIS_CACHE",
+        "REDIS_HOST",
+        "REDIS_PORT"
     )
     
     $MissingVars = @()
@@ -96,6 +111,16 @@ function Get-EnvVarsString {
         "METRICS_ENABLED=true",
         "EXCLUDE_SEEN_PRODUCTS=true",
         "DEFAULT_CURRENCY=COP"  # Configuración de moneda predeterminada
+        # Variables Redis
+        "USE_REDIS_CACHE=$($script:Secrets.USE_REDIS_CACHE)",
+        "REDIS_HOST=$($script:Secrets.REDIS_HOST)",
+        "REDIS_PORT=$($script:Secrets.REDIS_PORT)",
+        "REDIS_PASSWORD=$($script:Secrets.REDIS_PASSWORD)",
+        "REDIS_DB=$($script:Secrets.REDIS_DB)",
+        "REDIS_SSL=$($script:Secrets.REDIS_SSL)",
+        "CACHE_TTL=$($script:Secrets.CACHE_TTL)",
+        "CACHE_PREFIX=$($script:Secrets.CACHE_PREFIX)",
+        "CACHE_ENABLE_BACKGROUND_TASKS=$($script:Secrets.CACHE_ENABLE_BACKGROUND_TASKS)"
     )
     
     return $EnvVars -join ","

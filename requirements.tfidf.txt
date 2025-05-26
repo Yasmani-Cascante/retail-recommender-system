@@ -1,7 +1,8 @@
-# Dependencias básicas
+# Dependencias básicas con versiones compatibles
 fastapi==0.115.0
 uvicorn==0.34.0
 pydantic==2.10.0
+pydantic-settings==2.5.2
 python-dotenv==1.0.0
 
 # ML y procesamiento de datos
@@ -14,6 +15,22 @@ google-cloud-retail==1.24.0
 google-cloud-storage==2.19.0
 google-cloud-core==2.4.1
 
+# Integración con Shopify
+shopify-python-api==1.0.1
+
+# === SISTEMA DE CACHÉ DISTRIBUIDA ===
+redis>=4.6.0  # Incluye soporte asíncrono en redis.asyncio
+aioredis>=2.0.1  # Cliente asíncrono para Redis
+
 # Utilidades
 tqdm==4.67.0
 requests==2.32.0
+jinja2==3.1.5
+
+# CORREGIDO: Usar versiones compatibles con FastAPI 0.115.0
+# FastAPI 0.115.0 requiere starlette<0.39.0 y >=0.37.2
+starlette>=0.37.2,<0.39.0
+# anyio compatible
+anyio>=3.7.0,<5.0.0
+
+
