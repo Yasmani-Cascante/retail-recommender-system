@@ -20,7 +20,7 @@ shopify-python-api==1.0.1
 
 # === SISTEMA DE CACHÉ DISTRIBUIDA ===
 redis>=4.6.0  # Incluye soporte asíncrono en redis.asyncio
-aioredis>=2.0.1  # Cliente asíncrono para Redis
+# aioredis>=2.0.1  # Cliente asíncrono para Redis
 
 # Utilidades
 tqdm==4.67.0

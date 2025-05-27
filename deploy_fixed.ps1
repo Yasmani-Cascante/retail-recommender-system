@@ -288,6 +288,25 @@ if ($ServiceUrl) {
         }
     }
 
+    # Verificación adicional para Redis
+    Write-Host "`nVerificando sistema de caché Redis..." -ForegroundColor Cyan
+    try {
+        $CacheStatusUrl = "$ServiceUrl/health"
+        $HealthResponse = Invoke-RestMethod -Uri $CacheStatusUrl -Method Get -TimeoutSec 30
+        
+        if ($HealthResponse.components -and $HealthResponse.components.cache) {
+            $CacheStatus = $HealthResponse.components.cache
+            Write-Host "Estado del caché: $($CacheStatus.status)" -ForegroundColor Green
+            Write-Host "Conexión Redis: $($CacheStatus.redis_connection)" -ForegroundColor Green
+            Write-Host "Hit ratio: $($CacheStatus.hit_ratio)" -ForegroundColor Green
+            Write-Host "Total solicitudes: $($CacheStatus.stats.total_requests)" -ForegroundColor Green
+        } else {
+            Write-Host "No se encontró información del sistema de caché en la respuesta" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "Error verificando estado del sistema de caché: $_" -ForegroundColor Red
+    }
+
     # Mostrar instrucciones para pruebas manuales
     Write-Host "`n======================================================================================" -ForegroundColor Cyan
     Write-Host "                  INSTRUCCIONES PARA PROBAR LAS FUNCIONALIDADES" -ForegroundColor Cyan

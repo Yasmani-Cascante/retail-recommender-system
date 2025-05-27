@@ -14,9 +14,14 @@ RUN apt-get update && \
 # Copiar archivos de dependencias (usar versión mínima)
 COPY requirements.tfidf.txt ./requirements.txt
 
+# IMPORTANTE: Asegurar la limpieza de cualquier versión antigua e incompatible
+RUN pip uninstall -y aioredis || true
+
 # Instalar dependencias Python (con manejo de errores)
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    # Instalar explícitamente redis moderno con soporte asyncio
+    pip install --no-cache-dir redis>=4.6.0
 
 # Copiar código fuente
 COPY src/ /app/src/
