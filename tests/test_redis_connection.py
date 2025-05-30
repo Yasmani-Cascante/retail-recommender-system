@@ -36,7 +36,7 @@ async def test_redis_connection():
         port=port,
         db=db,
         password=password,
-        ssl=ssl
+        # ssl=ssl
     )
     
     # Intentar conectar

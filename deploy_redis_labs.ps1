@@ -54,7 +54,6 @@ CACHE_ENABLE_BACKGROUND_TASKS=true
                 $Key = $KeyValue[0].Trim()
                 $Value = $KeyValue[1].Trim()
                 $script:Secrets[$Key] = $Value
-                # Crear variable en el ambito del script
                 Set-Variable -Name $Key -Value $Value -Scope Script
             }
         }
@@ -67,7 +66,6 @@ CACHE_ENABLE_BACKGROUND_TASKS=true
         "SHOPIFY_SHOP_URL",
         "SHOPIFY_ACCESS_TOKEN",
         "GCS_BUCKET_NAME",
-        # Redis Labs requeridas
         "REDIS_HOST",
         "REDIS_PORT",
         "REDIS_PASSWORD",
@@ -95,7 +93,6 @@ CACHE_ENABLE_BACKGROUND_TASKS=true
 }
 
 function Get-EnvVarsString {
-    # Acceder a las variables almacenadas en el ambito del script
     $EnvVars = @(
         "GOOGLE_PROJECT_NUMBER=$($script:Secrets.GOOGLE_PROJECT_NUMBER)",
         "GOOGLE_LOCATION=global",
@@ -110,8 +107,6 @@ function Get-EnvVarsString {
         "METRICS_ENABLED=true",
         "EXCLUDE_SEEN_PRODUCTS=true",
         "DEFAULT_CURRENCY=COP",
-        
-        # Variables Redis Labs
         "USE_REDIS_CACHE=true",
         "REDIS_HOST=$($script:Secrets.REDIS_HOST)",
         "REDIS_PORT=$($script:Secrets.REDIS_PORT)",
@@ -189,7 +184,6 @@ if (-not $?) {
 
 # Desplegar en Cloud Run
 Write-Host "Desplegando a Cloud Run..." -ForegroundColor Yellow
-# Generar string de variables de entorno
 $EnvVars = Get-EnvVarsString
 
 gcloud run deploy $ServiceName `
@@ -219,12 +213,11 @@ try {
     Write-Host "Error al obtener la URL del servicio: $_" -ForegroundColor Red
 }
 
+# Pruebas del servicio desplegado
 if ($ServiceUrl) {
-    # Esperar para que el servicio se inicialice
     Write-Host "Esperando 30 segundos para que el servicio se inicialice..." -ForegroundColor Yellow
     Start-Sleep -Seconds 30
 
-    # Verificar estado del servicio
     Write-Host "Verificando estado del servicio..." -ForegroundColor Yellow
     try {
         $Response = Invoke-RestMethod -Uri "$ServiceUrl/health" -Method Get -TimeoutSec 30
@@ -236,7 +229,6 @@ if ($ServiceUrl) {
             Write-Host "Productos cargados: $($Response.components.recommender.products_count)" -ForegroundColor Green
         }
         
-        # Verificar estado de la cache Redis
         if ($Response.components -and $Response.components.cache) {
             $CacheStatus = $Response.components.cache
             Write-Host ""
@@ -246,14 +238,14 @@ if ($ServiceUrl) {
             Write-Host "  Hit ratio: $($CacheStatus.hit_ratio)" -ForegroundColor Green
             
             if ($CacheStatus.redis_connection -eq "connected") {
-                Write-Host "  ✓ Conexion a Redis Labs establecida correctamente" -ForegroundColor Green
+                Write-Host "  Conexion a Redis Labs establecida correctamente" -ForegroundColor Green
             } else {
-                Write-Host "  ✗ No se pudo establecer conexion con Redis Labs" -ForegroundColor Red
+                Write-Host "  No se pudo establecer conexion con Redis Labs" -ForegroundColor Red
                 Write-Host "    Verifica las credenciales y la configuracion" -ForegroundColor Yellow
             }
         } else {
             Write-Host ""
-            Write-Host "✗ No se encontro informacion sobre el sistema de cache" -ForegroundColor Red
+            Write-Host "No se encontro informacion sobre el sistema de cache" -ForegroundColor Red
         }
     } catch {
         Write-Host "Error verificando estado del servicio: $_" -ForegroundColor Red
@@ -276,7 +268,6 @@ if ($ServiceUrl) {
         Write-Host "  Exito: Obtenidas $($UserRecommendationResponse.metadata.total_recommendations) recomendaciones personalizadas" -ForegroundColor Green
         Write-Host "  Tiempo de respuesta: $($UserRecommendationResponse.metadata.took_ms) ms" -ForegroundColor Green
         
-        # Mostrar primeras recomendaciones si hay
         if ($UserRecommendationResponse.recommendations -and $UserRecommendationResponse.recommendations.Count -gt 0) {
             Write-Host ""
             Write-Host "  Primeras recomendaciones:" -ForegroundColor Cyan
@@ -292,25 +283,45 @@ if ($ServiceUrl) {
         }
     }
 
-    # Probar registrar un evento de usuario
+    # CORRECCION: Probar registrar un evento de usuario con query parameters
     Write-Host ""
     Write-Host "Probando registro de eventos de usuario..." -ForegroundColor Cyan
     try {
-        $EventUrl = "$ServiceUrl/v1/events/user/test_user_redis"
-        $EventParams = @{
-            "event_type" = "detail-page-view"
-            "product_id" = "product123"
-        }
+        # CORREGIDO: Enviar parametros como query parameters, no en el body
+        $EventUrl = "$ServiceUrl/v1/events/user/test_user_redis?event_type=detail-page-view&product_id=product123"
         
         Write-Host "  Registrando evento detail-page-view para test_user_redis..." -ForegroundColor Gray
-        $EventResponse = Invoke-RestMethod -Uri $EventUrl -Method Post -Headers $Headers -Body ($EventParams | ConvertTo-Json) -ContentType "application/json"
+        Write-Host "  URL: $EventUrl" -ForegroundColor Gray
         
-        Write-Host "  ✓ Evento registrado correctamente" -ForegroundColor Green
+        # Enviar como POST pero sin body, ya que los parametros estan en la URL
+        $EventResponse = Invoke-RestMethod -Uri $EventUrl -Method Post -Headers $Headers
+        
+        Write-Host "  Evento registrado correctamente" -ForegroundColor Green
+        
+        # Mostrar respuesta si esta disponible
+        if ($EventResponse) {
+            Write-Host "  Respuesta: $($EventResponse | ConvertTo-Json -Compress)" -ForegroundColor Gray
+        }
+        
     } catch {
         Write-Host "  Error al registrar evento: $_" -ForegroundColor Red
         $ErrorDetails = $_.Exception.Response
         if ($ErrorDetails) {
             Write-Host "  Detalles del error: $($ErrorDetails.StatusCode) - $($ErrorDetails.ReasonPhrase)" -ForegroundColor Red
+        }
+        
+        # Mostrar el cuerpo del error si esta disponible
+        if ($_.Exception.Response) {
+            try {
+                $ErrorBody = $_.Exception.Response.GetResponseStream()
+                if ($ErrorBody) {
+                    $Reader = New-Object System.IO.StreamReader($ErrorBody)
+                    $ErrorContent = $Reader.ReadToEnd()
+                    Write-Host "  Contenido del error: $ErrorContent" -ForegroundColor Red
+                }
+            } catch {
+                Write-Host "  No se pudo leer el contenido del error" -ForegroundColor Yellow
+            }
         }
     }
 
@@ -328,16 +339,18 @@ if ($ServiceUrl) {
     Write-Host ""
     Write-Host "2. Solicitar recomendaciones multiples veces para verificar cache:" -ForegroundColor White
     Write-Host "   GET $ServiceUrl/v1/recommendations/user/test_user_redis" -ForegroundColor Gray
-    Write-Host "   (Las primeras solicitudes pueden ser mas lentas, luego deberian ser mas rapidas debido a la cache)" -ForegroundColor Gray
+    Write-Host "   (Las primeras solicitudes pueden ser mas lentas, luego mas rapidas debido a la cache)" -ForegroundColor Gray
     
     Write-Host ""
     Write-Host "3. Registrar eventos para ver el impacto en la cache:" -ForegroundColor White
-    Write-Host "   POST $ServiceUrl/v1/events/user/test_user_redis con parametros event_type y product_id" -ForegroundColor Gray
+    Write-Host "   POST $ServiceUrl/v1/events/user/test_user_redis?event_type=detail-page-view&product_id=product123" -ForegroundColor Gray
     
     Write-Host ""
     Write-Host "Todas las peticiones deben incluir la cabecera X-API-Key: $ApiKey" -ForegroundColor Yellow
     Write-Host "======================================================================================" -ForegroundColor Cyan
 
+} else {
+    Write-Host "No se pudo obtener la URL del servicio. Verifica el despliegue manualmente." -ForegroundColor Red
 }
 
 Write-Host ""

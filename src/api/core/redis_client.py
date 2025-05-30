@@ -1,7 +1,7 @@
-"""
-Cliente Redis para el sistema de caché híbrido.
+""" .
+cliente Redis asíncrono para el sistema de caché híbrido, compatible tanto con Redis Labs (SSL) como con Redis local (sin SSL).
 
-Proporciona una interfaz asíncrona para interactuar con Redis,
+Esta biblioteca proporciona una interfaz asíncrona para interactuar con Redis,
 incluyendo manejo de errores y métricas de uso.
 """
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class RedisClient:
     """Cliente Redis con manejo de errores y métricas."""
-    
+    """Si se usar Redis local, debe usar ssl=False y el esquema debe ser redis://."""
     def __init__(
         self, 
         host='localhost', 
@@ -24,7 +24,7 @@ class RedisClient:
         db=0, 
         password=None, 
         ssl=False,
-        username=None
+        username="default"
     ):
         """
         Inicializa el cliente Redis.
@@ -61,26 +61,12 @@ class RedisClient:
         try:
             logger.info(f"Conectando a Redis: {self.redis_url.replace('/0', '/***')}")
             
-            # Configuración específica para SSL (necesaria para Redis Labs)
-            ssl_options = None
-            if self.ssl:
-                ssl_context = ssl_lib.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl_lib.CERT_NONE
-                ssl_options = ssl_context
-            
             # Crear las opciones de conexión
             connection_options = {
                 "decode_responses": True,
                 "health_check_interval": 30
             }
             
-            # Agregar SSL solo si está habilitado
-            if self.ssl and ssl_options:
-                connection_options["ssl"] = True
-                # No usar ssl_context directamente, puede causar error
-                # en algunas versiones de redis-py
-                
             self.client = await redis.from_url(
                 self.redis_url,
                 **connection_options
@@ -203,3 +189,11 @@ class RedisClient:
                 self.connected = False
         
         return status
+
+client = RedisClient(
+    host="redis-14272.c259.us-central1-2.gce.redns.redis-cloud.com",
+    port=14272,
+    password="34rleeRxTmFYqBZpSA5UoDP71bHEq6zO",
+    username="default",
+    ssl=False, # Cambiar a False si se usa Redis local sin SSL
+)

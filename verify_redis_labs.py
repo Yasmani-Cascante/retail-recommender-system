@@ -30,7 +30,7 @@ async def test_redis_labs_connection():
         else:
             auth_part = ""
             
-        redis_url = f"redis://{auth_part}{redis_host}:{redis_port}/0"
+        redis_url = f"rediss://{auth_part}{redis_host}:{redis_port}/0"
         
         logger.info(f"Conectando a Redis Labs: {redis_host}:{redis_port}")
         
