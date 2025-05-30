@@ -116,13 +116,23 @@ class RecommenderFactory:
             
             logger.info(f"Creando cliente Redis: {settings.redis_host}:{settings.redis_port}")
             
-            redis_client = RedisClient(
-                host=settings.redis_host,
-                port=settings.redis_port,
-                db=settings.redis_db,
-                password=settings.redis_password,
-                ssl=settings.redis_ssl
-            )
+            # Obtener parámetros para el cliente Redis
+            client_params = {
+                "host": settings.redis_host,
+                "port": settings.redis_port,
+                "db": settings.redis_db,
+                "ssl": settings.redis_ssl
+            }
+            
+            # Agregar password si está configurado
+            if settings.redis_password:
+                client_params["password"] = settings.redis_password
+                
+            # Agregar username si está configurado
+            if hasattr(settings, "redis_username") and settings.redis_username:
+                client_params["username"] = settings.redis_username
+                
+            redis_client = RedisClient(**client_params)
             
             # Iniciar conexión en segundo plano
             asyncio.create_task(redis_client.connect())

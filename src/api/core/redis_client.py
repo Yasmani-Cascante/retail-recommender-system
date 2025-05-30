@@ -10,13 +10,22 @@ import logging
 from typing import Optional, Any, Dict
 import json
 import traceback
+import ssl as ssl_lib
 
 logger = logging.getLogger(__name__)
 
 class RedisClient:
     """Cliente Redis con manejo de errores y métricas."""
     
-    def __init__(self, host='localhost', port=6379, db=0, password=None, ssl=False):
+    def __init__(
+        self, 
+        host='localhost', 
+        port=6379, 
+        db=0, 
+        password=None, 
+        ssl=False,
+        username=None
+    ):
         """
         Inicializa el cliente Redis.
         
@@ -26,11 +35,21 @@ class RedisClient:
             db: Número de base de datos Redis
             password: Contraseña para autenticación (opcional)
             ssl: Si debe usar conexión SSL/TLS
+            username: Nombre de usuario para Redis ACL (opcional)
         """
-        self.redis_url = f"redis{'s' if ssl else ''}://{password + '@' if password else ''}{host}:{port}/{db}"
+        # Construir la URL de conexión
+        if username and password:
+            auth_part = f"{username}:{password}@"
+        elif password:
+            auth_part = f"{password}@"
+        else:
+            auth_part = ""
+            
+        self.redis_url = f"redis{'s' if ssl else ''}://{auth_part}{host}:{port}/{db}"
         self.client = None
         self.connected = False
         self.stats = {"connections": 0, "errors": 0, "operations": 0}
+        self.ssl = ssl
         
     async def connect(self) -> bool:
         """
@@ -41,11 +60,32 @@ class RedisClient:
         """
         try:
             logger.info(f"Conectando a Redis: {self.redis_url.replace('/0', '/***')}")
+            
+            # Configuración específica para SSL (necesaria para Redis Labs)
+            ssl_options = None
+            if self.ssl:
+                ssl_context = ssl_lib.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl_lib.CERT_NONE
+                ssl_options = ssl_context
+            
+            # Crear las opciones de conexión
+            connection_options = {
+                "decode_responses": True,
+                "health_check_interval": 30
+            }
+            
+            # Agregar SSL solo si está habilitado
+            if self.ssl and ssl_options:
+                connection_options["ssl"] = True
+                # No usar ssl_context directamente, puede causar error
+                # en algunas versiones de redis-py
+                
             self.client = await redis.from_url(
                 self.redis_url,
-                decode_responses=True,
-                health_check_interval=30
+                **connection_options
             )
+            
             await self.client.ping()
             self.connected = True
             self.stats["connections"] += 1

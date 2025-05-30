@@ -1,0 +1,40 @@
+# Dockerfile.redis_labs
+# Imagen base
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Instalar dependencias del sistema necesarias
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copiar archivos de dependencias
+COPY requirements.tfidf.txt ./requirements.txt
+
+# IMPORTANTE: Asegurar la limpieza de cualquier versión antigua e incompatible
+RUN pip uninstall -y aioredis || true
+
+# Instalar dependencias Python
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    # Instalar explícitamente redis moderno con soporte asyncio
+    pip install --no-cache-dir redis>=4.6.0
+
+# Copiar código fuente
+COPY src/ /app/src/
+
+# Crear directorios necesarios
+RUN mkdir -p data logs
+
+# Variables de entorno críticas
+ENV PYTHONUNBUFFERED=1
+ENV LOG_LEVEL=INFO
+ENV DEBUG=true
+ENV USE_REDIS_CACHE=true
+
+# Comando para iniciar la aplicación
+CMD ["uvicorn", "src.api.main_tfidf_shopify_with_metrics_fixed:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info", "--timeout-keep-alive", "300"]

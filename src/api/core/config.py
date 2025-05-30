@@ -72,6 +72,7 @@ class RecommenderSettings(BaseSettings):
     redis_port: int = Field(default=6379, env="REDIS_PORT")
     redis_db: int = Field(default=0, env="REDIS_DB")
     redis_password: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
+    redis_username: Optional[str] = Field(default=None, env="REDIS_USERNAME")
     redis_ssl: bool = Field(default=False, env="REDIS_SSL")
     cache_ttl: int = Field(default=3600, env="CACHE_TTL")  # 1 hora por defecto
     cache_prefix: str = Field(default="product:", env="CACHE_PREFIX")
