@@ -59,6 +59,7 @@ class RecommenderSettings(BaseSettings):
     metrics_enabled: bool = Field(default=True, env="METRICS_ENABLED")
     exclude_seen_products: bool = Field(default=True, env="EXCLUDE_SEEN_PRODUCTS")
     validate_products: bool = Field(default=True, env="VALIDATE_PRODUCTS")
+    use_fallback: bool = Field(default=True, env="USE_FALLBACK")
     
     # Configuración de moneda
     default_currency: str = Field(default="COP", env="DEFAULT_CURRENCY")
@@ -97,7 +98,23 @@ def get_settings() -> RecommenderSettings:
     """Obtiene la configuración con caché para evitar lecturas repetidas."""
     return RecommenderSettings()
 
-# Función para pruebas que evita el cache
+# Función para pruebas que evita el cache y archivos .env
 def get_test_settings() -> RecommenderSettings:
     """Obtiene la configuración sin cache para pruebas."""
-    return RecommenderSettings()
+    # Para pruebas, utilizamos una configuración limpia sin leer de .env
+    if PYDANTIC_SETTINGS_AVAILABLE:
+        # Pydantic v2 con pydantic-settings
+        class TestRecommenderSettings(RecommenderSettings):
+            model_config = {
+                "env_file": None,  # No usar archivo .env
+                "case_sensitive": False,
+                "extra": "ignore"
+            }
+    else:
+        # Pydantic v1 o versiones anteriores
+        class TestRecommenderSettings(RecommenderSettings):
+            class Config:
+                env_file = None  # No usar archivo .env
+                case_sensitive = False
+    
+    return TestRecommenderSettings()

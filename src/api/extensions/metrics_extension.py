@@ -39,7 +39,7 @@ class MetricsExtension:
         """
         Configura la extensión de métricas.
         """
-        if not self.settings.use_metrics:
+        if not self.settings.metrics_enabled:
             logger.info("Extensión de métricas desactivada")
             return
         
@@ -66,7 +66,7 @@ class MetricsExtension:
             """
             try:
                 # Verificar si las métricas están habilitadas (doble verificación)
-                if not self.settings.use_metrics:
+                if not self.settings.metrics_enabled:
                     return {
                         "status": "disabled",
                         "message": "El sistema de métricas está desactivado. Actívalo con METRICS_ENABLED=true."

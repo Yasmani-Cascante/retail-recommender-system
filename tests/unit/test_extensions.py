@@ -31,7 +31,7 @@ class TestMetricsExtension:
     def mock_settings(self):
         """Fixture para configuración simulada para pruebas."""
         settings = MagicMock(spec=RecommenderSettings)
-        settings.use_metrics = True
+        settings.metrics_enabled = True
         settings.app_name = "Test App"
         settings.app_version = "1.0.0-test"
         return settings
@@ -61,7 +61,7 @@ class TestMetricsExtension:
         """Verifica que la extensión no configura la aplicación cuando las métricas están desactivadas."""
         # Configurar
         mock_settings = MagicMock(spec=RecommenderSettings)
-        mock_settings.use_metrics = False
+        mock_settings.metrics_enabled = False
         metrics_extension = MetricsExtension(mock_app, mock_settings)
         mock_app.include_router = MagicMock()
         
@@ -79,7 +79,7 @@ class TestMetricsExtension:
         
         # Configurar settings
         settings = MagicMock(spec=RecommenderSettings)
-        settings.use_metrics = True
+        settings.metrics_enabled = True
         settings.api_key = "test-api-key-123"  # Añadir API key para autenticación
         
         # Mockear la función get_current_user para que siempre devuelva un usuario

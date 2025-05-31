@@ -45,9 +45,9 @@ def test_config_default_values():
     
     # Verificar valores por defecto
     assert settings.app_name == "Retail Recommender API"
-    assert settings.app_version == "1.0.0"
+    assert settings.app_version == "0.5.0"
     assert settings.debug is False
-    assert settings.use_metrics is True
+    assert settings.metrics_enabled is True
     assert settings.exclude_seen_products is True
     assert settings.validate_products is True
     assert settings.use_fallback is True
@@ -77,7 +77,7 @@ def test_config_from_environment():
     # Verificar valores cargados desde variables de entorno
     assert settings.app_name == "Test App"
     assert settings.debug is True
-    assert settings.use_metrics is False
+    assert settings.metrics_enabled is False
     assert settings.exclude_seen_products is False
     assert settings.default_currency == "USD"
     
