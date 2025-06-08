@@ -72,7 +72,7 @@ startup_manager = StartupManager(startup_timeout=settings.startup_timeout)
 start_time = time.time()
 
 # Cargar extensiones según configuración
-if settings.use_metrics:
+if settings.metrics_enabled:
     from src.api.extensions.metrics_extension import MetricsExtension
     metrics_extension = MetricsExtension(app, settings)
     metrics_extension.setup()
@@ -274,6 +274,7 @@ async def get_recommendations(
             product = tfidf_recommender.get_product_by_id(product_id)
         
         if not product:
+            # Cambiar a HTTPException para mantener consistencia
             raise HTTPException(
                 status_code=404,
                 detail=f"Product ID {product_id} not found"
@@ -290,7 +291,7 @@ async def get_recommendations(
         processing_time_ms = (time.time() - start_processing) * 1000
         
         # Registrar métricas si están habilitadas
-        if settings.use_metrics and 'recommendation_metrics' in globals():
+        if settings.metrics_enabled and 'recommendation_metrics' in globals():
             from src.api.core.metrics import recommendation_metrics
             recommendation_metrics.record_recommendation_request(
                 request_data={
@@ -318,7 +319,11 @@ async def get_recommendations(
                 "took_ms": processing_time_ms
             }
         }
+    except HTTPException:
+        # Re-lanzar HTTPExceptions directamente para mantener el código y mensaje
+        raise
     except ValueError as e:
+        # Convertir ValueError a HTTPException 404
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Error obteniendo recomendaciones: {e}")
@@ -373,7 +378,7 @@ async def get_user_recommendations(
         processing_time_ms = (time.time() - start_processing) * 1000
         
         # Registrar métricas si están habilitadas
-        if settings.use_metrics and 'recommendation_metrics' in globals():
+        if settings.metrics_enabled and 'recommendation_metrics' in globals():
             from src.api.core.metrics import recommendation_metrics
             recommendation_metrics.record_recommendation_request(
                 request_data={
@@ -463,7 +468,7 @@ async def record_user_event(
             }
             
             # Registrar interacción en métricas si están habilitadas
-            if settings.use_metrics and 'recommendation_metrics' in globals():
+            if settings.metrics_enabled and 'recommendation_metrics' in globals():
                 from src.api.core.metrics import recommendation_metrics
                 recommendation_metrics.record_user_interaction(
                     user_id=user_id,

@@ -13,6 +13,7 @@ $Green = [ConsoleColor]::Green
 $Red = [ConsoleColor]::Red
 $Yellow = [ConsoleColor]::Yellow
 $Cyan = [ConsoleColor]::Cyan
+$Magenta = [ConsoleColor]::Magenta
 
 # Mostrar encabezado
 Write-Host "`n=======================================" -ForegroundColor $Cyan
@@ -36,12 +37,19 @@ if (-not (Test-Path $venvPath)) {
 }
 
 # Activar entorno virtual
-Write-Host "Activando entorno virtual de pruebas..." -ForegroundColor $Yellow
+Write-Host "Activando entorno virtual de pruebas ($venvPath)..." -ForegroundColor $Yellow
 & "$venvPath\Scripts\Activate.ps1"
 if (-not $?) {
     Write-Host "Error al activar entorno virtual" -ForegroundColor $Red
     exit 1
 }
+
+# Verificar entorno activado
+if (-not $env:VIRTUAL_ENV) {
+    Write-Host "ERROR: Entorno virtual no activado correctamente" -ForegroundColor $Red
+    exit 1
+}
+Write-Host "Entorno virtual activado correctamente: $env:VIRTUAL_ENV" -ForegroundColor $Green
 
 # Instalar dependencias si no están ya instaladas
 $testDeps = @(
@@ -72,6 +80,14 @@ if (-not $?) {
     Write-Host "Error al instalar dependencias del proyecto" -ForegroundColor $Red
     exit 1
 }
+
+# Configurar variables de entorno para pruebas
+Write-Host "Configurando variables de entorno para pruebas..." -ForegroundColor $Yellow
+$env:TEST_MODE = "true"
+$env:API_KEY = "test-api-key-123"
+
+# Verificar variable API_KEY
+Write-Host "API_KEY para pruebas: $env:API_KEY" -ForegroundColor $Magenta
 
 # Preparar comando de pytest
 $pytestCmd = "pytest"
@@ -121,11 +137,11 @@ Invoke-Expression $pytestCmd
 
 # Verificar resultado
 if ($?) {
-    Write-Host "`n✅ Pruebas completadas con éxito" -ForegroundColor $Green
+    Write-Host "`n[OK] Pruebas completadas con exito" -ForegroundColor $Green
     
     # Ejecutar pruebas de carga con Locust si se solicitan
     if ($TestType -eq "performance" -and $args -contains "load") {
-        Write-Host "`n🔄 Iniciando pruebas de carga con Locust..." -ForegroundColor $Yellow
+        Write-Host "`n[LOAD] Iniciando pruebas de carga con Locust..." -ForegroundColor $Yellow
         Write-Host "Nota: Locust iniciará una interfaz web en http://localhost:8089" -ForegroundColor $Yellow
         Write-Host "Presiona Ctrl+C para detener las pruebas de carga" -ForegroundColor $Yellow
         
@@ -135,15 +151,15 @@ if ($?) {
     
     # Mostrar información adicional
     if ($Coverage) {
-        Write-Host "`n📊 Informe de cobertura generado en el directorio 'coverage'" -ForegroundColor $Green
+        Write-Host "[INFO] Informe de cobertura generado en el directorio 'coverage'" -ForegroundColor $Green
     }
     
     if ($XmlReport) {
-        Write-Host "📄 Informe XML generado como 'test-results.xml'" -ForegroundColor $Green
+        Write-Host "[INFO] Informe XML generado como 'test-results.xml'" -ForegroundColor $Green
     }
     
     exit 0
 } else {
-    Write-Host "`n❌ Algunas pruebas han fallado" -ForegroundColor $Red
+    Write-Host "`n[ERROR] Algunas pruebas han fallado" -ForegroundColor $Red
     exit 1
 }

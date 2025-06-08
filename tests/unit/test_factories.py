@@ -83,7 +83,8 @@ def test_create_hybrid_recommender_with_exclusion(mock_settings):
         mock_hybrid_with_exclusion.assert_called_once_with(
             content_recommender=content_recommender,
             retail_recommender=retail_recommender,
-            content_weight=mock_settings.content_weight
+            content_weight=mock_settings.content_weight,
+            product_cache=None
         )
         assert recommender is mock_instance
 
@@ -111,34 +112,27 @@ def test_create_hybrid_recommender_without_exclusion(mock_settings):
         mock_hybrid.assert_called_once_with(
             content_recommender=content_recommender,
             retail_recommender=retail_recommender,
-            content_weight=mock_settings.content_weight
+            content_weight=mock_settings.content_weight,
+            product_cache=None
         )
         assert recommender is mock_instance
 
 def test_create_hybrid_recommender_fallback(mock_settings):
-    """Verifica el comportamiento fallback cuando falla la importación."""
-    # Simular un error de importación
+    """Verifica el comportamiento cuando falla la importación de los recomendadores híbridos."""
+    # Simular un error de importación en las importaciones de hybrid_recommender
     with patch('src.api.core.hybrid_recommender.HybridRecommenderWithExclusion', side_effect=ImportError()), \
-         patch('src.api.core.hybrid_recommender.HybridRecommender', side_effect=ImportError()), \
-         patch('src.recommenders.hybrid.HybridRecommender') as mock_hybrid_fallback:
-        
-        # Configurar el mock para que devuelva una instancia específica
-        mock_instance = MagicMock()
-        mock_hybrid_fallback.return_value = mock_instance
+         patch('src.api.core.hybrid_recommender.HybridRecommender', side_effect=ImportError()):
         
         # Crear mocks para los recomendadores que se pasarán como parámetros
         content_recommender = MagicMock()
         retail_recommender = MagicMock()
         
-        # Llamar al método de fábrica
-        recommender = RecommenderFactory.create_hybrid_recommender(
-            content_recommender, retail_recommender
-        )
+        # Llamar al método de fábrica debería lanzar ImportError
+        with pytest.raises(ImportError) as excinfo:
+            RecommenderFactory.create_hybrid_recommender(
+                content_recommender, retail_recommender
+            )
         
-        # Verificar que se usó la implementación de fallback
-        mock_hybrid_fallback.assert_called_once_with(
-            content_recommender=content_recommender,
-            retail_recommender=retail_recommender,
-            content_weight=mock_settings.content_weight
-        )
-        assert recommender is mock_instance
+        # Verificar que el mensaje de error es el esperado
+        assert "Error crítico" in str(excinfo.value)
+        assert "No se pudo cargar el recomendador híbrido" in str(excinfo.value)

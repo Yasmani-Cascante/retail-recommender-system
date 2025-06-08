@@ -10,7 +10,7 @@ import asyncio
 from src.api.core.config import get_settings
 from src.recommenders.tfidf_recommender import TFIDFRecommender
 from src.recommenders.retail_api import RetailAPIRecommender
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,34 @@ class RecommenderFactory:
         """
         logger.info(f"Creando recomendador TF-IDF con modelo en: {model_path}")
         return TFIDFRecommender(model_path=model_path)
+    
+    @staticmethod
+    def create_content_recommender():
+        """
+        Crea un recomendador basado en contenido, utilizando TF-IDF por defecto.
+        
+        Returns:
+            Un recomendador basado en contenido (TFIDFRecommender por defecto)
+        """
+        settings = get_settings()
+        logger.info("Creando recomendador basado en contenido")
+        
+        # Verificar si debemos usar ContentBasedRecommender
+        use_transformers = getattr(settings, 'use_transformers', False)
+        
+        if use_transformers:
+            # Intentar crear ContentBasedRecommender si está configurado
+            try:
+                from src.recommenders.content_based import ContentBasedRecommender
+                logger.info("Usando ContentBasedRecommender con Sentence Transformers")
+                return ContentBasedRecommender()
+            except ImportError:
+                logger.warning("No se pudo cargar ContentBasedRecommender, fallback a TF-IDF")
+        
+        # Usar TF-IDF como enfoque predeterminado
+        model_path = getattr(settings, 'tfidf_model_path', "data/tfidf_model.pkl")
+        logger.info(f"Usando TFIDFRecommender con modelo en: {model_path}")
+        return RecommenderFactory.create_tfidf_recommender(model_path=model_path)
     
     @staticmethod
     def create_retail_recommender():
@@ -53,19 +81,24 @@ class RecommenderFactory:
         )
     
     @staticmethod
-    def create_hybrid_recommender(content_recommender, retail_recommender):
+    def create_hybrid_recommender(
+        content_recommender, 
+        retail_recommender, 
+        product_cache=None
+    ):
         """
-        Crea un recomendador híbrido.
+        Crea un recomendador híbrido utilizando exclusivamente la implementación unificada.
         
         Args:
             content_recommender: Recomendador basado en contenido
             retail_recommender: Recomendador de Retail API
+            product_cache: Caché de productos (opcional)
             
         Returns:
-            HybridRecommender: Instancia del recomendador híbrido
+            HybridRecommender: Instancia del recomendador híbrido unificado
         """
         settings = get_settings()
-        logger.info(f"Creando recomendador híbrido con content_weight={settings.content_weight}")
+        logger.info(f"Creando recomendador híbrido unificado con content_weight={settings.content_weight}")
         logger.info(f"  Exclusión de productos vistos: {settings.exclude_seen_products}")
         
         try:
@@ -76,7 +109,8 @@ class RecommenderFactory:
                 return HybridRecommenderWithExclusion(
                     content_recommender=content_recommender,
                     retail_recommender=retail_recommender,
-                    content_weight=settings.content_weight
+                    content_weight=settings.content_weight,
+                    product_cache=product_cache
                 )
             else:
                 logger.info("Usando recomendador híbrido básico")
@@ -84,18 +118,16 @@ class RecommenderFactory:
                 return HybridRecommender(
                     content_recommender=content_recommender,
                     retail_recommender=retail_recommender,
-                    content_weight=settings.content_weight
+                    content_weight=settings.content_weight,
+                    product_cache=product_cache
                 )
-        except ImportError:
-            logger.warning("No se pudo cargar el recomendador híbrido unificado. Usando implementación original.")
-            
-            # Implementación básica como fallback
-            from src.recommenders.hybrid import HybridRecommender
-            return HybridRecommender(
-                content_recommender=content_recommender,
-                retail_recommender=retail_recommender, 
-                content_weight=settings.content_weight
-            )
+        except ImportError as e:
+            # En la arquitectura unificada, no intentamos fallback a implementaciones antiguas
+            # ya que hemos migrado completamente al nuevo sistema
+            error_msg = f"Error crítico: No se pudo cargar el recomendador híbrido: {str(e)}. "
+            error_msg += "Verifique la instalación y las dependencias del proyecto."
+            logger.error(error_msg)
+            raise ImportError(error_msg)
 
     @staticmethod
     def create_redis_client():

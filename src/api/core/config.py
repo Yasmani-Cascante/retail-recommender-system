@@ -54,12 +54,15 @@ class RecommenderSettings(BaseSettings):
     
     # Configuración de recomendadores
     content_weight: float = Field(default=0.5, env="CONTENT_WEIGHT")
+    tfidf_model_path: str = Field(default="data/tfidf_model.pkl", env="TFIDF_MODEL_PATH")
     
     # Características activables
     metrics_enabled: bool = Field(default=True, env="METRICS_ENABLED")
     exclude_seen_products: bool = Field(default=True, env="EXCLUDE_SEEN_PRODUCTS")
     validate_products: bool = Field(default=True, env="VALIDATE_PRODUCTS")
     use_fallback: bool = Field(default=True, env="USE_FALLBACK")
+    use_unified_architecture: bool = Field(default=True, env="USE_UNIFIED_ARCHITECTURE")
+    use_transformers: bool = Field(default=False, env="USE_TRANSFORMERS")
     
     # Configuración de moneda
     default_currency: str = Field(default="COP", env="DEFAULT_CURRENCY")

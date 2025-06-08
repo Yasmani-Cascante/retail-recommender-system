@@ -81,8 +81,13 @@ class ImprovedFallbackStrategies:
         if not available_products:
             logger.warning("No hay productos disponibles después de excluir las interacciones del usuario")
             # Si no quedan productos después de filtrar, usar todos los productos
-            available_products = products
-            logger.info("Utilizando todos los productos como fallback")
+            # Pero excluir los vistos si es posible
+            if len(products) > len(exclude_products):
+                available_products = [p for p in products if str(p.get("id", "")) not in exclude_products]
+            else:
+                # Si todos los productos han sido vistos, usar algunos de los menos vistos
+                available_products = products[:min(n, len(products))]
+            logger.info(f"Utilizando {len(available_products)} productos como fallback")
         
         # Calcular una puntuación de "popularidad" para cada producto
         scored_products = []
@@ -193,9 +198,20 @@ class ImprovedFallbackStrategies:
         
         if not available_products:
             logger.warning("No hay productos disponibles después de excluir las interacciones del usuario")
-            # Si no quedan productos después de filtrar, usar todos los productos
-            available_products = products
-            logger.info("Utilizando todos los productos como fallback")
+            # Si no hay productos disponibles, usar los que no estén en los excluidos
+            # o en el peor caso algunos de los productos vistos
+            if len(products) > 0:
+                # Usar algunos productos que no están en la lista de excluidos
+                non_excluded = [p for p in products if str(p.get("id", "")) not in exclude_products]
+                if non_excluded:
+                    available_products = non_excluded
+                else:
+                    # Si todos han sido vistos, usar algunos aleatorios
+                    available_products = random.sample(products, min(n, len(products)))
+                logger.info(f"Utilizando {len(available_products)} productos como fallback")
+            else:
+                logger.error("No hay productos disponibles en absoluto")
+                return []
         
         # Agrupar productos por categoría
         products_by_category = {}
@@ -211,6 +227,17 @@ class ImprovedFallbackStrategies:
         
         # Determinar cuántos productos tomar de cada categoría
         num_categories = min(n, len(categories))
+        
+        # FIX: Evitar división por cero cuando num_categories es 0
+        if num_categories == 0:
+            logger.warning("No hay categorías disponibles para recomendaciones diversas")
+            # En lugar de devolver lista vacía, intentar usar productos populares
+            return await ImprovedFallbackStrategies.get_popular_products(
+                products, 
+                n,
+                exclude_products
+            )
+            
         products_per_category = max(1, n // num_categories)
         
         # Seleccionar categorías y productos
@@ -220,8 +247,9 @@ class ImprovedFallbackStrategies:
             category_products = products_by_category[category]
             # Tomar productos aleatorios de esta categoría
             num_to_take = min(products_per_category, len(category_products))
-            selected_products = random.sample(category_products, num_to_take)
-            diverse_products.extend(selected_products)
+            if num_to_take > 0:  # Asegurar que no se intenta tomar 0 productos
+                selected_products = random.sample(category_products, num_to_take)
+                diverse_products.extend(selected_products)
         
         # Si necesitamos más productos para alcanzar n
         if len(diverse_products) < n:
@@ -235,6 +263,24 @@ class ImprovedFallbackStrategies:
             if num_additional > 0:
                 additional_products = random.sample(remaining_products, num_additional)
                 diverse_products.extend(additional_products)
+        
+        # Si aún no tenemos suficientes productos, usar productos populares
+        if len(diverse_products) < n:
+            logger.info("No hay suficientes productos diversos, complementando con populares")
+            additional_needed = n - len(diverse_products)
+            
+            # Excluir los productos ya seleccionados
+            additional_exclude = exclude_products.union({
+                str(p.get("id", "")) for p in diverse_products
+            })
+            
+            popular_products = await ImprovedFallbackStrategies.get_popular_products(
+                products,
+                additional_needed,
+                additional_exclude
+            )
+            
+            diverse_products.extend(popular_products)
         
         # Limitar al número solicitado (por si acaso hemos seleccionado más)
         diverse_products = diverse_products[:n]

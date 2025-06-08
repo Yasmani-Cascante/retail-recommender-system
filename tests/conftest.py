@@ -1,228 +1,368 @@
 """
-Configuración para pruebas de PyTest para el sistema de recomendaciones.
+Configuración mejorada para pruebas de integración del sistema de recomendaciones.
 
-Este módulo proporciona fixtures y configuraciones para facilitar las pruebas
-del sistema de recomendaciones.
+Este módulo configura fixtures y configuraciones robustas para todas las pruebas,
+incluyendo mocks correctamente configurados y datos de prueba consistentes.
 """
 
+import pytest
 import os
 import sys
-import pytest
-from unittest.mock import patch, MagicMock
 import asyncio
-import logging
-from dotenv import load_dotenv
-from pathlib import Path
+from unittest.mock import patch, AsyncMock, MagicMock
+from fastapi import Depends
+from fastapi.testclient import TestClient
+from typing import Optional, List, Dict
 
-# Asegurarse de que src está en el PYTHONPATH
+# Asegurar que src está en el PYTHONPATH
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Importar la configuración de logging
-from tests.test_logging import setup_test_logging
+# API Key para pruebas
+TEST_API_KEY = "test-api-key-123"
 
-# Inicializar logging para pruebas
-setup_test_logging()
-
-# Importar datos de prueba
+# Importar datos de prueba consistentes
 from tests.data.sample_products import SAMPLE_PRODUCTS
-from tests.data.sample_events import SAMPLE_USER_EVENTS, get_events_for_user
-from tests.data.test_configs import TEST_CONFIGS, apply_config_to_env
 
-# Fixture para cargar variables de entorno desde .env.test
 @pytest.fixture(scope="session", autouse=True)
-def load_test_env():
-    """Carga las variables de entorno desde .env.test al inicio de las pruebas."""
-    env_test_path = Path(__file__).parent.parent / '.env.test'
-    if env_test_path.exists():
-        logging.info(f"Cargando variables de entorno desde {env_test_path}")
-        load_dotenv(env_test_path)
-    else:
-        logging.warning(f"Archivo .env.test no encontrado en {env_test_path}")
+def setup_test_environment():
+    """Configura el entorno para todas las pruebas."""
+    # Guardar variables de entorno originales
+    original_env = os.environ.copy()
     
-    yield
-    # No se limpian las variables al finalizar para evitar afectar otras pruebas
-
-# Fixture para configurar variables de entorno de prueba
-@pytest.fixture
-def test_env():
-    """Configura variables de entorno básicas para pruebas."""
-    old_environ = dict(os.environ)
-    os.environ.update({
-        "GOOGLE_PROJECT_NUMBER": "test-project-123",
-        "GOOGLE_LOCATION": "global",
-        "GOOGLE_CATALOG": "test-catalog",
-        "GOOGLE_SERVING_CONFIG": "test-config",
-        "API_KEY": "test-api-key-123",
+    # Configurar variables de entorno para pruebas
+    test_env_vars = {
+        "TEST_MODE": "true",
+        "API_KEY": TEST_API_KEY,
         "DEBUG": "true",
         "METRICS_ENABLED": "true",
         "EXCLUDE_SEEN_PRODUCTS": "true",
-        "VALIDATE_PRODUCTS": "true",
-        "USE_FALLBACK": "true",
-        "CONTENT_WEIGHT": "0.5"
-    })
-    yield
-    os.environ.clear()
-    os.environ.update(old_environ)
-
-# Fixture para configurar variables de entorno con una configuración específica
-@pytest.fixture
-def config_env(request):
-    """
-    Configura variables de entorno según una configuración específica.
-    
-    Uso: @pytest.mark.parametrize("config_env", ["full_features", "no_metrics", ...], indirect=True)
-    """
-    config_name = request.param
-    old_environ = dict(os.environ)
-    
-    # Aplicar configuración base de prueba
-    os.environ.update({
+        "USE_REDIS_CACHE": "false",  # Desactivar Redis para pruebas
         "GOOGLE_PROJECT_NUMBER": "test-project-123",
         "GOOGLE_LOCATION": "global",
-        "GOOGLE_CATALOG": "test-catalog",
-        "GOOGLE_SERVING_CONFIG": "test-config",
-        "API_KEY": "test-api-key-123"
-    })
+        "GOOGLE_CATALOG": "test_catalog",
+        "GOOGLE_SERVING_CONFIG": "test_config",
+        "STARTUP_TIMEOUT": "10.0"  # Timeout más corto para pruebas
+    }
     
-    # Aplicar configuración específica
-    config = TEST_CONFIGS.get(config_name, TEST_CONFIGS["full_features"])
-    os.environ.update(config)
+    for key, value in test_env_vars.items():
+        os.environ[key] = value
     
-    yield config_name
+    # Devolver control a las pruebas
+    yield
     
+    # Restaurar variables de entorno originales
     os.environ.clear()
-    os.environ.update(old_environ)
+    os.environ.update(original_env)
 
-# Fixture para mock de TFIDFRecommender
+# Fixtures para componentes mockeados
 @pytest.fixture
 def mock_tfidf_recommender():
-    """Proporciona un mock para el recomendador TF-IDF."""
-    with patch('src.recommenders.tfidf_recommender.TFIDFRecommender') as mock:
-        recommender = MagicMock()
-        # Configurar el mock para que tenga los métodos necesarios
-        recommender.fit.return_value = asyncio.Future()
-        recommender.fit.return_value.set_result(True)
-        recommender.get_recommendations.return_value = asyncio.Future()
-        recommender.get_recommendations.return_value.set_result(SAMPLE_PRODUCTS[:3])
-        recommender.search_products.return_value = asyncio.Future()
-        recommender.search_products.return_value.set_result(SAMPLE_PRODUCTS[:2])
-        recommender.loaded = True
-        recommender.product_data = SAMPLE_PRODUCTS
-        recommender.health_check.return_value = asyncio.Future()
-        recommender.health_check.return_value.set_result({"status": "operational", "loaded": True})
-        recommender.get_product_by_id = lambda id: next((p for p in SAMPLE_PRODUCTS if str(p.get('id')) == str(id)), None)
+    """Mock robusto para el recomendador TF-IDF."""
+    recommender = MagicMock()
+    recommender.loaded = True
+    recommender.product_data = SAMPLE_PRODUCTS
+    recommender._validate_state.return_value = True
+    
+    # Configurar método get_product_by_id
+    def mock_get_product_by_id(product_id):
+        for product in SAMPLE_PRODUCTS:
+            if str(product.get('id', '')) == str(product_id):
+                return product
+        return None
+    
+    recommender.get_product_by_id = mock_get_product_by_id
+    
+    # Configurar métodos asíncronos
+    async def mock_get_recommendations(product_id, n=5):
+        # Simular recomendaciones basadas en el producto solicitado
+        if mock_get_product_by_id(product_id):
+            return SAMPLE_PRODUCTS[:min(n, len(SAMPLE_PRODUCTS))]
+        return []
         
-        # Configurar el constructor del mock para devolver nuestra instancia
-        mock.return_value = recommender
-        yield recommender
+    async def mock_search_products(query, n=10):
+        # Simular búsqueda - devolver productos que contengan la query en el título
+        results = [
+            p for p in SAMPLE_PRODUCTS 
+            if query.lower() in p.get('title', '').lower()
+        ]
+        return results[:n]
+        
+    async def mock_health_check():
+        return {
+            "status": "operational",
+            "loaded": True,
+            "products_count": len(SAMPLE_PRODUCTS)
+        }
+    
+    async def mock_fit(products):
+        recommender.product_data = products
+        recommender.loaded = True
+        return True
+        
+    async def mock_load():
+        recommender.loaded = True
+        return True
+    
+    recommender.get_recommendations = AsyncMock(side_effect=mock_get_recommendations)
+    recommender.search_products = AsyncMock(side_effect=mock_search_products)
+    recommender.health_check = AsyncMock(side_effect=mock_health_check)
+    recommender.fit = AsyncMock(side_effect=mock_fit)
+    recommender.load = AsyncMock(side_effect=mock_load)
+    
+    return recommender
 
-# Fixture para mock de RetailAPIRecommender
 @pytest.fixture
 def mock_retail_recommender():
-    """Proporciona un mock para el recomendador Retail API."""
-    with patch('src.recommenders.retail_api.RetailAPIRecommender') as mock:
-        recommender = MagicMock()
-        # Configurar el mock para que tenga los métodos necesarios
-        recommender.import_catalog.return_value = asyncio.Future()
-        recommender.import_catalog.return_value.set_result({"status": "success", "products_imported": len(SAMPLE_PRODUCTS)})
-        recommender.get_recommendations.return_value = asyncio.Future()
-        recommender.get_recommendations.return_value.set_result(SAMPLE_PRODUCTS[3:6])
-        recommender.record_user_event.return_value = asyncio.Future()
-        recommender.record_user_event.return_value.set_result({"status": "success"})
-        recommender.get_user_events.return_value = asyncio.Future()
-        recommender.get_user_events.return_value.set_result(get_events_for_user("test_user_1"))
-        recommender.ensure_catalog_branches.return_value = asyncio.Future()
-        recommender.ensure_catalog_branches.return_value.set_result(True)
+    """Mock robusto para el recomendador de Retail API."""
+    recommender = MagicMock()
+    
+    async def mock_get_recommendations(user_id, product_id=None, n_recommendations=5):
+        # Simular recomendaciones de Retail API
+        return SAMPLE_PRODUCTS[:min(n_recommendations, len(SAMPLE_PRODUCTS))]
         
-        # Configurar el constructor del mock para devolver nuestra instancia
-        mock.return_value = recommender
-        yield recommender
+    async def mock_record_user_event(user_id, event_type, product_id=None, purchase_amount=None):
+        return {
+            "status": "success",
+            "message": "Event recorded successfully",
+            "event_type": event_type,
+            "user_id": user_id,
+            "product_id": product_id
+        }
+    
+    async def mock_import_catalog(products):
+        return {
+            "status": "success",
+            "products_imported": len(products)
+        }
+    
+    async def mock_ensure_catalog_branches():
+        return True
+        
+    async def mock_get_user_events(user_id):
+        # Simular eventos para usuarios de prueba
+        if user_id.startswith("test_"):
+            return [
+                {"user_id": user_id, "event_type": "detail-page-view", "product_id": "test_prod_1"},
+                {"user_id": user_id, "event_type": "add-to-cart", "product_id": "test_prod_2"}
+            ]
+        return []
+        
+    recommender.get_recommendations = AsyncMock(side_effect=mock_get_recommendations)
+    recommender.record_user_event = AsyncMock(side_effect=mock_record_user_event)
+    recommender.import_catalog = AsyncMock(side_effect=mock_import_catalog)
+    recommender.ensure_catalog_branches = AsyncMock(side_effect=mock_ensure_catalog_branches)
+    recommender.get_user_events = AsyncMock(side_effect=mock_get_user_events)
+    
+    return recommender
 
-# Fixture para mock del recomendador híbrido
 @pytest.fixture
 def mock_hybrid_recommender(mock_tfidf_recommender, mock_retail_recommender):
-    """Proporciona un mock para el recomendador híbrido."""
-    with patch('src.api.core.hybrid_recommender.HybridRecommenderWithExclusion') as mock_class:
-        recommender = MagicMock()
-        # Configurar métodos necesarios
-        recommender.get_recommendations.return_value = asyncio.Future()
-        recommender.get_recommendations.return_value.set_result(SAMPLE_PRODUCTS[:5])
-        recommender.record_user_event.return_value = asyncio.Future()
-        recommender.record_user_event.return_value.set_result({"status": "success", "event_type": "detail-page-view"})
-        recommender.content_weight = 0.5
-        
-        # Configurar constructor para devolver nuestra instancia
-        mock_class.return_value = recommender
-        
-        # Proporcionar acceso a los recomendadores base
-        recommender.content_recommender = mock_tfidf_recommender
-        recommender.retail_recommender = mock_retail_recommender
-        
-        yield recommender
-
-# Fixture para FastAPI TestClient
-@pytest.fixture
-def client():
-    """Proporciona un cliente de prueba para la API."""
-    from fastapi.testclient import TestClient
-    from src.api.main_unified import app
+    """Mock robusto para el recomendador híbrido."""
+    recommender = MagicMock()
+    recommender.content_recommender = mock_tfidf_recommender
+    recommender.retail_recommender = mock_retail_recommender
+    recommender.content_weight = 0.5
     
-    return TestClient(app)
+    async def mock_get_recommendations(user_id, product_id=None, n_recommendations=5):
+        # Simular combinación de recomendaciones
+        return SAMPLE_PRODUCTS[:min(n_recommendations, len(SAMPLE_PRODUCTS))]
+        
+    async def mock_record_user_event(user_id, event_type, product_id=None, purchase_amount=None):
+        return await mock_retail_recommender.record_user_event(
+            user_id, event_type, product_id, purchase_amount
+        )
+    
+    recommender.get_recommendations = AsyncMock(side_effect=mock_get_recommendations)
+    recommender.record_user_event = AsyncMock(side_effect=mock_record_user_event)
+    
+    return recommender
 
-# Fixture para el loop de eventos de asyncio
-@pytest.fixture
-def event_loop():
-    """Proporciona un loop de eventos para pruebas asíncronas."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-# Fixture para simular un cliente Shopify
 @pytest.fixture
 def mock_shopify_client():
-    """Proporciona un mock para el cliente de Shopify."""
-    with patch('src.api.core.store.get_shopify_client') as mock_get_client:
-        client = MagicMock()
+    """Mock robusto para el cliente de Shopify."""
+    client = MagicMock()
+    
+    # Datos de clientes de prueba consistentes
+    test_customers = [
+        {"id": "test_customer_1", "email": "test1@example.com", "first_name": "Test", "last_name": "User1"},
+        {"id": "test_customer_2", "email": "test2@example.com", "first_name": "Test", "last_name": "User2"}
+    ]
+    
+    client.get_products.return_value = SAMPLE_PRODUCTS
+    client.get_customers.return_value = test_customers
+    
+    # Configurar método get_product para búsqueda individual
+    def mock_get_product(product_id):
+        for product in SAMPLE_PRODUCTS:
+            if str(product.get('id', '')) == str(product_id):
+                return product
+        return None
+    
+    client.get_product = mock_get_product
+    
+    # Configurar órdenes por cliente
+    def mock_get_orders_by_customer(customer_id):
+        if customer_id.startswith("test_"):
+            return [
+                {"id": "order_1", "customer_id": customer_id, "line_items": [{"product_id": "test_prod_1"}]}
+            ]
+        return []
+    
+    client.get_orders_by_customer = mock_get_orders_by_customer
+    
+    return client
+
+@pytest.fixture
+def mock_startup_manager():
+    """Mock para el gestor de arranque."""
+    manager = MagicMock()
+    manager.is_healthy.return_value = (True, "")
+    manager.get_status.return_value = {
+        "status": "operational",
+        "components_loaded": True,
+        "loading_complete": True
+    }
+    
+    def mock_register_component(name, loader, required=True):
+        pass
+    
+    async def mock_start_loading():
+        return True
+    
+    manager.register_component = mock_register_component
+    manager.start_loading = AsyncMock(side_effect=mock_start_loading)
+    
+    return manager
+
+# Mock para autenticación
+async def mock_get_api_key():
+    """Mock para la función get_api_key que siempre retorna la API key de prueba."""
+    return TEST_API_KEY
+
+async def mock_get_current_user(api_key: str = Depends(mock_get_api_key)) -> Optional[str]:
+    """Mock para la función get_current_user."""
+    return "test_user"
+
+# Mock para autenticación fallida
+async def mock_get_api_key_failed():
+    """Mock que simula fallo de autenticación."""
+    from fastapi import HTTPException
+    raise HTTPException(status_code=403, detail="API Key no válida")
+
+@pytest.fixture
+def mock_get_shopify_client(mock_shopify_client):
+    """Mock para la función get_shopify_client."""
+    return lambda: mock_shopify_client
+
+@pytest.fixture
+def test_app_with_mocks(
+    mock_tfidf_recommender,
+    mock_retail_recommender,
+    mock_hybrid_recommender,
+    mock_shopify_client,
+    mock_startup_manager
+):
+    """
+    Fixture que proporciona una app FastAPI completamente mockeada para pruebas.
+    """
+    # Patch los módulos antes de importar la aplicación
+    with patch('src.api.factories.RecommenderFactory.create_tfidf_recommender') as mock_create_tfidf, \
+         patch('src.api.factories.RecommenderFactory.create_retail_recommender') as mock_create_retail, \
+         patch('src.api.factories.RecommenderFactory.create_hybrid_recommender') as mock_create_hybrid, \
+         patch('src.api.core.store.get_shopify_client') as mock_get_shopify, \
+         patch('src.api.core.store.init_shopify') as mock_init_shopify, \
+         patch('src.api.startup_helper.StartupManager') as mock_startup_class:
         
-        # Configurar métodos necesarios
-        client.get_products.return_value = SAMPLE_PRODUCTS
-        client.get_customers.return_value = [
-            {"id": "customer_1", "email": "test1@example.com", "first_name": "Test", "last_name": "User1"},
-            {"id": "customer_2", "email": "test2@example.com", "first_name": "Test", "last_name": "User2"},
-        ]
-        client.get_orders_by_customer.return_value = []
+        # Configurar los mocks de las fábricas
+        mock_create_tfidf.return_value = mock_tfidf_recommender
+        mock_create_retail.return_value = mock_retail_recommender
+        mock_create_hybrid.return_value = mock_hybrid_recommender
+        mock_get_shopify.return_value = mock_shopify_client
+        mock_init_shopify.return_value = mock_shopify_client
+        mock_startup_class.return_value = mock_startup_manager
         
-        # Configurar el mock para devolver nuestra instancia
-        mock_get_client.return_value = client
+        # Ahora importar la aplicación con todos los mocks en su lugar
+        from src.api.main_unified import app
+        
+        # Configurar dependency overrides para autenticación
+        from src.api.security import get_api_key, get_current_user
+        app.dependency_overrides[get_api_key] = mock_get_api_key
+        app.dependency_overrides[get_current_user] = mock_get_current_user
+        
+        # Asegurar que los componentes globales están disponibles
+        app.state.tfidf_recommender = mock_tfidf_recommender
+        app.state.retail_recommender = mock_retail_recommender
+        app.state.hybrid_recommender = mock_hybrid_recommender
+        app.state.startup_manager = mock_startup_manager
+        
+        yield app
+        
+        # Limpiar dependency overrides
+        app.dependency_overrides.clear()
+
+@pytest.fixture
+def test_client(test_app_with_mocks):
+    """Fixture que proporciona un cliente para pruebas con todos los mocks configurados."""
+    with TestClient(test_app_with_mocks) as client:
+        # Añadir API key a headers por defecto
+        client.headers.update({"X-API-Key": TEST_API_KEY})
         yield client
 
-# Fixture para datos de rendimiento
 @pytest.fixture
-def performance_metrics():
-    """Proporciona una estructura para recopilar métricas de rendimiento durante las pruebas."""
-    import time
+def test_client_no_auth(test_app_with_mocks):
+    """Fixture que proporciona un cliente sin autenticación para probar errores de autenticación."""
+    # Crear una app limpia para evitar problemas de estado entre pruebas
+    from fastapi import HTTPException
+    from fastapi.testclient import TestClient
+    from src.api.security import get_api_key, get_current_user
     
-    class PerformanceMetrics:
-        def __init__(self):
-            self.start_times = {}
-            self.end_times = {}
-            self.durations = {}
-            
-        def start_timer(self, name):
-            self.start_times[name] = time.time()
-            
-        def end_timer(self, name):
-            if name in self.start_times:
-                self.end_times[name] = time.time()
-                self.durations[name] = self.end_times[name] - self.start_times[name]
-                return self.durations[name]
-            return None
-            
-        def get_duration(self, name):
-            return self.durations.get(name)
-            
-        def log_all_metrics(self):
-            for name, duration in self.durations.items():
-                logging.info(f"Métrica de rendimiento - {name}: {duration:.6f} segundos")
+    # Función que siempre falla la autenticación
+    async def always_fail_auth():
+        raise HTTPException(status_code=403, detail="API Key inválida o no proporcionada")
     
-    return PerformanceMetrics()
+    # Función que intenta obtener usuario y también falla
+    async def fail_get_user():
+        raise HTTPException(status_code=403, detail="Autenticación fallida")
+    
+    # Aplicar el override directamente en la app de prueba
+    test_app = test_app_with_mocks
+    
+    # Guardar las dependencias originales para restaurarlas después
+    original_overrides = test_app.dependency_overrides.copy()
+    
+    # Aplicar nuevos overrides
+    test_app.dependency_overrides[get_api_key] = always_fail_auth
+    test_app.dependency_overrides[get_current_user] = fail_get_user
+    
+    # Asegurar que se ha limpiado cualquier configuración anterior
+    test_client = TestClient(test_app)
+    
+    # Eliminar cualquier API key de los headers
+    test_client.headers.clear()
+    
+    # Log para verificar el estado
+    print("\nFixture test_client_no_auth: Dependencias anuladas para forzar error 403")
+    print(f"Headers del cliente: {test_client.headers}")
+    
+    # Devolver el cliente configurado
+    yield test_client
+    
+    # Restaurar las dependencias originales
+    test_app.dependency_overrides = original_overrides
+
+# Fixture para datos de prueba adicionales
+@pytest.fixture
+def test_user_events():
+    """Fixture que proporciona eventos de usuario de prueba."""
+    return [
+        {"user_id": "test_user_1", "event_type": "detail-page-view", "product_id": "test_prod_1"},
+        {"user_id": "test_user_1", "event_type": "add-to-cart", "product_id": "test_prod_2"},
+        {"user_id": "test_user_1", "event_type": "purchase-complete", "product_id": "test_prod_1", "purchase_amount": 19.99}
+    ]
+
+# Utilidades para pruebas asíncronas
+def async_test(f):
+    """Decorador para ejecutar funciones asíncronas en pruebas."""
+    def wrapper(*args, **kwargs):
+        return asyncio.run(f(*args, **kwargs))
+    return wrapper
