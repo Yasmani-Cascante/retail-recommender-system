@@ -34,11 +34,18 @@ class HybridRecommender:
             retail_recommender: Recomendador basado en comportamiento (Retail API)
             content_weight: Peso para las recomendaciones basadas en contenido (0-1)
         """
+        # Validar parámetros de entrada
+        if content_weight < 0 or content_weight > 1:
+            raise ValueError(f"content_weight debe estar entre 0 y 1, recibido: {content_weight}")
+            
         self.content_recommender = content_recommender
         self.retail_recommender = retail_recommender
         self.content_weight = content_weight
         self.product_cache = product_cache
+        
         logger.info(f"HybridRecommender inicializado con content_weight={content_weight}")
+        logger.info(f"Cache de productos: {'habilitada' if product_cache else 'deshabilitada'}")
+        logger.info(f"Lógica: Retail API se usa SIEMPRE para usuarios, content_weight se aplica solo para productos específicos")
     
     async def get_recommendations(
         self,
@@ -71,8 +78,12 @@ class HybridRecommender:
             except Exception as e:
                 logger.error(f"Error al obtener recomendaciones basadas en contenido: {str(e)}")
         
-        # Optimización: si content_weight=1, no llamar al recomendador retail
-        if self.content_weight < 1.0:
+        # CORRECCIÓN: Para recomendaciones de usuario (sin product_id), SIEMPRE usar Retail API
+        # Para recomendaciones de producto (con product_id), aplicar optimización content_weight
+        should_use_retail_api = not product_id or self.content_weight < 1.0
+        logger.info(f"Retail API - content_weight={self.content_weight}, product_id={product_id}, using_retail_api={should_use_retail_api}")
+        
+        if should_use_retail_api:
             # Intentar obtener recomendaciones de Retail API
             try:
                 retail_recs = await self.retail_recommender.get_recommendations(
@@ -80,9 +91,11 @@ class HybridRecommender:
                     product_id=product_id,
                     n_recommendations=n_recommendations
                 )
-                logger.info(f"Obtenidas {len(retail_recs)} recomendaciones de Retail API para usuario {user_id}")
+                logger.info(f"✅ Obtenidas {len(retail_recs)} recomendaciones de Retail API para usuario {user_id}")
             except Exception as e:
-                logger.error(f"Error al obtener recomendaciones de Retail API: {str(e)}")
+                logger.error(f"❌ Error al obtener recomendaciones de Retail API: {str(e)}")
+        else:
+            logger.info(f"⏭️ Saltando Retail API debido a content_weight=1.0 para recomendaciones de producto")
         
         # Si no hay producto_id y tampoco recomendaciones de Retail API,
         # usar recomendaciones inteligentes de fallback
@@ -97,10 +110,15 @@ class HybridRecommender:
                 retail_recs,
                 n_recommendations
             )
-            return recommendations
+        else:
+            # Si no hay product_id, usar solo recomendaciones de Retail API
+            recommendations = retail_recs
         
-        # Si no hay product_id, usar solo recomendaciones de Retail API
-        return retail_recs
+        # Enriquecer recomendaciones si está disponible el sistema de caché
+        if self.product_cache:
+            return await self._enrich_recommendations(recommendations, user_id)
+        else:
+            return recommendations
     
     async def _combine_recommendations(
         self,
@@ -284,7 +302,10 @@ class HybridRecommender:
         product_ids = [rec.get("id") for rec in recommendations if rec.get("id")]
         
         # Precargar productos
-        await self.product_cache.preload_products(product_ids)
+        try:
+            await self.product_cache.preload_products(product_ids)
+        except Exception as e:
+            logger.error(f"Error al precargar productos: {str(e)}")
         
         enriched_recommendations = []
         
@@ -296,55 +317,112 @@ class HybridRecommender:
                 
             enriched_rec = rec.copy()
             
-            # Obtener información completa del producto usando la caché
-            product = await self.product_cache.get_product(product_id)
-            
-            if product:
-                # Enriquecer con datos del producto
-                enriched_rec["title"] = product.get("title", product.get("name", rec.get("title", "Producto")))
+            try:
+                # Obtener información completa del producto usando la caché
+                product = await self.product_cache.get_product(product_id)
                 
-                # Extraer descripción
-                description = (
-                    product.get("body_html") or 
-                    product.get("description") or 
-                    product.get("body", "")
-                )
-                enriched_rec["description"] = description
-                
-                # Extraer precio
-                price = 0.0
-                if product.get("variants") and len(product["variants"]) > 0:
-                    try:
-                        price = float(product["variants"][0].get("price", 0.0))
-                    except (ValueError, TypeError):
-                        price = product.get("price", 0.0)
-                else:
-                    price = product.get("price", 0.0)
-                
-                enriched_rec["price"] = price
-                
-                # Extraer categoría
-                category = (
-                    product.get("product_type") or 
-                    product.get("category", "")
-                )
-                enriched_rec["category"] = category
-                
-                # Extraer imágenes si están disponibles
-                if product.get("images") and isinstance(product["images"], list) and len(product["images"]) > 0:
-                    enriched_rec["image_url"] = product["images"][0].get("src", "")
-                
-                logger.info(f"Producto ID={product_id} enriquecido: Título={enriched_rec['title'][:30]}..., Categoría={category}")
-            else:
-                # Si no se encuentra información completa
-                logger.warning(f"No se pudo obtener información completa para producto ID={product_id}")
-                
-                # Usar información existente o valores predeterminados
-                if not enriched_rec.get("title") or enriched_rec["title"] == "Producto":
-                    enriched_rec["title"] = f"Producto {product_id}"
+                if product:
+                    # Enriquecer con datos del producto
+                    enriched_rec["title"] = product.get("title", product.get("name", rec.get("title", "Producto")))
                     
-                # Marcar para diagnóstico
-                enriched_rec["_incomplete_data"] = True
+                    # Extraer descripción
+                    description = (
+                        product.get("body_html") or 
+                        product.get("description") or 
+                        product.get("body", "")
+                    )
+                    enriched_rec["description"] = description
+                    
+                    # Extraer precio
+                    price = 0.0
+                    if product.get("variants") and len(product["variants"]) > 0:
+                        try:
+                            price = float(product["variants"][0].get("price", 0.0))
+                        except (ValueError, TypeError):
+                            price = 0.0
+                    else:
+                        price = product.get("price", 0.0)
+                        if isinstance(price, str):
+                            try:
+                                price = float(price)
+                            except (ValueError, TypeError):
+                                price = 0.0
+                    
+                    enriched_rec["price"] = price
+                    
+                    # Extraer categoría
+                    category = (
+                        product.get("product_type") or 
+                        product.get("category", "")
+                    )
+                    enriched_rec["category"] = category
+                    
+                    # Extraer imágenes si están disponibles
+                    if product.get("images") and isinstance(product["images"], list) and len(product["images"]) > 0:
+                        enriched_rec["image_url"] = product["images"][0].get("src", "")
+                    
+                    logger.info(f"Producto ID={product_id} enriquecido: Título={enriched_rec['title'][:30]}..., Categoría={category}")
+                else:
+                    # Si no se encuentra información completa en la caché
+                    logger.warning(f"No se pudo obtener información completa para producto ID={product_id} (fuente: {rec.get('source', 'unknown')})")
+                    
+                    # Intentar buscar directamente en el catálogo local si está disponible
+                    local_product = None
+                    if self.content_recommender and hasattr(self.content_recommender, 'product_data'):
+                        for p in self.content_recommender.product_data:
+                            if str(p.get('id', '')) == str(product_id):
+                                local_product = p
+                                break
+                    
+                    if local_product:
+                        logger.info(f"Producto ID={product_id} encontrado en catálogo local como fallback")
+                        # Enriquecer con datos del producto local
+                        enriched_rec["title"] = local_product.get("title", rec.get("title", "Producto"))
+                        enriched_rec["description"] = local_product.get("body_html", "")
+                        
+                        # Extraer precio
+                        price = 0.0
+                        if local_product.get("variants") and len(local_product["variants"]) > 0:
+                            try:
+                                price = float(local_product["variants"][0].get("price", 0.0))
+                            except (ValueError, TypeError):
+                                price = 0.0
+                        
+                        enriched_rec["price"] = price
+                        enriched_rec["category"] = local_product.get("product_type", "")
+                        
+                        # Registrar que se usó el fallback
+                        logger.info(f"Se usó fallback de catálogo local para enriquecer producto ID={product_id}")
+                    else:
+                        # Si todavía no tenemos título válido, intentar con Shopify directamente
+                        if (not enriched_rec.get("title") or enriched_rec["title"] == "Producto") and self.shopify_client:
+                            try:
+                                if hasattr(self.shopify_client, 'get_product'):
+                                    shopify_product = self.shopify_client.get_product(product_id)
+                                    if shopify_product:
+                                        enriched_rec["title"] = shopify_product.get("title", f"Producto {product_id}")
+                                        enriched_rec["description"] = shopify_product.get("body_html", "")
+                                        if shopify_product.get("variants") and len(shopify_product["variants"]) > 0:
+                                            try:
+                                                enriched_rec["price"] = float(shopify_product["variants"][0].get("price", 0.0))
+                                            except (ValueError, TypeError):
+                                                pass
+                                        enriched_rec["category"] = shopify_product.get("product_type", "")
+                                        logger.info(f"Producto ID={product_id} obtenido directamente de Shopify")
+                            except Exception as e:
+                                logger.error(f"Error al obtener producto de Shopify como fallback: {str(e)}")
+                        
+                        # Si aún no tenemos título válido, usar valor predeterminado
+                        if not enriched_rec.get("title") or enriched_rec["title"] == "Producto":
+                            enriched_rec["title"] = f"Producto {product_id}"
+                            
+                        # Marcar para diagnóstico
+                        enriched_rec["_incomplete_data"] = True
+                        
+                        logger.warning(f"No se pudo enriquecer producto ID={product_id} (fuente: {rec.get('source', 'unknown')})")
+            except Exception as e:
+                logger.error(f"Error al enriquecer producto ID={product_id}: {str(e)}")
+                # Mantener los datos originales si hay un error
             
             enriched_recommendations.append(enriched_rec)
         
@@ -352,8 +430,11 @@ class HybridRecommender:
         
         # Registrar estadísticas para monitoreo
         if self.product_cache:
-            cache_stats = self.product_cache.get_stats()
-            logger.info(f"Estadísticas de caché: Hit ratio={cache_stats['hit_ratio']:.2f}")
+            try:
+                cache_stats = self.product_cache.get_stats()
+                logger.info(f"Estadísticas de caché: Hit ratio={cache_stats['hit_ratio']:.2f}")
+            except Exception as e:
+                logger.error(f"Error al obtener estadísticas de caché: {str(e)}")
         
         return enriched_recommendations
 
