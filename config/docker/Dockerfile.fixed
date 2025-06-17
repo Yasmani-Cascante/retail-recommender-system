@@ -39,3 +39,4 @@ ENV USE_REDIS_CACHE=true
 # USAR ARCHIVO SIMPLIFICADO PARA DEBUGGING
 # CMD ["uvicorn", "src.api.main_fixed_simple:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info", "--timeout-keep-alive", "300"] 
 CMD ["uvicorn", "src.api.main_tfidf_shopify_with_metrics_fixed:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info", "--timeout-keep-alive", "300"] 
+# CMD ["uvicorn", "src.api.main_unified_redis:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info", "--timeout-keep-alive", "300"] 
