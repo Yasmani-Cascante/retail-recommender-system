@@ -1,17 +1,17 @@
-# PowerShell script para desplegar la version unificada con Redis del sistema de recomendaciones
+# PowerShell script para desplegar la versión unificada del sistema de recomendaciones
 
-Write-Host "Iniciando despliegue de la version unificada con Redis del sistema de recomendaciones..." -ForegroundColor Green
+Write-Host "Iniciando despliegue de la versión unificada del sistema de recomendaciones..." -ForegroundColor Green
 
-# Configuracion
+# Configuración
 $ProjectID = "retail-recommendations-449216"
 $Region = "us-central1"
-$ServiceName = "retail-recommender-unified-redis"
+$ServiceName = "retail-recommender-unified"
 $ImageName = "gcr.io/$ProjectID/$ServiceName`:latest"
 $Dockerfile = "config\docker\Dockerfile.fixed"
-$UnifiedDockerfile = "config\docker\Dockerfile.unified.redis"
+$UnifiedDockerfile = "config\docker\Dockerfile.unified"
 
-# Verificar configuracion de GCloud
-Write-Host "Verificando configuracion de GCloud..." -ForegroundColor Yellow
+# Verificar configuración de GCloud
+Write-Host "Verificando configuración de GCloud..." -ForegroundColor Yellow
 $CurrentProject = gcloud config get-value project
 Write-Host "Proyecto actual: $CurrentProject" -ForegroundColor Cyan
 
@@ -19,24 +19,35 @@ if ($CurrentProject -ne $ProjectID) {
     Write-Host "Configurando proyecto: $ProjectID" -ForegroundColor Yellow
     gcloud config set project $ProjectID
 } else {
-    Write-Host "Ya esta configurado el proyecto correcto: $ProjectID" -ForegroundColor Green
+    Write-Host "Ya está configurado el proyecto correcto: $ProjectID" -ForegroundColor Green
 }
 
-# Configurar region
-Write-Host "Configurando region: $Region" -ForegroundColor Yellow
+# Configurar región
+Write-Host "Configurando región: $Region" -ForegroundColor Yellow
 gcloud config set run/region $Region
 
-# Crear Dockerfile especifico para la version unificada con Redis
-Write-Host "Creando Dockerfile especifico para la version unificada con Redis..." -ForegroundColor Yellow
+# Crear Dockerfile específico para la versión unificada
+Write-Host "Creando Dockerfile específico para la versión unificada..." -ForegroundColor Yellow
 $OriginalDockerfile = Get-Content $Dockerfile
-$ModifiedDockerfile = $OriginalDockerfile -replace "main_tfidf_shopify_with_metrics_fixed:app", "main_unified_redis:app"
+$ModifiedDockerfile = $OriginalDockerfile -replace "main_tfidf_shopify_with_metrics_fixed:app", "main_unified:app"
 $ModifiedDockerfile | Out-File -FilePath $UnifiedDockerfile -Encoding utf8
 
-# Verificar que el archivo main_unified_redis.py existe
-if (-not (Test-Path "src/api/main_unified_redis.py")) {
-    Write-Host "Error: El archivo src/api/main_unified_redis.py no existe." -ForegroundColor Red
-    Write-Host "Este archivo es necesario para la arquitectura unificada con Redis." -ForegroundColor Red
-    exit 1
+# Verificar que el archivo main_unified.py existe
+$MainUnifiedPath = "src/api/main_unified.py"
+if (-not (Test-Path $MainUnifiedPath)) {
+    Write-Host "Archivo $MainUnifiedPath no encontrado." -ForegroundColor Yellow
+    Write-Host "Creando archivo basado en main_unified_redis.py sin soporte de Redis..." -ForegroundColor Yellow
+    
+    # Leer archivo main_unified_redis.py
+    $MainRedisContent = Get-Content "src/api/main_unified_redis.py" -Raw
+    
+    # Modificar para quitar dependencias de Redis
+    $MainUnifiedContent = $MainRedisContent -replace "con Redis", "estándar"
+    $MainUnifiedContent = $MainUnifiedContent -replace "USE_REDIS_CACHE=true", "USE_REDIS_CACHE=false"
+    
+    # Guardar como main_unified.py
+    $MainUnifiedContent | Out-File -FilePath $MainUnifiedPath -Encoding utf8
+    Write-Host "Archivo $MainUnifiedPath creado correctamente." -ForegroundColor Green
 }
 
 # Construir imagen Docker
@@ -67,8 +78,8 @@ if (-not $?) {
 # Desplegar en Cloud Run
 Write-Host "Desplegando a Cloud Run..." -ForegroundColor Yellow
 
-# Variables de entorno, asegurando que USE_REDIS_CACHE está habilitado
-$EnvVars = "GOOGLE_PROJECT_NUMBER=178362262166,GOOGLE_LOCATION=global,GOOGLE_CATALOG=default_catalog,GOOGLE_SERVING_CONFIG=default_recommendation_config,API_KEY=2fed9999056fab6dac5654238f0cae1c,SHOPIFY_SHOP_URL=ai-shoppings.myshopify.com,SHOPIFY_ACCESS_TOKEN=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,GCS_BUCKET_NAME=retail-recommendations-449216_cloudbuild,USE_GCS_IMPORT=true,DEBUG=true,METRICS_ENABLED=true,EXCLUDE_SEEN_PRODUCTS=true,USE_REDIS_CACHE=true,REDIS_HOST=redis-14272.c259.us-central1-2.gce.redns.redis-cloud.com,REDIS_PORT=14272,REDIS_PASSWORD=34rleeRxTmFYqBZpSA5UoDP71bHEq6zO,REDIS_USERNAME=default,REDIS_SSL=false,REDIS_DB=0,CACHE_TTL=86400,CACHE_PREFIX=product:,CACHE_ENABLE_BACKGROUND_TASKS=true"
+# Variables de entorno, con Redis desactivado
+$EnvVars = "GOOGLE_PROJECT_NUMBER=178362262166,GOOGLE_LOCATION=global,GOOGLE_CATALOG=default_catalog,GOOGLE_SERVING_CONFIG=default_recommendation_config,API_KEY=2fed9999056fab6dac5654238f0cae1c,SHOPIFY_SHOP_URL=ai-shoppings.myshopify.com,SHOPIFY_ACCESS_TOKEN=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,GCS_BUCKET_NAME=retail-recommendations-449216_cloudbuild,USE_GCS_IMPORT=true,DEBUG=true,METRICS_ENABLED=true,EXCLUDE_SEEN_PRODUCTS=true,USE_REDIS_CACHE=false"
 
 gcloud run deploy $ServiceName `
     --image $ImageName `
@@ -112,33 +123,14 @@ if ($ServiceUrl) {
         if ($Response.components -and $Response.components.recommender) {
             Write-Host "Estado del recomendador: $($Response.components.recommender.status)" -ForegroundColor Green
         }
-        
-        # Verificar específicamente el estado de la caché
-        if ($Response.components -and $Response.components.cache) {
-            $CacheStatus = $Response.components.cache
-            Write-Host ""
-            Write-Host "Estado del sistema de cache:" -ForegroundColor Cyan
-            Write-Host "  Status: $($CacheStatus.status)" -ForegroundColor Green
-            Write-Host "  Conexion Redis: $($CacheStatus.redis_connection)" -ForegroundColor Green
-            
-            if ($CacheStatus.redis_connection -eq "connected") {
-                Write-Host "  Conexion a Redis Labs establecida correctamente" -ForegroundColor Green
-            } else {
-                Write-Host "  No se pudo establecer conexion con Redis Labs" -ForegroundColor Red
-                Write-Host "    Verifica las credenciales y la configuracion" -ForegroundColor Yellow
-            }
-        } else {
-            Write-Host ""
-            Write-Host "No se encontro informacion sobre el sistema de cache" -ForegroundColor Red
-        }
     } catch {
         Write-Host "Error verificando estado del servicio: $_" -ForegroundColor Red
-        Write-Host "El servicio podria necesitar mas tiempo para inicializarse." -ForegroundColor Yellow
+        Write-Host "El servicio podría necesitar más tiempo para inicializarse." -ForegroundColor Yellow
     }
 
-    # Realizar pruebas basicas si el servicio esta funcionando
+    # Realizar pruebas básicas si el servicio está funcionando
     if ($Response -and ($Response.status -eq "ready" -or $Response.status -eq "OK")) {
-        Write-Host "`nRealizando pruebas basicas..." -ForegroundColor Cyan
+        Write-Host "`nRealizando pruebas básicas..." -ForegroundColor Cyan
         
         $Headers = @{
             "X-API-Key" = "2fed9999056fab6dac5654238f0cae1c"
@@ -149,7 +141,7 @@ if ($ServiceUrl) {
         try {
             $ProductsUrl = $ServiceUrl + "/v1/products/"
             $ProductsResponse = Invoke-RestMethod -Uri $ProductsUrl -Method Get
-            Write-Host "  Exito: Obtenidos productos de la lista" -ForegroundColor Green
+            Write-Host "  Éxito: Obtenidos productos de la lista" -ForegroundColor Green
         } catch {
             Write-Host "  Error obteniendo productos: $_" -ForegroundColor Red
         }
@@ -157,9 +149,9 @@ if ($ServiceUrl) {
         # Prueba 2: Obtener recomendaciones de usuario
         Write-Host "Prueba 2: Obteniendo recomendaciones de usuario..." -ForegroundColor Cyan
         try {
-            $UserRecommendationUrl = $ServiceUrl + "/v1/recommendations/user/test_user_unified_redis?n=5"
+            $UserRecommendationUrl = $ServiceUrl + "/v1/recommendations/user/test_user_unified?n=5"
             $UserRecommendationResponse = Invoke-RestMethod -Uri $UserRecommendationUrl -Method Get -Headers $Headers
-            Write-Host "  Exito: Obtenidas recomendaciones de usuario" -ForegroundColor Green
+            Write-Host "  Éxito: Obtenidas recomendaciones de usuario" -ForegroundColor Green
         } catch {
             Write-Host "  Error obteniendo recomendaciones de usuario: $_" -ForegroundColor Red
         }
@@ -169,11 +161,11 @@ if ($ServiceUrl) {
         try {
             $EventType = "detail-page-view"
             $ProductId = "product123"
-            $EventUrl = $ServiceUrl + "/v1/events/user/test_user_unified_redis"
+            $EventUrl = $ServiceUrl + "/v1/events/user/test_user_unified"
             $EventUrl = $EventUrl + "?event_type=" + $EventType + "&product_id=" + $ProductId
             
             $EventResponse = Invoke-RestMethod -Uri $EventUrl -Method Post -Headers $Headers
-            Write-Host "  Exito: Evento registrado correctamente" -ForegroundColor Green
+            Write-Host "  Éxito: Evento registrado correctamente" -ForegroundColor Green
         } catch {
             Write-Host "  Error registrando evento: $_" -ForegroundColor Red
         }
@@ -201,4 +193,4 @@ if ($ServiceUrl) {
 }
 
 Write-Host "`nProceso de despliegue completado." -ForegroundColor Green
-Write-Host "La version unificada con Redis esta lista para usar!" -ForegroundColor Green
+Write-Host "La versión unificada estándar está lista para usar!" -ForegroundColor Green

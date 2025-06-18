@@ -1,7 +1,7 @@
 steps:
 # Build the container image con más memoria y timeout
 - name: 'gcr.io/cloud-builders/docker'
-  args: ['build', '-t', 'gcr.io/$PROJECT_ID/retail-recommender', '.']
+  args: ['build', '-t', 'gcr.io/$PROJECT_ID/retail-recommender', '-f', 'config/docker/Dockerfile', '.']
   timeout: '3600s'  # 1 hora
 
 # Push the container image to Container Registry
