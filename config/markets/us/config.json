@@ -1,0 +1,56 @@
+{
+  "market_id": "US",
+  "name": "United States",
+  "currency": "USD",
+  "language": "en",
+  "timezone": "America/New_York",
+  "currency_symbol": "$",
+  "decimal_places": 2,
+  
+  "scoring_weights": {
+    "price_sensitivity": 0.3,
+    "brand_preference": 0.4,
+    "trend_following": 0.7,
+    "seasonal_adjustment": 0.5,
+    "local_preference": 0.2
+  },
+  
+  "cache_settings": {
+    "products_ttl": 3600,
+    "recommendations_ttl": 1800,
+    "trending_ttl": 900,
+    "availability_ttl": 300
+  },
+  
+  "localization": {
+    "date_format": "MM/DD/YYYY",
+    "measurement_system": "imperial",
+    "size_system": "US",
+    "preferred_categories": ["electronics", "fashion", "home"],
+    "cultural_preferences": {
+      "color_preferences": ["neutral", "bold"],
+      "style_preferences": ["casual", "modern"],
+      "seasonal_timing": "standard"
+    }
+  },
+  
+  "business_rules": {
+    "min_order_value": 25.0,
+    "free_shipping_threshold": 50.0,
+    "express_shipping_available": true,
+    "return_policy_days": 30,
+    "tax_included": false
+  },
+  
+  "ai_prompts": {
+    "conversation_style": "friendly and helpful",
+    "cultural_context": "American casual, value-conscious",
+    "language_tone": "informal but professional",
+    "measurement_preferences": "imperial units (feet, pounds, Fahrenheit)"
+  },
+  
+  "peak_hours": {
+    "weekday": ["12:00-14:00", "18:00-21:00"],
+    "weekend": ["10:00-12:00", "15:00-19:00"]
+  }
+}

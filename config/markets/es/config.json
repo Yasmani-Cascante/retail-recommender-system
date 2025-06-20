@@ -1,0 +1,60 @@
+{
+  "market_id": "ES",
+  "name": "Spain",
+  "currency": "EUR",
+  "language": "es",
+  "timezone": "Europe/Madrid",
+  "currency_symbol": "€",
+  "decimal_places": 2,
+  
+  "scoring_weights": {
+    "price_sensitivity": 0.6,
+    "brand_preference": 0.5,
+    "trend_following": 0.4,
+    "seasonal_adjustment": 0.8,
+    "local_preference": 0.7
+  },
+  
+  "cache_settings": {
+    "products_ttl": 7200,
+    "recommendations_ttl": 3600,
+    "trending_ttl": 1800,
+    "availability_ttl": 600
+  },
+  
+  "localization": {
+    "date_format": "DD/MM/YYYY",
+    "measurement_system": "metric",
+    "size_system": "EU",
+    "preferred_categories": ["fashion", "food", "home", "electronics"],
+    "cultural_preferences": {
+      "color_preferences": ["earth_tones", "vibrant"],
+      "style_preferences": ["elegant", "traditional", "modern"],
+      "seasonal_timing": "mediterranean"
+    }
+  },
+  
+  "business_rules": {
+    "min_order_value": 20.0,
+    "free_shipping_threshold": 40.0,
+    "express_shipping_available": true,
+    "return_policy_days": 14,
+    "tax_included": true,
+    "iva_rate": 0.21
+  },
+  
+  "ai_prompts": {
+    "conversation_style": "cortés y profesional",
+    "cultural_context": "Español europeo, consciente de calidad",
+    "language_tone": "formal pero accesible",
+    "measurement_preferences": "sistema métrico (metros, kilos, Celsius)"
+  },
+  
+  "peak_hours": {
+    "weekday": ["13:00-15:00", "20:00-22:00"],
+    "weekend": ["11:00-13:00", "17:00-20:00"]
+  },
+  
+  "holidays_consideration": true,
+  "siesta_awareness": true
+}

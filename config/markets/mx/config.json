@@ -1,0 +1,60 @@
+{
+  "market_id": "MX",
+  "name": "Mexico",
+  "currency": "MXN",
+  "language": "es",
+  "timezone": "America/Mexico_City",
+  "currency_symbol": "$",
+  "decimal_places": 2,
+  
+  "scoring_weights": {
+    "price_sensitivity": 0.8,
+    "brand_preference": 0.3,
+    "trend_following": 0.6,
+    "seasonal_adjustment": 0.7,
+    "local_preference": 0.9
+  },
+  
+  "cache_settings": {
+    "products_ttl": 5400,
+    "recommendations_ttl": 2700,
+    "trending_ttl": 1350,
+    "availability_ttl": 450
+  },
+  
+  "localization": {
+    "date_format": "DD/MM/YYYY",
+    "measurement_system": "metric",
+    "size_system": "MX",
+    "preferred_categories": ["electronics", "fashion", "home", "beauty"],
+    "cultural_preferences": {
+      "color_preferences": ["vibrant", "warm"],
+      "style_preferences": ["traditional", "modern", "festive"],
+      "seasonal_timing": "tropical"
+    }
+  },
+  
+  "business_rules": {
+    "min_order_value": 500.0,
+    "free_shipping_threshold": 1000.0,
+    "express_shipping_available": false,
+    "return_policy_days": 7,
+    "tax_included": true,
+    "iva_rate": 0.16
+  },
+  
+  "ai_prompts": {
+    "conversation_style": "amigable y cercano",
+    "cultural_context": "Mexicano, enfocado en valor y familia",
+    "language_tone": "informal y cálido",
+    "measurement_preferences": "sistema métrico (metros, kilos, Celsius)"
+  },
+  
+  "peak_hours": {
+    "weekday": ["14:00-16:00", "19:00-21:00"],
+    "weekend": ["10:00-14:00", "16:00-20:00"]
+  },
+  
+  "holidays_consideration": true,
+  "family_focus": true
+}

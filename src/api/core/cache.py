@@ -155,3 +155,112 @@ class RedisCache:
             self.stats["errors"] += 1
             logging.error(f"Error limpiando Redis: {str(e)}")
             return False
+        
+
+# Instancia global del cache Redis (patrón singleton)
+_redis_cache_instance = None
+
+def get_redis_client():
+    """
+    Función factory para obtener el cliente Redis configurado.
+    Compatible con el código MCP que espera esta función.
+    
+    Returns:
+        RedisCache: Instancia del cliente Redis
+    """
+    global _redis_cache_instance
+    
+    if _redis_cache_instance is None:
+        _redis_cache_instance = RedisCache()
+        
+    return _redis_cache_instance
+
+# Función de compatibilidad para código asíncrono
+async def get_async_redis_client():
+    """
+    Versión asíncrona de get_redis_client para compatibilidad.
+    
+    Returns:
+        RedisCache: Instancia del cliente Redis
+    """
+    return get_redis_client()
+
+# Clase wrapper para compatibilidad con aioredis
+class AsyncRedisWrapper:
+    """
+    Wrapper para hacer que RedisCache sea compatible con aioredis
+    """
+    
+    def __init__(self, redis_cache: RedisCache):
+        self.redis_cache = redis_cache
+        self._connected = redis_cache.client is not None
+    
+    @property 
+    def connected(self) -> bool:
+        """Compatibilidad con verificación de conexión"""
+        return self._connected
+    
+    async def get(self, key: str) -> Optional[str]:
+        """Get con interfaz aioredis-compatible"""
+        result = await self.redis_cache.get(key)
+        if result is not None:
+            return json.dumps(result) if not isinstance(result, str) else result
+        return None
+    
+    async def setex(self, key: str, seconds: int, value: str) -> bool:
+        """Setex con interfaz aioredis-compatible"""
+        try:
+            parsed_value = json.loads(value) if isinstance(value, str) else value
+        except:
+            parsed_value = value
+        return await self.redis_cache.set(key, parsed_value, seconds)
+    
+    async def delete(self, *keys: str) -> int:
+        """Delete con interfaz aioredis-compatible"""
+        deleted_count = 0
+        for key in keys:
+            if await self.redis_cache.delete(key):
+                deleted_count += 1
+        return deleted_count
+    
+    async def keys(self, pattern: str) -> list:
+        """Keys con interfaz aioredis-compatible"""
+        if not self.redis_cache.client:
+            return []
+            
+        try:
+            # Usar el cliente Redis directo para operaciones de keys
+            keys = self.redis_cache.client.keys(pattern)
+            return [key.decode('utf-8') if isinstance(key, bytes) else key for key in keys]
+        except Exception as e:
+            logging.error(f"Error getting keys with pattern {pattern}: {e}")
+            return []
+    
+    async def ttl(self, key: str) -> int:
+        """TTL con interfaz aioredis-compatible"""
+        if not self.redis_cache.client:
+            return -1
+            
+        try:
+            return self.redis_cache.client.ttl(key)
+        except Exception as e:
+            logging.error(f"Error getting TTL for key {key}: {e}")
+            return -1
+    
+    async def ping(self) -> bool:
+        """Ping con interfaz aioredis-compatible"""
+        if not self.redis_cache.client:
+            return False
+            
+        try:
+            self.redis_cache.client.ping()
+            return True
+        except:
+            return False
+
+def get_async_redis_wrapper():
+    """
+    Obtener wrapper asíncrono compatible con aioredis
+    """
+    redis_cache = get_redis_client()
+    return AsyncRedisWrapper(redis_cache)

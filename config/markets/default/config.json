@@ -1,0 +1,56 @@
+{
+  "market_id": "default",
+  "name": "Default Market",
+  "currency": "USD",
+  "language": "en",
+  "timezone": "UTC",
+  "currency_symbol": "$",
+  "decimal_places": 2,
+  
+  "scoring_weights": {
+    "price_sensitivity": 0.5,
+    "brand_preference": 0.5,
+    "trend_following": 0.5,
+    "seasonal_adjustment": 0.5,
+    "local_preference": 0.5
+  },
+  
+  "cache_settings": {
+    "products_ttl": 3600,
+    "recommendations_ttl": 1800,
+    "trending_ttl": 900,
+    "availability_ttl": 300
+  },
+  
+  "localization": {
+    "date_format": "YYYY-MM-DD",
+    "measurement_system": "metric",
+    "size_system": "international",
+    "preferred_categories": ["general"],
+    "cultural_preferences": {
+      "color_preferences": ["neutral"],
+      "style_preferences": ["universal"],
+      "seasonal_timing": "standard"
+    }
+  },
+  
+  "business_rules": {
+    "min_order_value": 0.0,
+    "free_shipping_threshold": 100.0,
+    "express_shipping_available": true,
+    "return_policy_days": 30,
+    "tax_included": false
+  },
+  
+  "ai_prompts": {
+    "conversation_style": "professional and helpful",
+    "cultural_context": "international, neutral",
+    "language_tone": "formal and clear",
+    "measurement_preferences": "metric system (meters, kilograms, Celsius)"
+  },
+  
+  "peak_hours": {
+    "weekday": ["09:00-17:00"],
+    "weekend": ["10:00-16:00"]
+  }
+}

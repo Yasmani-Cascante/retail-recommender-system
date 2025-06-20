@@ -1,0 +1,22 @@
+Collecting ShopifyAPI
+  Downloading shopifyapi-12.7.0.tar.gz (33 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Collecting pyactiveresource>=2.2.2 (from ShopifyAPI)
+  Using cached pyactiveresource-2.2.2-py3-none-any.whl
+Requirement already satisfied: PyJWT>=2.0.0 in c:\users\yasma\desktop\retail-recommender-system\venv\lib\site-packages (from ShopifyAPI) (2.9.0)
+Requirement already satisfied: PyYAML in c:\users\yasma\desktop\retail-recommender-system\venv\lib\site-packages (from ShopifyAPI) (6.0.2)
+Requirement already satisfied: six in c:\users\yasma\desktop\retail-recommender-system\venv\lib\site-packages (from ShopifyAPI) (1.17.0)
+Building wheels for collected packages: ShopifyAPI
+  Building wheel for ShopifyAPI (pyproject.toml): started
+  Building wheel for ShopifyAPI (pyproject.toml): finished with status 'done'
+  Created wheel for ShopifyAPI: filename=shopifyapi-12.7.0-py3-none-any.whl size=46906 sha256=15c7edfd1ffa94b0375491628817c54a48794298c8538259f63ddc7776138829
+  Stored in directory: c:\users\yasma\appdata\local\pip\cache\wheels\8a\f0\0b\ad60725b49063ae8fabb53bf8af1dc26b76bf7d077a58b8d5e
+Successfully built ShopifyAPI
+Installing collected packages: pyactiveresource, ShopifyAPI
+
+Successfully installed ShopifyAPI-12.7.0 pyactiveresource-2.2.2
