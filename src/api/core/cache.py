@@ -24,24 +24,47 @@ class RedisCache:
             # Obtener configuración de variables de entorno
             redis_host = os.getenv("REDIS_HOST")
             redis_port = os.getenv("REDIS_PORT", "6379")
+            redis_password = os.getenv("REDIS_PASSWORD")
+            redis_username = os.getenv("REDIS_USERNAME", "default")
+            redis_ssl = os.getenv("REDIS_SSL", "false").lower() == "true"
+            redis_db = int(os.getenv("REDIS_DB", "0"))
             
             if not redis_host:
                 logging.warning("REDIS_HOST no configurado. La caché está deshabilitada.")
                 self.client = None
             else:
                 try:
-                    self.client = redis.Redis(
-                        host=redis_host,
-                        port=int(redis_port),
-                        db=0,
-                        socket_timeout=5,
-                        retry_on_timeout=True
-                    )
+                    # Configurar parámetros de conexión
+                    connection_params = {
+                        "host": redis_host,
+                        "port": int(redis_port),
+                        "db": redis_db,
+                        "socket_timeout": 10,
+                        "retry_on_timeout": True,
+                        "socket_connect_timeout": 10
+                    }
+                    
+                    # Agregar autenticación si está configurada
+                    if redis_password:
+                        connection_params["password"] = redis_password
+                        
+                    # Agregar username si está configurado (Redis 6+)
+                    if redis_username and redis_username != "default":
+                        connection_params["username"] = redis_username
+                    
+                    # Configurar SSL si está habilitado
+                    if redis_ssl:
+                        connection_params["ssl"] = True
+                        connection_params["ssl_cert_reqs"] = None
+                    
+                    self.client = redis.Redis(**connection_params)
+                    
                     # Verificar conexión
                     self.client.ping()
-                    logging.info(f"✅ Conectado a Redis en {redis_host}:{redis_port}")
+                    logging.info(f"✅ Conectado a Redis en {redis_host}:{redis_port} (auth: {bool(redis_password)}, ssl: {redis_ssl})")
                 except Exception as e:
                     logging.error(f"❌ Error conectando a Redis: {str(e)}")
+                    logging.error(f"   Host: {redis_host}, Port: {redis_port}, Auth: {bool(redis_password)}, SSL: {redis_ssl}")
                     self.client = None
                     
             self.initialized = True

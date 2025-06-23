@@ -15,6 +15,9 @@ import asyncio
 from typing import Dict, List, Optional, Any, Set
 import traceback
 import os
+from datetime import datetime, timedelta
+from collections import defaultdict
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,11 @@ class ProductCache:
             "total_failures": 0,
             "total_requests": 0
         }
+        # Nuevos atributos para warm-up inteligente
+        self.access_frequency = defaultdict(int)  # Frecuencia de acceso por producto
+        self.last_access = {}  # Último acceso por producto
+        self.market_popularity = defaultdict(lambda: defaultdict(int))  # Popularidad por mercado
+        self.category_stats = defaultdict(int)  # Estadísticas por categoría
         
         # Iniciar background task para health check periódico (opcional)
         self.health_task = None
@@ -130,6 +138,10 @@ class ProductCache:
             
         self.stats["total_requests"] += 1
         
+        # Actualizar estadísticas de acceso para warm-up inteligente
+        self.access_frequency[product_id] += 1
+        self.last_access[product_id] = datetime.now()
+        
         # 1. Intentar obtener de Redis
         if self.redis and self.redis.connected:
             redis_key = f"{self.prefix}{product_id}"
@@ -139,7 +151,17 @@ class ProductCache:
                 try:
                     self.stats["redis_hits"] += 1
                     logger.debug(f"Cache hit: producto {product_id} obtenido de Redis")
-                    return json.loads(cached_data)
+                    product_data = json.loads(cached_data)
+                    
+                    # Actualizar estadísticas de mercado si está disponible
+                    market_id = getattr(asyncio.current_task(), 'market_context', {}).get('market_id', 'default')
+                    self.market_popularity[market_id][product_id] += 1
+                    
+                    # Actualizar estadísticas de categoría
+                    category = product_data.get('product_type') or product_data.get('category', 'unknown')
+                    self.category_stats[category] += 1
+                    
+                    return product_data
                 except json.JSONDecodeError:
                     logger.warning(f"Datos corruptos en Redis para producto {product_id}")
                     self.stats["redis_misses"] += 1
@@ -388,5 +410,275 @@ class ProductCache:
             "shopify_hits": self.stats["shopify_hits"],
             "gateway_hits": self.stats["gateway_hits"],  # Incluir hits del gateway
             "total_failures": self.stats["total_failures"],
-            "ttl_seconds": self.ttl_seconds
+            "ttl_seconds": self.ttl_seconds,
+            "access_frequency_top10": dict(sorted(self.access_frequency.items(), key=lambda x: x[1], reverse=True)[:10]),
+            "category_stats": dict(self.category_stats),
+            "market_popularity_summary": {k: len(v) for k, v in self.market_popularity.items()}
         }
+    
+    # ===========================================
+    # MÉTODOS DE WARM-UP INTELIGENTE OPTIMIZADOS
+    # ===========================================
+    
+    async def intelligent_cache_warmup(
+        self, 
+        market_priorities: List[str] = None, 
+        max_products_per_market: int = 100,
+        include_trending: bool = True,
+        include_popular_categories: bool = True
+    ):
+        """
+        Precarga inteligente basada en popularidad por mercado y patrones de acceso.
+        
+        Args:
+            market_priorities: Lista de mercados priorizados ['US', 'ES', 'MX', 'CL']
+            max_products_per_market: Máximo productos a precargar por mercado
+            include_trending: Incluir productos con tendencia de acceso
+            include_popular_categories: Incluir productos de categorías populares
+        """
+        if not market_priorities:
+            market_priorities = ['US', 'ES', 'MX', 'CL', 'default']
+            
+        logger.info(f"Iniciando warm-up inteligente para mercados: {market_priorities}")
+        start_time = time.time()
+        total_preloaded = 0
+        
+        for market in market_priorities:
+            try:
+                # 1. Obtener productos populares del mercado
+                popular_products = await self.get_popular_products(market, max_products_per_market // 2)
+                
+                # 2. Obtener productos de acceso frecuente
+                frequent_products = self._get_frequently_accessed_products(max_products_per_market // 4)
+                
+                # 3. Incluir productos trending si está habilitado
+                trending_products = []
+                if include_trending:
+                    trending_products = self._get_trending_products(max_products_per_market // 4)
+                
+                # 4. Incluir productos de categorías populares
+                category_products = []
+                if include_popular_categories:
+                    category_products = await self._get_popular_category_products(market, max_products_per_market // 4)
+                
+                # 5. Combinar y deduplicar
+                all_products = list(set(
+                    popular_products + frequent_products + trending_products + category_products
+                ))
+                
+                # 6. Limitar a max_products_per_market
+                products_to_preload = all_products[:max_products_per_market]
+                
+                if products_to_preload:
+                    logger.info(f"Precargando {len(products_to_preload)} productos para mercado {market}")
+                    await self.preload_products(products_to_preload, concurrency=8)
+                    total_preloaded += len(products_to_preload)
+                else:
+                    logger.warning(f"No se encontraron productos para precargar en mercado {market}")
+                    
+            except Exception as e:
+                logger.error(f"Error en warm-up para mercado {market}: {str(e)}")
+                continue
+        
+        elapsed_time = time.time() - start_time
+        logger.info(f"Warm-up inteligente completado: {total_preloaded} productos en {elapsed_time:.2f}s")
+        
+        return {
+            "success": True,
+            "total_preloaded": total_preloaded,
+            "markets_processed": len(market_priorities),
+            "elapsed_time": elapsed_time
+        }
+    
+    async def get_popular_products(self, market_id: str, limit: int = 50) -> List[str]:
+        """
+        Obtiene productos populares para un mercado específico.
+        
+        Args:
+            market_id: ID del mercado
+            limit: Número máximo de productos
+            
+        Returns:
+            Lista de IDs de productos populares
+        """
+        try:
+            # Si tenemos datos de popularidad por mercado, usarlos
+            if market_id in self.market_popularity:
+                market_products = self.market_popularity[market_id]
+                sorted_products = sorted(market_products.items(), key=lambda x: x[1], reverse=True)
+                popular_ids = [pid for pid, _ in sorted_products[:limit]]
+                
+                if popular_ids:
+                    logger.debug(f"Encontrados {len(popular_ids)} productos populares para mercado {market_id}")
+                    return popular_ids
+            
+            # Fallback: usar catálogo local con filtrado por mercado simulado
+            if self.local_catalog and hasattr(self.local_catalog, 'product_data'):
+                all_products = self.local_catalog.product_data
+                
+                # Simular popularidad basada en hash del ID para consistencia
+                market_products = []
+                for product in all_products:
+                    product_id = str(product.get('id', ''))
+                    # Usar hash para simular popularidad consistente por mercado
+                    popularity_score = hash(f"{market_id}_{product_id}") % 1000
+                    market_products.append((product_id, popularity_score))
+                
+                # Ordenar por popularidad simulada y tomar top N
+                market_products.sort(key=lambda x: x[1], reverse=True)
+                popular_ids = [pid for pid, _ in market_products[:limit]]
+                
+                logger.debug(f"Generados {len(popular_ids)} productos simulados para mercado {market_id}")
+                return popular_ids
+                
+        except Exception as e:
+            logger.error(f"Error obteniendo productos populares para mercado {market_id}: {str(e)}")
+        
+        return []
+    
+    def _get_frequently_accessed_products(self, limit: int = 25) -> List[str]:
+        """
+        Obtiene productos accedidos frecuentemente.
+        
+        Args:
+            limit: Número máximo de productos
+            
+        Returns:
+            Lista de IDs de productos frecuentemente accedidos
+        """
+        if not self.access_frequency:
+            return []
+        
+        # Ordenar por frecuencia de acceso
+        sorted_by_frequency = sorted(
+            self.access_frequency.items(), 
+            key=lambda x: x[1], 
+            reverse=True
+        )
+        
+        frequent_ids = [pid for pid, _ in sorted_by_frequency[:limit]]
+        logger.debug(f"Identificados {len(frequent_ids)} productos de acceso frecuente")
+        
+        return frequent_ids
+    
+    def _get_trending_products(self, limit: int = 25) -> List[str]:
+        """
+        Obtiene productos con tendencia de acceso reciente.
+        
+        Args:
+            limit: Número máximo de productos
+            
+        Returns:
+            Lista de IDs de productos trending
+        """
+        if not self.last_access:
+            return []
+        
+        # Calcular trending score basado en accesos recientes
+        now = datetime.now()
+        trending_scores = {}
+        
+        for product_id, last_access_time in self.last_access.items():
+            # Calcular cuánto tiempo ha pasado desde el último acceso
+            time_diff = (now - last_access_time).total_seconds()
+            
+            # Productos accedidos en las últimas 2 horas tienen mayor score
+            if time_diff < 7200:  # 2 horas
+                frequency = self.access_frequency.get(product_id, 1)
+                # Score mayor para productos accedidos recientemente y frecuentemente
+                trending_score = frequency / (time_diff / 3600 + 1)  # Dividir por horas + 1
+                trending_scores[product_id] = trending_score
+        
+        # Ordenar por trending score
+        sorted_trending = sorted(
+            trending_scores.items(), 
+            key=lambda x: x[1], 
+            reverse=True
+        )
+        
+        trending_ids = [pid for pid, _ in sorted_trending[:limit]]
+        logger.debug(f"Identificados {len(trending_ids)} productos trending")
+        
+        return trending_ids
+    
+    async def _get_popular_category_products(self, market_id: str, limit: int = 25) -> List[str]:
+        """
+        Obtiene productos de categorías populares para un mercado.
+        
+        Args:
+            market_id: ID del mercado
+            limit: Número máximo de productos
+            
+        Returns:
+            Lista de IDs de productos de categorías populares
+        """
+        if not self.category_stats:
+            return []
+        
+        try:
+            # Obtener top 3 categorías más populares
+            top_categories = sorted(
+                self.category_stats.items(), 
+                key=lambda x: x[1], 
+                reverse=True
+            )[:3]
+            
+            category_products = []
+            
+            if self.local_catalog and hasattr(self.local_catalog, 'product_data'):
+                for category, _ in top_categories:
+                    # Buscar productos de esta categoría
+                    category_items = []
+                    for product in self.local_catalog.product_data:
+                        product_category = product.get('product_type') or product.get('category', 'unknown')
+                        if product_category == category:
+                            category_items.append(str(product.get('id', '')))
+                    
+                    # Añadir algunos productos de esta categoría
+                    products_per_category = min(limit // len(top_categories), len(category_items))
+                    if products_per_category > 0:
+                        # Usar random.sample para variedad
+                        selected = random.sample(category_items, products_per_category)
+                        category_products.extend(selected)
+            
+            logger.debug(f"Seleccionados {len(category_products)} productos de categorías populares para {market_id}")
+            return category_products[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo productos de categorías populares: {str(e)}")
+            return []
+    
+    async def adaptive_cache_management(self):
+        """
+        Gestión adaptiva de caché que ajusta TTL y limpia productos obsoletos.
+        """
+        logger.info("Iniciando gestión adaptiva de caché")
+        
+        try:
+            # 1. Identificar productos obsoletos (no accedidos en 24 horas)
+            obsolete_threshold = datetime.now() - timedelta(hours=24)
+            obsolete_products = []
+            
+            for product_id, last_access_time in self.last_access.items():
+                if last_access_time < obsolete_threshold:
+                    obsolete_products.append(product_id)
+            
+            # 2. Limpiar productos obsoletos
+            if obsolete_products:
+                cleaned_count = await self.invalidate_multiple(obsolete_products)
+                logger.info(f"Limpiados {cleaned_count} productos obsoletos del caché")
+            
+            # 3. Precargar productos trending para mantener el caché fresco
+            trending_products = self._get_trending_products(50)
+            if trending_products:
+                await self.preload_products(trending_products, concurrency=5)
+                logger.info(f"Precargados {len(trending_products)} productos trending")
+            
+            return {
+                "obsolete_cleaned": len(obsolete_products),
+                "trending_preloaded": len(trending_products)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error en gestión adaptiva de caché: {str(e)}")
+            return {"error": str(e)}

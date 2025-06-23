@@ -42,9 +42,21 @@ class EventGenerator:
         Returns:
             Dict: Resultado de la generación de eventos
         """
-        if not self.tfidf_recommender.loaded or not self.tfidf_recommender.product_data:
-            logger.error("El recomendador TF-IDF no está cargado o no hay productos disponibles")
+        # DIAGNÓSTICO MEJORADO: Verificar el estado del recomendador
+        if not self.tfidf_recommender.loaded:
+            logger.error("El recomendador TF-IDF no está cargado (loaded=False)")
+            return {"status": "error", "message": "El recomendador TF-IDF no está cargado"}
+        
+        if not self.tfidf_recommender.product_data:
+            logger.error("El recomendador TF-IDF no tiene datos de productos (product_data=None)")
+            logger.error(f"Estado del recomendador: loaded={self.tfidf_recommender.loaded}, "
+                        f"vectorizer={self.tfidf_recommender.vectorizer is not None}, "
+                        f"product_vectors={self.tfidf_recommender.product_vectors is not None}")
             return {"status": "error", "message": "No hay productos disponibles para generar eventos"}
+        
+        if len(self.tfidf_recommender.product_data) == 0:
+            logger.error("El recomendador TF-IDF tiene una lista vacía de productos")
+            return {"status": "error", "message": "La lista de productos está vacía"}
         
         logger.info(f"Generando {num_events} eventos sintéticos de usuario")
         
@@ -129,9 +141,18 @@ class EventGenerator:
         Returns:
             Dict: Resultado de la generación de sesiones
         """
-        if not self.tfidf_recommender.loaded or not self.tfidf_recommender.product_data:
-            logger.error("El recomendador TF-IDF no está cargado o no hay productos disponibles")
+        # DIAGNÓSTICO MEJORADO: Verificar el estado del recomendador
+        if not self.tfidf_recommender.loaded:
+            logger.error("El recomendador TF-IDF no está cargado (loaded=False)")
+            return {"status": "error", "message": "El recomendador TF-IDF no está cargado"}
+        
+        if not self.tfidf_recommender.product_data:
+            logger.error("El recomendador TF-IDF no tiene datos de productos (product_data=None)")
             return {"status": "error", "message": "No hay productos disponibles para generar eventos"}
+        
+        if len(self.tfidf_recommender.product_data) == 0:
+            logger.error("El recomendador TF-IDF tiene una lista vacía de productos")
+            return {"status": "error", "message": "La lista de productos está vacía"}
         
         logger.info(f"Generando {num_sessions} sesiones realistas de usuario")
         
@@ -263,9 +284,18 @@ class EventGenerator:
         Returns:
             Dict: Resultado de la generación de eventos
         """
-        if not self.tfidf_recommender.loaded or not self.tfidf_recommender.product_data:
-            logger.error("El recomendador TF-IDF no está cargado o no hay productos disponibles")
+        # DIAGNÓSTICO MEJORADO: Verificar el estado del recomendador
+        if not self.tfidf_recommender.loaded:
+            logger.error("El recomendador TF-IDF no está cargado (loaded=False)")
+            return {"status": "error", "message": "El recomendador TF-IDF no está cargado"}
+        
+        if not self.tfidf_recommender.product_data:
+            logger.error("El recomendador TF-IDF no tiene datos de productos (product_data=None)")
             return {"status": "error", "message": "No hay productos disponibles para generar eventos"}
+        
+        if len(self.tfidf_recommender.product_data) == 0:
+            logger.error("El recomendador TF-IDF tiene una lista vacía de productos")
+            return {"status": "error", "message": "La lista de productos está vacía"}
         
         logger.info(f"Generando {num_events} eventos personalizados para usuario {user_id}")
         

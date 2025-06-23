@@ -14,6 +14,122 @@ from typing import Dict, Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+class MCPFactory:
+    """Fábrica para crear componentes relacionados con MCP."""
+    
+    @staticmethod
+    def create_mcp_client():
+        """
+        Crea un cliente MCP para Shopify.
+        
+        Returns:
+            MCPClient: Cliente MCP inicializado
+        """
+        settings = get_settings()
+        
+        try:
+            from src.api.mcp.client.mcp_client import MCPClient
+            
+            logger.info(f"Creando cliente MCP bridge en puerto 3001")
+            client = MCPClient(bridge_host="localhost", bridge_port=3001)
+            
+            return client
+        except ImportError:
+            logger.error("No se pudo importar MCPClient. Verifica la instalación.")
+            return None
+        except Exception as e:
+            logger.error(f"Error creando cliente MCP: {str(e)}")
+            return None
+    
+    @staticmethod
+    def create_market_manager():
+        """
+        Crea un gestor de contexto de mercado.
+        
+        Returns:
+            MarketContextManager: Gestor de mercados inicializado
+        """
+        try:
+            from src.api.mcp.adapters.market_manager import MarketContextManager
+            
+            logger.info("Creando gestor de contexto de mercado")
+            manager = MarketContextManager()
+            
+            # Iniciar carga en segundo plano
+            asyncio.create_task(manager.initialize())
+            
+            return manager
+        except ImportError:
+            logger.error("No se pudo importar MarketContextManager. Verifica la instalación.")
+            return None
+        except Exception as e:
+            logger.error(f"Error creando gestor de mercado: {str(e)}")
+            return None
+    
+    @staticmethod
+    def create_market_cache():
+        """
+        Crea un sistema de caché específico para mercados.
+        
+        Returns:
+            MarketAwareProductCache: Cache market-aware
+        """
+        settings = get_settings()
+        
+        if not settings.use_redis_cache:
+            logger.info("MarketAwareProductCache desactivada por configuración")
+            return None
+            
+        try:
+            from src.cache.market_aware.market_cache import MarketAwareProductCache
+            
+            logger.info("Creando cache market-aware")
+            market_cache = MarketAwareProductCache()
+            
+            return market_cache
+        except ImportError:
+            logger.error("No se pudo importar MarketAwareProductCache.")
+            return None
+        except Exception as e:
+            logger.error(f"Error creando MarketAwareProductCache: {str(e)}")
+            return None
+    
+    @staticmethod
+    def create_mcp_recommender(base_recommender, mcp_client, market_manager, market_cache):
+        """
+        Crea un recomendador con capacidades MCP.
+        
+        Args:
+            base_recommender: Recomendador base para obtener recomendaciones iniciales
+            mcp_client: Cliente MCP para procesamiento conversacional
+            market_manager: Gestor de mercados para adaptación por mercado
+            market_cache: Caché market-aware para almacenamiento eficiente
+            
+        Returns:
+            MCPAwareHybridRecommender: Recomendador con capacidades MCP
+        """
+        try:
+            from src.recommenders.mcp_aware_hybrid import MCPAwareHybridRecommender
+            
+            logger.info("Creando recomendador MCPAwareHybrid")
+            
+            # Adaptación para trabajar con MCPClient en lugar de ShopifyMCPClient
+            mcp_recommender = MCPAwareHybridRecommender(
+                base_recommender=base_recommender,
+                mcp_client=mcp_client,
+                market_manager=market_manager,
+                market_cache=market_cache
+            )
+            
+            return mcp_recommender
+        except ImportError:
+            logger.error("No se pudo importar MCPAwareHybridRecommender. Verifica la instalación.")
+            return None
+        except Exception as e:
+            logger.error(f"Error creando MCPAwareHybridRecommender: {str(e)}")
+            return None
+
+
 class RecommenderFactory:
     """Fábrica para crear recomendadores."""
     

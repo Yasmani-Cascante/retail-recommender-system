@@ -96,12 +96,15 @@ class TFIDFRecommender:
                 if model_dir and not os.path.exists(model_dir):
                     os.makedirs(model_dir, exist_ok=True)
                 
+                # CORRECCIÓN: Guardar también los datos de productos y IDs
                 with open(self.model_path, 'wb') as f:
                     pickle.dump({
                         'vectorizer': self.vectorizer,
-                        'product_vectors': self.product_vectors
+                        'product_vectors': self.product_vectors,
+                        'product_data': self.product_data,  # Añadir datos de productos
+                        'product_ids': self.product_ids     # Añadir IDs de productos
                     }, f)
-                logger.info(f"Modelo TF-IDF guardado en {self.model_path}")
+                logger.info(f"Modelo TF-IDF guardado en {self.model_path} con {len(self.product_data)} productos")
             
             self.loaded = True
             logger.info(f"Recomendador TF-IDF entrenado exitosamente")
@@ -135,9 +138,20 @@ class TFIDFRecommender:
                 
             self.vectorizer = data['vectorizer']
             self.product_vectors = data['product_vectors']
+            
+            # CORRECCIÓN CRITICA: Verificar si hay product_data en el modelo
+            if 'product_data' in data:
+                self.product_data = data['product_data']
+                self.product_ids = data.get('product_ids', [str(p.get('id', i)) for i, p in enumerate(self.product_data)])
+                logger.info(f"Datos de productos cargados desde modelo: {len(self.product_data)} productos")
+            else:
+                logger.warning("El modelo no contiene datos de productos. Necesitará reentrenar o cargar productos.")
+                # IMPORTANTE: No marcar como loaded si no hay product_data
+                return False
+            
             self.loaded = True
             
-            logger.info(f"Modelo TF-IDF cargado exitosamente")
+            logger.info(f"Modelo TF-IDF cargado exitosamente con {len(self.product_data) if self.product_data else 0} productos")
             return True
             
         except Exception as e:
@@ -274,12 +288,28 @@ class TFIDFRecommender:
         Returns:
             Diccionario con información de estado
         """
+        # Calcular productos count de forma segura
+        products_count = 0
+        if self.loaded and self.product_data is not None:
+            products_count = len(self.product_data)
+        
+        # Calcular features count de forma segura
+        features_count = 0
+        if self.loaded and self.vectorizer is not None:
+            try:
+                features_count = self.vectorizer.get_feature_names_out().shape[0]
+            except:
+                features_count = 0
+        
         status = {
             "name": "tfidf_recommender",
             "status": "operational" if self.loaded else "unavailable",
             "loaded": self.loaded,
-            "products_count": len(self.product_data) if self.loaded else 0,
-            "vectorizer_features": self.vectorizer.get_feature_names_out().shape[0] if self.loaded and self.vectorizer else 0,
-            "fallback_active": self.fallback_active
+            "products_count": products_count,
+            "vectorizer_features": features_count,
+            "fallback_active": self.fallback_active,
+            "has_product_data": self.product_data is not None,
+            "has_vectorizer": self.vectorizer is not None,
+            "has_vectors": self.product_vectors is not None
         }
         return status

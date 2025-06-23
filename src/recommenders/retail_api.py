@@ -648,10 +648,51 @@ class RetailAPIRecommender:
             
             parent = f"projects/{self.project_number}/locations/{self.location}/catalogs/{self.catalog}"
             
+            # CORRECCIÓN: Importación flexible de ListUserEventsRequest
+            # Intentar múltiples patrones de importación para mayor compatibilidad
+            ListUserEventsRequest = None
+            import_successful = False
+            
+            # Patrón 1: Importación directa desde retail_v2 (más reciente)
+            try:
+                from google.cloud.retail_v2 import ListUserEventsRequest
+                import_successful = True
+                logging.debug("Importación exitosa: google.cloud.retail_v2.ListUserEventsRequest")
+            except ImportError:
+                pass
+            
+            # Patrón 2: Importación desde types (patrón anterior)
+            if not import_successful:
+                try:
+                    from google.cloud.retail_v2.types import ListUserEventsRequest
+                    import_successful = True
+                    logging.debug("Importación exitosa: google.cloud.retail_v2.types.ListUserEventsRequest")
+                except ImportError:
+                    pass
+            
+            # Patrón 3: Importación desde user_event_service (patrón más antiguo)
+            if not import_successful:
+                try:
+                    from google.cloud.retail_v2.types.user_event_service import ListUserEventsRequest
+                    import_successful = True
+                    logging.debug("Importación exitosa: google.cloud.retail_v2.types.user_event_service.ListUserEventsRequest")
+                except ImportError:
+                    pass
+            
+            # Si ningún patrón de importación funciona, usar implementación alternativa
+            if not import_successful or ListUserEventsRequest is None:
+                logging.warning("No se pudo importar ListUserEventsRequest. Usando implementación alternativa.")
+                logging.info(f"Implementación alternativa: simulando consulta de eventos para usuario {user_id}")
+                
+                # Implementación alternativa: devolver estructura vacía pero válida
+                # En una implementación real, esto podría consultar una base de datos local
+                # o usar otro método para obtener eventos de usuario
+                return []
+            
             # Crear el request para list_user_events
-            request = retail_v2.ListUserEventsRequest(
+            request = ListUserEventsRequest(
                 parent=parent,
-                filter=f"visitorId=\"{{user_id}}\"",
+                filter=f'visitorId="{user_id}"',
                 page_size=limit
             )
             
@@ -688,12 +729,12 @@ class RetailAPIRecommender:
                 
             except Exception as api_error:
                 logging.warning(f"Error al obtener eventos desde Google Retail API: {str(api_error)}")
-                # Si hay un error específico de la API, podemos intentar otra estrategia
-                # o simplemente devolver una lista vacía
+                # Si hay un error específico de la API, devolver lista vacía
                 return []
                 
         except Exception as e:
             logging.error(f"Error general al obtener eventos de usuario: {str(e)}")
+            logging.warning("Usando implementación alternativa para obtener eventos de usuario")
             return []
         
     async def ensure_catalog_branches(self) -> bool:

@@ -34,6 +34,9 @@ from src.api.startup_helper import StartupManager
 from src.api.core.store import get_shopify_client, init_shopify
 from src.api.security import get_api_key, get_current_user
 
+# Importar routers
+from src.api.routers import mcp_router
+
 # Configuración de logging
 logging.basicConfig(
     level=logging.INFO,
@@ -74,8 +77,14 @@ hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
     tfidf_recommender, retail_recommender
 )
 
+# Inicialmente el recomendador MCP es None, se inicializará en startup
+mcp_recommender = None
+
 # Crear gestor de arranque
 startup_manager = StartupManager(startup_timeout=settings.startup_timeout)
+
+# Incluir router MCP
+app.include_router(mcp_router.router)
 
 # Variables para uptime
 start_time = time.time()
@@ -187,7 +196,7 @@ async def load_recommender():
 @app.on_event("startup")
 async def startup_event():
     """Evento de inicio de la aplicación."""
-    logger.info("🚀 Iniciando API de recomendaciones unificada con Redis...")
+    logger.info("🚀 Iniciando API de recomendaciones unificada con Redis y MCP...")
     
     # Verificar estructura del catálogo en Retail API si está habilitado
     if settings.validate_products:
@@ -199,7 +208,7 @@ async def startup_event():
     
     # Inicializar cliente Redis y caché de productos
     try:
-        from src.api.factories import RecommenderFactory
+        from src.api.factories import RecommenderFactory, MCPFactory
         
         # Crear cliente Redis
         global redis_client
@@ -226,6 +235,33 @@ async def startup_event():
             logger.info("Recomendador híbrido actualizado para usar caché")
         else:
             logger.warning("Sistema de caché de productos no disponible - usando modo sin caché")
+            
+        # Inicializar componentes MCP
+        try:
+            # Inicializar cliente MCP
+            mcp_client = MCPFactory.create_mcp_client()
+            logger.info("Cliente MCP inicializado correctamente")
+            
+            # Inicializar gestor de mercados
+            market_manager = MCPFactory.create_market_manager()
+            logger.info("Gestor de mercados inicializado correctamente")
+            
+            # Inicializar caché market-aware
+            market_cache = MCPFactory.create_market_cache()
+            logger.info("Caché market-aware inicializado correctamente")
+            
+            # Crear recomendador MCP
+            global mcp_recommender
+            mcp_recommender = MCPFactory.create_mcp_recommender(
+                base_recommender=hybrid_recommender,
+                mcp_client=mcp_client,
+                market_manager=market_manager,
+                market_cache=market_cache
+            )
+            logger.info("✅ Recomendador MCP inicializado correctamente")
+        except Exception as mcp_error:
+            logger.error(f"Error inicializando componentes MCP: {str(mcp_error)}")
+            logger.info("Continuando sin soporte MCP...")
         
     except Exception as e:
         logger.error(f"Error inicializando sistemas de caché: {str(e)}")
@@ -238,8 +274,18 @@ async def startup_event():
         required=True
     )
     
-    # Iniciar carga en segundo plano
+    # CORRECCIÓN: Esperar a que la carga termine antes de continuar
+    logger.info("⏳ Esperando a que termine la carga del recomendador...")
     loading_task = asyncio.create_task(startup_manager.start_loading())
+    
+    # Esperar hasta 30 segundos a que termine la carga
+    try:
+        await asyncio.wait_for(loading_task, timeout=30.0)
+        logger.info("✅ Carga del recomendador completada")
+    except asyncio.TimeoutError:
+        logger.warning("⚠️ Timeout esperando carga del recomendador - continuando anyway")
+    except Exception as e:
+        logger.error(f"❌ Error en carga del recomendador: {e}")
     
     # Iniciar generación de datos de prueba si es necesario
     if settings.debug:
@@ -253,10 +299,11 @@ async def startup_event():
 @app.get("/", include_in_schema=False)
 def read_root():
     return {
-        "message": "Retail Recommender API unificada con Redis",
+        "message": "Retail Recommender API unificada con Redis y MCP",
         "version": settings.app_version,
         "status": "online",
-        "docs_url": "/docs"
+        "docs_url": "/docs",
+        "mcp_support": mcp_recommender is not None
     }
 
 @app.get("/health", response_model=HealthStatus)
@@ -290,12 +337,41 @@ async def health_check():
             "message": "Product cache not initialized"
         }
     
+    # Añadir estado de MCP si está disponible
+    mcp_status = {}
+    if 'mcp_recommender' in globals() and mcp_recommender:
+        try:
+            market_cache = mcp_recommender.market_cache
+            if market_cache:
+                mcp_health = await market_cache.health_check()
+                mcp_status = {
+                    "status": mcp_health["status"],
+                    "market_cache": mcp_health,
+                    "metrics": mcp_recommender.get_metrics() if hasattr(mcp_recommender, 'get_metrics') else {}
+                }
+            else:
+                mcp_status = {
+                    "status": "degraded",
+                    "message": "MCP recommender available but market cache not initialized"
+                }
+        except Exception as e:
+            mcp_status = {
+                "status": "error",
+                "error": str(e)
+            }
+    else:
+        mcp_status = {
+            "status": "unavailable",
+            "message": "MCP components not initialized"
+        }
+    
     return {
         "status": startup_status["status"],
         "components": {
             "recommender": recommender_status,
             "startup": startup_status,
-            "cache": cache_status  # Añadir componente de caché
+            "cache": cache_status,
+            "mcp": mcp_status
         },
         "uptime_seconds": time.time() - start_time
     }
