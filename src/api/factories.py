@@ -55,8 +55,9 @@ class MCPFactory:
             logger.info("Creando gestor de contexto de mercado")
             manager = MarketContextManager()
             
-            # Iniciar carga en segundo plano
-            asyncio.create_task(manager.initialize())
+            # CORREGIDO: Inicializar de forma segura sin event loop
+            # El manager se inicializará cuando sea necesario en contexto asíncrono
+            logger.info("Market manager creado - inicialización diferida")
             
             return manager
         except ImportError:
@@ -95,15 +96,20 @@ class MCPFactory:
             return None
     
     @staticmethod
-    def create_mcp_recommender(base_recommender, mcp_client, market_manager, market_cache):
+    def create_mcp_recommender(
+        base_recommender=None,
+        mcp_client=None,
+        market_manager=None,
+        market_cache=None
+    ):
         """
         Crea un recomendador con capacidades MCP.
         
         Args:
-            base_recommender: Recomendador base para obtener recomendaciones iniciales
-            mcp_client: Cliente MCP para procesamiento conversacional
-            market_manager: Gestor de mercados para adaptación por mercado
-            market_cache: Caché market-aware para almacenamiento eficiente
+            base_recommender: Recomendador híbrido base (opcional, se creará automáticamente si no se proporciona)
+            mcp_client: Cliente MCP (opcional, se creará automáticamente si no se proporciona)
+            market_manager: Gestor de mercados (opcional, se creará automáticamente si no se proporciona)
+            market_cache: Caché market-aware (opcional, se creará automáticamente si no se proporciona)
             
         Returns:
             MCPAwareHybridRecommender: Recomendador con capacidades MCP
@@ -111,9 +117,54 @@ class MCPFactory:
         try:
             from src.recommenders.mcp_aware_hybrid import MCPAwareHybridRecommender
             
-            logger.info("Creando recomendador MCPAwareHybrid")
+            logger.info("Creando recomendador MCPAwareHybrid con componentes proporcionados o automáticos")
             
-            # Adaptación para trabajar con MCPClient en lugar de ShopifyMCPClient
+            # 1. Usar base_recommender proporcionado o crear uno nuevo
+            if base_recommender is None:
+                logger.info("Creando componentes base para MCP recommender...")
+                content_recommender = RecommenderFactory.create_content_recommender()
+                retail_recommender = RecommenderFactory.create_retail_recommender()
+                
+                # Crear recomendador híbrido base
+                base_recommender = RecommenderFactory.create_hybrid_recommender(
+                    content_recommender=content_recommender,
+                    retail_recommender=retail_recommender
+                )
+                logger.info("Base recommender creado automáticamente")
+            else:
+                logger.info("Usando base recommender proporcionado")
+            
+            # 2. Usar MCP client proporcionado o crear uno nuevo
+            if mcp_client is None:
+                mcp_client = MCPFactory.create_mcp_client()
+                if not mcp_client:
+                    logger.warning("MCP client no disponible, usando fallback")
+                else:
+                    logger.info("MCP client creado automáticamente")
+            else:
+                logger.info("Usando MCP client proporcionado")
+            
+            # 3. Usar market manager proporcionado o crear uno nuevo
+            if market_manager is None:
+                market_manager = MCPFactory.create_market_manager()
+                if not market_manager:
+                    logger.warning("Market manager no disponible, usando fallback")
+                else:
+                    logger.info("Market manager creado automáticamente")
+            else:
+                logger.info("Usando market manager proporcionado")
+            
+            # 4. Usar market cache proporcionado o crear uno nuevo
+            if market_cache is None:
+                market_cache = MCPFactory.create_market_cache()
+                if not market_cache:
+                    logger.warning("Market cache no disponible, usando fallback")
+                else:
+                    logger.info("Market cache creado automáticamente")
+            else:
+                logger.info("Usando market cache proporcionado")
+            
+            # 5. Crear el recomendador MCP con todos los componentes
             mcp_recommender = MCPAwareHybridRecommender(
                 base_recommender=base_recommender,
                 mcp_client=mcp_client,
@@ -121,12 +172,14 @@ class MCPFactory:
                 market_cache=market_cache
             )
             
+            logger.info("MCPAwareHybridRecommender creado exitosamente")
             return mcp_recommender
-        except ImportError:
-            logger.error("No se pudo importar MCPAwareHybridRecommender. Verifica la instalación.")
+            
+        except ImportError as e:
+            logger.error(f"No se pudo importar MCPAwareHybridRecommender: {e}")
             return None
         except Exception as e:
-            logger.error(f"Error creando MCPAwareHybridRecommender: {str(e)}")
+            logger.error(f"Error creando MCPAwareHybridRecommender: {e}")
             return None
 
 

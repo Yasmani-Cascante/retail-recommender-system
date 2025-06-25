@@ -67,15 +67,40 @@ class MCPAwareHybridRecommender:
         self.metrics["total_requests"] += 1
         start_time = time.time()
         
+        # Verificar si request es un dict o un modelo Pydantic y extraer parámetros correctamente
+        # Los modelos Pydantic no tienen método get() pero sí acceso directo a atributos
+        # Los dicts tienen método get() pero no acceso directo a atributos
+        is_dict = isinstance(request, dict)
+        
+        # Extraer parámetros adaptándose al tipo de objeto
+        if is_dict:
+            user_id = request.get('user_id', 'anonymous')
+            product_id = request.get('product_id')
+            market_id = request.get('market_id', 'default')
+            n_recommendations = request.get('n_recommendations', 5)
+            include_conversation = request.get('include_conversation_response', False)
+            # Nuevo: Extraer consulta para uso en búsqueda cuando no hay recomendaciones
+            query_text = request.get('query', None)
+            if not query_text and 'conversation_context' in request:
+                # Intentar extraer query del contexto de conversación
+                conversation_context = request.get('conversation_context', {})
+                if isinstance(conversation_context, dict):
+                    query_text = conversation_context.get('query', None)
+        else:
+            # Es un modelo Pydantic (MCPRecommendationRequest)
+            user_id = getattr(request, 'user_id', 'anonymous')
+            product_id = getattr(request, 'product_id', None)
+            market_id = getattr(request, 'market_id', 'default')
+            n_recommendations = getattr(request, 'n_recommendations', 5)
+            include_conversation = getattr(request, 'include_conversation_response', False)
+            # Nuevo: Extraer consulta para uso en búsqueda cuando no hay recomendaciones
+            query_text = None
+            conversation_context = getattr(request, 'conversation_context', None)
+            if conversation_context is not None:
+                query_text = getattr(conversation_context, 'query', None)
+        
         try:
-            # Extraer parámetros del request (compatible con dict y objetos)
-            user_id = getattr(request, 'user_id', request.get('user_id', 'anonymous'))
-            product_id = getattr(request, 'product_id', request.get('product_id'))
-            market_id = getattr(request, 'market_id', request.get('market_id', 'default'))
-            n_recommendations = getattr(request, 'n_recommendations', request.get('n_recommendations', 5))
-            include_conversation = getattr(request, 'include_conversation_response', request.get('include_conversation_response', False))
-            
-            logger.info(f"Procesando request MCP: user={user_id}, market={market_id}, product={product_id}")
+            logger.info(f"Procesando request MCP: user={user_id}, market={market_id}, product={product_id}, query={query_text}")
             
             # 1. Obtener recomendaciones base
             base_recommendations = await self.base_recommender.get_recommendations(
@@ -83,6 +108,91 @@ class MCPAwareHybridRecommender:
                 product_id=product_id,
                 n_recommendations=n_recommendations
             )
+            
+            # Nuevo: Si no hay recomendaciones y tenemos query, intentar búsqueda por texto
+            if not base_recommendations and query_text and hasattr(self.base_recommender, 'content_recommender'):
+                logger.info(f"No se encontraron recomendaciones basadas en usuario/producto. Intentando búsqueda por texto: {query_text}")
+                try:
+                    # Asegurarnos de que el content_recommender esté cargado
+                    if hasattr(self.base_recommender.content_recommender, 'loaded') and not self.base_recommender.content_recommender.loaded:
+                        logger.warning("El content_recommender no está cargado. Intentando cargar modelo...")
+                        await self.base_recommender.content_recommender.load()
+                    
+                    # Intentar búsqueda por texto
+                    if hasattr(self.base_recommender.content_recommender, 'search_products'):
+                        search_results = await self.base_recommender.content_recommender.search_products(
+                            query_text, n_recommendations
+                        )
+                        if search_results:
+                            logger.info(f"Búsqueda por texto exitosa: {len(search_results)} resultados")
+                            # Marcar las recomendaciones como provenientes de búsqueda por texto
+                            for result in search_results:
+                                result["source"] = "text_search"
+                            base_recommendations = search_results
+                        else:
+                            logger.warning(f"Búsqueda por texto sin resultados para: {query_text}")
+                    else:
+                        logger.warning("El content_recommender no tiene método search_products")
+                except Exception as search_e:
+                    logger.error(f"Error en búsqueda por texto: {search_e}")
+            
+            # Nuevo: Fallback garantizado - si todavía no hay recomendaciones, proporcionar productos aleatorios
+            if not base_recommendations and hasattr(self.base_recommender, 'content_recommender'):
+                import random
+                logger.info("Aplicando fallback de productos aleatorios")
+                
+                # Verificar si tenemos product_data disponible
+                if hasattr(self.base_recommender.content_recommender, 'product_data') and \
+                   self.base_recommender.content_recommender.product_data:
+                    # Obtener productos aleatorios del catálogo
+                    all_products = self.base_recommender.content_recommender.product_data
+                    if len(all_products) > 0:
+                        num_sample = min(n_recommendations, len(all_products))
+                        random_products = random.sample(all_products, num_sample)
+                        
+                        base_recommendations = []
+                        for product in random_products:
+                            base_recommendations.append({
+                                "id": str(product.get('id', '')),
+                                "title": product.get('title', 'Producto'),
+                                "description": product.get('body_html', ''),
+                                "price": 0.0,  # Se extraerá posteriormente de variantes
+                                "score": 0.5,
+                                "source": "catalog_random_fallback"  # Especificar que proviene de productos aleatorios del catálogo
+                            })
+                        
+                        logger.info(f"Fallback aleatorio aplicó {len(base_recommendations)} productos")
+                else:
+                    # Fallback absoluto (productos de emergencia fijos) si no hay catálogo disponible
+                    logger.warning("Catálogo no disponible, usando productos de emergencia")
+                    emergency_products = [
+                        {
+                            "id": "emergency1",
+                            "title": "Camisa Azul Clásica",
+                            "description": "Camisa azul de alta calidad con corte clásico.",
+                            "price": 29.99,
+                            "score": 0.5,
+                            "source": "static_emergency_products"  # Fuente específica para productos estáticos
+                        },
+                        {
+                            "id": "emergency2",
+                            "title": "Pantalones Negros Slim Fit",
+                            "description": "Pantalones negros de corte slim fit para ocasiones formales.",
+                            "price": 39.99,
+                            "score": 0.5,
+                            "source": "static_emergency_products"
+                        },
+                        {
+                            "id": "emergency3",
+                            "title": "Zapatos de Cuero Marrón",
+                            "description": "Zapatos clásicos de cuero en color marrón.",
+                            "price": 59.99,
+                            "score": 0.5,
+                            "source": "static_emergency_products"
+                        }
+                    ]
+                    base_recommendations = emergency_products[:n_recommendations]
+                    logger.info(f"Fallback de emergencia aplicó {len(base_recommendations)} productos estáticos")
             
             # 2. Aplicar adaptación de mercado si está disponible
             adapted_recommendations = base_recommendations
@@ -125,6 +235,9 @@ class MCPAwareHybridRecommender:
             # Convertir recomendaciones base a formato MCP
             mcp_recommendations = []
             for rec in adapted_recommendations:
+                # Obtener la fuente de la recomendación
+                source = rec.get("source", "mcp_aware_hybrid")
+                
                 mcp_rec = {
                     "product": {
                         "id": rec.get("id"),
@@ -142,7 +255,7 @@ class MCPAwareHybridRecommender:
                     "metadata": {
                         "market_adapted": self.market_aware,
                         "mcp_processed": self.mcp_available,
-                        "source": "mcp_aware_hybrid"
+                        "source": source  # Usar la fuente específica de cada recomendación
                     }
                 }
                 mcp_recommendations.append(mcp_rec)
@@ -169,12 +282,74 @@ class MCPAwareHybridRecommender:
             
         except Exception as e:
             logger.error(f"Error en MCPAwareHybridRecommender: {e}")
-            # Fallback a recomendaciones base
-            base_recommendations = await self.base_recommender.get_recommendations(
-                user_id=user_id,
-                product_id=product_id,
-                n_recommendations=n_recommendations
-            )
+            # Fallback a recomendaciones base - ahora user_id está garantizado que esté definido
+            try:
+                base_recommendations = await self.base_recommender.get_recommendations(
+                    user_id=user_id,
+                    product_id=product_id,
+                    n_recommendations=n_recommendations
+                )
+            except Exception as inner_e:
+                logger.error(f"Error en fallback de recomendaciones: {inner_e}")
+                base_recommendations = []  # Lista vacía si falla el fallback
+            
+            # Nuevo: Intentar con fallback garantizado si no hay recomendaciones en caso de error
+            if not base_recommendations and hasattr(self.base_recommender, 'content_recommender'):
+                import random
+                logger.info("Aplicando fallback de emergencia (error) con productos aleatorios")
+                
+                # Verificar si tenemos product_data disponible
+                if hasattr(self.base_recommender.content_recommender, 'product_data') and \
+                   self.base_recommender.content_recommender.product_data:
+                    # Obtener productos aleatorios del catálogo
+                    all_products = self.base_recommender.content_recommender.product_data
+                    if len(all_products) > 0:
+                        num_sample = min(n_recommendations, len(all_products))
+                        random_products = random.sample(all_products, num_sample)
+                        
+                        base_recommendations = []
+                        for product in random_products:
+                            base_recommendations.append({
+                                "id": str(product.get('id', '')),
+                                "title": product.get('title', 'Producto'),
+                                "description": product.get('body_html', ''),
+                                "price": 0.0,
+                                "score": 0.5,
+                                "source": "error_recovery_catalog"  # Fuente específica para productos de recuperación de error
+                            })
+                        
+                        logger.info(f"Fallback de emergencia aplicó {len(base_recommendations)} productos")
+                else:
+                    # Fallback absoluto (productos de emergencia fijos) si no hay catálogo disponible
+                    logger.warning("Catálogo no disponible en fallback de error, usando productos de emergencia estáticos")
+                    emergency_products = [
+                        {
+                            "id": "emergency1",
+                            "title": "Camisa Azul Clásica",
+                            "description": "Camisa azul de alta calidad con corte clásico.",
+                            "price": 29.99,
+                            "score": 0.5,
+                            "source": "error_recovery_products"
+                        },
+                        {
+                            "id": "emergency2",
+                            "title": "Pantalones Negros Slim Fit",
+                            "description": "Pantalones negros de corte slim fit para ocasiones formales.",
+                            "price": 39.99,
+                            "score": 0.5,
+                            "source": "error_recovery_products"
+                        },
+                        {
+                            "id": "emergency3",
+                            "title": "Zapatos de Cuero Marrón",
+                            "description": "Zapatos clásicos de cuero en color marrón.",
+                            "price": 59.99,
+                            "score": 0.5,
+                            "source": "error_recovery_products"
+                        }
+                    ]
+                    base_recommendations = emergency_products[:n_recommendations]
+                    logger.info(f"Fallback de emergencia estático aplicó {len(base_recommendations)} productos")
             
             return {
                 "recommendations": [
@@ -188,7 +363,11 @@ class MCPAwareHybridRecommender:
                         },
                         "market_score": rec.get("score", 0.5),
                         "viability_score": 0.5,
-                        "reason": "Fallback recommendation"
+                        "reason": "Fallback recommendation",
+                        "metadata": {
+                            "source": rec.get("source", "error_fallback"),
+                            "error_recovery": True
+                        }
                     }
                     for rec in base_recommendations
                 ],

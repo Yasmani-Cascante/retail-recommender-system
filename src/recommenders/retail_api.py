@@ -909,60 +909,116 @@ class RetailAPIRecommender:
         product_id: Optional[str] = None,
         n_recommendations: int = 5
     ) -> List[Dict]:
+        """
+        Obtiene recomendaciones personalizadas de Google Cloud Retail API.
+        
+        Args:
+            user_id: ID del usuario
+            product_id: ID del producto (opcional, para recomendaciones basadas en producto)
+            n_recommendations: Número de recomendaciones a devolver
+            
+        Returns:
+            List[Dict]: Lista de productos recomendados
+        """
         try:
-            # Verificamos parámetros de configuración
+            # Verificar parámetros de configuración
             if not self.project_number or not self.location or not self.catalog or not self.serving_config_id:
                 logging.error("Faltan parámetros de configuración para Google Retail API")
                 logging.error(f"Project: {self.project_number}, Location: {self.location}, Catalog: {self.catalog}, Serving Config: {self.serving_config_id}")
                 return []
                 
-            # Verificamos que el serving_config_id no sea una ruta de archivo
+            # Verificar que el serving_config_id no sea una ruta de archivo
             if self.serving_config_id.endswith('.json') or '/' in self.serving_config_id or '\\' in self.serving_config_id:
                 logging.error(f"El valor de serving_config_id parece ser una ruta de archivo: {self.serving_config_id}")
                 return []
 
-            parent = f"projects/{self.project_number}/locations/{self.location}/catalogs/{self.catalog}"
-            
-            user_event = retail_v2.UserEvent(
-                event_type="home-page-view",
-                visitor_id=str(user_id),
-                event_time=datetime.utcnow()
-            )
+            # CORREGIDO: Crear evento de usuario contextual basado en parámetros
+            if product_id:
+                # Si hay product_id, usar evento de vista de producto
+                event_type = "detail-page-view"
+                logging.info(f"[DEBUG] 👁️ Creando evento de vista de producto para product_id={product_id}")
+                
+                user_event = retail_v2.UserEvent(
+                    event_type=event_type,
+                    visitor_id=str(user_id),
+                    event_time=datetime.utcnow()
+                )
+                
+                # Añadir detalles del producto
+                product_detail = retail_v2.ProductDetail()
+                product_detail.product.id = product_id
+                product_detail.quantity = 1
+                user_event.product_details = [product_detail]
+                
+                logging.info(f"[DEBUG] 📦 Añadido product_detail para {product_id}")
+                
+            else:
+                # Sin product_id, usar evento genérico pero personalizado para el usuario
+                event_type = "home-page-view"
+                logging.info(f"[DEBUG] 🏠 Creando evento de página de inicio para user_id={user_id}")
+                
+                user_event = retail_v2.UserEvent(
+                    event_type=event_type,
+                    visitor_id=str(user_id),
+                    event_time=datetime.utcnow()
+                )
 
-            logging.info(f"User event: {str(user_event)}")
-            logging.info(f"Placement: {self.placement}")
+            logging.info(f"[DEBUG] 📨 User event creado: tipo={event_type}, visitor_id={user_id}")
+            logging.info(f"[DEBUG] 🎯 Placement: {self.placement}")
 
+            # CORREGIDO: Crear request sin validación previa que puede fallar
             request = retail_v2.PredictRequest(
                 placement=self.placement,
                 user_event=user_event,
                 page_size=n_recommendations,
-                validate_only=True
+                validate_only=False  # CAMBIADO: No validar, ejecutar directamente
             )
 
-            logging.info(f"Request: {str(request)}")
+            logging.info(f"[DEBUG] 📤 Request creado - page_size: {n_recommendations}")
 
             try:
-                # Intentar validar la solicitud
+                # CORREGIDO: Ejecutar la solicitud directamente
+                logging.info(f"[DEBUG] 🚀 Enviando petición a Google Cloud Retail API...")
                 response = self.predict_client.predict(request)
-                logging.info(f"Validación exitosa")
                 
-                # Si la validación es exitosa, hacer la solicitud real
-                request.validate_only = False
-                response = self.predict_client.predict(request)
+                logging.info(f"[DEBUG] ✅ Respuesta recibida de Google Cloud Retail API")
+                logging.info(f"[DEBUG] 📊 Tipo de respuesta: {type(response)}")
                 
                 # Procesar y devolver resultados
                 results = self._process_predictions(response)
-                logging.info(f"Se obtuvieron {len(results)} recomendaciones para el usuario {user_id}")
+                
+                if results:
+                    logging.info(f"[DEBUG] 🎉 ÉXITO: {len(results)} recomendaciones procesadas para user_id={user_id}, product_id={product_id}")
+                    
+                    # Log de las primeras recomendaciones para diagnóstico
+                    for i, rec in enumerate(results[:3]):
+                        logging.info(f"[DEBUG] Retail API Rec {i+1}: ID={rec.get('id')}, Título={rec.get('title', '')[:30]}..., Score={rec.get('score', 0)}")
+                else:
+                    logging.warning(f"[DEBUG] ⚠️ Google Retail API devolvió respuesta vacía para user_id={user_id}, product_id={product_id}")
+                
                 return results
-            except Exception as e:
-                logging.error(f"Error en API de Google Retail: {str(e)}")
-                if hasattr(e, 'details'):
-                    logging.error(f"Detalles del error: {e.details}")
-                # Si falla la API de Google, intentar usar recomendaciones basadas en contenido
+                
+            except Exception as api_error:
+                logging.error(f"[DEBUG] ❌ ERROR en API de Google Retail: {str(api_error)}")
+                logging.error(f"[DEBUG] Tipo de error: {type(api_error).__name__}")
+                
+                if hasattr(api_error, 'details'):
+                    logging.error(f"[DEBUG] Detalles del error: {api_error.details}")
+                    
+                # Verificar si es un error de configuración
+                error_msg = str(api_error).lower()
+                if 'permission' in error_msg or 'auth' in error_msg:
+                    logging.error(f"[DEBUG] 🔒 ERROR DE AUTENTICACIÓN: Verificar credenciales de Google Cloud")
+                elif 'not found' in error_msg or '404' in error_msg:
+                    logging.error(f"[DEBUG] 📍 ERROR DE CONFIGURACIÓN: Verificar project_number, location, catalog, serving_config")
+                elif 'quota' in error_msg or 'limit' in error_msg:
+                    logging.error(f"[DEBUG] 🚧 ERROR DE QUOTA: Verificar límites de la API de Google Cloud")
+                    
                 return []
 
         except Exception as e:
-            logging.error(f"Error en get_recommendations: {str(e)}")
+            logging.error(f"[DEBUG] 💥 ERROR GENERAL en get_recommendations: {str(e)}")
+            logging.error(f"[DEBUG] Traceback: {traceback.format_exc()}")
             return []
             
     async def record_user_event(

@@ -66,6 +66,9 @@ class HybridRecommender:
         """
         logger.info(f"Solicitando recomendaciones híbridas: user_id={user_id}, product_id={product_id}, n={n_recommendations}")
         
+        # DIAGNÓSTICO: Logging detallado para debug
+        logger.info(f"[DEBUG] Parámetros recibidos: user_id='{user_id}', product_id='{product_id}', content_weight={self.content_weight}")
+        
         # Obtener recomendaciones de ambos sistemas
         content_recs = []
         retail_recs = []
@@ -86,25 +89,42 @@ class HybridRecommender:
         if should_use_retail_api:
             # Intentar obtener recomendaciones de Retail API
             try:
+                logger.info(f"[DEBUG] ⚙️ Intentando obtener recomendaciones de Retail API para user_id='{user_id}', product_id='{product_id}'")
+                
                 retail_recs = await self.retail_recommender.get_recommendations(
                     user_id=user_id,
                     product_id=product_id,
                     n_recommendations=n_recommendations
                 )
-                logger.info(f"✅ Obtenidas {len(retail_recs)} recomendaciones de Retail API para usuario {user_id}")
+                
+                logger.info(f"[DEBUG] ✅ ÉXITO: Obtenidas {len(retail_recs)} recomendaciones de Retail API para usuario {user_id}")
+                
+                # Log de las primeras recomendaciones para diagnóstico
+                if retail_recs:
+                    for i, rec in enumerate(retail_recs[:3]):
+                        logger.info(f"[DEBUG] Rec {i+1}: ID={rec.get('id')}, Título={rec.get('title', '')[:30]}..., Score={rec.get('score', 0)}")
+                else:
+                    logger.warning(f"[DEBUG] ⚠️ Retail API devolvió LISTA VACÍA para user_id='{user_id}', product_id='{product_id}'")
+                        
             except Exception as e:
-                logger.error(f"❌ Error al obtener recomendaciones de Retail API: {str(e)}")
+                logger.error(f"[DEBUG] ❌ ERROR al obtener recomendaciones de Retail API: {str(e)}")
+                logger.error(f"[DEBUG] Tipo de error: {type(e).__name__}")
+                
+                # Si es un usuario real (no anonymous), esto es un problema serio
+                if user_id != "anonymous":
+                    logger.warning(f"[DEBUG] ⚠️ PROBLEMA: Usuario real '{user_id}' no obtuvo recomendaciones personalizadas")
         else:
             logger.info(f"⏭️ Saltando Retail API debido a content_weight=1.0 para recomendaciones de producto")
         
         # Si no hay producto_id y tampoco recomendaciones de Retail API,
         # usar recomendaciones inteligentes de fallback
         if not product_id and not retail_recs:
-            logger.info("Usando recomendaciones mejoradas de fallback")
+            logger.info(f"[DEBUG] 🔄 Sin product_id y sin retail_recs. Usando fallback para user_id='{user_id}'")
             return await self._get_fallback_recommendations(user_id, n_recommendations)
             
         # Si hay product_id, combinar ambas recomendaciones
         if product_id:
+            logger.info(f"[DEBUG] 🔀 COMBINANDO recomendaciones: content_recs={len(content_recs)}, retail_recs={len(retail_recs)}")
             recommendations = await self._combine_recommendations(
                 content_recs,
                 retail_recs,
@@ -112,6 +132,7 @@ class HybridRecommender:
             )
         else:
             # Si no hay product_id, usar solo recomendaciones de Retail API
+            logger.info(f"[DEBUG] 📶 SOLO RETAIL API: Usando {len(retail_recs)} recomendaciones para user_id='{user_id}'")
             recommendations = retail_recs
         
         # Enriquecer recomendaciones si está disponible el sistema de caché

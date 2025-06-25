@@ -51,24 +51,60 @@ router = APIRouter(
 
 # Factorías e instancias necesarias para MCP
 def get_mcp_client():
-    """Factory para cliente MCP"""
+    """Obtiene el cliente MCP global"""
+    # Importar la instancia global desde main_unified_redis
+    from src.api import main_unified_redis
+    
+    # Verificar si hay una instancia MCP global disponible
+    if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
+        if hasattr(main_unified_redis.mcp_recommender, 'mcp_client'):
+            return main_unified_redis.mcp_recommender.mcp_client
+    
+    # Fallback a crear uno nuevo si no hay instancia global
     from src.api.factories import MCPFactory
     return MCPFactory.create_mcp_client()
 
 def get_market_manager():
-    """Factory para gestor de mercados"""
+    """Obtiene el gestor de mercados global"""
+    # Importar la instancia global desde main_unified_redis
+    from src.api import main_unified_redis
+    
+    # Verificar si hay una instancia MCP global disponible
+    if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
+        if hasattr(main_unified_redis.mcp_recommender, 'market_manager'):
+            return main_unified_redis.mcp_recommender.market_manager
+    
+    # Fallback a crear uno nuevo si no hay instancia global
     from src.api.factories import MCPFactory
     return MCPFactory.create_market_manager()
 
 def get_market_cache():
-    """Factory para cache market-aware"""
+    """Obtiene el cache market-aware global"""
+    # Importar la instancia global desde main_unified_redis
+    from src.api import main_unified_redis
+    
+    # Verificar si hay una instancia MCP global disponible
+    if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
+        if hasattr(main_unified_redis.mcp_recommender, 'market_cache'):
+            return main_unified_redis.mcp_recommender.market_cache
+    
+    # Fallback a crear uno nuevo si no hay instancia global
     from src.api.factories import MCPFactory
     return MCPFactory.create_market_cache()
 
 def get_mcp_recommender():
-    """Factory para recomendador MCP-aware"""
-    from src.api.factories import MCPFactory
-    return MCPFactory.create_mcp_recommender()
+    """Obtiene el recomendador MCP-aware global (ya entrenado)"""
+    # CORREGIDO: Usar la instancia global que ya está entrenada
+    from src.api import main_unified_redis
+    
+    # Verificar si hay una instancia MCP global disponible
+    if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
+        logger.info("Usando recomendador MCP global (ya entrenado)")
+        return main_unified_redis.mcp_recommender
+    
+    # Si no hay instancia global, loggear advertencia y retornar None
+    logger.warning("No hay instancia global de mcp_recommender disponible")
+    return None
 
 @router.post("/conversation", response_model=ConversationResponse)
 async def process_conversation(
@@ -111,36 +147,74 @@ async def process_conversation(
             include_conversation_response=True
         )
         
+        # IMPORTANTE: Modificación para asegurar que la consulta esté disponible para el fallback
+        # Pasar la consulta directamente como campo adicional en el diccionario de request
+        # Esto asegurará que el fallback pueda usarla cuando no hay recomendaciones
+        request_dict = request.dict()
+        request_dict['query'] = conversation.query  # Agregar consulta directamente al request
+        logger.info(f"Agregando consulta al request: {conversation.query}")
+        
         # Obtener recomendaciones MCP
-        response: MCPRecommendationResponse = await mcp_recommender.get_recommendations(request)
+        response_dict = await mcp_recommender.get_recommendations(request_dict)
         
         # Transformar recomendaciones a formato API
         simplified_recs = []
-        for rec in response.recommendations:
-            simplified_recs.append({
-                "id": rec.product.id,
-                "title": rec.product.localized_title or rec.product.title,
-                "description": rec.product.localized_description or rec.product.description,
-                "price": rec.product.market_price,
-                "currency": rec.product.currency,
-                "score": rec.market_score,
-                "reason": rec.reason,
-                "images": rec.product.images,
-                "market_adapted": True,
-                "viability_score": rec.viability_score
-            })
+        
+        # Adaptación para manejar tanto objetos Pydantic como diccionarios
+        if hasattr(response_dict, 'recommendations'):  # Es un objeto Pydantic
+            recommendations = response_dict.recommendations
+            ai_response = response_dict.ai_response
+            conversation_session = response_dict.conversation_session
+            metadata = response_dict.metadata
+        else:  # Es un diccionario
+            recommendations = response_dict.get("recommendations", [])
+            ai_response = response_dict.get("ai_response")
+            conversation_session = response_dict.get("conversation_session")
+            metadata = response_dict.get("metadata", {})
+        
+        for rec in recommendations:
+            # Verificar si rec es un objeto RecommendationMCP o un diccionario
+            if hasattr(rec, 'product'):  # Es un objeto Pydantic
+                product = rec.product
+                simplified_recs.append({
+                    "id": product.id,
+                    "title": product.localized_title or product.title,
+                    "description": product.localized_description or product.description,
+                    "price": product.market_price,
+                    "currency": product.currency,
+                    "score": rec.market_score,
+                    "reason": rec.reason,
+                    "images": product.images,
+                    "market_adapted": True,
+                    "viability_score": rec.viability_score
+                })
+            else:  # Es un diccionario
+                product = rec.get("product", {})
+                simplified_recs.append({
+                    "id": product.get("id"),
+                    "title": product.get("localized_title") or product.get("title"),
+                    "description": product.get("localized_description") or product.get("description", ""),
+                    "price": product.get("market_price"),
+                    "currency": product.get("currency"),
+                    "score": rec.get("market_score"),
+                    "reason": rec.get("reason"),
+                    "images": product.get("images", []),
+                    "market_adapted": True,
+                    "viability_score": rec.get("viability_score"),
+                    "source": rec.get("metadata", {}).get("source", "unknown")  # Añadir origen de la recomendación
+                })
         
         # Construir respuesta
         return {
-            "answer": response.ai_response or "I've found some recommendations that might interest you.",
+            "answer": ai_response or "I've found some recommendations that might interest you.",
             "recommendations": simplified_recs,
             "metadata": {
                 "market_id": conversation.market_id,
                 "intent_processed": True,
                 "source": "mcp_conversation",
-                **response.metadata
+                **metadata
             },
-            "session_id": response.conversation_session or context.session_id,
+            "session_id": conversation_session or context.session_id,
             "took_ms": (time.time() - start_time) * 1000
         }
         
@@ -223,21 +297,48 @@ async def get_market_recommendations(
             include_conversation_response=False
         )
         
+        # Convertir a dict para asegurar compatibilidad con mecanismo de fallback
+        request_dict = request.dict()
+        
         # Obtener recomendaciones
-        response = await mcp_recommender.get_recommendations(request)
+        response_dict = await mcp_recommender.get_recommendations(request_dict)
+        
+        # Adaptación para manejar tanto objetos Pydantic como diccionarios
+        if hasattr(response_dict, 'recommendations'):  # Es un objeto Pydantic
+            recommendations = response_dict.recommendations
+            market_context = response_dict.market_context
+        else:  # Es un diccionario
+            recommendations = response_dict.get("recommendations", [])
+            market_context = response_dict.get("market_context", {})
         
         # Transformar para API
         simplified_recs = []
-        for rec in response.recommendations:
-            simplified_recs.append({
-                "id": rec.product.id,
-                "title": rec.product.localized_title or rec.product.title,
-                "price": rec.product.market_price,
-                "currency": rec.product.currency,
-                "score": rec.market_score,
-                "reason": rec.reason,
-                "market_adapted": True
-            })
+        for rec in recommendations:
+            # Verificar si rec es un objeto RecommendationMCP o un diccionario
+            if hasattr(rec, 'product'):  # Es un objeto Pydantic
+                product = rec.product
+                simplified_recs.append({
+                    "id": product.id,
+                    "title": product.localized_title or product.title,
+                    "price": product.market_price,
+                    "currency": product.currency,
+                    "score": rec.market_score,
+                    "reason": rec.reason,
+                    "market_adapted": True,
+                    "source": getattr(rec, 'metadata', {}).get("source", "unknown")  # Añadir origen de la recomendación
+                })
+            else:  # Es un diccionario
+                product = rec.get("product", {})
+                simplified_recs.append({
+                    "id": product.get("id"),
+                    "title": product.get("localized_title") or product.get("title"),
+                    "price": product.get("market_price"),
+                    "currency": product.get("currency"),
+                    "score": rec.get("market_score"),
+                    "reason": rec.get("reason"),
+                    "market_adapted": True,
+                    "source": rec.get("metadata", {}).get("source", "unknown")  # Añadir origen de la recomendación
+                })
         
         return {
             "product_id": product_id,
@@ -245,7 +346,7 @@ async def get_market_recommendations(
             "recommendations": simplified_recs,
             "metadata": {
                 "total_recommendations": len(simplified_recs),
-                "market_context": response.market_context,
+                "market_context": market_context,
                 "took_ms": (time.time() - start_time) * 1000
             }
         }

@@ -15,19 +15,31 @@ class MarketContextManager:
     def __init__(self):
         self.redis = get_redis_client()
         self.market_configs = {}
+        self._initialized = False
+        
+    async def ensure_initialized(self):
+        """Asegura que el manager esté inicializado (lazy initialization)"""
+        if not self._initialized:
+            await self.initialize()
         
     async def initialize(self):
         """Inicializar gestor de mercados"""
+        if self._initialized:
+            return True
+            
         logger.info("Inicializando gestor de mercados")
         
         # Cargar configuraciones de mercados soportados
         self.market_configs = await self.get_supported_markets()
+        self._initialized = True
         
         logger.info(f"Gestor de mercados inicializado con {len(self.market_configs)} mercados")
         return True
         
     async def detect_market(self, request_context: Dict) -> str:
         """Detectar mercado basado en contexto de request"""
+        await self.ensure_initialized()
+        
         # Priority order: explicit > geolocation > user preference > default
         
         if request_context.get('market_id'):
@@ -45,6 +57,8 @@ class MarketContextManager:
     
     async def get_market_config(self, market_id: str) -> Dict:
         """Obtener configuración específica del mercado"""
+        await self.ensure_initialized()
+        
         cache_key = f"market_config:{market_id}"
         
         # Check cache first
@@ -191,6 +205,8 @@ class MarketContextManager:
     async def adapt_recommendations_for_market(self, recommendations: List[Dict], 
                                                market_id: str) -> List[Dict]:
         """Adaptar recomendaciones para mercado específico"""
+        await self.ensure_initialized()
+        
         market_config = await self.get_market_config(market_id)
         
         adapted = []
