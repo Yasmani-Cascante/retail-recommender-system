@@ -250,19 +250,13 @@ async def startup_event():
             market_cache = MCPFactory.create_market_cache()
             logger.info("Caché market-aware inicializado correctamente")
             
-            # Inicializar user event store resiliente
-            # user_event_store = MCPFactory.create_user_event_store(redis_client)
-            user_event_store = RecommenderFactory.create_user_event_store(redis_client)
-            logger.info("UserEventStore resiliente inicializado correctamente")
-            
             # Crear recomendador MCP
             global mcp_recommender
             mcp_recommender = MCPFactory.create_mcp_recommender(
                 base_recommender=hybrid_recommender,
                 mcp_client=mcp_client,
                 market_manager=market_manager,
-                market_cache=market_cache,
-                user_event_store=user_event_store
+                market_cache=market_cache
             )
             logger.info("✅ Recomendador MCP inicializado correctamente")
         except Exception as mcp_error:

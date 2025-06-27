@@ -21,9 +21,10 @@ google-cloud-core==2.4.1
 # === INTEGRACIÓN CON SHOPIFY ===
 # shopify-python-api==1.0.1
 ShopifyAPI>=12.0.0 
+
 # === SISTEMA DE CACHÉ DISTRIBUIDA ===
 redis>=4.6.0  # Incluye soporte asíncrono en redis.asyncio
-aioredis>=2.0.1  # Cliente asíncrono para Redis
+# aioredis>=2.0.1  # Cliente asíncrono para Redis
 
 # === UTILIDADES ===
 tqdm==4.67.0

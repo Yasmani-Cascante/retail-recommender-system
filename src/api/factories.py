@@ -100,24 +100,26 @@ class MCPFactory:
         base_recommender=None,
         mcp_client=None,
         market_manager=None,
-        market_cache=None
+        market_cache=None,
+        user_event_store=None
     ):
         """
         Crea un recomendador con capacidades MCP.
         
         Args:
-            base_recommender: Recomendador híbrido base (opcional, se creará automáticamente si no se proporciona)
-            mcp_client: Cliente MCP (opcional, se creará automáticamente si no se proporciona)
-            market_manager: Gestor de mercados (opcional, se creará automáticamente si no se proporciona)
-            market_cache: Caché market-aware (opcional, se creará automáticamente si no se proporciona)
-            
+            base_recommender: Recomendador híbrido base (opcional)
+            mcp_client: Cliente MCP (opcional)
+            market_manager: Gestor de mercados (opcional)
+            market_cache: Caché market-aware (opcional)
+            user_event_store: Almacén de eventos de usuario (opcional)
+                
         Returns:
             MCPAwareHybridRecommender: Recomendador con capacidades MCP
         """
         try:
-            from src.recommenders.mcp_aware_hybrid import MCPAwareHybridRecommender
+            from src.recommenders.mcp_aware_recommender import MCPAwareRecommender
             
-            logger.info("Creando recomendador MCPAwareHybrid con componentes proporcionados o automáticos")
+            logger.info("Creando recomendador MCPAwareRecommender con componentes proporcionados o automáticos")
             
             # 1. Usar base_recommender proporcionado o crear uno nuevo
             if base_recommender is None:
@@ -164,22 +166,31 @@ class MCPFactory:
             else:
                 logger.info("Usando market cache proporcionado")
             
-            # 5. Crear el recomendador MCP con todos los componentes
-            mcp_recommender = MCPAwareHybridRecommender(
+            # 5. Usar user_event_store proporcionado o crear uno nuevo
+            if user_event_store is None:
+                user_event_store = RecommenderFactory.create_user_event_store(redis_client)
+                if not user_event_store:
+                    logger.warning("UserEventStore no disponible, usando fallback")
+                else:
+                    logger.info("UserEventStore creado automáticamente")
+            else:
+                logger.info("Usando UserEventStore proporcionado")
+            
+            # 6. Crear el recomendador MCP con todos los componentes
+            mcp_recommender = MCPAwareRecommender(
                 base_recommender=base_recommender,
                 mcp_client=mcp_client,
-                market_manager=market_manager,
-                market_cache=market_cache
+                user_event_store=user_event_store
             )
             
-            logger.info("MCPAwareHybridRecommender creado exitosamente")
+            logger.info("MCPAwareRecommender creado exitosamente")
             return mcp_recommender
-            
+                
         except ImportError as e:
-            logger.error(f"No se pudo importar MCPAwareHybridRecommender: {e}")
+            logger.error(f"No se pudo importar MCPAwareRecommender: {e}")
             return None
         except Exception as e:
-            logger.error(f"Error creando MCPAwareHybridRecommender: {e}")
+            logger.error(f"Error creando MCPAwareRecommender: {e}")
             return None
 
 
@@ -395,4 +406,62 @@ class RecommenderFactory:
             return None
         except Exception as e:
             logger.error(f"Error creando ProductCache: {str(e)}")
+            return None
+        
+    @staticmethod
+    def create_user_event_store(redis_client=None):
+        """
+        Crea un almacén de eventos de usuario resiliente.
+        
+        Args:
+            redis_client: Cliente Redis opcional (se creará uno nuevo si no se proporciona)
+            
+        Returns:
+            UserEventStore: Almacén de eventos con patrones de resiliencia
+        """
+        try:
+            from src.api.mcp.user_events.resilient_user_event_store import UserEventStore
+            from src.api.core.config import get_settings
+            
+            settings = get_settings()
+            
+            # Verificar si tenemos un cliente Redis o necesitamos crear uno
+            if not redis_client:
+                from src.api.factories import RecommenderFactory
+                redis_client = RecommenderFactory.create_redis_client()
+                
+                if not redis_client:
+                    logger.warning("No se pudo crear cliente Redis para UserEventStore")
+                    return None
+            
+            # Crear directorio de fallback si está configurado
+            local_fallback_dir = getattr(settings, 'user_events_fallback_dir', None)
+            if local_fallback_dir:
+                import os
+                os.makedirs(local_fallback_dir, exist_ok=True)
+            
+            # Crear instancia de UserEventStore
+            redis_url = f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
+            
+            user_event_store = UserEventStore(
+                redis_url=redis_url,
+                cache_ttl=getattr(settings, 'user_event_cache_ttl', 300),
+                enable_circuit_breaker=True,
+                cache_size=getattr(settings, 'user_event_cache_size', 1000),
+                local_buffer_size=getattr(settings, 'user_event_buffer_size', 200),
+                flush_interval_seconds=getattr(settings, 'user_event_flush_interval', 30),
+                local_fallback_dir=local_fallback_dir
+            )
+            
+            # Iniciar conexión en segundo plano
+            import asyncio
+            asyncio.create_task(user_event_store.connect())
+            
+            logger.info("UserEventStore resiliente creado correctamente")
+            return user_event_store
+        except ImportError as e:
+            logger.error(f"No se pudo importar UserEventStore resiliente: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error creando UserEventStore resiliente: {e}")
             return None
