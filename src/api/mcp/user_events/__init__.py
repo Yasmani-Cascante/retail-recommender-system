@@ -1,0 +1,1 @@
+# src/api/mcp/user_events/__init__.py

@@ -79,13 +79,19 @@ class MCPAwareHybridRecommender:
             market_id = request.get('market_id', 'default')
             n_recommendations = request.get('n_recommendations', 5)
             include_conversation = request.get('include_conversation_response', False)
-            # Nuevo: Extraer consulta para uso en búsqueda cuando no hay recomendaciones
+            # CORRECCIÓN: Extraer consulta de manera segura para evitar errores de tipo
             query_text = request.get('query', None)
             if not query_text and 'conversation_context' in request:
                 # Intentar extraer query del contexto de conversación
                 conversation_context = request.get('conversation_context', {})
                 if isinstance(conversation_context, dict):
                     query_text = conversation_context.get('query', None)
+                elif hasattr(conversation_context, 'query'):
+                    query_text = getattr(conversation_context, 'query', None)
+            
+            # Asegurar que query_text es string o None
+            if query_text and not isinstance(query_text, str):
+                query_text = str(query_text)
         else:
             # Es un modelo Pydantic (MCPRecommendationRequest)
             user_id = getattr(request, 'user_id', 'anonymous')
@@ -93,11 +99,18 @@ class MCPAwareHybridRecommender:
             market_id = getattr(request, 'market_id', 'default')
             n_recommendations = getattr(request, 'n_recommendations', 5)
             include_conversation = getattr(request, 'include_conversation_response', False)
-            # Nuevo: Extraer consulta para uso en búsqueda cuando no hay recomendaciones
-            query_text = None
+            # CORRECCIÓN: Extraer consulta de manera segura para modelos Pydantic
+            query_text = getattr(request, 'query', None)
             conversation_context = getattr(request, 'conversation_context', None)
-            if conversation_context is not None:
-                query_text = getattr(conversation_context, 'query', None)
+            if not query_text and conversation_context is not None:
+                if hasattr(conversation_context, 'query'):
+                    query_text = getattr(conversation_context, 'query', None)
+                elif isinstance(conversation_context, dict):
+                    query_text = conversation_context.get('query', None)
+            
+            # Asegurar que query_text es string o None
+            if query_text and not isinstance(query_text, str):
+                query_text = str(query_text)
         
         try:
             logger.info(f"Procesando request MCP: user={user_id}, market={market_id}, product={product_id}, query={query_text}")

@@ -25,11 +25,13 @@ ShopifyAPI>=12.0.0
 # === SISTEMA DE CACHÉ DISTRIBUIDA ===
 redis>=4.6.0  # Incluye soporte asíncrono en redis.asyncio
 # aioredis>=2.0.1  # Cliente asíncrono para Redis
+cachetools>=5.0.0  # Para MCPClientEnhanced local caching
 
 # === UTILIDADES ===
 tqdm==4.67.0
 requests==2.32.0
 jinja2==3.1.5
+httpx>=0.24.0  # Para MCPClient async HTTP calls
 
 # === DESARROLLO Y TESTING (opcional) ===
 # pytest>=7.0.0

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any
 import math
 import random
+from src.api.core.redis_config_fix import RedisConfigValidator, PatchedRedisClient
 
 # Intentar cargar variables de entorno, pero continuar si no existe el archivo
 try:
@@ -192,99 +193,204 @@ async def load_recommender():
     except Exception as e:
         logger.error(f"Error cargando recomendador: {e}")
         return False
+    
+logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
-async def startup_event():
-    """Evento de inicio de la aplicación."""
-    logger.info("🚀 Iniciando API de recomendaciones unificada con Redis y MCP...")
+async def fixed_startup_event():
+    """
+    Versión corregida del startup_event con manejo robusto de Redis.
+    
+    Reemplazar el startup_event existente con esta implementación.
+    """
+    logger.info("🚀 Iniciando API de recomendaciones unificada con Redis CORREGIDO...")
+    
+    # 🔧 CORRECCIÓN CRÍTICA: Declarar variables globales al inicio
+    global redis_client, product_cache, hybrid_recommender, mcp_recommender
     
     # Verificar estructura del catálogo en Retail API si está habilitado
+    from src.api.core.config import get_settings
+    settings = get_settings()
+    
     if settings.validate_products:
         try:
             logger.info("Verificando estructura del catálogo en Google Cloud Retail API...")
+            # Asumir que retail_recommender está disponible globalmente
             await retail_recommender.ensure_catalog_branches()
         except Exception as e:
             logger.warning(f"Error al verificar estructura del catálogo: {str(e)}")
     
-    # Inicializar cliente Redis y caché de productos
+    # ==========================================
+    # INICIALIZACIÓN REDIS CORREGIDA
+    # ==========================================
+    
+    # 🔧 CORRECCIÓN: Solo variable local para control de flujo
+    redis_initialization_successful = False
+    
+    logger.info("🔧 Iniciando inicialización Redis corregida...")
+    
     try:
-        from src.api.factories import RecommenderFactory, MCPFactory
+        # PASO 1: Validar configuración Redis
+        from src.api.core.redis_config_fix import RedisConfigValidator, PatchedRedisClient
         
-        # Crear cliente Redis
-        global redis_client
-        redis_client = RecommenderFactory.create_redis_client()
-        logger.info("Cliente Redis inicializado")
+        config = RedisConfigValidator.validate_and_fix_config()
         
-        # Crear caché de productos
-        global product_cache
-        product_cache = RecommenderFactory.create_product_cache(
-            content_recommender=tfidf_recommender,
-            shopify_client=get_shopify_client()
+        if not config.get('use_redis_cache'):
+            logger.info("⚠️ Redis cache desactivado por configuración - continuando sin cache")
+            redis_initialization_successful = False
+        else:
+            logger.info("✅ Configuración Redis validada correctamente")
+            
+            # PASO 2: Crear cliente Redis con configuración validada
+            try:
+                redis_client = PatchedRedisClient(use_validated_config=True)
+                logger.info(f"✅ Cliente Redis creado con SSL={redis_client.ssl}")
+                
+                # PASO 3: Conectar con retry automático
+                connection_successful = await redis_client.connect()
+                
+                if connection_successful:
+                    logger.info("✅ Cliente Redis conectado exitosamente")
+                    redis_initialization_successful = True
+                    
+                    # PASO 4: Verificar operaciones básicas
+                    test_result = await redis_client.set("startup_test", "success", ex=30)
+                    if test_result:
+                        logger.info("✅ Operaciones Redis verificadas correctamente")
+                    else:
+                        logger.warning("⚠️ Redis conectado pero operaciones fallan")
+                        
+                else:
+                    logger.error("❌ No se pudo conectar a Redis después de intentos")
+                    redis_client = None
+                    redis_initialization_successful = False
+                    
+            except Exception as redis_error:
+                logger.error(f"❌ Error inicializando cliente Redis: {redis_error}")
+                redis_client = None
+                redis_initialization_successful = False
+                
+    except Exception as config_error:
+        logger.error(f"❌ Error en configuración Redis: {config_error}")
+        redis_initialization_successful = False
+    
+    # ==========================================
+    # CREACIÓN DE PRODUCT CACHE CONDICIONAL
+    # ==========================================
+    
+    if redis_initialization_successful and redis_client:
+        try:
+            logger.info("🚀 Creando ProductCache con Redis habilitado...")
+            
+            from src.api.core.product_cache import ProductCache
+            from src.api.core.store import get_shopify_client
+            
+            product_cache = ProductCache(
+                redis_client=redis_client,
+                local_catalog=tfidf_recommender,  # Asumiendo disponibilidad global
+                shopify_client=get_shopify_client(),
+                ttl_seconds=settings.cache_ttl,
+                prefix=settings.cache_prefix
+            )
+            
+            logger.info("✅ ProductCache creado exitosamente")
+            
+            # Verificar salud del caché inmediatamente
+            cache_stats = product_cache.get_stats()
+            logger.info(f"📊 Estado inicial del caché: hit_ratio={cache_stats['hit_ratio']}")
+            
+            # Iniciar tareas en segundo plano si está configurado
+            if settings.cache_enable_background_tasks:
+                asyncio.create_task(product_cache.start_background_tasks())
+                logger.info("🔄 Tareas en segundo plano de ProductCache iniciadas")
+                
+        except Exception as cache_error:
+            logger.error(f"❌ Error creando ProductCache: {cache_error}")
+            product_cache = None
+            
+    else:
+        logger.warning("⚠️ ProductCache desactivado porque Redis no está disponible")
+        product_cache = None
+    
+    # ==========================================
+    # ACTUALIZACIÓN DEL HYBRID RECOMMENDER
+    # ==========================================
+    
+    try:
+        from src.api.factories import RecommenderFactory
+        
+        # Actualizar hybrid_recommender global para usar la caché si está disponible
+        hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
+            tfidf_recommender,
+            retail_recommender,
+            product_cache=product_cache
         )
         
         if product_cache:
-            logger.info("Sistema de caché de productos inicializado correctamente")
-            
-            # Actualizar hybrid_recommender para usar la caché
-            global hybrid_recommender
-            hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
-                tfidf_recommender,
-                retail_recommender,
-                product_cache=product_cache
-            )
-            logger.info("Recomendador híbrido actualizado para usar caché")
+            logger.info("✅ Recomendador híbrido actualizado con caché Redis")
         else:
-            logger.warning("Sistema de caché de productos no disponible - usando modo sin caché")
+            logger.info("✅ Recomendador híbrido funcionando sin caché")
             
-        # Inicializar componentes MCP
-        try:
-            # Inicializar cliente MCP
+    except Exception as hybrid_error:
+        logger.error(f"❌ Error actualizando recomendador híbrido: {hybrid_error}")
+    
+    # ==========================================
+    # INICIALIZACIÓN MCP (OPCIONAL)
+    # ==========================================
+    
+    global mcp_recommender
+    mcp_recommender = None
+    
+    try:
+        if settings.debug:  # Solo en modo debug por ahora
+            from src.api.factories import MCPFactory
+            
+            logger.info("🤖 Inicializando componentes MCP...")
+            
+            # Crear componentes MCP
             mcp_client = MCPFactory.create_mcp_client()
-            logger.info("Cliente MCP inicializado correctamente")
-            
-            # Inicializar gestor de mercados
             market_manager = MCPFactory.create_market_manager()
-            logger.info("Gestor de mercados inicializado correctamente")
-            
-            # Inicializar caché market-aware
             market_cache = MCPFactory.create_market_cache()
-            logger.info("Caché market-aware inicializado correctamente")
             
-            # Inicializar user event store resiliente
-            # user_event_store = MCPFactory.create_user_event_store(redis_client)
-            user_event_store = RecommenderFactory.create_user_event_store(redis_client)
-            logger.info("UserEventStore resiliente inicializado correctamente")
+            # Crear user event store con Redis (si está disponible)
+            user_event_store = None
+            if redis_client:
+                user_event_store = RecommenderFactory.create_user_event_store(redis_client)
             
             # Crear recomendador MCP
-            global mcp_recommender
             mcp_recommender = MCPFactory.create_mcp_recommender(
                 base_recommender=hybrid_recommender,
                 mcp_client=mcp_client,
                 market_manager=market_manager,
                 market_cache=market_cache,
-                user_event_store=user_event_store
+                user_event_store=user_event_store,
+                redis_client=redis_client
             )
-            logger.info("✅ Recomendador MCP inicializado correctamente")
-        except Exception as mcp_error:
-            logger.error(f"Error inicializando componentes MCP: {str(mcp_error)}")
-            logger.info("Continuando sin soporte MCP...")
-        
-    except Exception as e:
-        logger.error(f"Error inicializando sistemas de caché: {str(e)}")
-        logger.info("Continuando sin caché...")
+            
+            if mcp_recommender:
+                logger.info("✅ Recomendador MCP inicializado correctamente")
+            else:
+                logger.warning("⚠️ Recomendador MCP no disponible")
+                
+    except Exception as mcp_error:
+        logger.error(f"❌ Error inicializando componentes MCP: {mcp_error}")
+        logger.info("Continuando sin soporte MCP...")
     
-    # Registrar componentes en el gestor de arranque
+    # ==========================================
+    # REGISTRAR COMPONENTES EN STARTUP MANAGER
+    # ==========================================
+    
+    # Asumir que startup_manager está disponible globalmente
     startup_manager.register_component(
         name="recommender",
-        loader=load_recommender,
+        loader=load_recommender,  # Asumiendo función disponible
         required=True
     )
     
-    # CORRECCIÓN: Esperar a que la carga termine antes de continuar
+    # Esperar a que termine la carga del recomendador
     logger.info("⏳ Esperando a que termine la carga del recomendador...")
     loading_task = asyncio.create_task(startup_manager.start_loading())
     
-    # Esperar hasta 30 segundos a que termine la carga
     try:
         await asyncio.wait_for(loading_task, timeout=30.0)
         logger.info("✅ Carga del recomendador completada")
@@ -293,14 +399,95 @@ async def startup_event():
     except Exception as e:
         logger.error(f"❌ Error en carga del recomendador: {e}")
     
-    # Iniciar generación de datos de prueba si es necesario
+    # ==========================================
+    # DATOS DE PRUEBA (SI DEBUG ESTÁ ACTIVADO)
+    # ==========================================
+    
     if settings.debug:
-        from src.api.core.event_generator import initialize_with_test_data
-        logger.info("Modo DEBUG: Programando generación de datos de prueba después de carga inicial")
-        # Programar para después de que el recomendador esté cargado
-        asyncio.create_task(
-            initialize_with_test_data(retail_recommender, tfidf_recommender)
-        )
+        try:
+            from src.api.core.event_generator import initialize_with_test_data
+            logger.info("🧪 Modo DEBUG: Programando generación de datos de prueba")
+            asyncio.create_task(
+                initialize_with_test_data(retail_recommender, tfidf_recommender)
+            )
+        except ImportError:
+            logger.warning("⚠️ event_generator no disponible para datos de prueba")
+        except Exception as e:
+            logger.error(f"❌ Error configurando datos de prueba: {e}")
+    
+    # ==========================================
+    # RESUMEN FINAL DEL STARTUP
+    # ==========================================
+    
+    logger.info("📋 RESUMEN DE INICIALIZACIÓN:")
+    logger.info(f"   ✅ Recomendador TF-IDF: Disponible")
+    logger.info(f"   ✅ Recomendador Retail API: Disponible")
+    logger.info(f"   ✅ Recomendador Híbrido: Disponible")
+    logger.info(f"   {'✅' if redis_initialization_successful else '❌'} Redis: {'Conectado' if redis_initialization_successful else 'No disponible'}")
+    logger.info(f"   {'✅' if product_cache else '❌'} ProductCache: {'Activo' if product_cache else 'Desactivado'}")
+    logger.info(f"   {'✅' if mcp_recommender else '❌'} MCP: {'Disponible' if mcp_recommender else 'No disponible'}")
+    
+    if not redis_initialization_successful:
+        logger.warning("⚠️ IMPORTANTE: Sistema funcionando sin Redis")
+        logger.warning("   - Las recomendaciones funcionarán pero sin caché")
+        logger.warning("   - Rendimiento puede ser menor")
+        logger.warning("   - Ejecutar diagnóstico: python diagnose_redis_issue.py")
+    
+    logger.info("🎉 Inicialización completada!")
+
+
+# Función auxiliar para health check mejorado
+def get_enhanced_cache_status(product_cache, redis_client) -> dict:
+    """
+    Obtiene estado detallado del caché para el endpoint /health.
+    
+    Args:
+        product_cache: Instancia de ProductCache
+        redis_client: Cliente Redis
+        
+    Returns:
+        dict: Estado detallado del caché
+    """
+    if not product_cache:
+        return {
+            "status": "unavailable",
+            "message": "Product cache not initialized",
+            "redis_connection": "not_configured"
+        }
+    
+    try:
+        cache_stats = product_cache.get_stats()
+        
+        # Determinar estado de Redis
+        redis_status = "unknown"
+        if product_cache.redis:
+            redis_status = "connected" if product_cache.redis.connected else "disconnected"
+        
+        # Determinar estado general
+        if redis_status == "connected":
+            status = "operational"
+        elif redis_status == "disconnected":
+            status = "degraded"
+        else:
+            status = "error"
+        
+        return {
+            "status": status,
+            "redis_connection": redis_status,
+            "hit_ratio": cache_stats["hit_ratio"],
+            "stats": cache_stats,
+            "fallback_sources": {
+                "local_catalog": "available" if product_cache.local_catalog else "unavailable",
+                "shopify_client": "available" if product_cache.shopify_client else "unavailable"
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "redis_connection": "error"
+        }
 
 @app.get("/", include_in_schema=False)
 def read_root():
@@ -312,53 +499,96 @@ def read_root():
         "mcp_support": mcp_recommender is not None
     }
 
+@app.get("/debug/globals")
+async def debug_globals():
+    """Endpoint de debugging para verificar variables globales."""
+    global redis_client, product_cache, hybrid_recommender, mcp_recommender
+    
+    return {
+        "redis_client": {
+            "type": type(redis_client).__name__ if redis_client else "None",
+            "connected": redis_client.connected if redis_client else False,
+            "ssl": redis_client.ssl if redis_client else "N/A"
+        },
+        "product_cache": {
+            "type": type(product_cache).__name__ if product_cache else "None",
+            "redis_available": bool(product_cache and product_cache.redis) if product_cache else False
+        },
+        "hybrid_recommender": {
+            "type": type(hybrid_recommender).__name__ if hybrid_recommender else "None",
+            "has_cache": bool(hasattr(hybrid_recommender, 'product_cache') and hybrid_recommender.product_cache) if hybrid_recommender else False
+        },
+        "mcp_recommender": {
+            "type": type(mcp_recommender).__name__ if mcp_recommender else "None"
+        }
+    }
+
 @app.get("/health", response_model=HealthStatus)
 async def health_check():
-    """Endpoint de verificación de salud del servicio."""
+    """Endpoint de verificación de salud del servicio CORREGIDO."""
     recommender_status = await tfidf_recommender.health_check()
     startup_status = startup_manager.get_status()
     
-    # Añadir estado de Redis/caché si está disponible
+    # 🔧 CORRECCIÓN: Usar variables globales directamente
+    global product_cache, redis_client
+    
     cache_status = {}
-    if 'product_cache' in globals() and product_cache:
+    if product_cache is not None:
         try:
             cache_stats = product_cache.get_stats()
+            
             # Obtener estado de conexión Redis
-            redis_status = "connected" if (product_cache.redis and product_cache.redis.connected) else "disconnected"
+            redis_status = "unknown"
+            if hasattr(product_cache, 'redis') and product_cache.redis:
+                redis_status = "connected" if product_cache.redis.connected else "disconnected"
             
             cache_status = {
                 "status": "operational" if redis_status == "connected" else "degraded",
                 "redis_connection": redis_status,
                 "hit_ratio": cache_stats["hit_ratio"],
-                "stats": cache_stats
+                "stats": cache_stats,
+                "initialization": "successful"
             }
         except Exception as e:
             cache_status = {
                 "status": "error",
-                "error": str(e)
+                "error": str(e),
+                "initialization": "failed"
             }
     else:
-        cache_status = {
-            "status": "unavailable",
-            "message": "Product cache not initialized"
-        }
+        # Determinar por qué product_cache es None
+        if redis_client is not None:
+            cache_status = {
+                "status": "initialization_failed",
+                "message": "Redis client available but ProductCache failed to initialize",
+                "redis_connection": "connected" if redis_client.connected else "disconnected"
+            }
+        else:
+            cache_status = {
+                "status": "unavailable",
+                "message": "Redis client not initialized - cache disabled",
+                "redis_connection": "not_configured"
+            }
     
     # Añadir estado de MCP si está disponible
+    global mcp_recommender
     mcp_status = {}
-    if 'mcp_recommender' in globals() and mcp_recommender:
+    if mcp_recommender is not None:
         try:
-            market_cache = mcp_recommender.market_cache
-            if market_cache:
-                mcp_health = await market_cache.health_check()
+            # Usar el método health_check del mcp_recommender en lugar de acceder directamente al market_cache
+            if hasattr(mcp_recommender, 'health_check'):
+                mcp_health = await mcp_recommender.health_check()
                 mcp_status = {
                     "status": mcp_health["status"],
-                    "market_cache": mcp_health,
-                    "metrics": mcp_recommender.get_metrics() if hasattr(mcp_recommender, 'get_metrics') else {}
+                    "components": mcp_health["components"],
+                    "metrics": await mcp_recommender.get_metrics() if hasattr(mcp_recommender, 'get_metrics') else {}
                 }
             else:
+                # Fallback para versiones anteriores del mcp_recommender que no tienen health_check
                 mcp_status = {
                     "status": "degraded",
-                    "message": "MCP recommender available but market cache not initialized"
+                    "message": "MCP recommender available but health_check method not implemented",
+                    "metrics": await mcp_recommender.get_metrics() if hasattr(mcp_recommender, 'get_metrics') else {}
                 }
         except Exception as e:
             mcp_status = {
@@ -379,7 +609,11 @@ async def health_check():
             "cache": cache_status,
             "mcp": mcp_status
         },
-        "uptime_seconds": time.time() - start_time
+        "uptime_seconds": time.time() - start_time,
+        "debug_info": {
+            "globals_status": "available",
+            "check_debug_endpoint": "/debug/globals"
+        }
     }
 
 @app.get("/v1/recommendations/{product_id}", response_model=Dict)

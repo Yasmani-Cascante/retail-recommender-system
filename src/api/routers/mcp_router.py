@@ -117,15 +117,56 @@ async def process_conversation(
     start_time = time.time()
     
     try:
-        # Obtener componentes necesarios
-        mcp_client = get_mcp_client()
-        mcp_recommender = get_mcp_recommender()
+        # Obtener componentes necesarios con manejo robusto
+        mcp_client = None
+        mcp_recommender = None
         
-        if not mcp_client:
-            raise HTTPException(status_code=503, detail="MCP client not initialized")
+        try:
+            mcp_client = get_mcp_client()
+            mcp_recommender = get_mcp_recommender()
+        except Exception as e:
+            logger.warning(f"Error getting MCP components: {e}")
         
-        if not mcp_recommender:
-            raise HTTPException(status_code=503, detail="MCP recommender not initialized")
+        # Si no hay componentes MCP, usar fallback directo
+        if not mcp_client or not mcp_recommender:
+            logger.info("Using direct fallback to hybrid recommender")
+            from src.api import main_unified_redis
+            if hasattr(main_unified_redis, 'hybrid_recommender') and main_unified_redis.hybrid_recommender:
+                try:
+                    fallback_recs = await main_unified_redis.hybrid_recommender.get_recommendations(
+                        user_id=conversation.user_id or "anonymous",
+                        product_id=conversation.product_id,
+                        n_recommendations=conversation.n_recommendations
+                    )
+                    
+                    return {
+                        "answer": f"Based on your query '{conversation.query}', I found {len(fallback_recs)} recommendations using our base system.",
+                        "recommendations": fallback_recs,
+                        "metadata": {
+                            "market_id": conversation.market_id,
+                            "source": "hybrid_fallback",
+                            "query_processed": conversation.query,
+                            "mcp_available": False
+                        },
+                        "session_id": f"session_{int(time.time())}",
+                        "took_ms": (time.time() - start_time) * 1000
+                    }
+                except Exception as e:
+                    logger.error(f"Fallback recommender also failed: {e}")
+            
+            # Si todo falla, devolver respuesta mínima
+            return {
+                "answer": f"I'm sorry, I'm having trouble processing your query '{conversation.query}' right now. Please try again later.",
+                "recommendations": [],
+                "metadata": {
+                    "market_id": conversation.market_id,
+                    "source": "error_fallback",
+                    "query_processed": conversation.query,
+                    "mcp_available": False
+                },
+                "session_id": f"session_{int(time.time())}",
+                "took_ms": (time.time() - start_time) * 1000
+            }
         
         # Crear contexto de conversación
         context = ConversationContext(
@@ -136,41 +177,169 @@ async def process_conversation(
             language=conversation.language
         )
         
-        # Crear request para MCP
-        request = MCPRecommendationRequest(
-            user_id=conversation.user_id or "anonymous",
-            session_id=conversation.session_id,
-            market_id=conversation.market_id,
-            product_id=conversation.product_id,
-            conversation_context=context,
-            n_recommendations=conversation.n_recommendations,
-            include_conversation_response=True
-        )
+        # ✅ Validación de parámetros de entrada
+        # Evitar que se pasen strings literales como IDs
+        validated_user_id = conversation.user_id
+        if not validated_user_id or validated_user_id.lower() in ['string', 'null', 'undefined', 'none']:
+            validated_user_id = "anonymous"
+            
+        validated_product_id = conversation.product_id
+        if validated_product_id and validated_product_id.lower() in ['string', 'null', 'undefined', 'none']:
+            validated_product_id = None
+            
+        # Loggear la información de la consulta para debugging
+        logger.info(f"Processing conversation query: {conversation.query}")
+        logger.info(f"User: {validated_user_id}, Market: {conversation.market_id}, Product: {validated_product_id}")
         
-        # IMPORTANTE: Modificación para asegurar que la consulta esté disponible para el fallback
-        # Pasar la consulta directamente como campo adicional en el diccionario de request
-        # Esto asegurará que el fallback pueda usarla cuando no hay recomendaciones
-        request_dict = request.dict()
-        request_dict['query'] = conversation.query  # Agregar consulta directamente al request
-        logger.info(f"Agregando consulta al request: {conversation.query}")
+        # ✅ CORRECCIÓN: Obtener recomendaciones MCP con timeout y fallback robusto
+        import asyncio
         
-        # Obtener recomendaciones MCP
-        response_dict = await mcp_recommender.get_recommendations(request_dict)
+        try:
+            # Envolver la llamada en un timeout para evitar bloqueos indefinidos
+            response_dict = await asyncio.wait_for(
+                mcp_recommender.get_recommendations(
+                    user_id=validated_user_id,
+                    product_id=validated_product_id,
+                    conversation_context={
+                        "query": conversation.query,
+                        "session_id": conversation.session_id,
+                        "market_id": conversation.market_id,
+                        "language": conversation.language
+                    },
+                    n_recommendations=conversation.n_recommendations,
+                    market_id=conversation.market_id
+                ),
+                timeout=5.0  # Timeout más agresivo de 5 segundos
+            )
+            logger.info("MCP recommender responded successfully")
+            
+        except asyncio.TimeoutError:
+            logger.warning("MCP recommender timed out, using base recommender fallback")
+            # Fallback al recomendador base si MCP se cuelga
+            from src.api import main_unified_redis
+            if hasattr(main_unified_redis, 'hybrid_recommender') and main_unified_redis.hybrid_recommender:
+                response_dict = await main_unified_redis.hybrid_recommender.get_recommendations(
+                    user_id=validated_user_id,
+                    product_id=validated_product_id,
+                    n_recommendations=conversation.n_recommendations
+                )
+            else:
+                # Fallback final: lista vacía
+                response_dict = []
+                
+        except Exception as e:
+            logger.error(f"Error in MCP recommender, using base recommender fallback: {e}")
+            # Fallback al recomendador base si MCP falla
+            from src.api import main_unified_redis
+            if hasattr(main_unified_redis, 'hybrid_recommender') and main_unified_redis.hybrid_recommender:
+                response_dict = await main_unified_redis.hybrid_recommender.get_recommendations(
+                    user_id=validated_user_id,
+                    product_id=validated_product_id,
+                    n_recommendations=conversation.n_recommendations
+                )
+            else:
+                # Fallback final: lista vacía
+                response_dict = []
         
-        # Transformar recomendaciones a formato API
+        # ✅ Manejo robusto de la respuesta del mcp_recommender
+        # El método puede retornar List[Dict] o Dict según el contexto
+        if isinstance(response_dict, list):
+            # Es una lista directa de recomendaciones
+            recommendations = response_dict
+            ai_response = None
+            conversation_session = None
+            metadata = {}
+            logger.info(f"Received direct list response with {len(recommendations)} recommendations")
+        elif isinstance(response_dict, dict):
+            # Es un diccionario con estructura completa
+            if hasattr(response_dict, 'recommendations'):  # Es un objeto Pydantic
+                recommendations = response_dict.recommendations
+                ai_response = response_dict.ai_response
+                conversation_session = response_dict.conversation_session
+                metadata = response_dict.metadata
+            else:  # Es un diccionario simple
+                recommendations = response_dict.get("recommendations", [])
+                ai_response = response_dict.get("ai_response")
+                conversation_session = response_dict.get("conversation_session")
+                metadata = response_dict.get("metadata", {})
+            logger.info(f"Received dict response with {len(recommendations)} recommendations")
+        else:
+            # Tipo inesperado, usar valores por defecto
+            logger.warning(f"Unexpected response type: {type(response_dict)}. Using fallback values.")
+            recommendations = []
+            ai_response = None
+            conversation_session = None
+            metadata = {}
+        
+        # ✅ Validación y corrección de recomendaciones vacías
+        def validate_and_fix_recommendations(recs_list):
+            """Valida que las recomendaciones tengan datos reales y no estén vacías."""
+            if not recs_list:
+                return []
+            
+            # Verificar si las recomendaciones tienen datos válidos
+            valid_recs = []
+            for rec in recs_list:
+                # Una recomendación es válida si tiene al menos ID y título
+                if isinstance(rec, dict):
+                    rec_id = rec.get("id")
+                    rec_title = rec.get("title")
+                    # Verificar que no sean None, cadenas vacías o "null"
+                    if (rec_id and rec_id != "null" and str(rec_id).strip() and 
+                        rec_title and rec_title != "null" and str(rec_title).strip()):
+                        valid_recs.append(rec)
+                elif hasattr(rec, 'product'):  # Objeto Pydantic
+                    if hasattr(rec.product, 'id') and hasattr(rec.product, 'title'):
+                        if rec.product.id and rec.product.title:
+                            valid_recs.append(rec)
+            
+            return valid_recs
+        
+        # Validar recomendaciones recibidas
+        valid_recommendations = validate_and_fix_recommendations(recommendations)
+        
+        # Si no hay recomendaciones válidas, usar fallback robusto
+        if len(valid_recommendations) == 0:
+            logger.warning("Recomendaciones MCP están vacías o inválidas, usando fallback al sistema base")
+            
+            # Intentar usar el hybrid_recommender directamente
+            from src.api import main_unified_redis
+            if hasattr(main_unified_redis, 'hybrid_recommender') and main_unified_redis.hybrid_recommender:
+                try:
+                    fallback_recs = await main_unified_redis.hybrid_recommender.get_recommendations(
+                        user_id=validated_user_id,
+                        product_id=validated_product_id,
+                        n_recommendations=conversation.n_recommendations
+                    )
+                    valid_recommendations = fallback_recs
+                    logger.info(f"Fallback hybrid_recommender devolvio {len(valid_recommendations)} recomendaciones")
+                except Exception as e:
+                    logger.error(f"Error en fallback hybrid_recommender: {e}")
+            
+            # Si aún no hay recomendaciones, intentar con TF-IDF directamente
+            if len(valid_recommendations) == 0:
+                try:
+                    if hasattr(main_unified_redis, 'tfidf_recommender') and main_unified_redis.tfidf_recommender:
+                        if main_unified_redis.tfidf_recommender.loaded and main_unified_redis.tfidf_recommender.product_data:
+                            # Usar estrategia de fallback inteligente
+                            from src.recommenders.improved_fallback_exclude_seen import ImprovedFallbackStrategies
+                            
+                            fallback_recs = await ImprovedFallbackStrategies.smart_fallback(
+                                user_id=validated_user_id,
+                                products=main_unified_redis.tfidf_recommender.product_data,
+                                user_events=[],  # No tenemos eventos aqui
+                                n=conversation.n_recommendations
+                            )
+                            valid_recommendations = fallback_recs
+                            logger.info(f"Fallback TF-IDF devolvio {len(valid_recommendations)} recomendaciones")
+                except Exception as e:
+                    logger.error(f"Error en fallback TF-IDF: {e}")
+        
+        # Usar las recomendaciones válidas
+        recommendations = valid_recommendations
+        
+        # ✅ CORRECCIÓN: Inicializar simplified_recs antes de usarla
         simplified_recs = []
-        
-        # Adaptación para manejar tanto objetos Pydantic como diccionarios
-        if hasattr(response_dict, 'recommendations'):  # Es un objeto Pydantic
-            recommendations = response_dict.recommendations
-            ai_response = response_dict.ai_response
-            conversation_session = response_dict.conversation_session
-            metadata = response_dict.metadata
-        else:  # Es un diccionario
-            recommendations = response_dict.get("recommendations", [])
-            ai_response = response_dict.get("ai_response")
-            conversation_session = response_dict.get("conversation_session")
-            metadata = response_dict.get("metadata", {})
         
         for rec in recommendations:
             # Verificar si rec es un objeto RecommendationMCP o un diccionario
@@ -204,19 +373,38 @@ async def process_conversation(
                     "source": rec.get("metadata", {}).get("source", "unknown")  # Añadir origen de la recomendación
                 })
         
-        # Construir respuesta
-        return {
-            "answer": ai_response or "I've found some recommendations that might interest you.",
+        # Construir respuesta conversacional inteligente y robusta
+        if not ai_response:
+            if len(simplified_recs) == 0:
+                ai_response = f"I apologize, but I couldn't find any products matching your query '{conversation.query}'. Could you try a different search or be more specific about what you're looking for?"
+            elif len(simplified_recs) == 1:
+                ai_response = f"Based on your query '{conversation.query}', I found 1 recommendation that might interest you."
+            else:
+                ai_response = f"Based on your query '{conversation.query}', I found {len(simplified_recs)} recommendations that might interest you."
+        
+        # Asegurar session_id válido
+        final_session_id = conversation_session or context.session_id or f"session_{int(time.time())}"
+        
+        # Construir respuesta robusta
+        response = {
+            "answer": ai_response,
             "recommendations": simplified_recs,
             "metadata": {
                 "market_id": conversation.market_id,
                 "intent_processed": True,
-                "source": "mcp_conversation",
+                "source": "mcp_conversation_robust",
+                "query_processed": conversation.query,
+                "user_validated": validated_user_id,
+                "product_validated": validated_product_id,
+                "fallback_used": isinstance(response_dict, list) and len(response_dict) == 0,
                 **metadata
             },
-            "session_id": conversation_session or context.session_id,
+            "session_id": final_session_id,
             "took_ms": (time.time() - start_time) * 1000
         }
+        
+        logger.info(f"Conversation processed successfully in {response['took_ms']:.1f}ms")
+        return response
         
     except Exception as e:
         logger.error(f"Error processing MCP conversation: {e}")
@@ -288,31 +476,87 @@ async def get_market_recommendations(
         if not mcp_recommender:
             raise HTTPException(status_code=503, detail="MCP recommender not initialized")
         
-        # Crear request MCP
-        request = MCPRecommendationRequest(
-            user_id=user_id or "anonymous",
-            market_id=market_id,
-            product_id=product_id,
-            n_recommendations=n,
-            include_conversation_response=False
-        )
+        # ✅ Validación de parámetros de entrada
+        # Evitar que se pasen strings literales como IDs
+        validated_user_id = user_id
+        if not validated_user_id or validated_user_id.lower() in ['string', 'null', 'undefined', 'none']:
+            validated_user_id = "anonymous"
+            
+        validated_product_id = product_id
+        if not validated_product_id or validated_product_id.lower() in ['string', 'null', 'undefined', 'none']:
+            raise HTTPException(status_code=400, detail="Valid product_id is required")
+            
+        # Loggear información para debugging
+        logger.info(f"Getting market recommendations - Product: {validated_product_id}, Market: {market_id}, User: {validated_user_id}")
         
-        # Convertir a dict para asegurar compatibilidad con mecanismo de fallback
-        request_dict = request.dict()
+        # ✅ CORRECCIÓN: Obtener recomendaciones con timeout y fallback robusto
+        import asyncio
         
-        # Obtener recomendaciones
-        response_dict = await mcp_recommender.get_recommendations(request_dict)
+        try:
+            # Envolver la llamada en un timeout para evitar bloqueos indefinidos
+            response_dict = await asyncio.wait_for(
+                mcp_recommender.get_recommendations(
+                    user_id=validated_user_id,
+                    product_id=validated_product_id,
+                    n_recommendations=n,
+                    market_id=market_id
+                ),
+                timeout=5.0  # Timeout más agresivo de 5 segundos
+            )
+            logger.info("MCP recommender responded successfully")
+            
+        except asyncio.TimeoutError:
+            logger.warning("MCP recommender timed out, using base recommender fallback")
+            # Fallback al recomendador base si MCP se cuelga
+            from src.api import main_unified_redis
+            if hasattr(main_unified_redis, 'hybrid_recommender') and main_unified_redis.hybrid_recommender:
+                response_dict = await main_unified_redis.hybrid_recommender.get_recommendations(
+                    user_id=validated_user_id,
+                    product_id=validated_product_id,
+                    n_recommendations=n
+                )
+            else:
+                # Fallback final: lista vacía
+                response_dict = []
+                
+        except Exception as e:
+            logger.error(f"Error in MCP recommender, using base recommender fallback: {e}")
+            # Fallback al recomendador base si MCP falla
+            from src.api import main_unified_redis
+            if hasattr(main_unified_redis, 'hybrid_recommender') and main_unified_redis.hybrid_recommender:
+                response_dict = await main_unified_redis.hybrid_recommender.get_recommendations(
+                    user_id=validated_user_id,
+                    product_id=validated_product_id,
+                    n_recommendations=n
+                )
+            else:
+                # Fallback final: lista vacía
+                response_dict = []
         
-        # Adaptación para manejar tanto objetos Pydantic como diccionarios
-        if hasattr(response_dict, 'recommendations'):  # Es un objeto Pydantic
-            recommendations = response_dict.recommendations
-            market_context = response_dict.market_context
-        else:  # Es un diccionario
-            recommendations = response_dict.get("recommendations", [])
-            market_context = response_dict.get("market_context", {})
+        # ✅ Manejo robusto de la respuesta del mcp_recommender  
+        # El método puede retornar List[Dict] o Dict según el contexto
+        if isinstance(response_dict, list):
+            # Es una lista directa de recomendaciones
+            recommendations = response_dict
+            market_context = {}
+            logger.info(f"Received direct list response with {len(recommendations)} recommendations")
+        elif isinstance(response_dict, dict):
+            # Es un diccionario con estructura completa
+            if hasattr(response_dict, 'recommendations'):  # Es un objeto Pydantic
+                recommendations = response_dict.recommendations
+                market_context = response_dict.market_context
+            else:  # Es un diccionario simple
+                recommendations = response_dict.get("recommendations", [])
+                market_context = response_dict.get("market_context", {})
+            logger.info(f"Received dict response with {len(recommendations)} recommendations")
+        else:
+            # Tipo inesperado, usar valores por defecto
+            logger.warning(f"Unexpected response type: {type(response_dict)}. Using fallback values.")
+            recommendations = []
+            market_context = {}
         
         # Transformar para API
-        simplified_recs = []
+        simplified_recs = []  # ✅ CORRECCIÓN: Inicializar simplified_recs antes de usarla
         for rec in recommendations:
             # Verificar si rec es un objeto RecommendationMCP o un diccionario
             if hasattr(rec, 'product'):  # Es un objeto Pydantic
@@ -341,12 +585,14 @@ async def get_market_recommendations(
                 })
         
         return {
-            "product_id": product_id,
+            "product_id": validated_product_id,
             "market_id": market_id,
             "recommendations": simplified_recs,
             "metadata": {
                 "total_recommendations": len(simplified_recs),
                 "market_context": market_context,
+                "user_validated": validated_user_id,
+                "product_validated": validated_product_id,
                 "took_ms": (time.time() - start_time) * 1000
             }
         }

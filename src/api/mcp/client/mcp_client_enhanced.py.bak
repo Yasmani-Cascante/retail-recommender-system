@@ -421,7 +421,7 @@ class MCPClientEnhanced(MCPClient):
             base_health = await super().health_check()
             
             # Agregar métricas propias
-            metrics = await self.get_metrics()
+            metrics = self.get_metrics()
             
             status = "healthy"
             if self.circuit_breaker and self.circuit_breaker.is_open:
@@ -444,7 +444,7 @@ class MCPClientEnhanced(MCPClient):
                 "error": str(e),
                 "enhanced_client": {
                     "status": "fallback_mode",
-                    "metrics": await self.get_metrics()
+                    "metrics": self.get_metrics()
                 }
             }
     

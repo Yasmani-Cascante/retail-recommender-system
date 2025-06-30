@@ -298,6 +298,78 @@ class HybridRecommender:
             purchase_amount=purchase_amount 
         )
         
+    async def health_check(self) -> Dict[str, Any]:
+        """
+        Verifica el estado del recomendador híbrido.
+        
+        Returns:
+            Dict con información de estado
+        """
+        # Verificar estado del recomendador de contenido
+        content_status = {"status": "unknown"}
+        if hasattr(self.content_recommender, 'health_check'):
+            try:
+                content_status = await self.content_recommender.health_check()
+            except Exception as e:
+                logger.error(f"Error en health_check del content_recommender: {e}")
+                content_status = {"status": "error", "error": str(e)}
+        else:
+            # Verificar estado básico
+            content_status = {
+                "status": "operational" if self.content_recommender and 
+                          hasattr(self.content_recommender, 'loaded') and 
+                          self.content_recommender.loaded else "unavailable",
+                "loaded": hasattr(self.content_recommender, 'loaded') and self.content_recommender.loaded,
+                "product_count": len(self.content_recommender.product_data) if hasattr(self.content_recommender, 'product_data') else 0
+            }
+        
+        # Verificar estado del recomendador retail
+        retail_status = {"status": "unknown"}
+        if hasattr(self.retail_recommender, 'health_check'):
+            try:
+                retail_status = await self.retail_recommender.health_check()
+            except Exception as e:
+                logger.error(f"Error en health_check del retail_recommender: {e}")
+                retail_status = {"status": "error", "error": str(e)}
+        else:
+            # Verificar estado básico
+            retail_status = {
+                "status": "operational" if self.retail_recommender else "unavailable"
+            }
+        
+        # Verificar estado de la caché de productos
+        cache_status = {"status": "not_available"}
+        if self.product_cache:
+            try:
+                cache_stats = self.product_cache.get_stats()
+                cache_status = {
+                    "status": "operational",
+                    "stats": cache_stats
+                }
+            except Exception as e:
+                logger.error(f"Error obteniendo estadísticas de caché: {e}")
+                cache_status = {"status": "error", "error": str(e)}
+        
+        # Determinar estado general
+        if content_status.get("status") == "operational" and retail_status.get("status") != "error":
+            overall_status = "operational"
+        elif content_status.get("status") == "error" or retail_status.get("status") == "error":
+            overall_status = "error"
+        else:
+            overall_status = "degraded"
+        
+        return {
+            "status": overall_status,
+            "components": {
+                "content_recommender": content_status,
+                "retail_recommender": retail_status,
+                "product_cache": cache_status
+            },
+            "config": {
+                "content_weight": self.content_weight
+            }
+        }
+        
     async def _enrich_recommendations(self, recommendations: List[Dict], user_id: str = None) -> List[Dict]:
         """
         Enriquece las recomendaciones con datos detallados de productos.

@@ -84,9 +84,29 @@ class RedisClient:
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return False
     
+    async def ensure_connected(self) -> bool:
+        """
+        Asegura que el cliente esté conectado, conectando si es necesario.
+        
+        Returns:
+            bool: True si está conectado, False si la conexión falla
+        """
+        if self.connected and self.client:
+            try:
+                # Verificar que la conexión sigue activa
+                await self.client.ping()
+                return True
+            except Exception:
+                # La conexión se perdió, reconectar
+                self.connected = False
+                
+        if not self.connected:
+            return await self.connect()
+        return True
+    
     async def get(self, key: str) -> Optional[str]:
         """
-        Obtiene un valor de Redis con manejo de errores.
+        Obtiene un valor de Redis con manejo de errores y conexión automática.
         
         Args:
             key: Clave a obtener
@@ -94,8 +114,9 @@ class RedisClient:
         Returns:
             str: Valor almacenado o None si ocurre un error
         """
-        if not self.connected or not self.client:
-            logger.warning("Intento de obtener clave sin conexión a Redis")
+        # Asegurar conexión antes de la operación
+        if not await self.ensure_connected():
+            logger.warning("No se pudo establecer conexión a Redis")
             return None
            
         try:
@@ -107,11 +128,13 @@ class RedisClient:
         except Exception as e:
             self.stats["errors"] += 1
             logger.error(f"Error obteniendo clave {key} de Redis: {str(e)}")
+            # Marcar como desconectado para reconectar en la próxima operación
+            self.connected = False
             return None
     
     async def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
         """
-        Guarda un valor en Redis con manejo de errores.
+        Guarda un valor en Redis con manejo de errores y conexión automática.
         
         Args:
             key: Clave a guardar
@@ -121,8 +144,9 @@ class RedisClient:
         Returns:
             bool: True si la operación fue exitosa, False en caso contrario
         """
-        if not self.connected or not self.client:
-            logger.warning("Intento de guardar clave sin conexión a Redis")
+        # Asegurar conexión antes de la operación
+        if not await self.ensure_connected():
+            logger.warning("No se pudo establecer conexión a Redis")
             return False
             
         try:
@@ -133,11 +157,13 @@ class RedisClient:
         except Exception as e:
             self.stats["errors"] += 1
             logger.error(f"Error guardando clave {key} en Redis: {str(e)}")
+            # Marcar como desconectado para reconectar en la próxima operación
+            self.connected = False
             return False
     
     async def delete(self, key: str) -> bool:
         """
-        Elimina una clave de Redis.
+        Elimina una clave de Redis con conexión automática.
         
         Args:
             key: Clave a eliminar
@@ -145,7 +171,8 @@ class RedisClient:
         Returns:
             bool: True si la operación fue exitosa, False en caso contrario
         """
-        if not self.connected or not self.client:
+        # Asegurar conexión antes de la operación
+        if not await self.ensure_connected():
             return False
             
         try:
@@ -156,6 +183,8 @@ class RedisClient:
         except Exception as e:
             self.stats["errors"] += 1
             logger.error(f"Error eliminando clave {key} de Redis: {str(e)}")
+            # Marcar como desconectado para reconectar en la próxima operación
+            self.connected = False
             return False
     
     async def health_check(self) -> Dict[str, Any]:
@@ -190,10 +219,4 @@ class RedisClient:
         
         return status
 
-client = RedisClient(
-    host="redis-14272.c259.us-central1-2.gce.redns.redis-cloud.com",
-    port=14272,
-    password="34rleeRxTmFYqBZpSA5UoDP71bHEq6zO",
-    username="default",
-    ssl=False, # Cambiar a False si se usa Redis local sin SSL
-)
+# Instancia global removida - usar RecommenderFactory.create_redis_client() en su lugar

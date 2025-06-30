@@ -1,11 +1,19 @@
 # src/api/mcp/adapters/market_manager.py
 from typing import Dict, Optional, List, Any
 import asyncio
-from src.api.core.cache import get_redis_client
 import json
 import logging
 import random
 from datetime import datetime
+
+# CORREGIDO: Importar y adaptar RedisCache para uso asíncrono
+try:
+    from src.api.core.cache import get_redis_client, AsyncRedisWrapper, get_async_redis_wrapper
+except ImportError as e:
+    logging.error(f"Error importando cache: {e}")
+    get_redis_client = None
+    AsyncRedisWrapper = None
+    get_async_redis_wrapper = None
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +21,16 @@ class MarketContextManager:
     """Gestiona contexto específico por mercado"""
     
     def __init__(self):
-        self.redis = get_redis_client()
+        try:
+            if get_async_redis_wrapper:
+                self.redis = get_async_redis_wrapper()
+            else:
+                logger.warning("No se pudo crear cliente Redis - usando modo degradado")
+                self.redis = None
+        except Exception as e:
+            logger.error(f"Error inicializando MarketContextManager: {e}")
+            self.redis = None
+            
         self.market_configs = {}
         self._initialized = False
         

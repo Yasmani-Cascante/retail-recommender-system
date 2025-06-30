@@ -9,7 +9,15 @@ import json
 import asyncio
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from src.api.core.cache import get_redis_client
+
+# CORREGIDO: Importar y adaptar RedisCache para uso asíncrono
+try:
+    from src.api.core.cache import get_redis_client, AsyncRedisWrapper, get_async_redis_wrapper
+except ImportError as e:
+    logging.error(f"Error importando cache: {e}")
+    get_redis_client = None
+    AsyncRedisWrapper = None
+    get_async_redis_wrapper = None
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +34,26 @@ class MarketAwareProductCache:
         Args:
             redis_client: Cliente Redis (opcional, se crea automáticamente)
         """
-        self.redis = redis_client or get_redis_client()
-        
-        # Verificar que el cliente Redis esté funcionando
-        if self.redis and hasattr(self.redis, 'client') and self.redis.client:
-            logger.info("MarketAwareProductCache: Cliente Redis disponible")
-        else:
-            logger.warning("MarketAwareProductCache: Cliente Redis no disponible - modo degradado")
+        try:
+            if redis_client:
+                self.redis = redis_client
+            elif get_async_redis_wrapper:
+                self.redis = get_async_redis_wrapper()
+            else:
+                logger.warning("No se pudo crear cliente Redis - usando modo degradado")
+                self.redis = None
+            
+            # Verificar que el cliente Redis esté funcionando
+            if self.redis and hasattr(self.redis, 'connected') and self.redis.connected:
+                logger.info("MarketAwareProductCache: Cliente Redis disponible")
+            else:
+                logger.warning("MarketAwareProductCache: Cliente Redis no disponible - modo degradado")
+                self.redis = None
+                
+        except Exception as e:
+            logger.error(f"Error inicializando MarketAwareProductCache: {e}")
+            self.redis = None
+            
         self.cache_prefix = "market_cache:"
         self.default_ttl = 3600  # 1 hora
         

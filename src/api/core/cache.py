@@ -212,10 +212,12 @@ async def get_async_redis_client():
 class AsyncRedisWrapper:
     """
     Wrapper para hacer que RedisCache sea compatible con aioredis
+    Provee una interfaz asíncrona para las operaciones de Redis.
     """
     
     def __init__(self, redis_cache: RedisCache):
         self.redis_cache = redis_cache
+        self.client = redis_cache.client
         self._connected = redis_cache.client is not None
     
     @property 
@@ -223,17 +225,19 @@ class AsyncRedisWrapper:
         """Compatibilidad con verificación de conexión"""
         return self._connected
     
-    async def get(self, key: str) -> Optional[str]:
+    async def get(self, key: str) -> Optional[Any]:
         """Get con interfaz aioredis-compatible"""
         result = await self.redis_cache.get(key)
-        if result is not None:
-            return json.dumps(result) if not isinstance(result, str) else result
-        return None
+        return result
     
-    async def setex(self, key: str, seconds: int, value: str) -> bool:
+    async def set(self, key: str, value: Any, expiration: int = 3600) -> bool:
+        """Set con interfaz aioredis-compatible"""
+        return await self.redis_cache.set(key, value, expiration)
+    
+    async def setex(self, key: str, seconds: int, value: Any) -> bool:
         """Setex con interfaz aioredis-compatible"""
         try:
-            parsed_value = json.loads(value) if isinstance(value, str) else value
+            parsed_value = json.loads(value) if isinstance(value, str) and value.startswith('{') else value
         except:
             parsed_value = value
         return await self.redis_cache.set(key, parsed_value, seconds)
@@ -280,6 +284,75 @@ class AsyncRedisWrapper:
             return True
         except:
             return False
+            
+    async def exists(self, key: str) -> bool:
+        """Check if a key exists"""
+        if not self.redis_cache.client:
+            return False
+            
+        try:
+            return bool(self.redis_cache.client.exists(key))
+        except Exception as e:
+            logging.error(f"Error checking key existence for {key}: {e}")
+            return False
+            
+    async def scan(self, cursor: int = 0, match: Optional[str] = None, count: Optional[int] = None) -> tuple:
+        """Scan the keyspace - aioredis compatible"""
+        if not self.redis_cache.client:
+            return (0, [])
+            
+        try:
+            scan_args = {}
+            if match:
+                scan_args['match'] = match
+            if count:
+                scan_args['count'] = count
+                
+            cursor, keys = self.redis_cache.client.scan(cursor, **scan_args)
+            return (cursor, [key.decode('utf-8') if isinstance(key, bytes) else key for key in keys])
+        except Exception as e:
+            logging.error(f"Error scanning keys: {e}")
+            return (0, [])
+            
+    async def hget(self, name: str, key: str) -> Optional[Any]:
+        """Get hash field - aioredis compatible"""
+        if not self.redis_cache.client:
+            return None
+            
+        try:
+            value = self.redis_cache.client.hget(name, key)
+            if value:
+                try:
+                    return json.loads(value) if isinstance(value, bytes) else json.loads(value.decode('utf-8'))
+                except:
+                    return value.decode('utf-8') if isinstance(value, bytes) else value
+            return None
+        except Exception as e:
+            logging.error(f"Error getting hash field {name}:{key}: {e}")
+            return None
+            
+    async def hset(self, name: str, key: str, value: Any) -> bool:
+        """Set hash field - aioredis compatible"""
+        if not self.redis_cache.client:
+            return False
+            
+        try:
+            serialized = json.dumps(value) if not isinstance(value, (str, bytes, int, float, bool)) else value
+            return bool(self.redis_cache.client.hset(name, key, serialized))
+        except Exception as e:
+            logging.error(f"Error setting hash field {name}:{key}: {e}")
+            return False
+            
+    async def incr(self, name: str, amount: int = 1) -> int:
+        """Increment counter - aioredis compatible"""
+        if not self.redis_cache.client:
+            return 0
+            
+        try:
+            return self.redis_cache.client.incr(name, amount)
+        except Exception as e:
+            logging.error(f"Error incrementing counter {name}: {e}")
+            return 0
 
 def get_async_redis_wrapper():
     """

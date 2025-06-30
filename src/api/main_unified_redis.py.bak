@@ -250,14 +250,37 @@ async def startup_event():
             market_cache = MCPFactory.create_market_cache()
             logger.info("Caché market-aware inicializado correctamente")
             
+            # Inicializar user event store resiliente
+            # user_event_store = MCPFactory.create_user_event_store(redis_client)
+            user_event_store = RecommenderFactory.create_user_event_store(redis_client)
+            logger.info("UserEventStore resiliente inicializado correctamente")
+            
             # Crear recomendador MCP
             global mcp_recommender
+            logger.info(f"🔍 DEBUG: Creando mcp_recommender con tipos:")
+            logger.info(f"  - base_recommender: {type(hybrid_recommender).__name__}")
+            logger.info(f"  - mcp_client: {type(mcp_client).__name__ if mcp_client else 'None'}")
+            logger.info(f"  - market_manager: {type(market_manager).__name__ if market_manager else 'None'}")
+            logger.info(f"  - market_cache: {type(market_cache).__name__ if market_cache else 'None'}")
+            logger.info(f"  - user_event_store: {type(user_event_store).__name__ if user_event_store else 'None'}")
+            logger.info(f"  - redis_client: {type(redis_client).__name__ if redis_client else 'None'}")
+            
             mcp_recommender = MCPFactory.create_mcp_recommender(
                 base_recommender=hybrid_recommender,
                 mcp_client=mcp_client,
                 market_manager=market_manager,
-                market_cache=market_cache
+                market_cache=market_cache,
+                user_event_store=user_event_store,
+                redis_client=redis_client
             )
+            
+            # DIAGNÓSTICO CRÍTICO: Verificar qué tipo de objeto realmente se creó
+            logger.info(f"🔍 DEBUG: mcp_recommender creado con tipo: {type(mcp_recommender).__name__ if mcp_recommender else 'None'}")
+            if mcp_recommender:
+                logger.info(f"🔍 DEBUG: mcp_recommender tiene get_metrics: {hasattr(mcp_recommender, 'get_metrics')}")
+                logger.info(f"🔍 DEBUG: mcp_recommender tiene health_check: {hasattr(mcp_recommender, 'health_check')}")
+                logger.info(f"🔍 DEBUG: mcp_recommender métodos: {[method for method in dir(mcp_recommender) if not method.startswith('_')][:10]}")
+            
             logger.info("✅ Recomendador MCP inicializado correctamente")
         except Exception as mcp_error:
             logger.error(f"Error inicializando componentes MCP: {str(mcp_error)}")
@@ -341,18 +364,20 @@ async def health_check():
     mcp_status = {}
     if 'mcp_recommender' in globals() and mcp_recommender:
         try:
-            market_cache = mcp_recommender.market_cache
-            if market_cache:
-                mcp_health = await market_cache.health_check()
+            # Usar el método health_check del mcp_recommender en lugar de acceder directamente al market_cache
+            if hasattr(mcp_recommender, 'health_check'):
+                mcp_health = await mcp_recommender.health_check()
                 mcp_status = {
                     "status": mcp_health["status"],
-                    "market_cache": mcp_health,
-                    "metrics": mcp_recommender.get_metrics() if hasattr(mcp_recommender, 'get_metrics') else {}
+                    "components": mcp_health["components"],
+                    "metrics": await mcp_recommender.get_metrics() if hasattr(mcp_recommender, 'get_metrics') else {}
                 }
             else:
+                # Fallback para versiones anteriores del mcp_recommender que no tienen health_check
                 mcp_status = {
                     "status": "degraded",
-                    "message": "MCP recommender available but market cache not initialized"
+                    "message": "MCP recommender available but health_check method not implemented",
+                    "metrics": await mcp_recommender.get_metrics() if hasattr(mcp_recommender, 'get_metrics') else {}
                 }
         except Exception as e:
             mcp_status = {

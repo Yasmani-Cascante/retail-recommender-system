@@ -17,29 +17,218 @@ logger = logging.getLogger(__name__)
 class MCPFactory:
     """Fábrica para crear componentes relacionados con MCP."""
     
+    # ==========================================
+    # MÉTODOS ASÍNCRONOS PARA TESTING Y MCP
+    # ==========================================
+    
+    @staticmethod
+    async def create_mcp_client_async():
+        """
+        Crea un cliente MCP de forma asíncrona.
+        
+        Returns:
+            MCPClientEnhanced: Cliente MCP inicializado
+        """
+        try:
+            from src.api.mcp.client.mcp_client_enhanced import MCPClientEnhanced
+            
+            logger.info("Creando cliente MCPClientEnhanced asíncrono en puerto 3001")
+            client = MCPClientEnhanced(
+                bridge_host="localhost", 
+                bridge_port=3001,
+                enable_circuit_breaker=True,
+                enable_local_cache=True,
+                cache_ttl=300
+            )
+            
+            logger.info(f"🔍 DEBUG asíncrono: MCPClientEnhanced creado: {type(client).__name__}")
+            logger.info(f"🔍 DEBUG asíncrono: Tiene get_metrics: {hasattr(client, 'get_metrics')}")
+            
+            return client
+            
+        except ImportError as e:
+            logger.warning(f"No se pudo importar MCPClientEnhanced: {e}")
+            try:
+                from src.api.mcp.client.mcp_client import MCPClient
+                
+                client = MCPClient(bridge_host="localhost", bridge_port=3001)
+                
+                async def mock_get_metrics():
+                    return {
+                        "client_type": "basic_mcp_client_async",
+                        "status": "available",
+                        "note": "Enhanced features not available - using basic client (async)"
+                    }
+                
+                client.get_metrics = mock_get_metrics
+                logger.info(f"🔍 DEBUG asíncrono: MCPClient básico creado: {type(client).__name__}")
+                return client
+                
+            except ImportError:
+                logger.error("No se pudo importar ningún cliente MCP asíncrono.")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error creando cliente MCP asíncrono: {str(e)}")
+            return None
+    
+    @staticmethod
+    async def create_mcp_recommender_async(
+        base_recommender=None,
+        mcp_client=None,
+        market_manager=None,
+        market_cache=None,
+        user_event_store=None,
+        redis_client=None
+    ):
+        """
+        Crea un recomendador con capacidades MCP de forma asíncrona.
+        
+        Returns:
+            MCPAwareRecommender: Recomendador con capacidades MCP
+        """
+        try:
+            from src.recommenders.mcp_aware_recommender import MCPAwareRecommender
+            
+            logger.info("Creando recomendador MCPAwareRecommender asíncrono")
+            
+            # 1. Crear base_recommender si no se proporcionó
+            if base_recommender is None:
+                logger.info("Creando componentes base para MCP recommender (asíncrono)...")
+                content_recommender = await RecommenderFactory.create_tfidf_recommender_async()
+                retail_recommender = await RecommenderFactory.create_retail_recommender_async()
+                
+                base_recommender = await RecommenderFactory.create_hybrid_recommender_async(
+                    content_recommender=content_recommender,
+                    retail_recommender=retail_recommender
+                )
+                logger.info("Base recommender creado automáticamente (asíncrono)")
+            
+            # 2. Crear MCP client si no se proporcionó
+            if mcp_client is None:
+                mcp_client = await MCPFactory.create_mcp_client_async()
+                if not mcp_client:
+                    logger.warning("MCP client no disponible (asíncrono), usando fallback")
+            
+            # 3. Crear user_event_store si no se proporcionó
+            if user_event_store is None:
+                if redis_client is None:
+                    redis_client = await RecommenderFactory.create_redis_client_async()
+                
+                user_event_store = await RecommenderFactory.create_user_event_store_async(redis_client)
+                if not user_event_store:
+                    logger.warning("UserEventStore no disponible (asíncrono), usando fallback")
+            
+            # 4. Crear el recomendador MCP
+            mcp_recommender = MCPAwareRecommender(
+                base_recommender=base_recommender,
+                mcp_client=mcp_client,
+                user_event_store=user_event_store,
+                market_manager=market_manager,
+                market_cache=market_cache
+            )
+            
+            logger.info(f"🔍 DEBUG asíncrono: MCPAwareRecommender creado: {type(mcp_recommender).__name__}")
+            logger.info(f"🔍 DEBUG asíncrono: Verificando métodos - get_metrics: {hasattr(mcp_recommender, 'get_metrics')}")
+            
+            return mcp_recommender
+                
+        except ImportError as e:
+            logger.error(f"No se pudo importar MCPAwareRecommender (asíncrono): {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error creando MCPAwareRecommender (asíncrono): {e}")
+            return None
+    
+    # ==========================================
+    # MÉTODOS SÍNCRONOS ORIGINALES
+    # ==========================================
+    
     @staticmethod
     def create_mcp_client():
         """
-        Crea un cliente MCP para Shopify.
+        Crea un cliente MCP mejorado para Shopify.
         
         Returns:
-            MCPClient: Cliente MCP inicializado
+            MCPClientEnhanced: Cliente MCP inicializado con circuit breaker y caching
         """
         settings = get_settings()
         
         try:
-            from src.api.mcp.client.mcp_client import MCPClient
+            # Intentar crear MCPClientEnhanced primero
+            from src.api.mcp.client.mcp_client_enhanced import MCPClientEnhanced
             
-            logger.info(f"Creando cliente MCP bridge en puerto 3001")
-            client = MCPClient(bridge_host="localhost", bridge_port=3001)
+            logger.info(f"Creando cliente MCPClientEnhanced bridge en puerto 3001")
+            client = MCPClientEnhanced(
+                bridge_host="localhost", 
+                bridge_port=3001,
+                enable_circuit_breaker=True,
+                enable_local_cache=True,
+                cache_ttl=300
+            )
+            
+            logger.info(f"🔍 DEBUG: MCPClientEnhanced creado: {type(client).__name__}")
+            logger.info(f"🔍 DEBUG: Tiene get_metrics: {hasattr(client, 'get_metrics')}")
             
             return client
-        except ImportError:
-            logger.error("No se pudo importar MCPClient. Verifica la instalación.")
-            return None
+            
+        except ImportError as e:
+            logger.warning(f"No se pudo importar MCPClientEnhanced: {e}")
+            logger.warning("Intentando fallback a MCPClient básico...")
+            
+            # Fallback a MCPClient básico si MCPClientEnhanced no está disponible
+            try:
+                from src.api.mcp.client.mcp_client import MCPClient
+                
+                logger.info(f"Creando cliente MCP básico bridge en puerto 3001")
+                client = MCPClient(bridge_host="localhost", bridge_port=3001)
+                
+                # Añadir método get_metrics simulado al MCPClient básico
+                async def mock_get_metrics():
+                    return {
+                        "client_type": "basic_mcp_client",
+                        "status": "available",
+                        "note": "Enhanced features not available - using basic client"
+                    }
+                
+                # Monkey patch para compatibilidad
+                client.get_metrics = mock_get_metrics
+                
+                logger.info(f"🔍 DEBUG: MCPClient básico creado: {type(client).__name__}")
+                logger.info(f"🔍 DEBUG: Tiene get_metrics: {hasattr(client, 'get_metrics')}")
+                
+                return client
+                
+            except ImportError:
+                logger.error("No se pudo importar ningún cliente MCP. Verifica la instalación.")
+                return None
+                
         except Exception as e:
             logger.error(f"Error creando cliente MCP: {str(e)}")
-            return None
+            logger.warning("Intentando fallback a MCPClient básico...")
+            
+            # Fallback en caso de error de configuración
+            try:
+                from src.api.mcp.client.mcp_client import MCPClient
+                
+                client = MCPClient(bridge_host="localhost", bridge_port=3001)
+                
+                # Añadir método get_metrics simulado
+                async def mock_get_metrics():
+                    return {
+                        "client_type": "basic_mcp_client_fallback",
+                        "status": "fallback_mode",
+                        "note": "Using basic client due to enhanced client error"
+                    }
+                
+                client.get_metrics = mock_get_metrics
+                
+                logger.info(f"🔍 DEBUG: MCPClient fallback creado: {type(client).__name__}")
+                return client
+                
+            except Exception as fallback_error:
+                logger.error(f"Error en fallback MCP client: {fallback_error}")
+                return None
     
     @staticmethod
     def create_market_manager():
@@ -101,7 +290,8 @@ class MCPFactory:
         mcp_client=None,
         market_manager=None,
         market_cache=None,
-        user_event_store=None
+        user_event_store=None,
+        redis_client=None
     ):
         """
         Crea un recomendador con capacidades MCP.
@@ -120,6 +310,7 @@ class MCPFactory:
             from src.recommenders.mcp_aware_recommender import MCPAwareRecommender
             
             logger.info("Creando recomendador MCPAwareRecommender con componentes proporcionados o automáticos")
+            logger.info(f"🔍 DEBUG: Importing MCPAwareRecommender exitoso")
             
             # 1. Usar base_recommender proporcionado o crear uno nuevo
             if base_recommender is None:
@@ -134,7 +325,7 @@ class MCPFactory:
                 )
                 logger.info("Base recommender creado automáticamente")
             else:
-                logger.info("Usando base recommender proporcionado")
+                logger.info(f"Usando base recommender proporcionado: {type(base_recommender).__name__}")
             
             # 2. Usar MCP client proporcionado o crear uno nuevo
             if mcp_client is None:
@@ -142,9 +333,9 @@ class MCPFactory:
                 if not mcp_client:
                     logger.warning("MCP client no disponible, usando fallback")
                 else:
-                    logger.info("MCP client creado automáticamente")
+                    logger.info(f"MCP client creado automáticamente: {type(mcp_client).__name__}")
             else:
-                logger.info("Usando MCP client proporcionado")
+                logger.info(f"Usando MCP client proporcionado: {type(mcp_client).__name__}")
             
             # 3. Usar market manager proporcionado o crear uno nuevo
             if market_manager is None:
@@ -152,9 +343,9 @@ class MCPFactory:
                 if not market_manager:
                     logger.warning("Market manager no disponible, usando fallback")
                 else:
-                    logger.info("Market manager creado automáticamente")
+                    logger.info(f"Market manager creado automáticamente: {type(market_manager).__name__}")
             else:
-                logger.info("Usando market manager proporcionado")
+                logger.info(f"Usando market manager proporcionado: {type(market_manager).__name__}")
             
             # 4. Usar market cache proporcionado o crear uno nuevo
             if market_cache is None:
@@ -162,28 +353,39 @@ class MCPFactory:
                 if not market_cache:
                     logger.warning("Market cache no disponible, usando fallback")
                 else:
-                    logger.info("Market cache creado automáticamente")
+                    logger.info(f"Market cache creado automáticamente: {type(market_cache).__name__}")
             else:
-                logger.info("Usando market cache proporcionado")
+                logger.info(f"Usando market cache proporcionado: {type(market_cache).__name__}")
             
             # 5. Usar user_event_store proporcionado o crear uno nuevo
             if user_event_store is None:
+                # Crear redis_client si no se proporcionó
+                if redis_client is None:
+                    redis_client = RecommenderFactory.create_redis_client()
+                    logger.info(f"Redis client creado automáticamente: {type(redis_client).__name__ if redis_client else 'None'}")
+                
                 user_event_store = RecommenderFactory.create_user_event_store(redis_client)
                 if not user_event_store:
                     logger.warning("UserEventStore no disponible, usando fallback")
                 else:
-                    logger.info("UserEventStore creado automáticamente")
+                    logger.info(f"UserEventStore creado automáticamente: {type(user_event_store).__name__}")
             else:
-                logger.info("Usando UserEventStore proporcionado")
+                logger.info(f"Usando UserEventStore proporcionado: {type(user_event_store).__name__}")
             
             # 6. Crear el recomendador MCP con todos los componentes
+            logger.info("🔍 DEBUG: Creando MCPAwareRecommender con parámetros...")
+            logger.info(f"  - base_recommender: {type(base_recommender).__name__ if base_recommender else 'None'}")
+            logger.info(f"  - mcp_client: {type(mcp_client).__name__ if mcp_client else 'None'}")
+            logger.info(f"  - user_event_store: {type(user_event_store).__name__ if user_event_store else 'None'}")
+            
             mcp_recommender = MCPAwareRecommender(
                 base_recommender=base_recommender,
                 mcp_client=mcp_client,
                 user_event_store=user_event_store
             )
             
-            logger.info("MCPAwareRecommender creado exitosamente")
+            logger.info(f"🔍 DEBUG: MCPAwareRecommender creado exitosamente: {type(mcp_recommender).__name__}")
+            logger.info(f"🔍 DEBUG: Verificando métodos - get_metrics: {hasattr(mcp_recommender, 'get_metrics')}")
             return mcp_recommender
                 
         except ImportError as e:
@@ -196,6 +398,199 @@ class MCPFactory:
 
 class RecommenderFactory:
     """Fábrica para crear recomendadores."""
+    
+    # ==========================================
+    # MÉTODOS ASÍNCRONOS PARA TESTING Y MCP
+    # ==========================================
+    
+    @staticmethod
+    async def create_redis_client_async():
+        """
+        Crea un cliente Redis de forma asíncrona con conexión inmediata.
+        Útil para testing y inicialización en contextos asíncronos.
+        
+        Returns:
+            RedisClient: Cliente Redis conectado o None si falla
+        """
+        settings = get_settings()
+        
+        if not settings.use_redis_cache:
+            logger.info("Caché Redis desactivada por configuración")
+            return None
+            
+        try:
+            from src.api.core.redis_client import RedisClient
+            
+            logger.info(f"Creando cliente Redis asíncrono: {settings.redis_host}:{settings.redis_port}")
+            
+            # Obtener parámetros para el cliente Redis
+            client_params = {
+                "host": settings.redis_host,
+                "port": settings.redis_port,
+                "db": settings.redis_db,
+                "ssl": settings.redis_ssl
+            }
+            
+            # Agregar password si está configurado
+            if settings.redis_password:
+                client_params["password"] = settings.redis_password
+                
+            # Agregar username si está configurado
+            if hasattr(settings, "redis_username") and settings.redis_username:
+                client_params["username"] = settings.redis_username
+                
+            redis_client = RedisClient(**client_params)
+            
+            # Conectar inmediatamente en contexto asíncrono
+            connection_successful = await redis_client.connect()
+            
+            if connection_successful:
+                logger.info("Cliente Redis conectado exitosamente en modo asíncrono")
+                return redis_client
+            else:
+                logger.error("No se pudo conectar a Redis en modo asíncrono")
+                return None
+                
+        except ImportError:
+            logger.error("No se pudo importar RedisClient. Asegúrate de que redis-py está instalado.")
+            return None
+        except Exception as e:
+            logger.error(f"Error creando cliente Redis asíncrono: {str(e)}")
+            return None
+    
+    @staticmethod
+    async def create_user_event_store_async(redis_client=None):
+        """
+        Crea un almacén de eventos de usuario de forma asíncrona.
+        
+        Args:
+            redis_client: Cliente Redis opcional
+            
+        Returns:
+            UserEventStore: Almacén de eventos o None si falla
+        """
+        try:
+            from src.api.mcp.user_events.resilient_user_event_store import UserEventStore
+            from src.api.core.config import get_settings
+            
+            settings = get_settings()
+            
+            # Crear cliente Redis si no se proporcionó
+            if not redis_client:
+                redis_client = await RecommenderFactory.create_redis_client_async()
+                
+                if not redis_client:
+                    logger.warning("No se pudo crear cliente Redis para UserEventStore")
+                    return None
+            
+            # Construir URL de Redis
+            redis_url = "redis://"
+            
+            if settings.redis_username and settings.redis_password:
+                redis_url += f"{settings.redis_username}:{settings.redis_password}@"
+            elif settings.redis_password:
+                redis_url += f":{settings.redis_password}@"
+            
+            redis_url += f"{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
+            
+            logger.info("Creando UserEventStore asíncrono con Redis")
+            
+            user_event_store = UserEventStore(
+                redis_url=redis_url,
+                cache_ttl=getattr(settings, 'user_event_cache_ttl', 300),
+                enable_circuit_breaker=True,
+                cache_size=getattr(settings, 'user_event_cache_size', 1000),
+                local_buffer_size=getattr(settings, 'user_event_buffer_size', 200),
+                flush_interval_seconds=getattr(settings, 'user_event_flush_interval', 30),
+                local_fallback_dir=getattr(settings, 'user_events_fallback_dir', None)
+            )
+            
+            # Conectar en contexto asíncrono
+            await user_event_store.connect()
+            
+            logger.info("UserEventStore conectado exitosamente en modo asíncrono")
+            return user_event_store
+            
+        except ImportError as e:
+            logger.error(f"No se pudo importar UserEventStore: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error creando UserEventStore asíncrono: {e}")
+            return None
+    
+    @staticmethod
+    async def create_tfidf_recommender_async(model_path="data/tfidf_model.pkl"):
+        """
+        Crea un recomendador TF-IDF de forma asíncrona.
+        
+        Args:
+            model_path: Ruta al archivo de modelo pre-entrenado
+            
+        Returns:
+            TFIDFRecommender: Instancia del recomendador
+        """
+        logger.info(f"Creando recomendador TF-IDF asíncrono con modelo en: {model_path}")
+        return TFIDFRecommender(model_path=model_path)
+    
+    @staticmethod
+    async def create_retail_recommender_async():
+        """
+        Crea un recomendador de Google Cloud Retail API de forma asíncrona.
+        
+        Returns:
+            RetailAPIRecommender: Instancia del recomendador
+        """
+        settings = get_settings()
+        logger.info("Creando recomendador de Google Cloud Retail API asíncrono")
+        
+        return RetailAPIRecommender(
+            project_number=settings.google_project_number,
+            location=settings.google_location,
+            catalog=settings.google_catalog,
+            serving_config_id=settings.google_serving_config
+        )
+    
+    @staticmethod
+    async def create_hybrid_recommender_async(content_recommender, retail_recommender, product_cache=None):
+        """
+        Crea un recomendador híbrido de forma asíncrona.
+        
+        Args:
+            content_recommender: Recomendador basado en contenido
+            retail_recommender: Recomendador de Retail API
+            product_cache: Caché de productos (opcional)
+            
+        Returns:
+            HybridRecommender: Instancia del recomendador híbrido
+        """
+        settings = get_settings()
+        logger.info(f"Creando recomendador híbrido asíncrono con content_weight={settings.content_weight}")
+        
+        try:
+            if settings.exclude_seen_products:
+                from src.api.core.hybrid_recommender import HybridRecommenderWithExclusion
+                return HybridRecommenderWithExclusion(
+                    content_recommender=content_recommender,
+                    retail_recommender=retail_recommender,
+                    content_weight=settings.content_weight,
+                    product_cache=product_cache
+                )
+            else:
+                from src.api.core.hybrid_recommender import HybridRecommender
+                return HybridRecommender(
+                    content_recommender=content_recommender,
+                    retail_recommender=retail_recommender,
+                    content_weight=settings.content_weight,
+                    product_cache=product_cache
+                )
+        except ImportError as e:
+            error_msg = f"Error crítico: No se pudo cargar el recomendador híbrido: {str(e)}"
+            logger.error(error_msg)
+            raise ImportError(error_msg)
+    
+    # ==========================================
+    # MÉTODOS SÍNCRONOS ORIGINALES
+    # ==========================================
     
     @staticmethod
     def create_tfidf_recommender(model_path="data/tfidf_model.pkl"):
@@ -346,8 +741,9 @@ class RecommenderFactory:
                 
             redis_client = RedisClient(**client_params)
             
-            # Iniciar conexión en segundo plano
-            asyncio.create_task(redis_client.connect())
+            # CORREGIDO: Conexión diferida - el cliente se conectará automáticamente
+            # cuando se realice la primera operación mediante ensure_connected()
+            logger.info("Cliente Redis creado con conexión diferida")
             
             return redis_client
         except ImportError:
@@ -425,9 +821,23 @@ class RecommenderFactory:
             
             settings = get_settings()
             
+            # CORRECCIÓN: Construir URL de Redis correctamente con credenciales
+            redis_url = "redis://"
+            
+            # Agregar credenciales si están configuradas
+            if settings.redis_username and settings.redis_password:
+                redis_url += f"{settings.redis_username}:{settings.redis_password}@"
+            elif settings.redis_password:
+                # Solo password (Redis < v6)
+                redis_url += f":{settings.redis_password}@"
+            
+            # Agregar host, puerto y base de datos
+            redis_url += f"{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
+            
+            logger.info(f"Construyendo URL Redis: redis://***@{settings.redis_host}:{settings.redis_port}/{settings.redis_db}")
+            
             # Verificar si tenemos un cliente Redis o necesitamos crear uno
             if not redis_client:
-                from src.api.factories import RecommenderFactory
                 redis_client = RecommenderFactory.create_redis_client()
                 
                 if not redis_client:
@@ -440,11 +850,9 @@ class RecommenderFactory:
                 import os
                 os.makedirs(local_fallback_dir, exist_ok=True)
             
-            # Crear instancia de UserEventStore
-            redis_url = f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
-            
+            # Crear instancia de UserEventStore con URL corregida
             user_event_store = UserEventStore(
-                redis_url=redis_url,
+                redis_url=redis_url,  # ✅ URL con credenciales correctas
                 cache_ttl=getattr(settings, 'user_event_cache_ttl', 300),
                 enable_circuit_breaker=True,
                 cache_size=getattr(settings, 'user_event_cache_size', 1000),
@@ -453,11 +861,10 @@ class RecommenderFactory:
                 local_fallback_dir=local_fallback_dir
             )
             
-            # Iniciar conexión en segundo plano
-            import asyncio
-            asyncio.create_task(user_event_store.connect())
-            
-            logger.info("UserEventStore resiliente creado correctamente")
+            # CORREGIDO: Conexión diferida - el UserEventStore se conectará cuando sea necesario
+            # en lugar de crear task asíncrono en contexto síncrono
+            logger.info("UserEventStore resiliente creado correctamente con URL autenticada")
+            logger.info("Nota: Conexión diferida - se conectará automáticamente al usarse")
             return user_event_store
         except ImportError as e:
             logger.error(f"No se pudo importar UserEventStore resiliente: {e}")

@@ -270,6 +270,26 @@ def create_event_id(user_id: str, event_type: EventType, timestamp: Optional[dat
     timestamp_str = str(int(timestamp.timestamp() * 1000))  # Milliseconds
     return f"{event_type.value}_{user_id}_{timestamp_str}"
 
+# Modelos para requests de API
+class ListUserEventsRequest(BaseModel):
+    """Request para listar eventos de usuario"""
+    user_id: str = Field(..., description="ID del usuario")
+    limit: int = Field(50, ge=1, le=1000, description="Límite de eventos a retornar")
+    offset: int = Field(0, ge=0, description="Offset para paginación")
+    event_types: Optional[List[EventType]] = Field(None, description="Filtrar por tipos de evento")
+    start_date: Optional[datetime] = Field(None, description="Fecha de inicio")
+    end_date: Optional[datetime] = Field(None, description="Fecha de fin")
+    
+    class Config:
+        use_enum_values = True
+
+class ListUserEventsResponse(BaseModel):
+    """Response para listar eventos de usuario"""
+    events: List[UserEvent] = Field(description="Lista de eventos")
+    total: int = Field(description="Total de eventos")
+    user_id: str = Field(description="ID del usuario")
+    pagination: Dict[str, Any] = Field(description="Información de paginación")
+
 def calculate_user_activity_level(total_events: int, session_count: int, days_active: int) -> str:
     """
     Calcula el nivel de actividad de un usuario
