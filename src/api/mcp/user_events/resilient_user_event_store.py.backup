@@ -321,7 +321,7 @@ class UserEventStore:
     
     async def record_conversation_intent(self, user_id: str, intent_data: Dict[str, Any]) -> bool:
         """
-        🔧 CORRECCIÓN: Registra intención conversacional del usuario con validación robusta.
+        Registra intención conversacional del usuario.
         
         Args:
             user_id: ID del usuario
@@ -331,106 +331,19 @@ class UserEventStore:
             bool: True si se registró correctamente
         """
         try:
-            # 🔧 CORRECCIÓN CRÍTICA: Validar y normalizar datos de intent antes de la validación Pydantic
-            
-            # Verificar si los datos tienen la estructura correcta para IntentData
-            required_fields = ['type', 'confidence', 'query']
-            
-            # Si faltan campos requeridos, intentar extraerlos o usar valores por defecto
-            normalized_intent_data = {}
-            
-            # Manejar campo 'type'
-            if 'type' in intent_data:
-                normalized_intent_data['type'] = intent_data['type']
-            elif 'intent_type' in intent_data:
-                normalized_intent_data['type'] = intent_data['intent_type']
-            else:
-                # Valor por defecto basado en contexto
-                normalized_intent_data['type'] = 'general'
-                logger.warning(f"Campo 'type' no encontrado en intent_data, usando 'general' como fallback")
-            
-            # Manejar campo 'confidence'
-            if 'confidence' in intent_data:
-                try:
-                    normalized_intent_data['confidence'] = float(intent_data['confidence'])
-                except (ValueError, TypeError):
-                    normalized_intent_data['confidence'] = 0.5
-            else:
-                normalized_intent_data['confidence'] = 0.5
-                logger.warning(f"Campo 'confidence' no encontrado en intent_data, usando 0.5 como fallback")
-            
-            # Manejar campo 'query'
-            if 'query' in intent_data:
-                normalized_intent_data['query'] = str(intent_data['query'])
-            elif 'user_query' in intent_data:
-                normalized_intent_data['query'] = str(intent_data['user_query'])
-            elif 'text' in intent_data:
-                normalized_intent_data['query'] = str(intent_data['text'])
-            else:
-                normalized_intent_data['query'] = "unknown query"
-                logger.warning(f"Campo 'query' no encontrado en intent_data, usando 'unknown query' como fallback")
-            
-            # Campos opcionales
-            normalized_intent_data['keywords'] = intent_data.get('keywords', [])
-            normalized_intent_data['market_id'] = intent_data.get('market_id', 'default')
-            normalized_intent_data['source'] = intent_data.get('source', 'mcp_conversation')
-            normalized_intent_data['language'] = intent_data.get('language', 'en')
-            
-            # Log para debugging
-            logger.info(f"Normalized intent data for user {user_id}: type={normalized_intent_data['type']}, query='{normalized_intent_data['query'][:50]}...', confidence={normalized_intent_data['confidence']}")
-            
-            # Crear objeto IntentData para validación con datos normalizados
-            try:
-                validated_intent = IntentData(**normalized_intent_data)
-            except Exception as validation_error:
-                logger.error(f"Error validating normalized intent data: {validation_error}")
-                logger.error(f"Normalized data was: {normalized_intent_data}")
-                
-                # Crear intent mínimo válido como último recurso
-                minimal_intent = IntentData(
-                    type='general',
-                    confidence=0.3,
-                    query=normalized_intent_data.get('query', 'fallback query'),
-                    keywords=[],
-                    market_id='default',
-                    source='fallback_validation',
-                    language='en'
-                )
-                validated_intent = minimal_intent
-                logger.warning(f"Used minimal fallback intent data for user {user_id}")
+            # Crear objeto IntentData para validación
+            validated_intent = IntentData(**intent_data)
             
             # Registrar como evento
             return await self.record_event(
                 user_id=user_id,
                 event_type=EventType.CONVERSATION_INTENT,
                 data=validated_intent.dict(),
-                market_id=normalized_intent_data.get("market_id", "default"),
-                session_id=intent_data.get("session_id")
+                market_id=intent_data.get("market_id")
             )
-            
         except Exception as e:
-            logger.error(f"Error al registrar intención para usuario {user_id}: {e}")
-            logger.error(f"Intent data received: {intent_data}")
-            
-            # Como último recurso, intentar registrar un evento básico sin validación Pydantic
-            try:
-                basic_intent_data = {
-                    "type": "error_fallback",
-                    "confidence": 0.1,
-                    "query": str(intent_data.get('query', intent_data.get('user_query', 'error processing intent'))),
-                    "source": "error_recovery",
-                    "original_error": str(e)
-                }
-                
-                return await self.record_event(
-                    user_id=user_id,
-                    event_type=EventType.MCP_EVENT,  # Usar evento genérico
-                    data=basic_intent_data,
-                    market_id=intent_data.get("market_id", "default")
-                )
-            except Exception as final_error:
-                logger.error(f"Error en fallback final para intent de usuario {user_id}: {final_error}")
-                return False
+            logger.error(f"Error al registrar intención: {e}")
+            return False
     
     async def record_mcp_event(self, user_id: str, event_data: Dict[str, Any]) -> bool:
         """

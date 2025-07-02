@@ -358,7 +358,7 @@ async def fixed_startup_event():
                 user_event_store = RecommenderFactory.create_user_event_store(redis_client)
             
             # Crear recomendador MCP
-            mcp_recommender = MCPFactory.create_mcp_recommender_fixed(
+            mcp_recommender = MCPFactory.create_mcp_recommender(
                 base_recommender=hybrid_recommender,
                 mcp_client=mcp_client,
                 market_manager=market_manager,
@@ -570,57 +570,30 @@ async def health_check():
                 "redis_connection": "not_configured"
             }
     
-    # 🔧 CORRECCIÓN MCP HEALTH CHECK - Eliminar await problemático
+    # Añadir estado de MCP si está disponible
     global mcp_recommender
     mcp_status = {}
     if mcp_recommender is not None:
         try:
-            # 🔧 CORRECCIÓN CRÍTICA: Verificar si health_check es async antes de usar await
+            # Usar el método health_check del mcp_recommender en lugar de acceder directamente al market_cache
             if hasattr(mcp_recommender, 'health_check'):
-                import inspect
-                if inspect.iscoroutinefunction(mcp_recommender.health_check):
-                    mcp_health = await mcp_recommender.health_check()
-                    mcp_status = {
-                        "status": mcp_health.get("status", "operational"),
-                        "components": mcp_health.get("components", {}),
-                        "metrics": mcp_health.get("metrics", {})
-                    }
-                else:
-                    # Es un método síncrono, llamar sin await
-                    mcp_health = mcp_recommender.health_check()
-                    mcp_status = {
-                        "status": mcp_health.get("status", "operational"),
-                        "components": mcp_health.get("components", {}),
-                        "metrics": mcp_health.get("metrics", {})
-                    }
-            else:
-                # 🔧 CORRECCIÓN CRÍTICA: NO usar await en get_metrics (es síncrono)
-                base_metrics = {}
-                if hasattr(mcp_recommender, 'get_metrics'):
-                    try:
-                        base_metrics = mcp_recommender.get_metrics()  # SIN await
-                    except Exception as metrics_error:
-                        logger.warning(f"Error obteniendo métricas MCP: {metrics_error}")
-                        base_metrics = {"error": str(metrics_error)}
-                
+                mcp_health = await mcp_recommender.health_check()
                 mcp_status = {
-                    "status": "operational",
-                    "message": "MCP recommender available, health_check method not implemented",
-                    "metrics": base_metrics,
-                    "capabilities": {
-                        "conversation": True,
-                        "market_aware": hasattr(mcp_recommender, 'market_manager') and mcp_recommender.market_manager is not None,
-                        "cache_enabled": hasattr(mcp_recommender, 'market_cache') and mcp_recommender.market_cache is not None
-                    },
-                    "corrected": "health_check_fixed_v1"
+                    "status": mcp_health["status"],
+                    "components": mcp_health["components"],
+                    "metrics": await mcp_recommender.get_metrics() if hasattr(mcp_recommender, 'get_metrics') else {}
+                }
+            else:
+                # Fallback para versiones anteriores del mcp_recommender que no tienen health_check
+                mcp_status = {
+                    "status": "degraded",
+                    "message": "MCP recommender available but health_check method not implemented",
+                    "metrics": await mcp_recommender.get_metrics() if hasattr(mcp_recommender, 'get_metrics') else {}
                 }
         except Exception as e:
-            logger.error(f"Error en health check MCP corregido: {e}")
             mcp_status = {
                 "status": "error",
-                "error": str(e),
-                "error_type": type(e).__name__,
-                "corrected": "health_check_error_handled"
+                "error": str(e)
             }
     else:
         mcp_status = {

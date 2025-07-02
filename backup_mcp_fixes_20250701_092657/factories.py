@@ -396,67 +396,6 @@ class MCPFactory:
             return None
 
 
-
-    @staticmethod
-    def create_mcp_recommender_fixed(
-        base_recommender=None,
-        mcp_client=None,
-        market_manager=None,
-        market_cache=None,
-        user_event_store=None,
-        redis_client=None
-    ):
-        """
-        🔧 VERSIÓN CORREGIDA: Crea un recomendador con capacidades MCP usando la versión fixed.
-        """
-        try:
-            from src.recommenders.mcp_aware_hybrid_fixed import MCPAwareHybridRecommenderFixed
-            
-            logger.info("Creando recomendador MCPAwareHybridRecommenderFixed")
-            
-            # 1. Crear base_recommender si no se proporcionó
-            if base_recommender is None:
-                logger.info("Creando componentes base para MCP recommender corregido...")
-                content_recommender = RecommenderFactory.create_content_recommender()
-                retail_recommender = RecommenderFactory.create_retail_recommender()
-                
-                base_recommender = RecommenderFactory.create_hybrid_recommender(
-                    content_recommender=content_recommender,
-                    retail_recommender=retail_recommender
-                )
-                logger.info("Base recommender creado automáticamente (corregido)")
-            
-            # 2. Crear MCP client si no se proporcionó
-            if mcp_client is None:
-                mcp_client = MCPFactory.create_mcp_client()
-                if not mcp_client:
-                    logger.warning("MCP client no disponible, usando fallback")
-            
-            # 3. Crear market manager si no se proporcionó
-            if market_manager is None:
-                market_manager = MCPFactory.create_market_manager()
-                if not market_manager:
-                    logger.warning("Market manager no disponible, usando fallback")
-            
-            # 4. Crear el recomendador MCP CORREGIDO
-            mcp_recommender = MCPAwareHybridRecommenderFixed(
-                base_recommender=base_recommender,
-                mcp_client=mcp_client,
-                market_manager=market_manager,
-                market_cache=market_cache
-            )
-            
-            logger.info(f"🔧 ÉXITO: MCPAwareHybridRecommenderFixed creado: {type(mcp_recommender).__name__}")
-            return mcp_recommender
-                
-        except ImportError as e:
-            logger.error(f"No se pudo importar MCPAwareHybridRecommenderFixed: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Error creando MCPAwareHybridRecommenderFixed: {e}")
-            return None
-
-
 class RecommenderFactory:
     """Fábrica para crear recomendadores."""
     

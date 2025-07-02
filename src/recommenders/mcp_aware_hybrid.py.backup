@@ -54,27 +54,12 @@ class MCPAwareHybridRecommender:
         logger.info(f"  - Market-aware: {self.market_aware}")
         logger.info(f"  - Base recommender: {type(base_recommender).__name__}")
     
-    async def get_recommendations(
-        self, 
-        user_id: str = "anonymous",
-        product_id: Optional[str] = None,
-        n_recommendations: int = 5,
-        market_id: str = "default",
-        conversation_context: Optional[Dict] = None,
-        include_conversation_response: bool = False,
-        **kwargs
-    ) -> Dict[str, Any]:
+    async def get_recommendations(self, request) -> Dict[str, Any]:
         """
-        🔧 CORRECCIÓN: Obtener recomendaciones con capacidades MCP usando parámetros keyword.
+        Obtener recomendaciones con capacidades MCP.
         
         Args:
-            user_id: ID del usuario
-            product_id: ID del producto base (opcional)
-            n_recommendations: Número de recomendaciones
-            market_id: ID del mercado
-            conversation_context: Contexto conversacional (opcional)
-            include_conversation_response: Incluir respuesta AI
-            **kwargs: Parámetros adicionales
+            request: Objeto de request (puede ser dict o modelo Pydantic)
             
         Returns:
             Dict con recomendaciones y metadata MCP
@@ -82,16 +67,50 @@ class MCPAwareHybridRecommender:
         self.metrics["total_requests"] += 1
         start_time = time.time()
         
-        # 🔧 CORRECCIÓN: Usar parámetros directamente en lugar de extraer de request
+        # Verificar si request es un dict o un modelo Pydantic y extraer parámetros correctamente
+        # Los modelos Pydantic no tienen método get() pero sí acceso directo a atributos
+        # Los dicts tienen método get() pero no acceso directo a atributos
+        is_dict = isinstance(request, dict)
         
-        # Extraer query del contexto de conversación si está disponible
-        query_text = None
-        if conversation_context and isinstance(conversation_context, dict):
-            query_text = conversation_context.get('query', None)
-        
-        # Asegurar que query_text es string o None
-        if query_text and not isinstance(query_text, str):
-            query_text = str(query_text)
+        # Extraer parámetros adaptándose al tipo de objeto
+        if is_dict:
+            user_id = request.get('user_id', 'anonymous')
+            product_id = request.get('product_id')
+            market_id = request.get('market_id', 'default')
+            n_recommendations = request.get('n_recommendations', 5)
+            include_conversation = request.get('include_conversation_response', False)
+            # CORRECCIÓN: Extraer consulta de manera segura para evitar errores de tipo
+            query_text = request.get('query', None)
+            if not query_text and 'conversation_context' in request:
+                # Intentar extraer query del contexto de conversación
+                conversation_context = request.get('conversation_context', {})
+                if isinstance(conversation_context, dict):
+                    query_text = conversation_context.get('query', None)
+                elif hasattr(conversation_context, 'query'):
+                    query_text = getattr(conversation_context, 'query', None)
+            
+            # Asegurar que query_text es string o None
+            if query_text and not isinstance(query_text, str):
+                query_text = str(query_text)
+        else:
+            # Es un modelo Pydantic (MCPRecommendationRequest)
+            user_id = getattr(request, 'user_id', 'anonymous')
+            product_id = getattr(request, 'product_id', None)
+            market_id = getattr(request, 'market_id', 'default')
+            n_recommendations = getattr(request, 'n_recommendations', 5)
+            include_conversation = getattr(request, 'include_conversation_response', False)
+            # CORRECCIÓN: Extraer consulta de manera segura para modelos Pydantic
+            query_text = getattr(request, 'query', None)
+            conversation_context = getattr(request, 'conversation_context', None)
+            if not query_text and conversation_context is not None:
+                if hasattr(conversation_context, 'query'):
+                    query_text = getattr(conversation_context, 'query', None)
+                elif isinstance(conversation_context, dict):
+                    query_text = conversation_context.get('query', None)
+            
+            # Asegurar que query_text es string o None
+            if query_text and not isinstance(query_text, str):
+                query_text = str(query_text)
         
         try:
             logger.info(f"Procesando request MCP: user={user_id}, market={market_id}, product={product_id}, query={query_text}")
@@ -208,7 +227,7 @@ class MCPAwareHybridRecommender:
             ai_response = None
             conversation_session = None
             
-            if include_conversation_response and self.mcp_available and self.mcp_client:
+            if include_conversation and self.mcp_available and self.mcp_client:
                 try:
                     self.metrics["mcp_requests"] += 1
                     
@@ -226,52 +245,30 @@ class MCPAwareHybridRecommender:
             # 4. Formatear respuesta
             processing_time_ms = (time.time() - start_time) * 1000
             
-            # 🔧 CORRECCIÓN: Validar y normalizar recomendaciones antes de formatear
-            try:
-                from src.api.core.product_data_validator import ProductDataValidator
-                
-                # Validar cada recomendación
-                validated_recommendations = []
-                for rec in adapted_recommendations:
-                    try:
-                        validated_rec = ProductDataValidator.validate_recommendation_data(rec)
-                        validated_recommendations.append(validated_rec)
-                    except Exception as val_error:
-                        logger.warning(f"Error validando recomendación: {val_error}")
-                        # Usar recomendación original si la validación falla
-                        validated_recommendations.append(rec)
-                
-                adapted_recommendations = validated_recommendations
-                logger.info(f"Validadas {len(adapted_recommendations)} recomendaciones")
-                
-            except Exception as import_error:
-                logger.warning(f"ProductDataValidator no disponible: {import_error}")
-            
             # Convertir recomendaciones base a formato MCP
             mcp_recommendations = []
             for rec in adapted_recommendations:
                 # Obtener la fuente de la recomendación
                 source = rec.get("source", "mcp_aware_hybrid")
                 
-                # 🔧 CORRECCIÓN: Conversion MCP robusta con manejo de None
                 mcp_rec = {
                     "product": {
-                        "id": str(rec.get("id", "unknown") or "unknown"),
-                        "title": str(rec.get("title", "Producto") or "Producto"),
-                        "description": str(rec.get("description", "") or ""),
-                        "localized_title": str(rec.get("localized_title", rec.get("title", "Producto")) or "Producto"),
-                        "localized_description": str(rec.get("localized_description", rec.get("description", "")) or ""),
-                        "market_price": float(rec.get("market_price", rec.get("price", 0.0)) or 0.0),
-                        "currency": str(market_context.get("currency", "USD")),
-                        "images": list(rec.get("images", []) or [])
+                        "id": rec.get("id"),
+                        "title": rec.get("title"),
+                        "description": rec.get("description", ""),
+                        "localized_title": rec.get("localized_title", rec.get("title")),
+                        "localized_description": rec.get("localized_description", rec.get("description", "")),
+                        "market_price": rec.get("market_price", rec.get("price", 0.0)),
+                        "currency": market_context.get("currency", "USD"),
+                        "images": rec.get("images", [])
                     },
-                    "market_score": float(rec.get("market_score", rec.get("score", 0.5)) or 0.5),
-                    "viability_score": float(rec.get("viability_score", 0.8) or 0.8),
-                    "reason": str(rec.get("reason", "Based on your preferences") or "Based on your preferences"),
+                    "market_score": rec.get("market_score", rec.get("score", 0.5)),
+                    "viability_score": rec.get("viability_score", 0.8),
+                    "reason": rec.get("reason", "Based on your preferences"),
                     "metadata": {
-                        "market_adapted": bool(self.market_aware),
-                        "mcp_processed": bool(self.mcp_available),
-                        "source": str(source or "mcp_aware_hybrid")  # Usar la fuente específica de cada recomendación
+                        "market_adapted": self.market_aware,
+                        "mcp_processed": self.mcp_available,
+                        "source": source  # Usar la fuente específica de cada recomendación
                     }
                 }
                 mcp_recommendations.append(mcp_rec)
@@ -367,29 +364,26 @@ class MCPAwareHybridRecommender:
                     base_recommendations = emergency_products[:n_recommendations]
                     logger.info(f"Fallback de emergencia estático aplicó {len(base_recommendations)} productos")
             
-            # 🔧 CORRECCIÓN: Fallback robusto con manejo de None
-            safe_recommendations = []
-            for rec in base_recommendations:
-                safe_rec = {
-                    "product": {
-                        "id": str(rec.get("id", "error_product") or "error_product"),
-                        "title": str(rec.get("title", "Producto No Disponible") or "Producto No Disponible"),
-                        "description": str(rec.get("description", "Error al procesar") or "Error al procesar"),
-                        "market_price": float(rec.get("price", 0.0) or 0.0),
-                        "currency": "USD"
-                    },
-                    "market_score": float(rec.get("score", 0.5) or 0.5),
-                    "viability_score": 0.5,
-                    "reason": "Fallback recommendation",
-                    "metadata": {
-                        "source": str(rec.get("source", "error_fallback") or "error_fallback"),
-                        "error_recovery": True
-                    }
-                }
-                safe_recommendations.append(safe_rec)
-            
             return {
-                "recommendations": safe_recommendations,
+                "recommendations": [
+                    {
+                        "product": {
+                            "id": rec.get("id"),
+                            "title": rec.get("title"),
+                            "description": rec.get("description", ""),
+                            "market_price": rec.get("price", 0.0),
+                            "currency": "USD"
+                        },
+                        "market_score": rec.get("score", 0.5),
+                        "viability_score": 0.5,
+                        "reason": "Fallback recommendation",
+                        "metadata": {
+                            "source": rec.get("source", "error_fallback"),
+                            "error_recovery": True
+                        }
+                    }
+                    for rec in base_recommendations
+                ],
                 "ai_response": "I found some recommendations for you.",
                 "conversation_session": None,
                 "market_context": {},

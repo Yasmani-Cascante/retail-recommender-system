@@ -197,7 +197,8 @@ class HybridRecommender:
         n_recommendations: int = 5
     ) -> List[Dict]:
         """
-        🔧 CORRECCIÓN: Proporciona recomendaciones de respaldo con manejo robusto de valores None.
+        Proporciona recomendaciones de respaldo cuando no es posible obtener recomendaciones
+        de Google Cloud Retail API ni del recomendador basado en contenido.
         
         Args:
             user_id: ID del usuario
@@ -245,10 +246,9 @@ class HybridRecommender:
             # Por ahora, simplemente tomamos los primeros 'n'
             selected_products = all_products[:min(n_recommendations, len(all_products))]
             
-            # Convertir a formato de respuesta con manejo robusto de None
+            # Convertir a formato de respuesta
             recommendations = []
             for product in selected_products:
-                # 🔧 CORRECCIÓN CRÍTICA: Manejo seguro de valores None
                 # Extraer precio del primer variante si está disponible
                 price = 0.0
                 if product.get("variants") and len(product["variants"]) > 0:
@@ -258,23 +258,17 @@ class HybridRecommender:
                     except (ValueError, TypeError):
                         price = 0.0
                 
-                # 🔧 CORRECCIÓN CRÍTICA: Manejar body_html que puede ser None
-                body_html = product.get("body_html") or ""  # Convertir None a string vacío
-                description = str(body_html).replace("<p>", "").replace("</p>", "") if body_html else ""
-                
-                # 🔧 CORRECCIÓN: Asegurar que todos los campos son strings o números válidos
                 recommendations.append({
                     "id": str(product.get("id", "")),
-                    "title": str(product.get("title", "") or "Producto"),  # Manejar title None
-                    "description": description,
+                    "title": product.get("title", ""),
+                    "description": product.get("body_html", "").replace("<p>", "").replace("</p>", ""),
                     "price": price,
-                    "category": str(product.get("product_type", "") or ""),  # Manejar category None
+                    "category": product.get("product_type", ""),
                     "score": 0.5,  # Score arbitrario
-                    "recommendation_type": "fallback",  # Indicar que es una recomendación de respaldo
-                    "source": "fallback_basic_corrected"
+                    "recommendation_type": "fallback"  # Indicar que es una recomendación de respaldo
                 })
             
-            logger.info(f"Generadas {len(recommendations)} recomendaciones de fallback básico corregido")
+            logger.info(f"Generadas {len(recommendations)} recomendaciones de fallback básico")
             return recommendations
     
     async def record_user_event(
