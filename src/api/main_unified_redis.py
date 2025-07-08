@@ -38,6 +38,9 @@ from src.api.security import get_api_key, get_current_user
 # Importar routers
 from src.api.routers import mcp_router
 
+# Importar OptimizedConversationAIManager para Fase 0
+from src.api.integrations.ai.optimized_conversation_manager import OptimizedConversationAIManager
+
 # Configuración de logging
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +83,9 @@ hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
 
 # Inicialmente el recomendador MCP es None, se inicializará en startup
 mcp_recommender = None
+
+# Variables globales para conversación AI optimizada (Fase 0)
+optimized_conversation_manager = None
 
 # Crear gestor de arranque
 startup_manager = StartupManager(startup_timeout=settings.startup_timeout)

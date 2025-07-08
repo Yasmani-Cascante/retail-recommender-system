@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 class CircuitState(Enum):
     """Estados del Circuit Breaker"""
-    CLOSED = "closed"        # Normal operation
-    OPEN = "open"           # Circuit is open, calls are failing
-    HALF_OPEN = "half_open" # Testing if service recovered
+    CLOSED = "CLOSED"        # Normal operation
+    OPEN = "OPEN"           # Circuit is open, calls are failing
+    HALF_OPEN = "HALF_OPEN" # Testing if service recovered
 
 @dataclass
 class CircuitBreakerConfig:
