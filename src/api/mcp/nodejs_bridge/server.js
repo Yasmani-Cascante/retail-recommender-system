@@ -1,26 +1,35 @@
 /**
- * Real Node.js Bridge Server for Shopify MCP Integration
+ * CORRECTED Node.js Bridge Server for REAL Shopify MCP Integration
  * 
- * Este servidor proporciona una interfaz HTTP real entre Python y Shopify MCP,
- * reemplazando los mocks anteriores con funcionalidad completamente operativa.
+ * CORRECCIÓN CRÍTICA: Declarar y configurar 'app' ANTES de definir las rutas
+ * 
+ * Este servidor proporciona una interfaz HTTP real entre Python y Shopify Admin GraphQL API,
+ * usando nuestra implementación custom del cliente MCP.
  * 
  * Características:
- * - Integración real con @shopify/dev-mcp
+ * - Integración REAL con Shopify Admin GraphQL API
  * - Rate limiting y security headers
  * - Logging estructurado
  * - Health checks comprehensivos
  * - Error handling robusto
  */
 
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const winston = require('winston');
-const Joi = require('joi');
-require('dotenv').config();
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import winston from 'winston';
+import Joi from 'joi';
+import { config } from 'dotenv';
+config();
 
-// Configurar logger
+// ✅ CORRECCIÓN CRÍTICA: Importar nuestro cliente real en lugar de @shopify/dev-mcp
+import { RealShopifyMCPClient } from './shopify-mcp-client.js';
+
+// ============================================================================
+// 1. CONFIGURACIÓN DE LOGGING
+// ============================================================================
+
 const logger = winston.createLogger({
     level: process.env.LOG_LEVEL || 'info',
     format: winston.format.combine(
@@ -41,6 +50,180 @@ const logger = winston.createLogger({
     ]
 });
 
+// ============================================================================
+// 2. ESTADO DEL SERVIDOR Y MÉTRICAS
+// ============================================================================
+
+const serverState = {
+    startTime: Date.now(),
+    requestCount: 0,
+    errorCount: 0,
+    shopifyConnectionStatus: 'unknown',
+    lastHealthCheck: null,
+    lastShopifyTest: null
+};
+
+// ============================================================================
+// 3. SHOPIFY MCP WRAPPER
+// ============================================================================
+
+/**
+ * ✅ CORRECCIÓN: Wrapper para RealShopifyMCPClient en lugar de @shopify/dev-mcp
+ * Encapsula la lógica de interacción con Shopify Admin GraphQL API
+ */
+class ShopifyMCPWrapper {
+    constructor() {
+        this.initialized = false;
+        this.shopifyClient = null;
+        this.initializationPromise = null;
+    }
+    
+    async initialize() {
+        if (this.initializationPromise) {
+            return this.initializationPromise;
+        }
+        
+        this.initializationPromise = this._doInitialize();
+        return this.initializationPromise;
+    }
+    
+    async _doInitialize() {
+        try {
+            logger.info('🏪 Initializing Real Shopify MCP client...');
+            
+            // ✅ USAR NUESTRO CLIENTE REAL
+            this.shopifyClient = new RealShopifyMCPClient({
+                shopDomain: process.env.SHOPIFY_SHOP_URL,
+                accessToken: process.env.SHOPIFY_ACCESS_TOKEN,
+                apiVersion: process.env.SHOPIFY_API_VERSION || '2024-07'
+            });
+            
+            // Test the connection with real Shopify
+            const initResult = await this.shopifyClient.initialize();
+            
+            if (initResult.success) {
+                this.initialized = true;
+                serverState.shopifyConnectionStatus = 'connected';
+                serverState.lastShopifyTest = Date.now();
+                
+                logger.info('✅ Real Shopify MCP client initialized successfully', {
+                    shopName: initResult.shopInfo.name,
+                    currency: initResult.shopInfo.currencyCode
+                });
+                
+                return true;
+            } else {
+                throw new Error('Shopify initialization failed');
+            }
+            
+        } catch (error) {
+            logger.error('❌ Real Shopify MCP initialization failed:', error);
+            serverState.shopifyConnectionStatus = 'failed';
+            this.initialized = false;
+            throw error;
+        }
+    }
+    
+    async extractIntent(query, marketContext = {}, conversationHistory = []) {
+        await this.ensureInitialized();
+        
+        try {
+            logger.debug('🧠 Extracting intent via Real Shopify MCP', { 
+                query: query.substring(0, 100),
+                marketId: marketContext.market_id 
+            });
+            
+            // ✅ USAR MÉTODO REAL DEL CLIENTE
+            const result = await this.shopifyClient.extractIntent(
+                query, 
+                marketContext, 
+                conversationHistory
+            );
+            
+            logger.debug('✅ Intent extraction completed', { 
+                type: result.intent?.type,
+                confidence: result.intent?.confidence 
+            });
+            
+            return result;
+            
+        } catch (error) {
+            logger.error('❌ Intent extraction failed:', error);
+            throw error;
+        }
+    }
+    
+    async getMarketConfiguration(marketId) {
+        await this.ensureInitialized();
+        
+        try {
+            logger.debug('🌍 Fetching market configuration', { marketId });
+            
+            // ✅ USAR MÉTODO REAL DEL CLIENTE
+            const result = await this.shopifyClient.getMarketConfiguration(marketId);
+            
+            logger.debug('✅ Market configuration retrieved', { 
+                marketId,
+                currency: result.market_config?.currency 
+            });
+            
+            return result;
+            
+        } catch (error) {
+            logger.error('❌ Market configuration fetch failed:', error);
+            throw error;
+        }
+    }
+    
+    async checkInventoryAvailability(marketId, productIds) {
+        await this.ensureInitialized();
+        
+        try {
+            logger.debug('📦 Checking inventory availability', { 
+                marketId, 
+                productCount: productIds.length 
+            });
+            
+            // ✅ USAR MÉTODO REAL DEL CLIENTE  
+            const result = await this.shopifyClient.checkInventoryAvailability(marketId, productIds);
+            
+            logger.debug('✅ Inventory check completed', { 
+                marketId,
+                totalProducts: Object.keys(result.availability || {}).length
+            });
+            
+            return result;
+            
+        } catch (error) {
+            logger.error('❌ Inventory check failed:', error);
+            throw error;
+        }
+    }
+    
+    async ensureInitialized() {
+        if (!this.initialized) {
+            await this.initialize();
+        }
+    }
+    
+    getConnectionStatus() {
+        return {
+            initialized: this.initialized,
+            connection_status: serverState.shopifyConnectionStatus,
+            last_test: serverState.lastShopifyTest,
+            client_metrics: this.shopifyClient?.getConnectionStatus() || null
+        };
+    }
+}
+
+// ✅ INSTANCIA GLOBAL DEL CLIENTE REAL
+const shopifyMCP = new ShopifyMCPWrapper();
+
+// ============================================================================
+// 4. CONFIGURACIÓN DE EXPRESS Y MIDDLEWARE
+// ============================================================================
+
+// ✅ CORRECCIÓN CRÍTICA: Declarar app ANTES de usarla en las rutas
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -78,6 +261,12 @@ const limiter = rateLimit({
 
 app.use(limiter);
 
+// Request timing middleware
+app.use((req, res, next) => {
+    req.startTime = Date.now();
+    next();
+});
+
 // Middleware de logging
 app.use((req, res, next) => {
     const start = Date.now();
@@ -97,7 +286,16 @@ app.use((req, res, next) => {
     next();
 });
 
-// Schemas de validación
+// Middleware para contar requests
+app.use((req, res, next) => {
+    serverState.requestCount++;
+    next();
+});
+
+// ============================================================================
+// 5. SCHEMAS DE VALIDACIÓN
+// ============================================================================
+
 const schemas = {
     extractIntent: Joi.object({
         query: Joi.string().required().min(1).max(1000),
@@ -119,351 +317,6 @@ const schemas = {
     })
 };
 
-// Estado del servidor y métricas
-const serverState = {
-    startTime: Date.now(),
-    requestCount: 0,
-    errorCount: 0,
-    mcpConnectionStatus: 'unknown',
-    lastHealthCheck: null
-};
-
-/**
- * MCP Client Wrapper
- * Encapsula la lógica de interacción con Shopify MCP
- */
-class MCPClientWrapper {
-    constructor() {
-        this.initialized = false;
-        this.mcpClient = null;
-        this.initializationPromise = null;
-    }
-    
-    async initialize() {
-        if (this.initializationPromise) {
-            return this.initializationPromise;
-        }
-        
-        this.initializationPromise = this._doInitialize();
-        return this.initializationPromise;
-    }
-    
-    async _doInitialize() {
-        try {
-            logger.info('Initializing Shopify MCP client...');
-            
-            // Importar y configurar Shopify MCP
-            const { createMCPClient } = require('@shopify/dev-mcp');
-            
-            this.mcpClient = await createMCPClient({
-                // Configuración específica para MCP
-                transport: 'stdio',
-                capabilities: {
-                    roots: true,
-                    sampling: true,
-                    experimental: {
-                        progressNotifications: true
-                    }
-                }
-            });
-            
-            // Verificar conexión
-            await this.mcpClient.connect();
-            
-            this.initialized = true;
-            serverState.mcpConnectionStatus = 'connected';
-            logger.info('Shopify MCP client initialized successfully');
-            
-            return true;
-            
-        } catch (error) {
-            logger.error('Failed to initialize MCP client:', error);
-            serverState.mcpConnectionStatus = 'failed';
-            this.initialized = false;
-            throw error;
-        }
-    }
-    
-    async extractIntent(query, marketContext = {}, conversationHistory = []) {
-        await this.ensureInitialized();
-        
-        try {
-            logger.debug('Extracting intent via MCP', { 
-                query: query.substring(0, 100),
-                marketId: marketContext.market_id 
-            });
-            
-            // Usar MCP para análisis de intención
-            const result = await this.mcpClient.analyze({
-                text: query,
-                context: {
-                    market: marketContext,
-                    history: conversationHistory.slice(-3), // Últimas 3 interacciones
-                    timestamp: new Date().toISOString()
-                }
-            });
-            
-            // Procesar y normalizar respuesta MCP
-            const intent = this._normalizeIntentResponse(result, query);
-            
-            logger.debug('Intent extraction completed', { 
-                type: intent.type,
-                confidence: intent.confidence 
-            });
-            
-            return intent;
-            
-        } catch (error) {
-            logger.error('Intent extraction failed:', error);
-            // Fallback a análisis básico
-            return this._fallbackIntentAnalysis(query);
-        }
-    }
-    
-    async getMarketConfiguration(marketId) {
-        await this.ensureInitialized();
-        
-        try {
-            logger.debug('Fetching market configuration', { marketId });
-            
-            const marketData = await this.mcpClient.getMarketInfo({
-                marketId: marketId
-            });
-            
-            // Normalizar datos de mercado
-            const config = this._normalizeMarketConfig(marketData, marketId);
-            
-            logger.debug('Market configuration retrieved', { 
-                marketId,
-                currency: config.currency 
-            });
-            
-            return config;
-            
-        } catch (error) {
-            logger.error('Market configuration fetch failed:', error);
-            // Fallback a configuración por defecto
-            return this._fallbackMarketConfig(marketId);
-        }
-    }
-    
-    async checkInventoryAvailability(marketId, productIds) {
-        await this.ensureInitialized();
-        
-        try {
-            logger.debug('Checking inventory availability', { 
-                marketId, 
-                productCount: productIds.length 
-            });
-            
-            const inventoryData = await this.mcpClient.checkInventory({
-                marketId: marketId,
-                productIds: productIds
-            });
-            
-            const availability = this._normalizeInventoryResponse(inventoryData);
-            
-            logger.debug('Inventory check completed', { 
-                marketId,
-                availableCount: Object.values(availability).filter(Boolean).length
-            });
-            
-            return availability;
-            
-        } catch (error) {
-            logger.error('Inventory check failed:', error);
-            // Fallback: asumir disponibilidad limitada
-            return this._fallbackInventoryResponse(productIds);
-        }
-    }
-    
-    async ensureInitialized() {
-        if (!this.initialized) {
-            await this.initialize();
-        }
-    }
-    
-    _normalizeIntentResponse(mcpResult, originalQuery) {
-        /**
-         * Normaliza la respuesta de MCP a un formato estándar
-         */
-        try {
-            const intent = {
-                type: mcpResult.intent?.type || 'general',
-                confidence: Math.min(mcpResult.confidence || 0.7, 1.0),
-                attributes: mcpResult.attributes || [],
-                urgency: mcpResult.urgency || 'medium',
-                categories: mcpResult.categories || [],
-                budget_signals: mcpResult.budget || {},
-                source: 'shopify_mcp',
-                timestamp: new Date().toISOString(),
-                original_query: originalQuery
-            };
-            
-            // Mejorar confianza basada en señales adicionales
-            if (intent.attributes.length > 0) {
-                intent.confidence = Math.min(intent.confidence + 0.1, 1.0);
-            }
-            
-            return intent;
-            
-        } catch (error) {
-            logger.error('Error normalizing intent response:', error);
-            return this._fallbackIntentAnalysis(originalQuery);
-        }
-    }
-    
-    _normalizeMarketConfig(mcpData, marketId) {
-        /**
-         * Normaliza configuración de mercado de MCP
-         */
-        const marketConfigs = {
-            'US': { currency: 'USD', language: 'en', timezone: 'America/New_York' },
-            'ES': { currency: 'EUR', language: 'es', timezone: 'Europe/Madrid' },
-            'MX': { currency: 'MXN', language: 'es', timezone: 'America/Mexico_City' },
-            'CO': { currency: 'COP', language: 'es', timezone: 'America/Bogota' },
-            'CL': { currency: 'CLP', language: 'es', timezone: 'America/Santiago' }
-        };
-        
-        const defaultConfig = marketConfigs[marketId] || marketConfigs['US'];
-        
-        return {
-            market_id: marketId,
-            market_name: mcpData?.market_name || `Market ${marketId}`,
-            currency: mcpData?.currency || defaultConfig.currency,
-            primary_language: mcpData?.language || defaultConfig.language,
-            timezone: mcpData?.timezone || defaultConfig.timezone,
-            tax_rate: mcpData?.tax_rate || 0.0,
-            shipping_zones: mcpData?.shipping_zones || [`${marketId}_domestic`],
-            payment_methods: mcpData?.payment_methods || ['credit_card', 'paypal'],
-            cultural_preferences: {
-                communication_style: mcpData?.cultural?.communication_style || 'standard',
-                seasonal_events: mcpData?.cultural?.seasonal_events || [],
-                product_preferences: mcpData?.cultural?.product_preferences || {}
-            },
-            source: 'shopify_mcp',
-            last_updated: new Date().toISOString()
-        };
-    }
-    
-    _normalizeInventoryResponse(mcpData) {
-        /**
-         * Normaliza respuesta de inventario
-         */
-        const availability = {};
-        
-        if (mcpData && mcpData.products) {
-            mcpData.products.forEach(product => {
-                availability[product.id] = {
-                    available: product.available || false,
-                    quantity: product.quantity || 0,
-                    price: product.price || null,
-                    estimated_delivery: product.estimated_delivery || null
-                };
-            });
-        }
-        
-        return availability;
-    }
-    
-    _fallbackIntentAnalysis(query) {
-        /**
-         * Análisis de intención de fallback usando keywords
-         */
-        const queryLower = query.toLowerCase();
-        
-        const intentKeywords = {
-            'search': ['busco', 'quiero', 'necesito', 'donde encuentro', 'buscando'],
-            'recommendation': ['recomienda', 'sugieres', 'aconsejas', 'mejor opcion'],
-            'comparison': ['comparar', 'diferencia', 'cual es mejor', 'versus', 'vs'],
-            'purchase': ['comprar', 'precio', 'cuesta', 'checkout', 'carrito'],
-            'support': ['ayuda', 'problema', 'no funciona', 'soporte']
-        };
-        
-        let detectedIntent = 'general';
-        let maxScore = 0;
-        
-        for (const [intent, keywords] of Object.entries(intentKeywords)) {
-            const score = keywords.reduce((acc, keyword) => {
-                return acc + (queryLower.includes(keyword) ? 1 : 0);
-            }, 0);
-            
-            if (score > maxScore) {
-                maxScore = score;
-                detectedIntent = intent;
-            }
-        }
-        
-        const confidence = maxScore > 0 ? Math.min(0.6 + (maxScore * 0.1), 0.9) : 0.5;
-        
-        return {
-            type: detectedIntent,
-            confidence: confidence,
-            attributes: Object.keys(intentKeywords).filter(intent => 
-                intentKeywords[intent].some(keyword => queryLower.includes(keyword))
-            ),
-            urgency: queryLower.includes('urgente') || queryLower.includes('rapido') ? 'high' : 'medium',
-            categories: [],
-            budget_signals: {},
-            source: 'fallback_keyword_analysis',
-            timestamp: new Date().toISOString(),
-            original_query: query
-        };
-    }
-    
-    _fallbackMarketConfig(marketId) {
-        /**
-         * Configuración de mercado de fallback
-         */
-        const configs = {
-            'US': { currency: 'USD', language: 'en', timezone: 'America/New_York' },
-            'ES': { currency: 'EUR', language: 'es', timezone: 'Europe/Madrid' },
-            'MX': { currency: 'MXN', language: 'es', timezone: 'America/Mexico_City' },
-            'CO': { currency: 'COP', language: 'es', timezone: 'America/Bogota' },
-            'CL': { currency: 'CLP', language: 'es', timezone: 'America/Santiago' }
-        };
-        
-        const config = configs[marketId] || configs['US'];
-        
-        return {
-            market_id: marketId,
-            market_name: `Market ${marketId}`,
-            currency: config.currency,
-            primary_language: config.language,
-            timezone: config.timezone,
-            tax_rate: 0.0,
-            shipping_zones: [`${marketId}_domestic`],
-            payment_methods: ['credit_card'],
-            cultural_preferences: {
-                communication_style: 'standard',
-                seasonal_events: [],
-                product_preferences: {}
-            },
-            source: 'fallback_config',
-            last_updated: new Date().toISOString()
-        };
-    }
-    
-    _fallbackInventoryResponse(productIds) {
-        /**
-         * Respuesta de inventario de fallback
-         */
-        const availability = {};
-        productIds.forEach(productId => {
-            availability[productId] = {
-                available: true,  // Asumir disponible por defecto
-                quantity: 10,
-                price: null,
-                estimated_delivery: '3-5 business days'
-            };
-        });
-        return availability;
-    }
-}
-
-// Instancia global del cliente MCP
-const mcpClient = new MCPClientWrapper();
-
 // Validador de requests
 const validateRequest = (schema) => {
     return (req, res, next) => {
@@ -482,13 +335,9 @@ const validateRequest = (schema) => {
     };
 };
 
-// Middleware para contar requests
-app.use((req, res, next) => {
-    serverState.requestCount++;
-    next();
-});
-
-// Routes
+// ============================================================================
+// 6. RUTAS DE LA API (AHORA app YA ESTÁ DECLARADA)
+// ============================================================================
 
 /**
  * Health check endpoint
@@ -499,36 +348,202 @@ app.get('/health', async (req, res) => {
             status: 'healthy',
             timestamp: new Date().toISOString(),
             uptime: Date.now() - serverState.startTime,
-            version: process.env.npm_package_version || '1.0.0',
+            version: process.env.npm_package_version || '2.0.0',
             environment: process.env.NODE_ENV || 'development',
-            mcp_connection: serverState.mcpConnectionStatus,
+            
+            // ✅ SHOPIFY CONNECTION STATUS
+            shopify_connection: serverState.shopifyConnectionStatus,
+            
             metrics: {
                 total_requests: serverState.requestCount,
                 total_errors: serverState.errorCount,
                 error_rate: serverState.requestCount > 0 ? 
                     (serverState.errorCount / serverState.requestCount) : 0
+            },
+            
+            // Configuration check
+            configuration: {
+                shopify_configured: !!(process.env.SHOPIFY_SHOP_URL && process.env.SHOPIFY_ACCESS_TOKEN),
+                shop_url: process.env.SHOPIFY_SHOP_URL ? 
+                    process.env.SHOPIFY_SHOP_URL.replace(/\/.*/, '/***') : 'not_configured',
+                api_version: process.env.SHOPIFY_API_VERSION || 'default'
             }
         };
         
-        // Test MCP connection if needed
-        if (serverState.mcpConnectionStatus === 'unknown') {
+        // Test Shopify connection if unknown
+        if (serverState.shopifyConnectionStatus === 'unknown') {
             try {
-                await mcpClient.ensureInitialized();
-                healthStatus.mcp_connection = 'connected';
+                await shopifyMCP.ensureInitialized();
+                healthStatus.shopify_connection = 'connected';
+                healthStatus.shopify_details = shopifyMCP.getConnectionStatus();
             } catch (error) {
-                healthStatus.mcp_connection = 'failed';
-                healthStatus.mcp_error = error.message;
+                healthStatus.shopify_connection = 'failed';
+                healthStatus.shopify_error = error.message;
             }
         }
         
         serverState.lastHealthCheck = Date.now();
+        
+        // Determine overall status
+        if (healthStatus.shopify_connection === 'failed') {
+            healthStatus.status = 'degraded';
+            res.status(503);
+        }
+        
         res.json(healthStatus);
         
     } catch (error) {
+        serverState.errorCount++;
         logger.error('Health check failed:', error);
         res.status(500).json({
             status: 'unhealthy',
             error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+/**
+ * ✅ MCP Status endpoint (compatible con Python client)
+ */
+app.get('/api/mcp/status', async (req, res) => {
+    try {
+        const status = {
+            mcp_status: 'operational',
+            bridge_version: process.env.npm_package_version || '2.0.0',
+            claude_model: process.env.CLAUDE_MODEL || 'claude-3-sonnet-20240229',
+            conversation_cache_size: 0,
+            active_sessions: 0,
+            shopify_integration: {
+                status: serverState.shopifyConnectionStatus,
+                shop_domain: process.env.SHOPIFY_SHOP_URL,
+                api_version: process.env.SHOPIFY_API_VERSION || '2024-07',
+                last_test: serverState.lastShopifyTest
+            },
+            server_info: {
+                uptime_seconds: Math.floor((Date.now() - serverState.startTime) / 1000),
+                total_requests: serverState.requestCount,
+                error_rate: serverState.requestCount > 0 ? 
+                    (serverState.errorCount / serverState.requestCount) : 0
+            },
+            timestamp: new Date().toISOString()
+        };
+        
+        res.json(status);
+        
+    } catch (error) {
+        logger.error('MCP status endpoint failed:', error);
+        res.status(500).json({
+            mcp_status: 'error',
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+/**
+ * ✅ Intent analysis endpoint (compatible con Python client) 
+ */
+app.post('/api/mcp/analyze-intent', async (req, res) => {
+    try {
+        const { text, context = {} } = req.body;
+        
+        if (!text) {
+            return res.status(400).json({ 
+                error: 'Text is required for intent analysis',
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        logger.info('Intent analysis request', { 
+            textLength: text.length,
+            marketId: context.market_id 
+        });
+        
+        // Llamar al endpoint interno de extract-intent
+        const result = await shopifyMCP.extractIntent(
+            text, 
+            context, 
+            []
+        );
+        
+        // Formatear respuesta compatible con Python client
+        const response = {
+            success: true,
+            intent: result.intent?.type || 'general',
+            confidence: result.intent?.confidence || 0.5,
+            entities: result.intent?.attributes || [],
+            reasoning: `Intent detected based on Shopify analysis`,
+            timestamp: new Date().toISOString()
+        };
+        
+        res.json(response);
+        
+    } catch (error) {
+        logger.error('Intent analysis failed:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error analyzing intent',
+            details: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+/**
+ * ✅ Conversation endpoint (compatible con Python client)
+ */
+app.post('/api/mcp/conversation', async (req, res) => {
+    try {
+        const { query, sessionId, context = {} } = req.body;
+        
+        if (!query) {
+            return res.status(400).json({ 
+                error: 'Query is required',
+                timestamp: new Date().toISOString()
+            });
+        }
+        
+        logger.info('Conversation request', { 
+            queryLength: query.length,
+            sessionId: sessionId,
+            marketId: context.market_id 
+        });
+        
+        // Generar session ID si no se proporciona
+        const finalSessionId = sessionId || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Procesar usando extract-intent
+        const intentResult = await shopifyMCP.extractIntent(
+            query, 
+            context, 
+            []
+        );
+        
+        // Generar respuesta conversacional simple
+        const conversationalResponse = `Based on your query, I understand you're looking for ${intentResult.intent?.type || 'general assistance'}. Here's what I can help you with.`;
+        
+        const response = {
+            success: true,
+            response: conversationalResponse,
+            sessionId: finalSessionId,
+            metadata: {
+                processing_time_ms: Date.now() - req.startTime,
+                intent_detected: intentResult.intent?.type,
+                confidence: intentResult.intent?.confidence,
+                market_id: context.market_id,
+                timestamp: new Date().toISOString()
+            }
+        };
+        
+        res.json(response);
+        
+    } catch (error) {
+        logger.error('Conversation processing failed:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error processing conversation',
+            details: error.message,
             timestamp: new Date().toISOString()
         });
     }
@@ -546,7 +561,8 @@ app.post('/mcp/extract-intent', validateRequest(schemas.extractIntent), async (r
             marketId: market_context?.market_id 
         });
         
-        const intent = await mcpClient.extractIntent(
+        // ✅ USAR CLIENTE SHOPIFY REAL
+        const result = await shopifyMCP.extractIntent(
             query, 
             market_context || {}, 
             conversation_history || []
@@ -554,9 +570,9 @@ app.post('/mcp/extract-intent', validateRequest(schemas.extractIntent), async (r
         
         res.json({
             success: true,
-            intent: intent,
-            timestamp: new Date().toISOString(),
-            processing_time_ms: Date.now() - req.startTime
+            ...result,  // Include all fields from RealShopifyMCPClient
+            processing_time_ms: Date.now() - req.startTime,
+            timestamp: new Date().toISOString()
         });
         
     } catch (error) {
@@ -580,13 +596,14 @@ app.post('/mcp/markets/get-config', validateRequest(schemas.getMarketConfig), as
         
         logger.info('Market config request', { marketId: market_id });
         
-        const config = await mcpClient.getMarketConfiguration(market_id);
+        // ✅ USAR CLIENTE SHOPIFY REAL
+        const result = await shopifyMCP.getMarketConfiguration(market_id);
         
         res.json({
             success: true,
-            market_config: config,
-            timestamp: new Date().toISOString(),
-            processing_time_ms: Date.now() - req.startTime
+            ...result,  // Include all fields from RealShopifyMCPClient
+            processing_time_ms: Date.now() - req.startTime,
+            timestamp: new Date().toISOString()
         });
         
     } catch (error) {
@@ -613,14 +630,14 @@ app.post('/mcp/inventory/check-availability', validateRequest(schemas.checkInven
             productCount: product_ids.length 
         });
         
-        const availability = await mcpClient.checkInventoryAvailability(market_id, product_ids);
+        // ✅ USAR CLIENTE SHOPIFY REAL
+        const result = await shopifyMCP.checkInventoryAvailability(market_id, product_ids);
         
         res.json({
             success: true,
-            availability: availability,
-            market_id: market_id,
-            timestamp: new Date().toISOString(),
-            processing_time_ms: Date.now() - req.startTime
+            ...result,  // Include all fields from RealShopifyMCPClient
+            processing_time_ms: Date.now() - req.startTime,
+            timestamp: new Date().toISOString()
         });
         
     } catch (error) {
@@ -636,26 +653,55 @@ app.post('/mcp/inventory/check-availability', validateRequest(schemas.checkInven
 });
 
 /**
- * Get server metrics
+ * Get detailed server and Shopify metrics
  */
-app.get('/metrics', (req, res) => {
-    const metrics = {
-        uptime_seconds: Math.floor((Date.now() - serverState.startTime) / 1000),
-        total_requests: serverState.requestCount,
-        total_errors: serverState.errorCount,
-        error_rate: serverState.requestCount > 0 ? 
-            (serverState.errorCount / serverState.requestCount) : 0,
-        mcp_connection_status: serverState.mcpConnectionStatus,
-        last_health_check: serverState.lastHealthCheck,
-        memory_usage: process.memoryUsage(),
-        environment: process.env.NODE_ENV || 'development',
-        timestamp: new Date().toISOString()
-    };
-    
-    res.json(metrics);
+app.get('/metrics', async (req, res) => {
+    try {
+        const metrics = {
+            server: {
+                uptime_seconds: Math.floor((Date.now() - serverState.startTime) / 1000),
+                total_requests: serverState.requestCount,
+                total_errors: serverState.errorCount,
+                error_rate: serverState.requestCount > 0 ? 
+                    (serverState.errorCount / serverState.requestCount) : 0,
+                memory_usage: process.memoryUsage(),
+                environment: process.env.NODE_ENV || 'development'
+            },
+            
+            shopify: {
+                connection_status: serverState.shopifyConnectionStatus,
+                last_health_check: serverState.lastHealthCheck,
+                last_shopify_test: serverState.lastShopifyTest,
+                client_details: shopifyMCP.getConnectionStatus()
+            },
+            
+            timestamp: new Date().toISOString()
+        };
+        
+        // Get detailed Shopify metrics if available
+        if (shopifyMCP.initialized && shopifyMCP.shopifyClient) {
+            try {
+                const shopifyMetrics = await shopifyMCP.shopifyClient.getMetrics();
+                metrics.shopify.detailed_metrics = shopifyMetrics;
+            } catch (error) {
+                logger.warn('Could not fetch detailed Shopify metrics:', error.message);
+            }
+        }
+        
+        res.json(metrics);
+        
+    } catch (error) {
+        logger.error('Metrics fetch failed:', error);
+        res.status(500).json({
+            error: 'Failed to fetch metrics',
+            timestamp: new Date().toISOString()
+        });
+    }
 });
 
-// Error handlers
+// ============================================================================
+// 7. ERROR HANDLERS
+// ============================================================================
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -679,48 +725,43 @@ app.use((err, req, res, next) => {
     });
 });
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-    logger.info('SIGTERM received, shutting down gracefully');
+// ============================================================================
+// 8. GRACEFUL SHUTDOWN
+// ============================================================================
+
+const shutdown = async (signal) => {
+    logger.info(`${signal} received, shutting down gracefully`);
     
-    if (mcpClient.mcpClient) {
+    if (shopifyMCP.shopifyClient) {
         try {
-            await mcpClient.mcpClient.disconnect();
-            logger.info('MCP client disconnected');
+            await shopifyMCP.shopifyClient.disconnect();
+            logger.info('Shopify client disconnected');
         } catch (error) {
-            logger.error('Error disconnecting MCP client:', error);
+            logger.error('Error disconnecting Shopify client:', error);
         }
     }
     
     process.exit(0);
-});
+};
 
-process.on('SIGINT', async () => {
-    logger.info('SIGINT received, shutting down gracefully');
-    
-    if (mcpClient.mcpClient) {
-        try {
-            await mcpClient.mcpClient.disconnect();
-            logger.info('MCP client disconnected');
-        } catch (error) {
-            logger.error('Error disconnecting MCP client:', error);
-        }
-    }
-    
-    process.exit(0);
-});
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
-// Start server
+// ============================================================================
+// 9. START SERVER
+// ============================================================================
+
 app.listen(PORT, () => {
-    logger.info(`MCP Bridge server running on port ${PORT}`, {
+    logger.info(`🚀 Real Shopify MCP Bridge server running on port ${PORT}`, {
         environment: process.env.NODE_ENV || 'development',
-        version: process.env.npm_package_version || '1.0.0'
+        version: process.env.npm_package_version || '2.0.0',
+        shopify_configured: !!(process.env.SHOPIFY_SHOP_URL && process.env.SHOPIFY_ACCESS_TOKEN)
     });
     
-    // Initialize MCP client on startup
-    mcpClient.initialize().catch(error => {
-        logger.error('Failed to initialize MCP client on startup:', error);
+    // Initialize Shopify client on startup
+    shopifyMCP.initialize().catch(error => {
+        logger.error('Failed to initialize Shopify client on startup:', error);
     });
 });
 
-module.exports = app;
+export default app;

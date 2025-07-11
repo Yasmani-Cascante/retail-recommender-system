@@ -41,6 +41,25 @@ from src.api.routers import mcp_router
 # Importar OptimizedConversationAIManager para Fase 0
 from src.api.integrations.ai.optimized_conversation_manager import OptimizedConversationAIManager
 
+# Configurar logger básico para imports
+import logging
+logger = logging.getLogger(__name__)
+
+# === FASE 2: MCP PERSONALIZATION ENGINE ===
+try:
+    from src.api.mcp.engines.mcp_personalization_engine import (
+        MCPPersonalizationEngine,
+        create_mcp_personalization_engine,
+        PersonalizationStrategy,
+        PersonalizationInsightsAnalyzer
+    )
+    from src.api.mcp.conversation_state_manager import MCPConversationStateManager
+    MCP_PERSONALIZATION_AVAILABLE = True
+    logger.info("✅ MCP Personalization Engine imports successful")
+except ImportError as e:
+    logger.warning(f"⚠️ MCP Personalization Engine not available: {e}")
+    MCP_PERSONALIZATION_AVAILABLE = False
+
 # Configuración de logging
 logging.basicConfig(
     level=logging.INFO,
@@ -204,15 +223,26 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def fixed_startup_event():
+    # ✅ CORRECCIÓN: Declaraciones globales movidas al inicio
+    global redis_client, product_cache, hybrid_recommender, mcp_recommender
+    global mcp_recommender
+    global optimized_conversation_manager, mcp_state_manager, personalization_engine
+
     """
     Versión corregida del startup_event con manejo robusto de Redis.
     
     Reemplazar el startup_event existente con esta implementación.
     """
+    redis_client = None
+    product_cache = None
+    mcp_recommender = None
+    optimized_conversation_manager = None
+    mcp_state_manager = None
+    personalization_engine = None
+
     logger.info("🚀 Iniciando API de recomendaciones unificada con Redis CORREGIDO...")
     
     # 🔧 CORRECCIÓN CRÍTICA: Declarar variables globales al inicio
-    global redis_client, product_cache, hybrid_recommender, mcp_recommender
     
     # Verificar estructura del catálogo en Retail API si está habilitado
     from src.api.core.config import get_settings
@@ -344,7 +374,6 @@ async def fixed_startup_event():
     # INICIALIZACIÓN MCP (OPCIONAL)
     # ==========================================
     
-    global mcp_recommender
     mcp_recommender = None
     
     try:
@@ -432,12 +461,95 @@ async def fixed_startup_event():
     logger.info(f"   {'✅' if redis_initialization_successful else '❌'} Redis: {'Conectado' if redis_initialization_successful else 'No disponible'}")
     logger.info(f"   {'✅' if product_cache else '❌'} ProductCache: {'Activo' if product_cache else 'Desactivado'}")
     logger.info(f"   {'✅' if mcp_recommender else '❌'} MCP: {'Disponible' if mcp_recommender else 'No disponible'}")
+    logger.info(f"   {'✅' if personalization_engine else '❌'} Personalization: {'Disponible' if personalization_engine else 'No disponible'}")
+    logger.info(f"   {'✅' if optimized_conversation_manager else '❌'} Conversation AI: {'Disponible' if optimized_conversation_manager else 'No disponible'}")
+    logger.info(f"   {'✅' if mcp_state_manager else '❌'} State Manager: {'Disponible' if mcp_state_manager else 'No disponible'}")
     
     if not redis_initialization_successful:
         logger.warning("⚠️ IMPORTANTE: Sistema funcionando sin Redis")
         logger.warning("   - Las recomendaciones funcionarán pero sin caché")
         logger.warning("   - Rendimiento puede ser menor")
         logger.warning("   - Ejecutar diagnóstico: python diagnose_redis_issue.py")
+    
+    # ==========================================
+    # FASE 2: INICIALIZACIÓN MCP PERSONALIZATION ENGINE
+    # ==========================================
+    
+    optimized_conversation_manager = None
+    mcp_state_manager = None 
+    personalization_engine = None
+    
+    if MCP_PERSONALIZATION_AVAILABLE and os.getenv("MCP_PERSONALIZATION_ENABLED", "false").lower() == "true":
+        try:
+            logger.info("🎯 FASE 2: Inicializando MCP Personalization Engine...")
+            
+            # Paso 1: Inicializar OptimizedConversationAIManager
+            if os.getenv("ANTHROPIC_API_KEY"):
+                optimized_conversation_manager = OptimizedConversationAIManager(
+                    anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+                    redis_client=redis_client,
+                    perplexity_api_key=os.getenv("PERPLEXITY_API_KEY"),
+                    use_perplexity_validation=os.getenv("USE_PERPLEXITY_VALIDATION", "false").lower() == "true",
+                    enable_caching=True,
+                    enable_circuit_breaker=True
+                )
+                logger.info("✅ OptimizedConversationAIManager inicializado")
+            else:
+                logger.error("❌ ANTHROPIC_API_KEY no configurado")
+                raise ValueError("Missing ANTHROPIC_API_KEY")
+            
+            # Paso 2: Inicializar MCPConversationStateManager
+            if redis_client:
+                mcp_state_manager = MCPConversationStateManager(
+                    redis_client=redis_client,
+                    state_ttl=int(os.getenv("PERSONALIZATION_CACHE_TTL", "3600")),
+                    conversation_ttl=int(os.getenv("PERSONALIZATION_PROFILE_TTL", "604800")),
+                    max_turns_per_session=int(os.getenv("MAX_CONVERSATION_HISTORY", "50"))
+                )
+                logger.info("✅ MCPConversationStateManager inicializado")
+            else:
+                logger.warning("⚠️ Redis no disponible - MCPConversationStateManager con funcionalidad limitada")
+                # Crear con configuración mínima para desarrollo
+                mcp_state_manager = MCPConversationStateManager(
+                    redis_client=None,
+                    state_ttl=3600,
+                    conversation_ttl=604800
+                )
+            
+            # Paso 3: Crear MCPPersonalizationEngine
+            personalization_engine = create_mcp_personalization_engine(
+                redis_client=redis_client,
+                anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+                conversation_manager=optimized_conversation_manager,
+                state_manager=mcp_state_manager,
+                profile_ttl=int(os.getenv("PERSONALIZATION_PROFILE_TTL", "604800")),
+                enable_ml_predictions=os.getenv("ENABLE_ML_PREDICTIONS", "true").lower() == "true"
+            )
+            
+            logger.info("🎉 MCPPersonalizationEngine creado exitosamente")
+            
+            # Paso 4: Verificar funcionalidad básica
+            try:
+                metrics = personalization_engine.get_personalization_metrics()
+                logger.info(f"📊 Métricas de personalización: {metrics['strategies_available']} estrategias disponibles")
+                logger.info(f"📊 Mercados configurados: {metrics['markets_configured']}")
+                logger.info(f"📊 ML predictions: {'habilitado' if metrics['ml_predictions_enabled'] else 'deshabilitado'}")
+            except Exception as metrics_error:
+                logger.warning(f"⚠️ Error obteniendo métricas de personalización: {metrics_error}")
+            
+            logger.info("✅ FASE 2 completada: Sistema de personalización operativo")
+            
+        except Exception as personalization_error:
+            logger.error(f"❌ Error inicializando MCP Personalization Engine: {personalization_error}")
+            logger.warning("⚠️ Sistema funcionará sin personalización avanzada")
+            personalization_engine = None
+            optimized_conversation_manager = None
+            mcp_state_manager = None
+    else:
+        if not MCP_PERSONALIZATION_AVAILABLE:
+            logger.warning("⚠️ MCP Personalization Engine no disponible (imports fallaron)")
+        else:
+            logger.info("ℹ️ MCP Personalization Engine deshabilitado por configuración")
     
     logger.info("🎉 Inicialización completada!")
 
@@ -1093,6 +1205,279 @@ async def search_products(
     except Exception as e:
         logger.error(f"Error en búsqueda de productos: {e}")
         raise HTTPException(status_code=500, detail=f"Error en búsqueda: {str(e)}")
+
+# ==========================================
+# FASE 2: ENDPOINTS MCP PERSONALIZATION
+# ==========================================
+
+@app.post("/v1/mcp/personalized-conversation")
+async def personalized_conversation(
+    user_id: str,
+    message: str,
+    market_id: str = "US",
+    session_id: Optional[str] = None,
+    strategy: str = "hybrid",
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Endpoint para conversaciones altamente personalizadas con MCP Personalization Engine.
+    
+    Args:
+        user_id: ID del usuario
+        message: Mensaje del usuario
+        market_id: Mercado objetivo (US, ES, MX)
+        session_id: ID de sesión (opcional, se genera automáticamente si no se proporciona)
+        strategy: Estrategia de personalización (behavioral, cultural, contextual, predictive, hybrid)
+        
+    Returns:
+        Respuesta personalizada con recomendaciones adaptadas al mercado y usuario
+    """
+    start_processing = time.time()
+    
+    # Verificar estado de carga
+    is_healthy, reason = startup_manager.is_healthy()
+    if not is_healthy:
+        raise HTTPException(status_code=503, detail=f"Servicio no disponible: {reason}")
+    
+    # Verificar si el personalization engine está disponible
+    if not personalization_engine:
+        # Fallback a recomendaciones básicas
+        try:
+            basic_recommendations = await hybrid_recommender.get_recommendations(
+                user_id=user_id,
+                n_recommendations=5
+            )
+            
+            processing_time = (time.time() - start_processing) * 1000
+            
+            return {
+                "session_id": session_id or f"basic_session_{user_id}_{int(time.time())}",
+                "market_id": market_id,
+                "personalized_response": "Te ayudo a encontrar lo que buscas. ¿Qué tipo de producto te interesa?",
+                "recommendations": basic_recommendations[:5],
+                "personalization_metadata": {
+                    "strategy_used": "fallback",
+                    "personalization_score": 0.3,
+                    "engine_available": False,
+                    "processing_time_ms": processing_time
+                },
+                "status": "success_fallback",
+                "message": "Personalization engine no disponible - usando recomendaciones básicas"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error en fallback de personalización: {e}")
+            raise HTTPException(status_code=500, detail="Error en servicio de recomendaciones")
+    
+    try:
+        # Obtener/crear contexto conversacional
+        if session_id:
+            mcp_context = await mcp_state_manager.load_conversation_state(session_id)
+        else:
+            session_id = f"session_{user_id}_{int(time.time())}"
+            mcp_context = None
+        
+        if not mcp_context:
+            mcp_context = await mcp_state_manager.create_conversation_context(
+                session_id=session_id,
+                user_id=user_id,
+                initial_query=message,
+                market_context={"market_id": market_id},
+                user_agent="api_client"
+            )
+        
+        # Agregar nuevo turno a la conversación
+        intent_analysis = {
+            "intent": "recommend",
+            "confidence": 0.8,
+            "entities": [],
+            "market_context": {"market_id": market_id}
+        }
+        
+        mcp_context = await mcp_state_manager.add_conversation_turn(
+            context=mcp_context,
+            user_query=message,
+            intent_analysis=intent_analysis,
+            ai_response="",  # Se llenará después
+            recommendations=[],
+            processing_time_ms=0
+        )
+        
+        # Obtener recomendaciones base
+        base_recommendations = await hybrid_recommender.get_recommendations(
+            user_id=user_id,
+            n_recommendations=8
+        )
+        
+        # Mapear estrategia string a enum
+        strategy_mapping = {
+            "behavioral": PersonalizationStrategy.BEHAVIORAL,
+            "cultural": PersonalizationStrategy.CULTURAL,
+            "contextual": PersonalizationStrategy.CONTEXTUAL,
+            "predictive": PersonalizationStrategy.PREDICTIVE,
+            "hybrid": PersonalizationStrategy.HYBRID
+        }
+        
+        selected_strategy = strategy_mapping.get(strategy.lower(), PersonalizationStrategy.HYBRID)
+        
+        # Aplicar personalización avanzada
+        personalized_result = await personalization_engine.generate_personalized_response(
+            mcp_context=mcp_context,
+            recommendations=base_recommendations,
+            strategy=selected_strategy
+        )
+        
+        # Actualizar contexto con respuesta generada
+        ai_response = personalized_result["personalized_response"]["response"]
+        
+        # Guardar estado actualizado
+        await mcp_state_manager.save_conversation_state(mcp_context)
+        
+        processing_time = (time.time() - start_processing) * 1000
+        
+        return {
+            "session_id": session_id,
+            "market_id": market_id,
+            "personalized_response": ai_response,
+            "recommendations": personalized_result["personalized_recommendations"][:5],
+            "personalization_metadata": {
+                **personalized_result["personalization_metadata"],
+                "processing_time_ms": processing_time,
+                "conversation_turn": len(mcp_context.turns),
+                "engine_available": True
+            },
+            "conversation_enhancement": personalized_result["conversation_enhancement"],
+            "status": "success"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error en conversación personalizada: {e}")
+        logger.error("Stack trace:", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error en personalización: {str(e)}")
+
+@app.get("/v1/mcp/user-analytics/{user_id}")
+async def get_user_analytics(
+    user_id: str,
+    market_id: str = "US",
+    analysis_depth: str = "standard",
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Obtiene análisis comprehensivo del usuario para insights de personalización.
+    
+    Args:
+        user_id: ID del usuario
+        market_id: Mercado a analizar
+        analysis_depth: Profundidad del análisis (basic, standard, deep)
+        
+    Returns:
+        Reporte completo con insights y recomendaciones de optimización
+    """
+    start_processing = time.time()
+    
+    # Verificar si el personalization engine está disponible
+    if not personalization_engine:
+        raise HTTPException(
+            status_code=503, 
+            detail="MCP Personalization Engine no disponible"
+        )
+    
+    try:
+        # Crear analizador de insights
+        insights_analyzer = PersonalizationInsightsAnalyzer(redis_client)
+        
+        # Generar reporte comprehensivo
+        user_report = await insights_analyzer.generate_comprehensive_user_report(
+            user_id=user_id,
+            market_id=market_id,
+            analysis_depth=analysis_depth
+        )
+        
+        processing_time = (time.time() - start_processing) * 1000
+        
+        return {
+            "user_report": user_report,
+            "metadata": {
+                "processing_time_ms": processing_time,
+                "analysis_depth": analysis_depth,
+                "market_id": market_id,
+                "generated_at": time.time()
+            },
+            "status": "success"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error generando analytics de usuario: {e}")
+        raise HTTPException(status_code=500, detail=f"Error en analytics: {str(e)}")
+
+@app.get("/v1/mcp/health")
+async def mcp_health_check():
+    """
+    Health check específico para componentes MCP y Personalization Engine.
+    """
+    try:
+        health_status = {
+            "status": "operational",
+            "components": {
+                "personalization_engine": {
+                    "available": personalization_engine is not None,
+                    "status": "operational" if personalization_engine else "unavailable"
+                },
+                "conversation_manager": {
+                    "available": optimized_conversation_manager is not None,
+                    "status": "operational" if optimized_conversation_manager else "unavailable"
+                },
+                "state_manager": {
+                    "available": mcp_state_manager is not None,
+                    "status": "operational" if mcp_state_manager else "unavailable"
+                },
+                "redis_connection": {
+                    "available": redis_client is not None,
+                    "connected": redis_client.connected if redis_client else False
+                }
+            },
+            "capabilities": {
+                "personalized_conversations": personalization_engine is not None,
+                "user_analytics": personalization_engine is not None,
+                "market_optimization": personalization_engine is not None,
+                "ml_predictions": (
+                    personalization_engine.enable_ml_predictions 
+                    if personalization_engine else False
+                )
+            },
+            "timestamp": time.time()
+        }
+        
+        # Obtener métricas del personalization engine si está disponible
+        if personalization_engine:
+            try:
+                metrics = personalization_engine.get_personalization_metrics()
+                health_status["metrics"] = metrics
+            except Exception as e:
+                health_status["metrics_error"] = str(e)
+        
+        # Determinar estado general
+        critical_components = [
+            health_status["components"]["personalization_engine"]["available"],
+            health_status["components"]["conversation_manager"]["available"]
+        ]
+        
+        if all(critical_components):
+            health_status["status"] = "operational"
+        elif any(critical_components):
+            health_status["status"] = "degraded"
+        else:
+            health_status["status"] = "unavailable"
+        
+        return health_status
+        
+    except Exception as e:
+        logger.error(f"Error en MCP health check: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": time.time()
+        }
 
 # Configuración para ejecutar con uvicorn
 if __name__ == "__main__":
