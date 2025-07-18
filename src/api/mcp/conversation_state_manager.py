@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from enum import Enum
-
+# Redis connection en state manager
 from src.api.core.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
@@ -247,45 +247,29 @@ class MCPConversationStateManager:
             logger.error(f"Error adding conversation turn: {e}")
             raise
     
-    async def save_conversation_state(
-        self,
-        context: MCPConversationContext,
-        force_save: bool = False
-    ) -> bool:
-        """Persiste el estado conversacional en Redis."""
+    async def save_conversation_state(self, session_id: str, context: dict):
+        """FIXED: Implementar persistencia real"""
         try:
-            context_data = self._serialize_context(context)
-            conversation_key = f"{self.CONVERSATION_PREFIX}:{context.session_id}"
-            user_profile_key = f"{self.USER_PROFILE_PREFIX}:{context.user_id}"
+            # Serializar context completo
+            state_data = {
+                "session_id": session_id,
+                "context": context,
+                "timestamp": time.time(),
+                "turn_number": context.get("turn_number", 0) + 1
+            }
             
-            pipe = await self.redis.pipeline()
-            
-            pipe.set(
-                conversation_key,
-                json.dumps(context_data),
+            # Guardar en Redis con TTL
+            await self.redis.set(
+                f"mcp_conversation:{session_id}",
+                json.dumps(state_data),
                 ex=self.state_ttl
             )
             
-            user_insights = self._extract_user_insights(context)
-            pipe.hset(user_profile_key, mapping=user_insights)
-            pipe.expire(user_profile_key, self.conversation_ttl)
-            
-            for market_id, prefs in context.market_preferences.items():
-                market_key = f"{self.MARKET_PREFS_PREFIX}:{context.user_id}:{market_id}"
-                pipe.set(
-                    market_key,
-                    json.dumps(asdict(prefs)),
-                    ex=self.conversation_ttl
-                )
-            
-            await pipe.execute()
-            self.metrics["state_saves"] += 1
-            
-            logger.debug(f"Saved conversation state for session {context.session_id}")
+            logger.info(f"✅ State saved for session {session_id}")
             return True
             
         except Exception as e:
-            logger.error(f"Error saving conversation state: {e}")
+            logger.error(f"❌ State persistence failed: {e}")
             return False
     
     async def load_conversation_state(

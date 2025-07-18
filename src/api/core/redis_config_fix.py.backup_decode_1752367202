@@ -299,13 +299,10 @@ class PatchedRedisClient:
             raise Exception("Redis client not connected")
         
         try:
-            # Ensure value is string
-            str_value = str(value) if value is not None else ""
-            
             if ex:
-                result = await self.client.set(key, str_value, ex=ex)
+                result = await self.client.set(key, value, ex=ex)
             else:
-                result = await self.client.set(key, str_value)
+                result = await self.client.set(key, value)
             self.stats["operations"] += 1
             return result
         except Exception as e:
@@ -320,17 +317,7 @@ class PatchedRedisClient:
         try:
             result = await self.client.get(key)
             self.stats["operations"] += 1
-            
-            # Handle both bytes and str returns
-            if result is None:
-                return None
-            elif isinstance(result, bytes):
-                return result.decode('utf-8')
-            elif isinstance(result, str):
-                return result
-            else:
-                return str(result)
-                
+            return result.decode('utf-8') if result else None
         except Exception as e:
             self.stats["errors"] += 1
             raise e
@@ -391,13 +378,10 @@ class PatchedRedisClient:
             raise Exception("Redis client not connected")
         
         try:
-            # Ensure value is string
-            str_value = str(value) if value is not None else ""
-            
             if ex:
-                result = await self.client.set(key, str_value, ex=ex)
+                result = await self.client.set(key, value, ex=ex)
             else:
-                result = await self.client.set(key, str_value)
+                result = await self.client.set(key, value)
             self.stats["operations"] += 1
             return result
         except Exception as e:
@@ -412,17 +396,7 @@ class PatchedRedisClient:
         try:
             result = await self.client.get(key)
             self.stats["operations"] += 1
-            
-            # Handle both bytes and str returns
-            if result is None:
-                return None
-            elif isinstance(result, bytes):
-                return result.decode('utf-8')
-            elif isinstance(result, str):
-                return result
-            else:
-                return str(result)
-                
+            return result.decode('utf-8') if result else None
         except Exception as e:
             self.stats["errors"] += 1
             raise e

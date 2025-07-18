@@ -1,0 +1,927 @@
+#!/usr/bin/env python3
+"""
+Script de Validación Completa - Fase 2: Advanced Features
+=========================================================
+
+Este script valida exhaustivamente todas las funcionalidades implementadas en la Fase 2:
+- Real-time market data integration
+- Personalization engine avanzado  
+- Monitoring y observabilidad
+- Integración MCP + Claude API
+- Multi-market support
+- Performance y stability
+
+Uso:
+    python validate_phase2_complete.py
+    python validate_phase2_complete.py --verbose
+    python validate_phase2_complete.py --market ES --user test_user_123
+"""
+
+import asyncio
+import aiohttp
+import json
+import time
+import logging
+import argparse
+import uuid
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass
+import sys
+import os
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+@dataclass
+class ValidationResult:
+    """Resultado de una validación individual"""
+    test_name: str
+    passed: bool
+    details: str
+    execution_time_ms: float
+    error: Optional[str] = None
+
+@dataclass
+class ValidationConfig:
+    """Configuración para las validaciones"""
+    base_url: str = "http://localhost:8000"
+    api_key: str = "2fed9999056fab6dac5654238f0cae1c"
+    timeout: int = 30
+    test_user_id: str = None
+    test_market_id: str = "US"
+    verbose: bool = False
+
+class Phase2Validator:
+    """
+    Validador completo para todas las funcionalidades de Fase 2
+    """
+    
+    def __init__(self, config: ValidationConfig):
+        self.config = config
+        self.session = None
+        self.results: List[ValidationResult] = []
+        
+        # Generar test user único para esta ejecución
+        if not config.test_user_id:
+            self.config.test_user_id = f"test_user_{uuid.uuid4().hex[:8]}"
+        
+        logger.info(f"🚀 Iniciando validación de Fase 2")
+        logger.info(f"   Base URL: {config.base_url}")
+        logger.info(f"   Test User: {config.test_user_id}")
+        logger.info(f"   Test Market: {config.test_market_id}")
+    
+    async def __aenter__(self):
+        """Inicializar sesión HTTP"""
+        timeout = aiohttp.ClientTimeout(total=self.config.timeout)
+        self.session = aiohttp.ClientSession(timeout=timeout)
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Limpiar sesión HTTP"""
+        if self.session:
+            await self.session.close()
+    
+    def _log_test(self, test_name: str, start: bool = True):
+        """Log del inicio/fin de test"""
+        if start:
+            if self.config.verbose:
+                logger.info(f"🔍 Iniciando: {test_name}")
+        else:
+            if self.config.verbose:
+                logger.info(f"✅ Completado: {test_name}")
+    
+    async def _make_request(
+        self, 
+        method: str, 
+        endpoint: str, 
+        **kwargs
+    ) -> aiohttp.ClientResponse:
+        """Hacer request HTTP con headers estándar"""
+        headers = {
+            "X-API-Key": self.config.api_key,
+            "Content-Type": "application/json",
+            "User-Agent": "Phase2Validator/1.0"
+        }
+        
+        if "headers" in kwargs:
+            headers.update(kwargs["headers"])
+            del kwargs["headers"]
+        
+        url = f"{self.config.base_url}{endpoint}"
+        
+        return await self.session.request(
+            method=method,
+            url=url,
+            headers=headers,
+            **kwargs
+        )
+    
+    async def _execute_test(self, test_name: str, test_func) -> ValidationResult:
+        """Ejecutar un test individual con manejo de errores"""
+        self._log_test(test_name, start=True)
+        start_time = time.time()
+        
+        try:
+            result = await test_func()
+            execution_time = (time.time() - start_time) * 1000
+            
+            validation_result = ValidationResult(
+                test_name=test_name,
+                passed=result.get("passed", False),
+                details=result.get("details", ""),
+                execution_time_ms=execution_time,
+                error=result.get("error")
+            )
+            
+            self._log_test(test_name, start=False)
+            return validation_result
+            
+        except Exception as e:
+            execution_time = (time.time() - start_time) * 1000
+            
+            validation_result = ValidationResult(
+                test_name=test_name,
+                passed=False,
+                details=f"Test failed with exception",
+                execution_time_ms=execution_time,
+                error=str(e)
+            )
+            
+            logger.error(f"❌ Test failed: {test_name} - {str(e)}")
+            return validation_result
+    
+    # ==========================================
+    # TESTS DE SISTEMA BÁSICO
+    # ==========================================
+    
+    async def test_system_health(self):
+        """Validar health check del sistema"""
+        async with await self._make_request("GET", "/health") as response:
+            data = await response.json()
+            
+            # Validaciones básicas
+            system_healthy = response.status == 200
+            has_components = "components" in data
+            redis_available = data.get("components", {}).get("cache", {}).get("redis_connection") == "connected"
+            
+            details = f"Status: {response.status}, Components: {len(data.get('components', {}))}"
+            
+            if redis_available:
+                details += ", Redis: Connected"
+            
+            return {
+                "passed": system_healthy and has_components,
+                "details": details
+            }
+    
+    async def test_mcp_bridge_connectivity(self):
+        """Validar conectividad con MCP Bridge"""
+        try:
+            # Test directo al bridge si está disponible
+            bridge_url = "http://localhost:3001/health"
+            async with self.session.get(bridge_url) as response:
+                bridge_healthy = response.status == 200
+                
+                if bridge_healthy:
+                    data = await response.json()
+                    shopify_status = data.get("shopify_connection", "unknown")
+                    
+                    return {
+                        "passed": True,
+                        "details": f"Bridge: Healthy, Shopify: {shopify_status}"
+                    }
+        except:
+            # Si no hay bridge directo, verificar a través de la API principal
+            async with await self._make_request("GET", "/health") as response:
+                data = await response.json()
+                mcp_available = "mcp" in data.get("components", {})
+                
+                return {
+                    "passed": mcp_available,
+                    "details": f"MCP available through main API: {mcp_available}"
+                }
+    
+    # ==========================================
+    # TESTS DE PERSONALIZACIÓN AVANZADA
+    # ==========================================
+    
+    async def test_personalized_conversation(self):
+        """Validar conversación personalizada con MCP"""
+        payload = {
+            "query": "I'm looking for a comfortable summer dress under $80",
+            "user_id": self.config.test_user_id,
+            "market_id": self.config.test_market_id,
+            "n_recommendations": 5
+        }
+        
+        async with await self._make_request("POST", "/v1/mcp/conversation", json=payload) as response:
+            if response.status != 200:
+                return {
+                    "passed": False,
+                    "details": f"HTTP {response.status}: {await response.text()}"
+                }
+            
+            data = await response.json()
+            
+            # Validaciones
+            has_response = "answer" in data or "response" in data
+            has_recommendations = len(data.get("recommendations", [])) > 0
+            has_personalization = "personalization_metadata" in data
+            
+            details = f"Response: {has_response}, Recommendations: {len(data.get('recommendations', []))}"
+            
+            if has_personalization:
+                strategy = data["personalization_metadata"].get("strategy_used", "unknown")
+                score = data["personalization_metadata"].get("personalization_score", 0)
+                details += f", Strategy: {strategy}, Score: {score:.2f}"
+            
+            return {
+                "passed": has_response and has_recommendations,
+                "details": details
+            }
+    
+    async def test_multi_strategy_personalization(self):
+        """Validar diferentes estrategias de personalización"""
+        strategies_tested = []
+        
+        # Test diferentes tipos de queries para activar diferentes estrategias
+        test_queries = [
+            ("behavioral", "I want something similar to what I bought before"),
+            ("contextual", "I need a gift for my sister's birthday"),
+            ("cultural", "What's popular in my region?"),
+            ("hybrid", "Help me find the perfect outfit for dinner")
+        ]
+        
+        for strategy_name, query in test_queries:
+            payload = {
+                "query": query,
+                "user_id": self.config.test_user_id,
+                "market_id": self.config.test_market_id,
+                "context": {"strategy_hint": strategy_name}
+            }
+            
+            try:
+                async with await self._make_request("POST", "/v1/mcp/conversation", json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if "personalization_metadata" in data:
+                            used_strategy = data["personalization_metadata"].get("strategy_used", "unknown")
+                            strategies_tested.append(used_strategy)
+            except:
+                continue
+        
+        unique_strategies = len(set(strategies_tested))
+        
+        return {
+            "passed": unique_strategies >= 2,
+            "details": f"Strategies tested: {unique_strategies}, Used: {list(set(strategies_tested))}"
+        }
+    
+    async def test_market_specific_personalization(self):
+        """Validar personalización específica por mercado"""
+        markets_to_test = ["US", "ES", "MX"]
+        market_results = []
+        
+        for market in markets_to_test:
+            payload = {
+                "query": "I want a nice shirt",
+                "user_id": f"{self.config.test_user_id}_{market}",
+                "market_id": market
+            }
+            
+            try:
+                async with await self._make_request("POST", "/v1/mcp/conversation", json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        
+                        # Verificar adaptación cultural
+                        cultural_adaptation = data.get("personalization_metadata", {}).get("cultural_adaptation", {})
+                        market_optimization = data.get("personalization_metadata", {}).get("market_optimization", {})
+                        
+                        market_results.append({
+                            "market": market,
+                            "cultural_adapted": bool(cultural_adaptation),
+                            "market_optimized": bool(market_optimization)
+                        })
+            except:
+                continue
+        
+        successful_markets = len([r for r in market_results if r["cultural_adapted"]])
+        
+        return {
+            "passed": successful_markets >= 2,
+            "details": f"Markets tested: {len(market_results)}, Culturally adapted: {successful_markets}"
+        }
+    
+    # ==========================================
+    # TESTS DE REAL-TIME MARKET DATA
+    # ==========================================
+    
+    async def test_real_time_market_context(self):
+        """Validar integración de datos de mercado en tiempo real"""
+        payload = {
+            "query": "What's available in my market?",
+            "user_id": self.config.test_user_id,
+            "market_id": self.config.test_market_id,
+            "include_market_context": True
+        }
+        
+        async with await self._make_request("POST", "/v1/mcp/conversation", json=payload) as response:
+            if response.status != 200:
+                return {
+                    "passed": False,
+                    "details": f"HTTP {response.status}"
+                }
+            
+            data = await response.json()
+            
+            # Verificar contexto de mercado
+            has_market_context = "market_context" in data
+            market_data = data.get("market_context", {})
+            
+            has_market_id = market_data.get("market_id") == self.config.test_market_id
+            has_currency = "currency" in market_data
+            has_availability = "availability_checked" in market_data
+            
+            details = f"Market context: {has_market_context}"
+            if has_market_context:
+                details += f", Currency: {market_data.get('currency', 'N/A')}"
+                details += f", Availability checked: {has_availability}"
+            
+            return {
+                "passed": has_market_context and has_market_id,
+                "details": details
+            }
+    
+    async def test_dynamic_pricing_context(self):
+        """Validar contexto de precios dinámico"""
+        # Primero obtener recomendaciones con precios
+        payload = {
+            "query": "Show me products with prices",
+            "user_id": self.config.test_user_id,
+            "market_id": self.config.test_market_id,
+            "include_pricing": True
+        }
+        
+        async with await self._make_request("POST", "/v1/mcp/conversation", json=payload) as response:
+            if response.status != 200:
+                return {
+                    "passed": False,
+                    "details": f"HTTP {response.status}"
+                }
+            
+            data = await response.json()
+            recommendations = data.get("recommendations", [])
+            
+            # Verificar que los productos tienen información de precios
+            products_with_prices = 0
+            products_with_currency = 0
+            
+            for rec in recommendations:
+                if "price" in rec and rec["price"] is not None:
+                    products_with_prices += 1
+                if "currency" in rec:
+                    products_with_currency += 1
+            
+            return {
+                "passed": products_with_prices > 0,
+                "details": f"Products: {len(recommendations)}, With prices: {products_with_prices}, With currency: {products_with_currency}"
+            }
+    
+    async def test_inventory_availability(self):
+        """Validar verificación de disponibilidad de inventario"""
+        # Obtener productos para verificar disponibilidad
+        async with await self._make_request("GET", "/v1/products/?limit=5") as response:
+            if response.status != 200:
+                return {
+                    "passed": False,
+                    "details": f"HTTP {response.status} getting products"
+                }
+            
+            data = await response.json()
+            products = data.get("products", [])
+            
+            if not products:
+                return {
+                    "passed": False,
+                    "details": "No products available for inventory test"
+                }
+            
+            # Test específico de disponibilidad (si el endpoint existe)
+            product_ids = [p.get("id") for p in products[:3]]
+            
+            # En la implementación real, esto sería una llamada al MCP bridge
+            # Por ahora, verificamos que los productos tengan información de disponibilidad
+            products_with_availability = 0
+            for product in products:
+                if "availability" in product or "in_stock" in product or "market_availability" in product:
+                    products_with_availability += 1
+            
+            return {
+                "passed": products_with_availability > 0,
+                "details": f"Products checked: {len(products)}, With availability: {products_with_availability}"
+            }
+    
+    # ==========================================
+    # TESTS DE CONVERSATION STATE MANAGEMENT
+    # ==========================================
+    
+    async def test_conversation_state_persistence(self):
+        """Validar persistencia del estado conversacional"""
+        session_id = f"test_session_{uuid.uuid4().hex[:8]}"
+        
+        # Primera conversación
+        payload1 = {
+            "query": "I'm looking for shoes",
+            "user_id": self.config.test_user_id,
+            "session_id": session_id
+        }
+        
+        async with await self._make_request("POST", "/v1/mcp/conversation", json=payload1) as response:
+            if response.status != 200:
+                return {
+                    "passed": False,
+                    "details": f"First conversation failed: HTTP {response.status}"
+                }
+            
+            data1 = await response.json()
+        
+        # Segunda conversación en la misma sesión
+        payload2 = {
+            "query": "Actually, I prefer sneakers",
+            "user_id": self.config.test_user_id,
+            "session_id": session_id
+        }
+        
+        async with await self._make_request("POST", "/v1/mcp/conversation", json=payload2) as response:
+            if response.status != 200:
+                return {
+                    "passed": False,
+                    "details": f"Second conversation failed: HTTP {response.status}"
+                }
+            
+            data2 = await response.json()
+        
+        # Verificar que hay contexto de conversación
+        has_session_metadata = "session_metadata" in data2
+        session_data = data2.get("session_metadata", {})
+        
+        turn_number = session_data.get("turn_number", 0)
+        session_id_match = session_data.get("session_id") == session_id
+        
+        return {
+            "passed": has_session_metadata and turn_number > 1 and session_id_match,
+            "details": f"Session tracked: {has_session_metadata}, Turn: {turn_number}, ID match: {session_id_match}"
+        }
+    
+    async def test_intent_evolution_tracking(self):
+        """Validar seguimiento de evolución de intenciones"""
+        session_id = f"intent_test_{uuid.uuid4().hex[:8]}"
+        
+        # Secuencia de conversación que debería mostrar evolución de intent
+        conversation_flow = [
+            "I'm just browsing",  # general intent
+            "I need something for work",  # narrowing intent  
+            "Show me professional dresses",  # specific intent
+            "What's the price of the blue one?"  # purchase intent
+        ]
+        
+        intent_progression = []
+        
+        for i, query in enumerate(conversation_flow):
+            payload = {
+                "query": query,
+                "user_id": self.config.test_user_id,
+                "session_id": session_id
+            }
+            
+            try:
+                async with await self._make_request("POST", "/v1/mcp/conversation", json=payload) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        intent_analysis = data.get("intent_analysis", {})
+                        if intent_analysis:
+                            intent_progression.append(intent_analysis.get("intent", "unknown"))
+                        
+                        # Pausa breve entre requests
+                        await asyncio.sleep(0.5)
+            except:
+                continue
+        
+        # Verificar que hay progresión de intents
+        unique_intents = len(set(intent_progression))
+        
+        return {
+            "passed": unique_intents >= 2,
+            "details": f"Intents tracked: {len(intent_progression)}, Unique: {unique_intents}, Progression: {intent_progression}"
+        }
+    
+    # ==========================================
+    # TESTS DE PERFORMANCE Y MONITORING
+    # ==========================================
+    
+    async def test_response_times(self):
+        """Validar tiempos de respuesta aceptables"""
+        test_queries = [
+            "Quick recommendation",
+            "I need something specific for tonight",
+            "Show me your best products"
+        ]
+        
+        response_times = []
+        
+        for query in test_queries:
+            start_time = time.time()
+            
+            payload = {
+                "query": query,
+                "user_id": self.config.test_user_id,
+                "market_id": self.config.test_market_id
+            }
+            
+            try:
+                async with await self._make_request("POST", "/v1/mcp/conversation", json=payload) as response:
+                    if response.status == 200:
+                        response_time = (time.time() - start_time) * 1000
+                        response_times.append(response_time)
+            except:
+                continue
+        
+        if not response_times:
+            return {
+                "passed": False,
+                "details": "No successful responses to measure"
+            }
+        
+        avg_response_time = sum(response_times) / len(response_times)
+        max_response_time = max(response_times)
+        
+        # Criterios: promedio < 2000ms, máximo < 5000ms
+        performance_acceptable = avg_response_time < 2000 and max_response_time < 5000
+        
+        return {
+            "passed": performance_acceptable,
+            "details": f"Avg: {avg_response_time:.0f}ms, Max: {max_response_time:.0f}ms, Tests: {len(response_times)}"
+        }
+    
+    async def test_metrics_endpoint(self):
+        """Validar endpoint de métricas"""
+        async with await self._make_request("GET", "/v1/metrics") as response:
+            if response.status != 200:
+                return {
+                    "passed": False,
+                    "details": f"HTTP {response.status}"
+                }
+            
+            data = await response.json()
+            
+            # Verificar estructura de métricas
+            has_personalization_metrics = "personalization_metrics" in data
+            has_system_metrics = "system_metrics" in data or "realtime_metrics" in data
+            has_performance_data = any(
+                key in data for key in ["average_response_time", "total_requests", "cache_hit_ratio"]
+            )
+            
+            metrics_count = len(data)
+            
+            return {
+                "passed": has_personalization_metrics or has_system_metrics,
+                "details": f"Metrics sections: {metrics_count}, Personalization: {has_personalization_metrics}, Performance: {has_performance_data}"
+            }
+    
+    async def test_concurrent_requests(self):
+        """Validar manejo de requests concurrentes"""
+        concurrent_count = 5
+        
+        async def single_request(request_id: int):
+            payload = {
+                "query": f"Concurrent test request {request_id}",
+                "user_id": f"{self.config.test_user_id}_concurrent_{request_id}",
+                "market_id": self.config.test_market_id
+            }
+            
+            start_time = time.time()
+            try:
+                async with await self._make_request("POST", "/v1/mcp/conversation", json=payload) as response:
+                    response_time = (time.time() - start_time) * 1000
+                    success = response.status == 200
+                    return {"success": success, "response_time": response_time, "request_id": request_id}
+            except Exception as e:
+                return {"success": False, "response_time": -1, "request_id": request_id, "error": str(e)}
+        
+        # Ejecutar requests concurrentes
+        tasks = [single_request(i) for i in range(concurrent_count)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Analizar resultados
+        successful_requests = sum(1 for r in results if isinstance(r, dict) and r.get("success", False))
+        avg_response_time = sum(
+            r["response_time"] for r in results 
+            if isinstance(r, dict) and r.get("response_time", 0) > 0
+        ) / max(successful_requests, 1)
+        
+        success_rate = successful_requests / concurrent_count
+        
+        return {
+            "passed": success_rate >= 0.8,  # 80% success rate mínimo
+            "details": f"Success rate: {success_rate:.1%}, Avg time: {avg_response_time:.0f}ms, Concurrent: {concurrent_count}"
+        }
+    
+    # ==========================================
+    # ORQUESTADOR PRINCIPAL
+    # ==========================================
+    
+    async def run_all_validations(self) -> Dict[str, Any]:
+        """Ejecutar todas las validaciones de Fase 2"""
+        logger.info("🔍 Ejecutando validaciones de Fase 2...")
+        
+        # Definir todas las validaciones a ejecutar
+        validations = [
+            # Sistema básico
+            ("System Health Check", self.test_system_health),
+            ("MCP Bridge Connectivity", self.test_mcp_bridge_connectivity),
+            
+            # Personalización avanzada
+            ("Personalized Conversation", self.test_personalized_conversation),
+            ("Multi-Strategy Personalization", self.test_multi_strategy_personalization),
+            ("Market-Specific Personalization", self.test_market_specific_personalization),
+            
+            # Real-time market data
+            ("Real-Time Market Context", self.test_real_time_market_context),
+            ("Dynamic Pricing Context", self.test_dynamic_pricing_context),
+            ("Inventory Availability", self.test_inventory_availability),
+            
+            # Conversation state management
+            ("Conversation State Persistence", self.test_conversation_state_persistence),
+            ("Intent Evolution Tracking", self.test_intent_evolution_tracking),
+            
+            # Performance y monitoring
+            ("Response Times", self.test_response_times),
+            ("Metrics Endpoint", self.test_metrics_endpoint),
+            ("Concurrent Requests", self.test_concurrent_requests)
+        ]
+        
+        # Ejecutar validaciones
+        for test_name, test_func in validations:
+            result = await self._execute_test(test_name, test_func)
+            self.results.append(result)
+        
+        # Generar reporte final
+        return self._generate_final_report()
+    
+    def _generate_final_report(self) -> Dict[str, Any]:
+        """Generar reporte final de validaciones"""
+        total_tests = len(self.results)
+        passed_tests = sum(1 for r in self.results if r.passed)
+        failed_tests = total_tests - passed_tests
+        
+        success_rate = (passed_tests / total_tests) * 100 if total_tests > 0 else 0
+        
+        avg_execution_time = sum(r.execution_time_ms for r in self.results) / total_tests if total_tests > 0 else 0
+        
+        # Categorizar resultados
+        critical_failures = []
+        warnings = []
+        successes = []
+        
+        for result in self.results:
+            if not result.passed:
+                if any(keyword in result.test_name.lower() for keyword in ["health", "connectivity", "conversation"]):
+                    critical_failures.append(result)
+                else:
+                    warnings.append(result)
+            else:
+                successes.append(result)
+        
+        # Determinar estado general de Fase 2
+        if success_rate >= 90:
+            phase2_status = "EXCELLENT"
+        elif success_rate >= 80:
+            phase2_status = "GOOD"
+        elif success_rate >= 70:
+            phase2_status = "ACCEPTABLE"
+        elif success_rate >= 50:
+            phase2_status = "NEEDS_IMPROVEMENT"
+        else:
+            phase2_status = "CRITICAL_ISSUES"
+        
+        return {
+            "validation_summary": {
+                "timestamp": datetime.now().isoformat(),
+                "total_tests": total_tests,
+                "passed_tests": passed_tests,
+                "failed_tests": failed_tests,
+                "success_rate": success_rate,
+                "avg_execution_time_ms": avg_execution_time,
+                "phase2_status": phase2_status
+            },
+            "test_results": [
+                {
+                    "test_name": r.test_name,
+                    "passed": r.passed,
+                    "details": r.details,
+                    "execution_time_ms": r.execution_time_ms,
+                    "error": r.error
+                }
+                for r in self.results
+            ],
+            "critical_failures": [
+                {
+                    "test_name": r.test_name,
+                    "error": r.error,
+                    "details": r.details
+                }
+                for r in critical_failures
+            ],
+            "warnings": [
+                {
+                    "test_name": r.test_name,
+                    "details": r.details
+                }
+                for r in warnings
+            ],
+            "recommendations": self._generate_recommendations(phase2_status, critical_failures, warnings)
+        }
+    
+    def _generate_recommendations(self, status: str, critical_failures: List, warnings: List) -> List[str]:
+        """Generar recomendaciones basadas en resultados"""
+        recommendations = []
+        
+        if status == "EXCELLENT":
+            recommendations.append("🎉 ¡Fase 2 completamente operativa! Listo para Fase 3: Production Ready")
+            recommendations.append("🚀 Proceder con load testing y deployment a producción")
+        
+        elif status == "GOOD":
+            recommendations.append("✅ Fase 2 en buen estado, proceder con precaución a Fase 3")
+            recommendations.append("🔍 Revisar warnings menores antes del deployment")
+        
+        elif status in ["ACCEPTABLE", "NEEDS_IMPROVEMENT"]:
+            recommendations.append("⚠️ Fase 2 necesita mejoras antes de proceder a Fase 3")
+            recommendations.append("🔧 Resolver problemas identificados en las validaciones")
+        
+        else:  # CRITICAL_ISSUES
+            recommendations.append("🚨 Problemas críticos en Fase 2 - NO proceder a Fase 3")
+            recommendations.append("🛠️ Resolver problemas críticos antes de continuar")
+        
+        # Recomendaciones específicas por tipo de fallo
+        if critical_failures:
+            recommendations.append(f"🚨 Resolver {len(critical_failures)} problemas críticos identificados")
+        
+        if warnings:
+            recommendations.append(f"⚠️ Revisar {len(warnings)} warnings para optimización")
+        
+        return recommendations
+
+def print_results(report: Dict[str, Any], verbose: bool = False):
+    """Imprimir resultados de validación en formato legible"""
+    summary = report["validation_summary"]
+    
+    print("\n" + "="*80)
+    print("🚀 REPORTE DE VALIDACIÓN - FASE 2: ADVANCED FEATURES")
+    print("="*80)
+    
+    print(f"📊 RESUMEN:")
+    print(f"   ✅ Tests pasados: {summary['passed_tests']}/{summary['total_tests']}")
+    print(f"   ❌ Tests fallidos: {summary['failed_tests']}")
+    print(f"   📈 Tasa de éxito: {summary['success_rate']:.1f}%")
+    print(f"   ⏱️ Tiempo promedio: {summary['avg_execution_time_ms']:.0f}ms")
+    print(f"   🎯 Estado Fase 2: {summary['phase2_status']}")
+    
+    # Estado visual
+    status_emoji = {
+        "EXCELLENT": "🎉",
+        "GOOD": "✅", 
+        "ACCEPTABLE": "⚠️",
+        "NEEDS_IMPROVEMENT": "🔧",
+        "CRITICAL_ISSUES": "🚨"
+    }
+    
+    print(f"\n{status_emoji.get(summary['phase2_status'], '❓')} ESTADO GENERAL: {summary['phase2_status']}")
+    
+    # Mostrar fallos críticos
+    if report["critical_failures"]:
+        print(f"\n🚨 PROBLEMAS CRÍTICOS ({len(report['critical_failures'])}):")
+        for failure in report["critical_failures"]:
+            print(f"   ❌ {failure['test_name']}: {failure['details']}")
+            if failure.get('error') and verbose:
+                print(f"      Error: {failure['error']}")
+    
+    # Mostrar warnings
+    if report["warnings"]:
+        print(f"\n⚠️ WARNINGS ({len(report['warnings'])}):")
+        for warning in report["warnings"]:
+            print(f"   ⚠️ {warning['test_name']}: {warning['details']}")
+    
+    # Mostrar resultados detallados si verbose
+    if verbose:
+        print(f"\n📋 RESULTADOS DETALLADOS:")
+        for result in report["test_results"]:
+            status_icon = "✅" if result["passed"] else "❌"
+            print(f"   {status_icon} {result['test_name']}")
+            print(f"      📝 {result['details']}")
+            print(f"      ⏱️ {result['execution_time_ms']:.0f}ms")
+            if result.get('error'):
+                print(f"      🚨 Error: {result['error']}")
+            print()
+    
+    # Mostrar recomendaciones
+    print(f"\n💡 RECOMENDACIONES:")
+    for rec in report["recommendations"]:
+        print(f"   {rec}")
+    
+    print("\n" + "="*80)
+
+async def main():
+    """Función principal"""
+    parser = argparse.ArgumentParser(
+        description="Validación completa de Fase 2: Advanced Features"
+    )
+    parser.add_argument(
+        "--verbose", "-v", 
+        action="store_true",
+        help="Mostrar detalles verbose de todos los tests"
+    )
+    parser.add_argument(
+        "--base-url",
+        default="http://localhost:8000",
+        help="URL base del sistema a validar"
+    )
+    parser.add_argument(
+        "--api-key",
+        default="2fed9999056fab6dac5654238f0cae1c",
+        help="API key para autenticación"
+    )
+    parser.add_argument(
+        "--user",
+        help="Test user ID específico"
+    )
+    parser.add_argument(
+        "--market",
+        default="US",
+        help="Market ID para tests"
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=30,
+        help="Timeout en segundos para requests"
+    )
+    parser.add_argument(
+        "--output",
+        help="Archivo para guardar reporte JSON"
+    )
+    
+    args = parser.parse_args()
+    
+    # Configurar validación
+    config = ValidationConfig(
+        base_url=args.base_url,
+        api_key=args.api_key,
+        test_user_id=args.user,
+        test_market_id=args.market,
+        timeout=args.timeout,
+        verbose=args.verbose
+    )
+    
+    try:
+        # Ejecutar validaciones
+        async with Phase2Validator(config) as validator:
+            report = await validator.run_all_validations()
+        
+        # Mostrar resultados
+        print_results(report, verbose=args.verbose)
+        
+        # Guardar reporte si se especifica
+        if args.output:
+            with open(args.output, 'w', encoding='utf-8') as f:
+                json.dump(report, f, indent=2, ensure_ascii=False)
+            print(f"\n💾 Reporte guardado en: {args.output}")
+        
+        # Exit code basado en resultados
+        if report["validation_summary"]["phase2_status"] in ["EXCELLENT", "GOOD"]:
+            print(f"\n🎉 ¡Validación exitosa! Sistema listo para Fase 3.")
+            sys.exit(0)
+        elif report["validation_summary"]["phase2_status"] == "ACCEPTABLE":
+            print(f"\n⚠️ Validación aceptable. Revisar warnings antes de Fase 3.")
+            sys.exit(1)
+        else:
+            print(f"\n🚨 Validación falló. Resolver problemas antes de continuar.")
+            sys.exit(2)
+            
+    except KeyboardInterrupt:
+        print(f"\n⚠️ Validación cancelada por usuario")
+        sys.exit(130)
+    except Exception as e:
+        print(f"\n❌ Error durante validación: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -2,6 +2,8 @@
 """
 ConversationAIManager optimizado con circuit breakers, caching y mejoras de rendimiento.
 Esta versión extiende el ConversationAIManager existente para la Fase 0 de consolidación.
+
+PERFORMANCE OPTIMIZATION: Integrado con PerformanceOptimizer para timeouts optimizados
 """
 
 import asyncio
@@ -16,6 +18,8 @@ import httpx
 from cachetools import TTLCache
 # aioredis removed - using redis.asyncio via RedisClient
 from src.api.core.redis_client import RedisClient
+# 🚀 PERFORMANCE: Import optimized performance manager
+from src.api.core.performance_optimizer import execute_claude_call, ComponentType
 
 from .ai_conversation_manager import ConversationAIManager, ConversationContext
 
@@ -483,12 +487,15 @@ class OptimizedConversationAIManager(ConversationAIManager):
         }
         
         try:
-            # Test básico de Claude API
-            test_response = await self.claude.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=10,
-                messages=[{"role": "user", "content": "test"}]
-            )
+            # 🚀 PERFORMANCE: Test básico de Claude API con optimización
+            async def test_claude_call():
+                return await self.claude.messages.create(
+                    model="claude-3-haiku-20240307",
+                    max_tokens=10,
+                    messages=[{"role": "user", "content": "test"}]
+                )
+            
+            test_response = await execute_claude_call(test_claude_call)
             health_status["claude_api"] = "healthy"
             
         except Exception as e:

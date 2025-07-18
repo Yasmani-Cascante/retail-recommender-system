@@ -1,161 +1,94 @@
-# test_redis_connection.py
+#!/usr/bin/env python3
 """
-Test específico para verificar conexión Redis con autenticación.
+Test Redis Connection - Script específico para probar Redis
+========================================================
+
+Ejecutar: python test_redis_connection.py
 """
 
-import os
+import asyncio
 import sys
-from pathlib import Path
-from dotenv import load_dotenv
+import os
 
-# Cargar variables de entorno
-load_dotenv()
+# Add path
+sys.path.insert(0, os.getcwd())
 
-# Añadir path del proyecto
-root_dir = Path(__file__).resolve().parent
-sys.path.append(str(root_dir))
-
-def test_redis_direct():
-    """Test directo con redis-py"""
+async def test_redis_connection():
+    """Test específico de conexión Redis"""
+    
+    print("🔍 TESTING REDIS CONNECTION")
+    print("=" * 40)
+    
     try:
-        import redis
-        
-        # Configuración desde .env
-        redis_host = os.getenv("REDIS_HOST")
-        redis_port = int(os.getenv("REDIS_PORT", "6379"))
-        redis_password = os.getenv("REDIS_PASSWORD")
-        redis_username = os.getenv("REDIS_USERNAME", "default")
-        redis_ssl = os.getenv("REDIS_SSL", "false").lower() == "true"
-        redis_db = int(os.getenv("REDIS_DB", "0"))
-        
-        print(f"🔍 Conectando a Redis:")
-        print(f"   Host: {redis_host}")
-        print(f"   Port: {redis_port}")
-        print(f"   Password: {'***' if redis_password else 'None'}")
-        print(f"   Username: {redis_username}")
-        print(f"   SSL: {redis_ssl}")
-        print(f"   DB: {redis_db}")
-        
-        # Configurar parámetros
-        connection_params = {
-            "host": redis_host,
-            "port": redis_port,
-            "db": redis_db,
-            "socket_timeout": 10,
-            "retry_on_timeout": True,
-            "socket_connect_timeout": 10
-        }
-        
-        if redis_password:
-            connection_params["password"] = redis_password
-            
-        if redis_username and redis_username != "default":
-            connection_params["username"] = redis_username
-        
-        if redis_ssl:
-            connection_params["ssl"] = True
-            connection_params["ssl_cert_reqs"] = None
+        from src.api.core.redis_config_fix import PatchedRedisClient
         
         # Crear cliente
-        client = redis.Redis(**connection_params)
+        print("1. Creating PatchedRedisClient...")
+        redis_client = PatchedRedisClient(use_validated_config=True)
+        
+        # Conectar
+        print("2. Connecting to Redis...")
+        connected = await redis_client.connect()
+        
+        if not connected:
+            print("❌ Connection failed")
+            return False
+        
+        print("✅ Connected successfully")
         
         # Test ping
-        result = client.ping()
-        print(f"✅ Ping exitoso: {result}")
+        print("3. Testing ping...")
+        try:
+            ping_result = await redis_client.ping()
+            print(f"✅ Ping successful: {ping_result}")
+        except Exception as e:
+            print(f"❌ Ping failed: {e}")
+            return False
         
         # Test set/get
-        test_key = "mcp_test_key"
-        test_value = "mcp_test_value"
+        print("4. Testing set/get operations...")
+        test_key = "test_connection_key"
+        test_value = "test_value_123"
         
-        client.set(test_key, test_value, ex=60)
-        retrieved = client.get(test_key)
-        
-        if retrieved and retrieved.decode('utf-8') == test_value:
-            print("✅ Set/Get exitoso")
-            client.delete(test_key)
-            print("✅ Delete exitoso")
-            return True
-        else:
-            print("❌ Set/Get falló")
-            return False
+        try:
+            # Set
+            await redis_client.set(test_key, test_value, ex=30)
+            print(f"✅ Set successful: {test_key} = {test_value}")
             
-    except Exception as e:
-        print(f"❌ Error en test directo: {e}")
-        return False
-
-async def test_redis_cache_class():
-    """Test con la clase RedisCache actualizada"""
-    try:
-        from src.api.core.cache import RedisCache
-        
-        print("\n🔍 Testing clase RedisCache actualizada...")
-        
-        cache = RedisCache()
-        
-        if not cache.client:
-            print("❌ RedisCache: cliente no inicializado")
+            # Get
+            retrieved = await redis_client.get(test_key)
+            print(f"✅ Get successful: {test_key} = {retrieved}")
+            
+            if retrieved == test_value:
+                print("✅ Value integrity confirmed")
+            else:
+                print(f"❌ Value mismatch: expected '{test_value}', got '{retrieved}'")
+                return False
+            
+            # Delete
+            await redis_client.delete(test_key)
+            print("✅ Delete successful")
+            
+        except Exception as e:
+            print(f"❌ Set/Get/Delete failed: {e}")
             return False
         
-        # Test básico
-        test_key = "mcp_cache_test"
-        test_data = {"test": "success", "timestamp": "2025-01-01"}
+        # Close connection
+        await redis_client.close()
+        print("✅ Connection closed")
         
-        # Set
-        success = await cache.set(test_key, test_data, expiration=60)
-        if not success:
-            print("❌ RedisCache: set falló")
-            return False
-        
-        # Get
-        result = await cache.get(test_key)
-        if not result or result.get("test") != "success":
-            print("❌ RedisCache: get falló")
-            return False
-        
-        # Delete
-        deleted = await cache.delete(test_key)
-        if not deleted:
-            print("❌ RedisCache: delete falló")
-            return False
-        
-        print("✅ RedisCache funcionando correctamente")
+        print("\n🎉 ALL REDIS TESTS PASSED!")
         return True
         
     except Exception as e:
-        print(f"❌ Error en RedisCache: {e}")
+        print(f"❌ Redis test failed: {e}")
         return False
 
 if __name__ == "__main__":
-    print("🚀 Iniciando tests de conexión Redis...")
+    success = asyncio.run(test_redis_connection())
     
-    # Test 1: Conexión directa
-    print("\n" + "="*50)
-    print("TEST 1: Conexión directa con redis-py")
-    print("="*50)
-    direct_success = test_redis_direct()
-    
-    # Test 2: Clase RedisCache
-    print("\n" + "="*50)
-    print("TEST 2: Clase RedisCache")
-    print("="*50)
-    
-    import asyncio
-    cache_success = asyncio.run(test_redis_cache_class())
-    
-    # Resumen
-    print("\n" + "="*50)
-    print("RESUMEN DE TESTS")
-    print("="*50)
-    print(f"Redis directo: {'✅ PASS' if direct_success else '❌ FAIL'}")
-    print(f"RedisCache: {'✅ PASS' if cache_success else '❌ FAIL'}")
-    
-    if direct_success and cache_success:
-        print("\n🎉 ¡Todos los tests de Redis pasaron!")
-        print("🚀 El sistema está listo para ejecutar con Redis")
+    if success:
+        print("\n✅ Redis is working correctly!")
+        print("You can now run: python step1_validate_environment.py")
     else:
-        print("\n⚠️ Algunos tests fallaron - revisar configuración")
-        
-        if not direct_success:
-            print("❌ Problema con autenticación/conexión básica")
-        if not cache_success:
-            print("❌ Problema con clase RedisCache")
+        print("\n❌ Redis issues remain. Check configuration.")

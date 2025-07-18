@@ -22,12 +22,14 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from enum import Enum
 import numpy as np
-from anthropic import Anthropic
+# from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 
 from src.api.core.redis_client import RedisClient
 from src.api.mcp.conversation_state_manager import (
     MCPConversationStateManager, 
     MCPConversationContext,
+    ConversationStage,
     UserMarketPreferences,
     ConversationStage
 )
@@ -83,7 +85,8 @@ class MCPPersonalizationEngine:
     def __init__(
         self,
         redis_client: RedisClient,
-        anthropic_client: Anthropic,
+        # anthropic_client: Anthropic,
+        anthropic_client: AsyncAnthropic,
         conversation_manager: OptimizedConversationAIManager,
         state_manager: MCPConversationStateManager,
         profile_ttl: int = 7 * 24 * 3600,  # 7 days
@@ -2764,7 +2767,8 @@ def create_mcp_personalization_engine(
         Instancia configurada de MCPPersonalizationEngine
     """
     try:
-        anthropic_client = Anthropic(api_key=anthropic_api_key)
+        # anthropic_client = Anthropic(api_key=anthropic_api_key)
+        anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
         
         engine = MCPPersonalizationEngine(
             redis_client=redis_client,

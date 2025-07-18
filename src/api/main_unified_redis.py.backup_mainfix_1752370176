@@ -41,6 +41,14 @@ from src.api.routers import mcp_router
 # Importar OptimizedConversationAIManager para Fase 0
 from src.api.integrations.ai.optimized_conversation_manager import OptimizedConversationAIManager
 
+
+
+# === STARTUP OPTIMIZATION IMPORTS ===
+from startup_sequence_fix import StartupSequenceOptimizer
+from environment_validator import EnvironmentValidator
+
+
+
 # Configurar logger básico para imports
 import logging
 logger = logging.getLogger(__name__)
@@ -51,7 +59,7 @@ try:
         MCPPersonalizationEngine,
         create_mcp_personalization_engine,
         PersonalizationStrategy,
-        # PersonalizationInsightsAnalyzer  # ← COMENTADO TEMPORALMENTE
+        PersonalizationInsightsAnalyzer
     )
     from src.api.mcp.conversation_state_manager import MCPConversationStateManager
     MCP_PERSONALIZATION_AVAILABLE = True
@@ -105,6 +113,376 @@ mcp_recommender = None
 
 # Variables globales para conversación AI optimizada (Fase 0)
 optimized_conversation_manager = None
+# Variables globales para MCP (agregadas)
+mcp_state_manager = None
+personalization_engine = None
+
+
+
+
+# Crear gestor de arranque
+startup_manager = StartupManager(startup_timeout=settings.startup_timeout)
+
+# Incluir router MCP
+app.include_router(mcp_router.router)
+
+# Variables para uptime
+start_time = time.time()
+
+# Cargar extensiones según configuración
+if settings.metrics_enabled:
+    from src.api.extensions.metrics_extension import MetricsExtension
+    metrics_extension = MetricsExtension(app, settings)
+    metrics_extension.setup()
+
+# Modelos de datos
+class HealthStatus(BaseModel):
+    status: str = Field(description="Estado general del servicio")
+    components: Dict[str, Any] = Field(description="Estado de los componentes")
+    uptime_seconds: float = Field(description="Tiempo de funcionamiento en segundos")
+
+# Función para la carga asíncrona de productos y modelos
+async def load_shopify_products():
+    """Carga productos desde Shopify."""
+    try:
+        # Inicializar cliente Shopify
+        client = init_shopify()
+        if client:
+            products = client.get_products()
+            logger.info(f"Cargados {len(products)} productos desde Shopify")
+            if products:
+                logger.info(f"Primer producto: {products[0].get('title', 'No title')}")
+            return products
+        else:
+            logger.warning("No se pudo inicializar el cliente de Shopify, intentando cargar productos de muestra")
+    except Exception as e:
+        logger.error(f"Error cargando productos desde Shopify: {e}")
+    
+    # Si falla Shopify, intentar cargar productos de muestra
+    return await load_sample_data()
+
+async def load_sample_data():
+    """Carga datos de muestra para el recomendador si no se pueden obtener de Shopify."""
+    try:
+        # Intento 1: Cargar desde datos de muestra en el módulo
+        from src.api.core.sample_data import SAMPLE_PRODUCTS
+        if SAMPLE_PRODUCTS:
+            logger.info(f"Cargados {len(SAMPLE_PRODUCTS)} productos de muestra")
+            return SAMPLE_PRODUCTS
+    except Exception as e:
+        logger.warning(f"No se pudieron cargar productos de muestra desde código: {e}")
+    
+    # Datos mínimos de fallback
+    minimal_products = [
+        {
+            "id": "product1",
+            "title": "Camiseta básica",
+            "body_html": "Camiseta de algodón de alta calidad.",
+            "product_type": "Ropa"
+        },
+        {
+            "id": "product2",
+            "title": "Pantalón vaquero",
+            "body_html": "Pantalón vaquero clásico de corte recto.",
+            "product_type": "Ropa"
+        },
+        {
+            "id": "product3",
+            "title": "Zapatillas deportivas",
+            "body_html": "Zapatillas para running con amortiguación.",
+            "product_type": "Calzado"
+        }
+    ]
+    logger.info(f"Usando {len(minimal_products)} productos mínimos de muestra")
+    return minimal_products
+
+async def load_recommender():
+    """Carga y entrena el recomendador TF-IDF con productos de Shopify."""
+    try:
+        # Intentar cargar modelo pre-entrenado
+        if os.path.exists("data/tfidf_model.pkl"):
+            success = await tfidf_recommender.load()
+            if success:
+                logger.info("Modelo TF-IDF cargado correctamente desde archivo")
+                return True
+        
+        # Si no existe o falla, entrenar con datos de Shopify o muestra
+        products = await load_shopify_products()
+        if not products:
+            logger.error("No se pudieron cargar productos de ninguna fuente")
+            return False
+            
+        # Entrenar modelo TF-IDF
+        success = await tfidf_recommender.fit(products)
+        
+        if success:
+            logger.info("Modelo TF-IDF entrenado exitosamente")
+            # Guardar modelo entrenado
+            try:
+                await tfidf_recommender.save()
+                logger.info("Modelo TF-IDF guardado en disco")
+            except Exception as save_error:
+                logger.warning(f"No se pudo guardar el modelo: {save_error}")
+            
+            return True
+        else:
+            logger.error("Error entrenando modelo TF-IDF")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error cargando recomendador: {e}")
+        return False
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Evento de inicio optimizado con validación de environment y secuencia de inicialización mejorada.
+    """
+    global redis_client, product_cache, hybrid_recommender, mcp_recommender
+    global optimized_conversation_manager, mcp_state_manager, personalization_engine
+    
+    start_time = time.time()
+    logger.info("🚀 Starting optimized startup sequence...")
+    
+    try:
+        # 1. VALIDACIÓN DE ENVIRONMENT
+        logger.info("🔍 Step 1: Environment validation...")
+        env_validator = EnvironmentValidator()
+        env_result = await env_validator.quick_health_check()
+        
+        if env_result["overall_status"] == "critical":
+            logger.error("❌ Critical environment issues detected!")
+            logger.error("Environment report:")
+            print(env_validator.generate_environment_report())
+            # Continue but with warnings
+        elif env_result["overall_status"] == "degraded":
+            logger.warning("⚠️ Environment has some issues, continuing with fallbacks...")
+        else:
+            logger.info("✅ Environment validation passed")
+        
+        # 2. OPTIMIZED COMPONENT INITIALIZATION
+        logger.info("🔧 Step 2: Optimized component initialization...")
+        startup_optimizer = StartupSequenceOptimizer()
+        startup_result = await startup_optimizer.optimized_startup_sequence()
+        
+        if startup_result["success"]:
+            logger.info(f"✅ All components initialized successfully ({startup_result['initialization_time']:.2f}s)")
+            
+            # Extract initialized components
+            components = startup_result["components"]
+            redis_client = components.get("redis_client")
+            mcp_state_manager = components.get("mcp_state_manager")
+            optimized_conversation_manager = components.get("conversation_manager")
+            mcp_bridge_client = components.get("mcp_bridge_client")
+            personalization_engine = components.get("personalization_engine")
+            
+        else:
+            logger.warning("⚠️ Some components failed to initialize, using fallbacks...")
+            
+            # Fallback initialization for critical components
+            redis_client = await startup_optimizer.initialize_redis_client()
+            if redis_client:
+                mcp_state_manager = await startup_optimizer.initialize_mcp_state_manager(redis_client)
+                optimized_conversation_manager = await startup_optimizer.initialize_conversation_manager(redis_client)
+        
+        # 3. LEGACY COMPONENT INITIALIZATION (para compatibilidad)
+        logger.info("🔄 Step 3: Legacy component compatibility...")
+        
+        # Inicializar Redis si no se hizo en optimized sequence
+        if not redis_client:
+            logger.info("Initializing Redis with fallback method...")
+            redis_validator = RedisConfigValidator()
+            # Intentar inicializar Redis con configuración validada
+            config = redis_validator.validate_and_fix_config()
+            if config.get('use_redis_cache'):
+                try:
+                    redis_client = PatchedRedisClient()
+                    await redis_client.connect()
+                    logger.info("✅ Redis client conectado (fallback)")
+                except Exception as e:
+                    logger.error(f"❌ Error conectando Redis (fallback): {e}")
+                    redis_client = None
+        
+        # Crear caché de productos solo si Redis está disponible
+        if redis_client:
+            try:
+                from src.cache.market_aware.market_cache import MarketAwareProductCache
+                product_cache = MarketAwareProductCache(
+                    redis_client=redis_client,
+                    cache_ttl=settings.cache_ttl,
+                    cache_prefix=settings.cache_prefix,
+                    enable_background_tasks=settings.cache_enable_background_tasks
+                )
+                logger.info("✅ Market-aware product cache initialized")
+            except Exception as e:
+                logger.error(f"❌ Error creando product cache: {e}")
+                product_cache = None
+        
+        # Actualizar hybrid recommender con caché
+        if product_cache:
+            hybrid_recommender = RecommenderFactory.create_hybrid_recommender_with_cache(
+                tfidf_recommender, retail_recommender, product_cache
+            )
+            logger.info("✅ Hybrid recommender updated with cache")
+        
+        # 4. MCP RECOMMENDER INITIALIZATION
+        logger.info("🤖 Step 4: MCP Recommender initialization...")
+        
+        try:
+            if (redis_client and 
+                startup_optimizer.components.get('mcp_bridge_client')):
+                
+                from src.api.factories import MCPFactory
+                mcp_recommender = await MCPFactory.create_mcp_recommender(
+                    hybrid_recommender=hybrid_recommender,
+                    redis_client=redis_client,
+                    mcp_bridge_client=startup_optimizer.components.get('mcp_bridge_client')
+                )
+                logger.info("✅ MCP Recommender initialized")
+            else:
+                logger.warning("⚠️ MCP Recommender not initialized - missing dependencies")
+                mcp_recommender = None
+                
+        except Exception as e:
+            logger.error(f"❌ Error initializing MCP Recommender: {e}")
+            mcp_recommender = None
+        
+        # 5. DATA LOADING (async background task)
+        logger.info("📁 Step 5: Background data loading...")
+        
+        async def load_data_background():
+            """Carga de datos en background"""
+            try:
+                success = await load_recommender()
+                if success:
+                    logger.info("✅ Background data loading completed")
+                else:
+                    logger.warning("⚠️ Background data loading had issues")
+            except Exception as e:
+                logger.error(f"❌ Background data loading failed: {e}")
+        
+        # Iniciar carga en background
+        asyncio.create_task(load_data_background())
+        
+        # 6. FINAL STATUS REPORT
+        total_time = time.time() - start_time
+        
+        # Count successful components
+        component_status = {
+            "redis_client": redis_client is not None,
+            "product_cache": product_cache is not None,
+            "hybrid_recommender": hybrid_recommender is not None,
+            "mcp_state_manager": mcp_state_manager is not None,
+            "conversation_manager": optimized_conversation_manager is not None,
+            "personalization_engine": personalization_engine is not None,
+            "mcp_recommender": mcp_recommender is not None
+        }
+        
+        successful_components = len([c for c in component_status.values() if c])
+        total_components = len(component_status)
+        
+        logger.info(f"🎯 Startup completed in {total_time:.2f}s")
+        logger.info(f"📊 Components: {successful_components}/{total_components} successful")
+        
+        # Log component status
+        for component, status in component_status.items():
+            status_icon = "✅" if status else "❌"
+            logger.info(f"   {status_icon} {component}")
+        
+        # Store startup result globally for health checks
+        app.state.startup_result = {
+            "success": successful_components >= 4,  # Minimum viable components
+            "total_time": total_time,
+            "components": component_status,
+            "environment_status": env_result["overall_status"],
+            "timestamp": time.time()
+        }
+        
+        if successful_components >= 4:
+            logger.info("✅ System ready for requests")
+        else:
+            logger.warning("⚠️ System started with limited functionality")
+        
+    except Exception as e:
+        logger.error(f"❌ Critical error during startup: {e}")
+        logger.error("Stack trace:", exc_info=True)
+        
+        # Store error state
+        app.state.startup_result = {
+            "success": False,
+            "error": str(e),
+            "timestamp": time.time()
+        }
+        
+        # Don't raise - let the app start in degraded mode
+        logger.warning("⚠️ Starting in emergency mode with minimal functionality")
+def load_data_background():
+            """Carga de datos en background"""
+            try:
+                success = await load_recommender()
+                if success:
+                    logger.info("✅ Background data loading completed")
+                else:
+                    logger.warning("⚠️ Background data loading had issues")
+            except Exception as e:
+                logger.error(f"❌ Background data loading failed: {e}")
+        
+        # Iniciar carga en background
+        asyncio.create_task(load_data_background())
+        
+        # 6. FINAL STATUS REPORT
+        total_time = time.time() - start_time
+        
+        # Count successful components
+        component_status = {
+            "redis_client": redis_client is not None,
+            "product_cache": product_cache is not None,
+            "hybrid_recommender": hybrid_recommender is not None,
+            "mcp_state_manager": mcp_state_manager is not None,
+            "conversation_manager": optimized_conversation_manager is not None,
+            "personalization_engine": personalization_engine is not None,
+            "mcp_recommender": mcp_recommender is not None
+        }
+        
+        successful_components = len([c for c in component_status.values() if c])
+        total_components = len(component_status)
+        
+        logger.info(f"🎯 Startup completed in {total_time:.2f}s")
+        logger.info(f"📊 Components: {successful_components}/{total_components} successful")
+        
+        # Log component status
+        for component, status in component_status.items():
+            status_icon = "✅" if status else "❌"
+            logger.info(f"   {status_icon} {component}")
+        
+        # Store startup result globally for health checks
+        app.state.startup_result = {
+            "success": successful_components >= 4,  # Minimum viable components
+            "total_time": total_time,
+            "components": component_status,
+            "environment_status": env_result["overall_status"],
+            "timestamp": time.time()
+        }
+        
+        if successful_components >= 4:
+            logger.info("✅ System ready for requests")
+        else:
+            logger.warning("⚠️ System started with limited functionality")
+        
+    except Exception as e:
+        logger.error(f"❌ Critical error during startup: {e}")
+        logger.error("Stack trace:", exc_info=True)
+        
+        # Store error state
+        app.state.startup_result = {
+            "success": False,
+            "error": str(e),
+            "timestamp": time.time()
+        }
+        
+        # Don't raise - let the app start in degraded mode
+        logger.warning("⚠️ Starting in emergency mode with minimal functionality")
+
 
 # Crear gestor de arranque
 startup_manager = StartupManager(startup_timeout=settings.startup_timeout)
@@ -237,6 +615,9 @@ async def fixed_startup_event():
     product_cache = None
     mcp_recommender = None
     optimized_conversation_manager = None
+# Variables globales para MCP (agregadas)
+mcp_state_manager = None
+personalization_engine = None
     mcp_state_manager = None
     personalization_engine = None
 
@@ -476,6 +857,9 @@ async def fixed_startup_event():
     # ==========================================
     
     optimized_conversation_manager = None
+# Variables globales para MCP (agregadas)
+mcp_state_manager = None
+personalization_engine = None
     mcp_state_manager = None 
     personalization_engine = None
     
@@ -544,6 +928,9 @@ async def fixed_startup_event():
             logger.warning("⚠️ Sistema funcionará sin personalización avanzada")
             personalization_engine = None
             optimized_conversation_manager = None
+# Variables globales para MCP (agregadas)
+mcp_state_manager = None
+personalization_engine = None
             mcp_state_manager = None
     else:
         if not MCP_PERSONALIZATION_AVAILABLE:
@@ -1479,153 +1866,104 @@ async def mcp_health_check():
             "timestamp": time.time()
         }
 
-@app.get("/v1/metrics")
-async def get_comprehensive_metrics(current_user: str = Depends(get_current_user)):
-    """
-    Endpoint de métricas comprehensivo para validación de Fase 2
-    
-    Incluye métricas de:
-    - Sistema general
-    - Personalización 
-    - Performance
-    - MCP integration
-    """
+# Configuración para ejecutar con uvicorn
+
+
+# === ENDPOINTS BÁSICOS ===
+
+@app.get("/health", response_model=HealthStatus)
+async def health_check():
+    """Endpoint de verificación de salud del sistema."""
     try:
-        metrics_response = {
-            "timestamp": time.time(),
-            "system_metrics": {
-                "uptime_seconds": time.time() - start_time,
-                "total_requests": getattr(app.state, 'total_requests', 0),
-                "active_sessions": getattr(app.state, 'active_sessions', 0),
-                "memory_usage_mb": 0,  # Placeholder
-                "cpu_usage_percent": 0  # Placeholder
+        current_time = time.time()
+        uptime = current_time - start_time
+        
+        # Verificar componentes principales
+        components = {
+            "redis": {
+                "status": "connected" if redis_client and redis_client.connected else "disconnected",
+                "details": "Redis cache connection"
             },
-            "realtime_metrics": {
-                "average_response_time_ms": getattr(app.state, 'avg_response_time', 0),
-                "p95_response_time_ms": getattr(app.state, 'p95_response_time', 0),
-                "p99_response_time_ms": getattr(app.state, 'p99_response_time', 0),
-                "cache_hit_ratio": 0.85,  # Placeholder
-                "fallback_rate": 0.05  # Placeholder
+            "recommender": {
+                "status": "ready" if hybrid_recommender else "not_ready",
+                "details": "Hybrid recommendation engine"
             },
-            "business_metrics": {
-                "recommendations_by_source": {
-                    "content_based": 45.2,
-                    "collaborative": 54.8
-                },
-                "user_interactions": {
-                    "conversations": getattr(app.state, 'conversations_count', 0),
-                    "recommendations_generated": getattr(app.state, 'recommendations_count', 0),
-                    "personalization_applied": getattr(app.state, 'personalization_count', 0)
-                }
+            "mcp": {
+                "status": "available" if mcp_recommender else "unavailable",
+                "details": "Market Context Protocol integration"
+            },
+            "ai_conversation": {
+                "status": "ready" if optimized_conversation_manager else "not_ready",
+                "details": "AI conversation manager"
             }
         }
         
-        # ✅ AÑADIR: Métricas de personalización si está disponible
-        try:
-            if hasattr(app.state, 'personalization_engine') or (
-                hasattr(globals().get('personalization_engine', {}), 'get_personalization_metrics')
-            ):
-                personalization_engine = getattr(app.state, 'personalization_engine', None)
-                if not personalization_engine:
-                    from src.api import main_unified_redis
-                    personalization_engine = getattr(main_unified_redis, 'personalization_engine', None)
-                
-                if personalization_engine:
-                    p_metrics = personalization_engine.get_personalization_metrics()
-                    metrics_response["personalization_metrics"] = p_metrics
-                else:
-                    metrics_response["personalization_metrics"] = {
-                        "status": "not_available",
-                        "personalizations_generated": 0,
-                        "strategies_available": ["hybrid", "behavioral", "cultural", "contextual"],
-                        "ml_predictions_enabled": False
-                    }
-        except Exception as e:
-            logger.warning(f"Error getting personalization metrics: {e}")
-            metrics_response["personalization_metrics"] = {"error": str(e)}
+        # Determinar estado general
+        all_components_ok = all(comp["status"] in ["connected", "ready", "available"] 
+                               for comp in components.values())
         
-        # ✅ AÑADIR: Métricas de cache si está disponible
-        try:
-            if redis_client:
-                cache_stats = {
-                    "redis_connected": redis_client.connected if hasattr(redis_client, 'connected') else True,
-                    "cache_enabled": True,
-                    "hit_ratio": 0.87,  # Placeholder - se puede obtener de ProductCache
-                    "total_keys": 0,  # Placeholder
-                    "memory_usage": "unknown"
-                }
-                metrics_response["cache_metrics"] = cache_stats
-            else:
-                metrics_response["cache_metrics"] = {
-                    "redis_connected": False,
-                    "cache_enabled": False
-                }
-        except Exception as e:
-            metrics_response["cache_metrics"] = {"error": str(e)}
+        status = "healthy" if all_components_ok else "degraded"
         
-        # ✅ AÑADIR: Métricas de MCP si está disponible
-        try:
-            mcp_metrics = {
-                "mcp_available": mcp_recommender is not None,
-                "bridge_status": "unknown",
-                "mcp_requests": getattr(app.state, 'mcp_requests', 0),
-                "mcp_success_rate": getattr(app.state, 'mcp_success_rate', 0.95)
-            }
-            
-            # Intentar obtener métricas del MCP recommender
-            if mcp_recommender and hasattr(mcp_recommender, 'get_metrics'):
-                try:
-                    mcp_detailed = mcp_recommender.get_metrics()
-                    mcp_metrics.update(mcp_detailed)
-                except:
-                    pass
-            
-            metrics_response["mcp_metrics"] = mcp_metrics
-            
-        except Exception as e:
-            metrics_response["mcp_metrics"] = {"error": str(e)}
-        
-        return metrics_response
+        return HealthStatus(
+            status=status,
+            components=components,
+            uptime_seconds=uptime
+        )
         
     except Exception as e:
-        logger.error(f"Error generating metrics: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error retrieving metrics: {str(e)}"
+        logger.error(f"Error en health check: {e}")
+        raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
+
+@app.get("/")
+async def root():
+    """Endpoint raíz con información básica."""
+    return {
+        "message": "Retail Recommender API",
+        "version": settings.app_version,
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "recommendations": "/recommendations",
+            "mcp": "/v1/mcp/",
+            "docs": "/docs"
+        }
+    }
+
+@app.get("/recommendations")
+async def get_recommendations(
+    user_id: str = Query(..., description="ID del usuario"),
+    n_recommendations: int = Query(5, ge=1, le=20, description="Número de recomendaciones"),
+    market_id: str = Query("default", description="ID del mercado"),
+    current_user: str = Depends(get_current_user)
+):
+    """Obtener recomendaciones básicas."""
+    try:
+        start_time_req = time.time()
+        
+        if not hybrid_recommender:
+            raise HTTPException(status_code=503, detail="Recommendation system not available")
+        
+        recommendations = await hybrid_recommender.get_recommendations(
+            user_id=user_id,
+            n_recommendations=n_recommendations
         )
+        
+        processing_time = (time.time() - start_time_req) * 1000
+        
+        return {
+            "recommendations": recommendations.get("recommendations", []),
+            "user_id": user_id,
+            "market_id": market_id,
+            "total_recommendations": len(recommendations.get("recommendations", [])),
+            "processing_time_ms": processing_time,
+            "timestamp": time.time()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting recommendations: {e}")
+        raise HTTPException(status_code=500, detail=f"Recommendation error: {str(e)}")
 
-# ✅ CORRECCIÓN ADICIONAL: Middleware para tracking de métricas
-@app.middleware("http")
-async def metrics_tracking_middleware(request, call_next):
-    """Middleware para trackear métricas básicas"""
-    start_time = time.time()
-    
-    # Incrementar contador de requests
-    if not hasattr(app.state, 'total_requests'):
-        app.state.total_requests = 0
-    app.state.total_requests += 1
-    
-    response = await call_next(request)
-    
-    # Calcular tiempo de respuesta
-    response_time = (time.time() - start_time) * 1000
-    
-    # Actualizar métricas de tiempo de respuesta (promedio móvil simple)
-    if not hasattr(app.state, 'avg_response_time'):
-        app.state.avg_response_time = response_time
-    else:
-        app.state.avg_response_time = (app.state.avg_response_time * 0.9) + (response_time * 0.1)
-    
-    # Trackear métricas específicas por endpoint
-    if "/mcp/" in str(request.url):
-        if not hasattr(app.state, 'mcp_requests'):
-            app.state.mcp_requests = 0
-        app.state.mcp_requests += 1
-    
-    return response
-
-# Configuración para ejecutar con uvicorn
-if __name__ == "__main__":
+\n\nif __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run("main_unified_redis:app", host="0.0.0.0", port=port, reload=True)

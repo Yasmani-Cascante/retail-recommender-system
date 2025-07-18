@@ -12,6 +12,72 @@ from collections import Counter
 
 logger = logging.getLogger(__name__)
 
+def safe_clean_text(text: Optional[str], field_name: str = "text") -> str:
+    """
+    Limpia texto de forma segura manejando valores None explícitos.
+    
+    Args:
+        text: Texto a limpiar (puede ser None)
+        field_name: Nombre del campo para logging (opcional)
+        
+    Returns:
+        str: Texto limpio o string vacío si es None
+    """
+    try:
+        # Manejar None explícito
+        if text is None:
+            logger.debug(f"Campo {field_name} es None, usando string vacío")
+            return ""
+        
+        # Convertir a string si no lo es
+        if not isinstance(text, str):
+            logger.debug(f"Campo {field_name} no es string, convirtiendo: {type(text)}")
+            text = str(text)
+        
+        # Limpiar HTML tags básicos
+        cleaned = text.replace("<p>", "").replace("</p>", "")
+        cleaned = cleaned.replace("<br>", " ").replace("<br/>", " ")
+        cleaned = cleaned.replace("<div>", "").replace("</div>", "")
+        
+        # Limpiar espacios extra
+        cleaned = " ".join(cleaned.split())
+        
+        return cleaned
+        
+    except Exception as e:
+        logger.warning(f"Error limpiando texto en campo {field_name}: {e}")
+        return ""
+
+def safe_extract_price(product: Dict) -> float:
+    """
+    Extrae precio de forma segura de un producto.
+    
+    Args:
+        product: Diccionario del producto
+        
+    Returns:
+        float: Precio extraído o 0.0 si no se puede extraer
+    """
+    try:
+        # Intentar desde variants
+        if product.get("variants") and len(product["variants"]) > 0:
+            price_str = product["variants"][0].get("price", "0")
+            if price_str is not None:
+                return float(price_str)
+        
+        # Intentar desde price directo
+        price = product.get("price", 0.0)
+        if price is not None:
+            if isinstance(price, str):
+                return float(price)
+            return float(price)
+        
+        return 0.0
+        
+    except (ValueError, TypeError, IndexError) as e:
+        logger.debug(f"Error extrayendo precio del producto {product.get('id', 'unknown')}: {e}")
+        return 0.0
+
 class ImprovedFallbackStrategies:
     """
     Implementa estrategias avanzadas de fallback para recomendaciones.
@@ -142,19 +208,13 @@ class ImprovedFallbackStrategies:
         # Convertir a formato de respuesta
         recommendations = []
         for product, score in popular_products:
-            # Extraer precio del primer variante si está disponible
-            price = 0.0
-            if product.get("variants") and len(product["variants"]) > 0:
-                price_str = product["variants"][0].get("price", "0")
-                try:
-                    price = float(price_str)
-                except (ValueError, TypeError):
-                    price = 0.0
+            # 🔧 CORRECCIÓN: Usar safe_extract_price
+            price = safe_extract_price(product)
             
             recommendations.append({
                 "id": str(product.get("id", "")),
-                "title": product.get("title", ""),
-                "description": product.get("body_html", "").replace("<p>", "").replace("</p>", ""),
+                "title": product.get("title", "") or "Producto",  # Manejar title None
+                "description": safe_clean_text(product.get("body_html"), "body_html"),
                 "price": price,
                 "category": product.get("product_type", ""),
                 "score": score,
@@ -288,19 +348,13 @@ class ImprovedFallbackStrategies:
         # Convertir a formato de respuesta
         recommendations = []
         for product in diverse_products:
-            # Extraer precio del primer variante si está disponible
-            price = 0.0
-            if product.get("variants") and len(product["variants"]) > 0:
-                price_str = product["variants"][0].get("price", "0")
-                try:
-                    price = float(price_str)
-                except (ValueError, TypeError):
-                    price = 0.0
+            # 🔧 CORRECCIÓN: Usar safe_extract_price
+            price = safe_extract_price(product)
             
             recommendations.append({
                 "id": str(product.get("id", "")),
-                "title": product.get("title", ""),
-                "description": product.get("body_html", "").replace("<p>", "").replace("</p>", ""),
+                "title": product.get("title", "") or "Producto",  # Manejar title None
+                "description": safe_clean_text(product.get("body_html"), "body_html"),
                 "price": price,
                 "category": product.get("product_type", ""),
                 "score": 0.5,  # Score fijo para productos diversos
@@ -427,14 +481,8 @@ class ImprovedFallbackStrategies:
         # Convertir a formato de respuesta
         recommendations = []
         for i, product in enumerate(personalized_products):
-            # Extraer precio del primer variante si está disponible
-            price = 0.0
-            if product.get("variants") and len(product["variants"]) > 0:
-                price_str = product["variants"][0].get("price", "0")
-                try:
-                    price = float(price_str)
-                except (ValueError, TypeError):
-                    price = 0.0
+            # 🔧 CORRECCIÓN: Usar safe_extract_price
+            price = safe_extract_price(product)
             
             # Dar mayor score a los primeros productos (de categorías más preferidas)
             score = 0.9 - (i * 0.05)  # Empieza en 0.9 y va disminuyendo
@@ -442,8 +490,8 @@ class ImprovedFallbackStrategies:
             
             recommendations.append({
                 "id": str(product.get("id", "")),
-                "title": product.get("title", ""),
-                "description": product.get("body_html", "").replace("<p>", "").replace("</p>", ""),
+                "title": product.get("title", "") or "Producto",  # Manejar title None
+                "description": safe_clean_text(product.get("body_html"), "body_html"),
                 "price": price,
                 "category": product.get("product_type", ""),
                 "score": score,

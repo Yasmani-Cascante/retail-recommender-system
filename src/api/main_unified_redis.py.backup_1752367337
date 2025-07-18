@@ -41,6 +41,16 @@ from src.api.routers import mcp_router
 # Importar OptimizedConversationAIManager para Fase 0
 from src.api.integrations.ai.optimized_conversation_manager import OptimizedConversationAIManager
 
+# === STARTUP OPTIMIZATION IMPORTS ===
+from startup_sequence_fix import StartupSequenceOptimizer
+from environment_validator import EnvironmentValidator
+
+
+
+# Configurar logger básico para imports
+import logging
+logger = logging.getLogger(__name__)
+
 # === FASE 2: MCP PERSONALIZATION ENGINE ===
 try:
     from src.api.mcp.engines.mcp_personalization_engine import (
@@ -101,6 +111,190 @@ mcp_recommender = None
 
 # Variables globales para conversación AI optimizada (Fase 0)
 optimized_conversation_manager = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Evento de inicio optimizado con validación de environment y secuencia de inicialización mejorada.
+    """
+    global redis_client, product_cache, hybrid_recommender, mcp_recommender
+    global optimized_conversation_manager, mcp_state_manager, personalization_engine
+    
+    start_time = time.time()
+    logger.info("🚀 Starting optimized startup sequence...")
+    
+    try:
+        # 1. VALIDACIÓN DE ENVIRONMENT
+        logger.info("🔍 Step 1: Environment validation...")
+        env_validator = EnvironmentValidator()
+        env_result = await env_validator.quick_health_check()
+        
+        if env_result["overall_status"] == "critical":
+            logger.error("❌ Critical environment issues detected!")
+            logger.error("Environment report:")
+            print(env_validator.generate_environment_report())
+            # Continue but with warnings
+        elif env_result["overall_status"] == "degraded":
+            logger.warning("⚠️ Environment has some issues, continuing with fallbacks...")
+        else:
+            logger.info("✅ Environment validation passed")
+        
+        # 2. OPTIMIZED COMPONENT INITIALIZATION
+        logger.info("🔧 Step 2: Optimized component initialization...")
+        startup_optimizer = StartupSequenceOptimizer()
+        startup_result = await startup_optimizer.optimized_startup_sequence()
+        
+        if startup_result["success"]:
+            logger.info(f"✅ All components initialized successfully ({startup_result['initialization_time']:.2f}s)")
+            
+            # Extract initialized components
+            components = startup_result["components"]
+            redis_client = components.get("redis_client")
+            mcp_state_manager = components.get("mcp_state_manager")
+            optimized_conversation_manager = components.get("conversation_manager")
+            mcp_bridge_client = components.get("mcp_bridge_client")
+            personalization_engine = components.get("personalization_engine")
+            
+        else:
+            logger.warning("⚠️ Some components failed to initialize, using fallbacks...")
+            
+            # Fallback initialization for critical components
+            redis_client = await startup_optimizer.initialize_redis_client()
+            if redis_client:
+                mcp_state_manager = await startup_optimizer.initialize_mcp_state_manager(redis_client)
+                optimized_conversation_manager = await startup_optimizer.initialize_conversation_manager(redis_client)
+        
+        # 3. LEGACY COMPONENT INITIALIZATION (para compatibilidad)
+        logger.info("🔄 Step 3: Legacy component compatibility...")
+        
+        # Inicializar Redis si no se hizo en optimized sequence
+        if not redis_client:
+            logger.info("Initializing Redis with fallback method...")
+            redis_validator = RedisConfigValidator()
+            if await redis_validator.validate_environment():
+                try:
+                    redis_client = PatchedRedisClient()
+                    await redis_client.connect()
+                    logger.info("✅ Redis client conectado (fallback)")
+                except Exception as e:
+                    logger.error(f"❌ Error conectando Redis (fallback): {e}")
+                    redis_client = None
+        
+        # Crear caché de productos solo si Redis está disponible
+        if redis_client:
+            try:
+                from src.cache.market_aware.market_cache import MarketAwareProductCache
+                product_cache = MarketAwareProductCache(
+                    redis_client=redis_client,
+                    cache_ttl=settings.cache_ttl,
+                    cache_prefix=settings.cache_prefix,
+                    enable_background_tasks=settings.cache_enable_background_tasks
+                )
+                logger.info("✅ Market-aware product cache initialized")
+            except Exception as e:
+                logger.error(f"❌ Error creando product cache: {e}")
+                product_cache = None
+        
+        # Actualizar hybrid recommender con caché
+        if product_cache:
+            hybrid_recommender = RecommenderFactory.create_hybrid_recommender_with_cache(
+                tfidf_recommender, retail_recommender, product_cache
+            )
+            logger.info("✅ Hybrid recommender updated with cache")
+        
+        # 4. MCP RECOMMENDER INITIALIZATION
+        logger.info("🤖 Step 4: MCP Recommender initialization...")
+        
+        try:
+            if (redis_client and 
+                startup_optimizer.components.get('mcp_bridge_client')):
+                
+                from src.api.factories import MCPFactory
+                mcp_recommender = await MCPFactory.create_mcp_recommender(
+                    hybrid_recommender=hybrid_recommender,
+                    redis_client=redis_client,
+                    mcp_bridge_client=startup_optimizer.components.get('mcp_bridge_client')
+                )
+                logger.info("✅ MCP Recommender initialized")
+            else:
+                logger.warning("⚠️ MCP Recommender not initialized - missing dependencies")
+                mcp_recommender = None
+                
+        except Exception as e:
+            logger.error(f"❌ Error initializing MCP Recommender: {e}")
+            mcp_recommender = None
+        
+        # 5. DATA LOADING (async background task)
+        logger.info("📁 Step 5: Background data loading...")
+        
+        async def load_data_background():
+            """Carga de datos en background"""
+            try:
+                success = await load_recommender()
+                if success:
+                    logger.info("✅ Background data loading completed")
+                else:
+                    logger.warning("⚠️ Background data loading had issues")
+            except Exception as e:
+                logger.error(f"❌ Background data loading failed: {e}")
+        
+        # Iniciar carga en background
+        asyncio.create_task(load_data_background())
+        
+        # 6. FINAL STATUS REPORT
+        total_time = time.time() - start_time
+        
+        # Count successful components
+        component_status = {
+            "redis_client": redis_client is not None,
+            "product_cache": product_cache is not None,
+            "hybrid_recommender": hybrid_recommender is not None,
+            "mcp_state_manager": mcp_state_manager is not None,
+            "conversation_manager": optimized_conversation_manager is not None,
+            "personalization_engine": personalization_engine is not None,
+            "mcp_recommender": mcp_recommender is not None
+        }
+        
+        successful_components = len([c for c in component_status.values() if c])
+        total_components = len(component_status)
+        
+        logger.info(f"🎯 Startup completed in {total_time:.2f}s")
+        logger.info(f"📊 Components: {successful_components}/{total_components} successful")
+        
+        # Log component status
+        for component, status in component_status.items():
+            status_icon = "✅" if status else "❌"
+            logger.info(f"   {status_icon} {component}")
+        
+        # Store startup result globally for health checks
+        app.state.startup_result = {
+            "success": successful_components >= 4,  # Minimum viable components
+            "total_time": total_time,
+            "components": component_status,
+            "environment_status": env_result["overall_status"],
+            "timestamp": time.time()
+        }
+        
+        if successful_components >= 4:
+            logger.info("✅ System ready for requests")
+        else:
+            logger.warning("⚠️ System started with limited functionality")
+        
+    except Exception as e:
+        logger.error(f"❌ Critical error during startup: {e}")
+        logger.error("Stack trace:", exc_info=True)
+        
+        # Store error state
+        app.state.startup_result = {
+            "success": False,
+            "error": str(e),
+            "timestamp": time.time()
+        }
+        
+        # Don't raise - let the app start in degraded mode
+        logger.warning("⚠️ Starting in emergency mode with minimal functionality")
+
 
 # Crear gestor de arranque
 startup_manager = StartupManager(startup_timeout=settings.startup_timeout)
@@ -219,15 +413,26 @@ logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def fixed_startup_event():
+    # ✅ CORRECCIÓN: Declaraciones globales movidas al inicio
+    global redis_client, product_cache, hybrid_recommender, mcp_recommender
+    global mcp_recommender
+    global optimized_conversation_manager, mcp_state_manager, personalization_engine
+
     """
     Versión corregida del startup_event con manejo robusto de Redis.
     
     Reemplazar el startup_event existente con esta implementación.
     """
+    redis_client = None
+    product_cache = None
+    mcp_recommender = None
+    optimized_conversation_manager = None
+    mcp_state_manager = None
+    personalization_engine = None
+
     logger.info("🚀 Iniciando API de recomendaciones unificada con Redis CORREGIDO...")
     
     # 🔧 CORRECCIÓN CRÍTICA: Declarar variables globales al inicio
-    global redis_client, product_cache, hybrid_recommender, mcp_recommender
     
     # Verificar estructura del catálogo en Retail API si está habilitado
     from src.api.core.config import get_settings
@@ -359,7 +564,6 @@ async def fixed_startup_event():
     # INICIALIZACIÓN MCP (OPCIONAL)
     # ==========================================
     
-    global mcp_recommender
     mcp_recommender = None
     
     try:
@@ -461,7 +665,6 @@ async def fixed_startup_event():
     # FASE 2: INICIALIZACIÓN MCP PERSONALIZATION ENGINE
     # ==========================================
     
-    global optimized_conversation_manager, mcp_state_manager, personalization_engine
     optimized_conversation_manager = None
     mcp_state_manager = None 
     personalization_engine = None
@@ -478,8 +681,7 @@ async def fixed_startup_event():
                     perplexity_api_key=os.getenv("PERPLEXITY_API_KEY"),
                     use_perplexity_validation=os.getenv("USE_PERPLEXITY_VALIDATION", "false").lower() == "true",
                     enable_caching=True,
-                    circuit_breaker_threshold=int(os.getenv("CLAUDE_CIRCUIT_BREAKER_THRESHOLD", "5")),
-                    rate_limit_requests_per_minute=int(os.getenv("CLAUDE_REQUESTS_PER_MINUTE", "60"))
+                    enable_circuit_breaker=True
                 )
                 logger.info("✅ OptimizedConversationAIManager inicializado")
             else:

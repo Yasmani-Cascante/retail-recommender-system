@@ -8,7 +8,8 @@ import asyncio
 import logging
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
-from anthropic import Anthropic
+# from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 import httpx
 import time
 
@@ -39,7 +40,8 @@ class ConversationAIManager:
         perplexity_api_key: Optional[str] = None,
         use_perplexity_validation: bool = False
     ):
-        self.claude = Anthropic(api_key=anthropic_api_key)
+        # self.claude = Anthropic(api_key=anthropic_api_key)
+        self.claude = AsyncAnthropic(api_key=anthropic_api_key)
         self.perplexity_key = perplexity_api_key
         self.use_validation = use_perplexity_validation
         self.http_client = httpx.AsyncClient()
@@ -98,6 +100,7 @@ class ConversationAIManager:
             # 5. Actualizar métricas
             self._update_metrics("claude", time.time() - start_time)
             
+            logger.info(f"✅ Conversation processed successfully in {response['metadata']['latency_ms']:.0f}ms")
             return response
             
         except Exception as e:

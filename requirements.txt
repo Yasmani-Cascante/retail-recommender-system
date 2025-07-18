@@ -52,3 +52,6 @@ httpx>=0.24.0
 # === AI CONVERSATION ENHANCEMENTS ===
 textblob>=0.17.1  # Para análisis de texto básico en fallbacks
 langdetect>=1.0.9  # Para detección de idioma
+
+# === DEPENDENDIAS PARA PRUEBAS ===
+aiohttp>=3.9.0
