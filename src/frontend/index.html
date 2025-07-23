@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Retail Recommender Widget</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    
+    <!-- Demo page content -->
+    <div style="padding: 20px; max-width: 800px; margin: 0 auto;">
+      <h1>Retail Recommender Widget Demo</h1>
+      <p>This is a demo page to test the widget integration.</p>
+      
+      <div style="margin: 20px 0;">
+        <h2>Sample Product</h2>
+        <div style="border: 1px solid #ddd; padding: 15px; border-radius: 8px;">
+          <h3>Premium Wireless Headphones</h3>
+          <p>High-quality wireless headphones with noise cancellation.</p>
+          <p><strong>Price:</strong> $299.99</p>
+        </div>
+      </div>
+
+      <p>The widget should appear in the bottom-right corner. Try asking questions like:</p>
+      <ul>
+        <li>"Show me similar headphones"</li>
+        <li>"What are your best electronics?"</li>
+        <li>"I need something under $200"</li>
+      </ul>
+    </div>
+
+    <script type="module" src="/src/main.tsx"></script>
+    
+    <!-- Initialize widget for development -->
+    <script>
+      // Wait for widget to load, then initialize
+      document.addEventListener('DOMContentLoaded', () => {
+        setTimeout(() => {
+          if (window.RetailRecommenderWidget) {
+            window.RetailRecommenderWidget.init({
+              apiUrl: 'http://localhost:8000',
+              apiKey: '2fed9999056fab6dac5654238f0cae1c',
+              marketId: 'US',
+              theme: 'light'
+            });
+          }
+        }, 1000);
+      });
+    </script>
+  </body>
+</html>

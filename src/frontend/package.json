@@ -1,0 +1,36 @@
+{
+  "name": "@retail-recommender/widget",
+  "version": "1.0.0",
+  "description": "Conversational widget for retail recommendations",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:widget": "vite build --mode production",
+    "preview": "vite preview",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "clsx": "^2.0.0",
+    "lucide-react": "^0.263.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.23",
+    "@types/react-dom": "^18.2.7",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "@vitejs/plugin-react": "^4.6.0",
+    "autoprefixer": "^10.4.14",
+    "eslint": "^8.45.0",
+    "postcss": "^8.4.27",
+    "tailwindcss": "^3.3.3",
+    "terser": "^5.43.1",
+    "typescript": "^5.0.2",
+    "vite": "^4.5.14",
+    "vitest": "^0.34.0"
+  }
+}

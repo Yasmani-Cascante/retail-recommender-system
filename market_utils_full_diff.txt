@@ -1,0 +1,581 @@
+--- src/api/utils/market_utils.py	2025-07-18 15:43:02.244719800 +0200
++++ src/api/mcp/utils/market_utils.py	2025-07-21 12:41:05.356477300 +0200
+@@ -1,354 +1,224 @@
+-"""
+-Market Utils - Utilidades para conversión de moneda y traducción
+-==============================================================
+-
+-Módulo que maneja las conversiones de moneda y traducción básica
+-para adaptación de contenido por mercado.
+-"""
+-
+-import logging
+-import re
+-from typing import Dict, Any, Optional
+-from datetime import datetime
+-
+-logger = logging.getLogger(__name__)
+-
+-# Tasas de cambio base (actualizables desde API externa)
+-EXCHANGE_RATES = {
+-    "COP_TO_USD": 0.00025,  # 1 COP = 0.00025 USD (aprox 4000 COP = 1 USD)
+-    "COP_TO_EUR": 0.00023,  # 1 COP = 0.00023 EUR
+-    "COP_TO_MXN": 0.0044,   # 1 COP = 0.0044 MXN
+-    "USD_TO_COP": 4000.0,   # 1 USD = 4000 COP
+-    "EUR_TO_COP": 4350.0,   # 1 EUR = 4350 COP
+-    "MXN_TO_COP": 227.0,    # 1 MXN = 227 COP
+-}
+-
+-# Traducciones básicas para términos comunes de productos
+-BASIC_TRANSLATIONS = {
+-    # Términos de ropa y accesorios
+-    "Vestido de Novia": "Wedding Dress",
+-    "Alas de Novia": "Bridal Wings",
+-    "Cinturon": "Belt",
+-    "Cinturón": "Belt", 
+-    "Indio": "Indian Style",
+-    "Hojas Dorado": "Golden Leaves",
+-    "Dorado": "Golden",
+-    "Ivory": "Ivory",
+-    "Metros": "Meters",
+-    "Box": "Box",
+-    "Indispensables": "Essentials",
+-    "Enterito": "Jumpsuit",
+-    "Fiesta": "Party",
+-    "Largo": "Long",
+-    "Un Hombro": "One Shoulder",
+-    "Azul Oscuro": "Dark Blue",
+-    
+-    # Descripciones comunes
+-    "confeccionado en": "made with",
+-    "tela elasticada": "stretch fabric",
+-    "forro interior": "inner lining",
+-    "escote cruzado": "crossover neckline",
+-    "manga": "sleeve",
+-    "cintura": "waist",
+-    "abertura lateral": "side opening",
+-    "cierre invisible": "invisible zipper",
+-    "tejido indio": "indian fabric",
+-    "detalles dorados": "golden details",
+-    "hecho a mano": "handmade",
+-    "importado": "imported",
+-    
+-    # Frases de marketing
+-    "perfecto para": "perfect for",
+-    "ideal para": "ideal for",
+-    "complemento perfecto": "perfect complement",
+-    "diseño versátil": "versatile design",
+-    "añade un toque": "adds a touch",
+-    "realza tu estilo": "enhances your style",
+-    "pocas unidades disponibles": "limited units available",
+-    "precio especial": "special price",
+-}
+-
+-def convert_price_to_market_currency(
+-    price: float, 
+-    from_currency: str = "COP", 
+-    to_market_id: str = "US"
+-) -> Dict[str, Any]:
+-    """
+-    Convierte precio de una moneda a la moneda del mercado objetivo.
+-    
+-    Args:
+-        price: Precio original
+-        from_currency: Moneda origen (default: COP)
+-        to_market_id: ID del mercado destino
+-        
+-    Returns:
+-        Dict con precio convertido, moneda y metadata
+-    """
+-    try:
+-        # Mapear market_id a moneda
+-        market_currencies = {
+-            "US": "USD",
+-            "ES": "EUR", 
+-            "MX": "MXN",
+-            "CL": "CLP",
+-            "default": "USD"
+-        }
+-        
+-        target_currency = market_currencies.get(to_market_id, "USD")
+-        
+-        # Si ya está en la moneda correcta, retornar tal como está
+-        if from_currency == target_currency:
+-            return {
+-                "price": price,
+-                "currency": target_currency,
+-                "conversion_applied": False,
+-                "original_price": price,
+-                "original_currency": from_currency
+-            }
+-        
+-        # Aplicar conversión
+-        conversion_key = f"{from_currency}_TO_{target_currency}"
+-        rate = EXCHANGE_RATES.get(conversion_key)
+-        
+-        if rate is None:
+-            logger.warning(f"No hay tasa de cambio para {conversion_key}, usando precio original")
+-            return {
+-                "price": price,
+-                "currency": target_currency,  # Marcar con la moneda target aunque no se haya convertido
+-                "conversion_applied": False,
+-                "original_price": price,
+-                "original_currency": from_currency,
+-                "error": f"No exchange rate found for {conversion_key}"
+-            }
+-        
+-        # Calcular precio convertido
+-        converted_price = price * rate
+-        
+-        # Redondear según la moneda
+-        if target_currency == "USD":
+-            converted_price = round(converted_price, 2)  # 2 decimales para USD
+-        elif target_currency == "EUR":
+-            converted_price = round(converted_price, 2)  # 2 decimales para EUR
+-        elif target_currency in ["MXN", "CLP"]:
+-            converted_price = round(converted_price, 0)  # Sin decimales para MXN/CLP
+-        
+-        logger.info(f"Precio convertido: {price} {from_currency} -> {converted_price} {target_currency}")
+-        
+-        return {
+-            "price": converted_price,
+-            "currency": target_currency,
+-            "conversion_applied": True,
+-            "original_price": price,
+-            "original_currency": from_currency,
+-            "exchange_rate": rate
+-        }
+-        
+-    except Exception as e:
+-        logger.error(f"Error en conversión de moneda: {e}")
+-        return {
+-            "price": price,
+-            "currency": from_currency,
+-            "conversion_applied": False,
+-            "original_price": price,
+-            "original_currency": from_currency,
+-            "error": str(e)
+-        }
+-
+-def translate_basic_text(text: str, target_market: str = "US") -> Dict[str, Any]:
+-    """
+-    Aplica traducción básica de términos comunes al texto.
+-    
+-    Args:
+-        text: Texto a traducir
+-        target_market: Mercado objetivo
+-        
+-    Returns:
+-        Dict con texto traducido y metadata
+-    """
+-    try:
+-        if target_market not in ["US"]:  # Solo traducir para mercado US por ahora
+-            return {
+-                "text": text,
+-                "translation_applied": False,
+-                "original_text": text,
+-                "target_language": "original"
+-            }
+-        
+-        translated_text = text
+-        translations_applied = []
+-        
+-        # Aplicar traducciones básicas
+-        for spanish_term, english_term in BASIC_TRANSLATIONS.items():
+-            if spanish_term.lower() in translated_text.lower():
+-                # Usar regex para reemplazar manteniendo capitalización
+-                pattern = re.compile(re.escape(spanish_term), re.IGNORECASE)
+-                translated_text = pattern.sub(english_term, translated_text)
+-                translations_applied.append(f"{spanish_term} -> {english_term}")
+-        
+-        # Limpiar HTML y caracteres especiales comunes
+-        translated_text = clean_html_tags(translated_text)
+-        
+-        return {
+-            "text": translated_text,
+-            "translation_applied": len(translations_applied) > 0,
+-            "original_text": text,
+-            "target_language": "en",
+-            "translations_applied": translations_applied
+-        }
+-        
+-    except Exception as e:
+-        logger.error(f"Error en traducción básica: {e}")
+-        return {
+-            "text": text,
+-            "translation_applied": False,
+-            "original_text": text,
+-            "target_language": "original",
+-            "error": str(e)
+-        }
+-
+-def clean_html_tags(text: str) -> str:
+-    """
+-    Limpia tags HTML básicos del texto.
+-    
+-    Args:
+-        text: Texto con posibles tags HTML
+-        
+-    Returns:
+-        Texto limpio
+-    """
+-    try:
+-        # Remover tags HTML comunes
+-        html_patterns = [
+-            r'<meta[^>]*>',
+-            r'<p[^>]*>',
+-            r'</p>',
+-            r'<span[^>]*>',
+-            r'</span>',
+-            r'<strong[^>]*>',
+-            r'</strong>',
+-            r'<br[^>]*>',
+-            r'<div[^>]*>',
+-            r'</div>',
+-        ]
+-        
+-        cleaned_text = text
+-        for pattern in html_patterns:
+-            cleaned_text = re.sub(pattern, '', cleaned_text, flags=re.IGNORECASE)
+-        
+-        # Limpiar espacios múltiples
+-        cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
+-        
+-        return cleaned_text
+-        
+-    except Exception as e:
+-        logger.error(f"Error limpiando HTML: {e}")
+-        return text
+-
+-def adapt_product_for_market(product: Dict[str, Any], market_id: str) -> Dict[str, Any]:
+-    """
+-    Adapta un producto completo para un mercado específico.
+-    
+-    Args:
+-        product: Producto original
+-        market_id: ID del mercado objetivo
+-        
+-    Returns:
+-        Producto adaptado
+-    """
+-    try:
+-        adapted_product = product.copy()
+-        adaptations_applied = []
+-        
+-        # 1. Convertir precio
+-        if "price" in product:
+-            price_conversion = convert_price_to_market_currency(
+-                product["price"], 
+-                from_currency="COP",  # Asumiendo que los precios vienen en COP
+-                to_market_id=market_id
+-            )
+-            
+-            adapted_product["price"] = price_conversion["price"]
+-            adapted_product["currency"] = price_conversion["currency"]
+-            
+-            if price_conversion["conversion_applied"]:
+-                adaptations_applied.append("price_conversion")
+-                adapted_product["original_price"] = price_conversion["original_price"]
+-                adapted_product["exchange_rate"] = price_conversion.get("exchange_rate")
+-        
+-        # 2. Traducir título
+-        if "title" in product:
+-            title_translation = translate_basic_text(product["title"], market_id)
+-            adapted_product["title"] = title_translation["text"]
+-            
+-            if title_translation["translation_applied"]:
+-                adaptations_applied.append("title_translation")
+-                adapted_product["original_title"] = title_translation["original_text"]
+-        
+-        # 3. Traducir descripción
+-        if "description" in product:
+-            desc_translation = translate_basic_text(product["description"], market_id)
+-            adapted_product["description"] = desc_translation["text"]
+-            
+-            if desc_translation["translation_applied"]:
+-                adaptations_applied.append("description_translation")
+-                adapted_product["original_description"] = desc_translation["original_text"]
+-        
+-        # 4. Añadir metadata de adaptación
+-        adapted_product["market_adapted"] = True
+-        adapted_product["adaptations_applied"] = adaptations_applied
+-        adapted_product["adaptation_timestamp"] = datetime.now().isoformat()
+-        
+-        logger.info(f"Producto {product.get('id', 'unknown')} adaptado para mercado {market_id}: {adaptations_applied}")
+-        
+-        return adapted_product
+-        
+-    except Exception as e:
+-        logger.error(f"Error adaptando producto para mercado: {e}")
+-        # Retornar producto original en caso de error
+-        return product
+-
+-def get_market_currency_symbol(market_id: str) -> str:
+-    """
+-    Obtiene el símbolo de moneda para un mercado.
+-    
+-    Args:
+-        market_id: ID del mercado
+-        
+-    Returns:
+-        Símbolo de moneda
+-    """
+-    symbols = {
+-        "US": "$",
+-        "ES": "€",
+-        "MX": "$",
+-        "CL": "$",
+-        "default": "$"
+-    }
+-    return symbols.get(market_id, "$")
+-
+-def format_price_for_market(price: float, market_id: str) -> str:
+-    """
+-    Formatea un precio según las convenciones del mercado.
+-    
+-    Args:
+-        price: Precio numérico
+-        market_id: ID del mercado
+-        
+-    Returns:
+-        Precio formateado como string
+-    """
+-    try:
+-        symbol = get_market_currency_symbol(market_id)
+-        
+-        if market_id == "US":
+-            return f"${price:,.2f}"
+-        elif market_id == "ES":
+-            return f"€{price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+-        elif market_id in ["MX", "CL"]:
+-            return f"{symbol}{price:,.0f}"
+-        else:
+-            return f"{symbol}{price:,.2f}"
+-            
+-    except Exception as e:
+-        logger.error(f"Error formateando precio: {e}")
+-        return f"${price}"
++# improved_market_utils.py
++"""
++Versión mejorada y verificada del adaptador de mercado
++"""
++
++import logging
++from typing import Dict, Any
++
++logger = logging.getLogger(__name__)
++
++class MarketAdapter:
++    """Adaptador de mercado con conversión de moneda y traducción básica"""
++    
++    EXCHANGE_RATES = {
++        "COP_TO_USD": 0.00025,  # 1 COP = 0.00025 USD (4000 COP = 1 USD)
++        "COP_TO_EUR": 0.00023,  # 1 COP = 0.00023 EUR  
++        "COP_TO_MXN": 0.0043,   # 1 COP = 0.0043 MXN
++    }
++    
++    MARKET_CURRENCIES = {
++        "US": "USD",
++        "ES": "EUR",
++        "MX": "MXN", 
++        "CO": "COP"
++    }
++    
++    BASIC_TRANSLATIONS = {
++        # Jewelry
++        "aros": "earrings",
++        "aro": "earring",
++        "argollas": "hoops",
++        "argolla": "hoop",
++        "maxi": "maxi",
++        "luciana": "luciana",
++        "dorado": "gold",
++        "plateado": "silver",
++        "pompón": "pompom",
++        "pétalos": "petals",
++        "morados": "purple",
++        "flor": "flower",
++        "brillo": "sparkle",
++        "amarillo": "yellow",
++        "fucsia": "fuchsia",
++        "celeste": "light blue",
++        "burdeo": "burgundy",
++        "hoja": "leaf",
++        "gota": "drop",
++        "piedra": "stone",
++        "verde": "green",
++        "oscuro": "dark",
++        "diana": "diana",
++        # Clothing
++        "vestido": "dress",
++        "falda": "skirt", 
++        "blusa": "blouse",
++        "pantalón": "pants",
++        "zapatos": "shoes",
++        "bolso": "bag",
++        "cinturón": "belt",
++        # Descriptions
++        "largo": "long",
++        "corto": "short",
++        "fiesta": "party",
++        "casual": "casual",
++        "elegante": "elegant"
++    }
++    
++    def adapt_product_for_market(self, product: Dict[str, Any], market_id: str) -> Dict[str, Any]:
++        """
++        Adapta un producto para el mercado especificado
++        
++        Args:
++            product: Producto a adaptar
++            market_id: ID del mercado (US, ES, MX, CO)
++            
++        Returns:
++            Producto adaptado con precio convertido y textos traducidos
++        """
++        try:
++            # Logging para debug
++            logger.info(f"Adaptando producto para mercado {market_id}")
++            logger.debug(f"Producto original: price={product.get('price')}, currency={product.get('currency')}")
++            
++            # Clonar para no mutar el original
++            adapted = product.copy()
++            
++            # 1. CONVERSIÓN DE PRECIO
++            if "price" in adapted and market_id in self.MARKET_CURRENCIES:
++                original_price = float(adapted["price"])
++                
++                # Guardar valores originales SIEMPRE
++                adapted["original_price"] = original_price
++                adapted["original_currency"] = adapted.get("currency", "COP")
++                
++                # Determinar moneda origen
++                # Si ya tiene currency y no es la del mercado, probablemente es COP
++                current_currency = adapted.get("currency", "COP")
++                
++                # Si el precio es > 1000 y la moneda es USD/EUR, probablemente es COP mal etiquetado
++                if original_price > 1000 and current_currency in ["USD", "EUR"]:
++                    logger.warning(f"Precio sospechoso: {original_price} {current_currency}, tratando como COP")
++                    current_currency = "COP"
++                
++                # Convertir precio según mercado
++                target_currency = self.MARKET_CURRENCIES[market_id]
++                
++                if current_currency == "COP" and target_currency != "COP":
++                    # Convertir de COP a moneda destino
++                    if target_currency == "USD":
++                        adapted["price"] = round(original_price * self.EXCHANGE_RATES["COP_TO_USD"], 2)
++                    elif target_currency == "EUR":
++                        adapted["price"] = round(original_price * self.EXCHANGE_RATES["COP_TO_EUR"], 2)
++                    elif target_currency == "MXN":
++                        adapted["price"] = round(original_price * self.EXCHANGE_RATES["COP_TO_MXN"], 2)
++                    
++                    logger.info(f"Precio convertido: {original_price} COP -> {adapted['price']} {target_currency}")
++                
++                # Actualizar moneda
++                adapted["currency"] = target_currency
++            
++            # 2. TRADUCCIÓN (solo para mercado US)
++            if market_id == "US":
++                # Traducir título/nombre
++                for field in ["title", "name"]:
++                    if field in adapted and adapted[field]:
++                        original_text = str(adapted[field])
++                        adapted[f"original_{field}"] = original_text
++                        
++                        # Traducir
++                        translated = self._translate_text(original_text)
++                        if translated != original_text:
++                            adapted[field] = translated
++                            logger.info(f"Traducido: '{original_text}' -> '{translated}'")
++                
++                # Traducir descripción (solo primeras palabras)
++                if "description" in adapted and adapted["description"]:
++                    original_desc = str(adapted["description"])
++                    adapted["original_description"] = original_desc
++                    
++                    # Traducir solo el inicio
++                    first_words = original_desc[:100]
++                    translated_start = self._translate_text(first_words)
++                    if translated_start != first_words:
++                        adapted["description"] = translated_start + original_desc[100:]
++            
++            # 3. Verificar que la adaptación se aplicó
++            if adapted.get("original_price") is not None:
++                adapted["market_adapted"] = True
++                adapted["adapted_for_market"] = market_id
++                logger.info(f"✅ Adaptación completa para {market_id}")
++            else:
++                logger.warning(f"⚠️ Adaptación incompleta para {market_id}")
++            
++            return adapted
++            
++        except Exception as e:
++            logger.error(f"Error adaptando producto: {e}", exc_info=True)
++            # En caso de error, devolver original con flag
++            product["adaptation_error"] = str(e)
++            return product
++    
++    def _translate_text(self, text: str) -> str:
++        """Traduce texto del español al inglés usando diccionario básico"""
++        if not text:
++            return text
++        
++        # Convertir a minúsculas para buscar
++        text_lower = text.lower()
++        translated_lower = text_lower
++        
++        # Aplicar traducciones palabra por palabra
++        for spanish, english in self.BASIC_TRANSLATIONS.items():
++            # Reemplazar palabras completas (con límites de palabra)
++            import re
++            pattern = r'\b' + re.escape(spanish) + r'\b'
++            translated_lower = re.sub(pattern, english, translated_lower, flags=re.IGNORECASE)
++        
++        # Si hubo cambios, ajustar capitalización
++        if translated_lower != text_lower:
++            # Capitalizar primera letra si el original la tenía
++            if text and text[0].isupper():
++                words = translated_lower.split()
++                if words:
++                    words[0] = words[0].capitalize()
++                    # Capitalizar nombres propios conocidos
++                    for i, word in enumerate(words):
++                        if word in ["luciana", "diana", "silvina"]:
++                            words[i] = word.capitalize()
++                    
++                    return " ".join(words)
++            
++            return translated_lower
++        
++        # Si no se tradujo nada, devolver original
++        return text
++
++
++# Crear instancia global
++market_adapter = MarketAdapter()
++
++# Función de utilidad para testing
++def test_adaptation():
++    """Prueba la adaptación con un producto de ejemplo"""
++    test_product = {
++        "id": "123",
++        "title": "AROS MAXI ARGOLLAS LUCIANA DORADO",
++        "price": 12990.0,
++        "currency": "USD",  # Mal etiquetado, es COP
++        "description": "Aros de acero dorado"
++    }
++    
++    print("Producto original:", test_product)
++    print("\nAdaptaciones:")
++    
++    for market in ["US", "ES", "MX", "CO"]:
++        adapted = market_adapter.adapt_product_for_market(test_product.copy(), market)
++        print(f"\n{market}:")
++        print(f"  Precio: {adapted.get('price')} {adapted.get('currency')}")
++        print(f"  Título: {adapted.get('title')}")
++        if adapted.get('original_price'):
++            print(f"  (Original: {adapted.get('original_price')} {adapted.get('original_currency')})")
++
++if __name__ == "__main__":
++    test_adaptation()

@@ -1251,7 +1251,7 @@ async def personalized_conversation(
             processing_time = (time.time() - start_processing) * 1000
             
             return {
-                "session_id": session_id or f"basic_session_{user_id}_{int(time.time())}",
+                "session_id": session_id or f"basic_session_{user_id}_{time.time_ns()}",
                 "market_id": market_id,
                 "personalized_response": "Te ayudo a encontrar lo que buscas. ¿Qué tipo de producto te interesa?",
                 "recommendations": basic_recommendations[:5],

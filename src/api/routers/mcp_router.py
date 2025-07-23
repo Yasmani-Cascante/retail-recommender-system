@@ -4,9 +4,13 @@ import logging
 import asyncio
 import json  # Added for response transformation
 from datetime import datetime  # Fix: Use datetime to avoid all time shadowing issues
+
+from src.core.market.adapter import get_market_adapter, adapt_product_for_market
+# from src.api.core.market.adapter import get_market_adapter, adapt_product_for_market
 from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from pydantic import BaseModel
+
 
 # 🚀 PERFORMANCE: Import optimized performance components
 from src.api.core.performance_optimizer import (
@@ -25,6 +29,13 @@ from src.api.mcp.models.mcp_models import (
     ConversationContext, MCPRecommendationRequest, MCPRecommendationResponse,
     MarketID, IntentType
 )
+
+# 🔧 CRITICAL MARKET ADAPTATIONS IMPORTS
+from src.api.utils.market_adaptations_patch import apply_market_adaptations
+from src.api.utils.market_processor import get_processing_stats
+
+# 🔧 CRITICAL MARKET CORRECTIONS
+from src.api.utils.market_integration import fix_recommendations
 
 logger = logging.getLogger(__name__)
 
@@ -426,13 +437,13 @@ async def process_conversation(
             recommendations = []
         
         # 🔧 CORRECCIÓN CRÍTICA: Transformación de datos robusta con validación
-        def safe_transform_recommendation(rec) -> Dict:
+        async def safe_transform_recommendation(rec, context=None) -> Dict:
             """Transforma una recomendación de manera segura, manejando valores None y estructuras anidadas."""
             if isinstance(rec, dict):
                 # Verificar si tiene estructura MCP (con 'product' anidado)
                 if "product" in rec:
                     product = rec["product"]
-                    return {
+                    result = {
                         "id": str(product.get("id", "unknown")),
                         "title": str(product.get("title", "Producto")),
                         "description": str(product.get("description", "")),
@@ -447,7 +458,7 @@ async def process_conversation(
                     }
                 else:
                     # Estructura plana
-                    return {
+                    result = {
                         "id": str(rec.get("id", "unknown")),
                         "title": str(rec.get("title", "Producto")),
                         "description": str(rec.get("description", "")),
@@ -458,15 +469,15 @@ async def process_conversation(
                         "images": list(rec.get("images", [])),
                         "market_adapted": True,
                         "viability_score": 0.8,
-                        "source": str(rec.get("source", "base_recommender"))
-                    }
+                    "source": str(rec.get("source", "base_recommender"))
+                }
             else:
                 # Estructura inesperada, crear recomendación de emergencia
-                return {
+                result = {
                     "id": "unknown",
                     "title": "Producto",
                     "description": "",
-                    "price": 0.0,
+                    "price": float(rec.get("price", 0.0)),
                     "currency": "USD",
                     "score": 0.5,
                     "reason": "Fallback recommendation",
@@ -475,12 +486,27 @@ async def process_conversation(
                     "viability_score": 0.5,
                     "source": "error_recovery"
                 }
+            
+            # ✅ Aplicar adaptación de mercado si hay contexto
+            if context and "market_id" in context:
+                try:
+                    adapter = get_market_adapter()
+                    if isinstance(rec, dict):
+                        if "product" in rec:
+                            result = await adapter.adapt_product(result, context["market_id"])
+                        else:
+                            result = await adapter.adapt_product(result, context["market_id"])
+                except Exception as e:
+                    logger.error(f"Market adaptation failed in transform: {e}")
+            
+            return result
         
         # Aplicar transformación segura a todas las recomendaciones
         safe_recommendations = []
+        market_context = {"market_id": conversation.market_id}
         for rec in recommendations:
             try:
-                safe_rec = safe_transform_recommendation(rec)
+                safe_rec = await safe_transform_recommendation(rec, context=market_context)
                 safe_recommendations.append(safe_rec)
             except Exception as transform_error:
                 logger.error(f"Error transforming recommendation: {transform_error}")
@@ -489,7 +515,7 @@ async def process_conversation(
                     "id": "error_product",
                     "title": "Producto No Disponible",
                     "description": "Error al procesar recomendación",
-                    "price": 0.0,
+                    "price": float(rec.get("price", 0.0)),
                     "currency": "USD",
                     "score": 0.1,
                     "reason": "Error en procesamiento",
@@ -530,7 +556,7 @@ async def process_conversation(
                     """Gestor de fallbacks robusto para componentes MCP"""
                     
                     @staticmethod
-                    def handle_personalization_fallback(
+                    async def handle_personalization_fallback(
                         safe_recommendations: list,
                         conversation_req,
                         validated_user_id: str
@@ -583,6 +609,7 @@ async def process_conversation(
                         personalized_recommendations = []
                         for i, rec in enumerate(safe_recommendations):
                             enhanced_rec = rec.copy()
+                            # enhanced_rec = rec.copy()
                             reasons = [
                                 f"Top match for '{conversation_req.query}' based on title relevance",
                                 f"High compatibility with your search '{conversation_req.query}'",
@@ -596,6 +623,18 @@ async def process_conversation(
                                 "market_adapted": True,
                                 "cultural_fit_score": 0.7
                             })
+
+                            # ✅ Aplica la adaptación de mercado si hay contexto
+                            if 'market_id' in locals() and conversation.market_id:
+                                try:
+                                    adapter = get_market_adapter()
+                                    enhanced_rec = await adapter.adapt_product(
+                                        enhanced_rec,
+                                        conversation.market_id
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Market adaptation failed: {e}")
+
                             personalized_recommendations.append(enhanced_rec)
                         
                         return {
@@ -767,7 +806,7 @@ async def process_conversation(
                     logger.warning(f"⚠️ Personalization failed, using robust fallback: {personalization_error}")
                     
                     # ✅ USAR: Fallback robusto que mantiene estructura esperada
-                    personalization_result = MCPFallbackManager.handle_personalization_fallback(
+                    personalization_result = await MCPFallbackManager.handle_personalization_fallback(
                         safe_recommendations, conversation, validated_user_id
                     )
                 
@@ -966,6 +1005,7 @@ async def process_conversation(
         }
         
         logger.info("Returning emergency response with complete structure")
+        
         return emergency_response
 
 @router.get("/markets", response_model=MarketSupportedResponse)
@@ -1116,7 +1156,7 @@ async def get_market_recommendations(
             # Verificar si rec es un objeto RecommendationMCP o un diccionario
             if hasattr(rec, 'product'):  # Es un objeto Pydantic
                 product = rec.product
-                simplified_recs.append({
+                simplified_rec = {
                     "id": product.id,
                     "title": product.localized_title or product.title,
                     "price": product.market_price,
@@ -1124,11 +1164,11 @@ async def get_market_recommendations(
                     "score": rec.market_score,
                     "reason": rec.reason,
                     "market_adapted": True,
-                    "source": getattr(rec, 'metadata', {}).get("source", "unknown")  # Añadir origen de la recomendación
-                })
+                    "source": getattr(rec, 'metadata', {}).get("source", "unknown")
+                }
             else:  # Es un diccionario
                 product = rec.get("product", {})
-                simplified_recs.append({
+                simplified_rec = {
                     "id": product.get("id"),
                     "title": product.get("localized_title") or product.get("title"),
                     "price": product.get("market_price"),
@@ -1136,9 +1176,21 @@ async def get_market_recommendations(
                     "score": rec.get("market_score"),
                     "reason": rec.get("reason"),
                     "market_adapted": True,
-                    "source": rec.get("metadata", {}).get("source", "unknown")  # Añadir origen de la recomendación
-                })
-        
+                    "source": rec.get("metadata", {}).get("source", "unknown")
+                }
+            
+            # ✅ Aplica la adaptación de mercado
+            try:
+                adapter = get_market_adapter()
+                simplified_rec = await adapter.adapt_product(
+                    simplified_rec,
+                    market_id  # Usar el market_id del parámetro
+                )
+            except Exception as e:
+                logger.error(f"Market adaptation failed: {e}")
+
+            simplified_recs.append(simplified_rec)
+            
         return {
             "product_id": validated_product_id,
             "market_id": market_id,
@@ -1302,4 +1354,28 @@ async def invalidate_market_cache(
         raise HTTPException(
             status_code=500,
             detail=f"Error invalidating market cache: {str(e)}"
+        )
+
+@router.get("/market/corrections-stats", response_model=Dict)
+async def get_market_corrections_stats(
+    current_user: str = Depends(get_current_user)
+):
+    """
+    🔧 NUEVO ENDPOINT: Obtiene estadísticas de correcciones de mercado aplicadas
+    """
+    try:
+        stats = get_processing_stats()
+        
+        return {
+            "status": "success",
+            "corrections_stats": stats,
+            "timestamp": time.time(),
+            "message": "Market corrections statistics retrieved successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting corrections stats: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving corrections stats: {str(e)}"
         )
