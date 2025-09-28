@@ -2,6 +2,7 @@
  * CORRECTED Node.js Bridge Server for REAL Shopify MCP Integration
  * 
  * CORRECCIÓN CRÍTICA: Declarar y configurar 'app' ANTES de definir las rutas
+ * REFACTORIZADO: Configuración centralizada Claude para futuras integraciones
  * 
  * Este servidor proporciona una interfaz HTTP real entre Python y Shopify Admin GraphQL API,
  * usando nuestra implementación custom del cliente MCP.
@@ -12,6 +13,7 @@
  * - Logging estructurado
  * - Health checks comprehensivos
  * - Error handling robusto
+ * - Configuración centralizada Claude preparada para microservicios
  */
 
 import express from 'express';
@@ -25,6 +27,37 @@ config();
 
 // ✅ CORRECCIÓN CRÍTICA: Importar nuestro cliente real en lugar de @shopify/dev-mcp
 import { RealShopifyMCPClient } from './shopify-mcp-client.js';
+
+// 🚀 NUEVA CONFIGURACIÓN CENTRALIZADA CLAUDE
+const CLAUDE_CONFIG = {
+    modelTier: process.env.CLAUDE_MODEL_TIER || 'SONNET',
+    region: process.env.CLAUDE_REGION || 'global',
+    timeout: parseInt(process.env.CLAUDE_TIMEOUT || '30'),
+    maxRetries: parseInt(process.env.CLAUDE_MAX_RETRIES || '3'),
+    
+    // Mapeo de tiers a modelos específicos
+    getModelName() {
+        const models = {
+            'HAIKU': 'claude-3-haiku-20240307',
+            'SONNET': 'claude-sonnet-4-20250514',
+            'OPUS': 'claude-opus-4'
+        };
+        return models[this.modelTier] || models['SONNET'];
+    },
+    
+    // Configuración para diferentes entornos
+    getConfigForEnvironment() {
+        const env = process.env.NODE_ENV || 'development';
+        
+        if (env === 'production') {
+            return { ...this, modelTier: 'SONNET', timeout: 20 };
+        } else if (env === 'staging') {
+            return { ...this, modelTier: 'HAIKU', timeout: 15 };
+        }
+        
+        return this;
+    }
+};
 
 // ============================================================================
 // 1. CONFIGURACIÓN DE LOGGING
@@ -411,7 +444,7 @@ app.get('/api/mcp/status', async (req, res) => {
         const status = {
             mcp_status: 'operational',
             bridge_version: process.env.npm_package_version || '2.0.0',
-            claude_model: process.env.CLAUDE_MODEL || 'claude-3-sonnet-20240229',
+            claude_model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-20250514',
             conversation_cache_size: 0,
             active_sessions: 0,
             shopify_integration: {
@@ -755,7 +788,9 @@ app.listen(PORT, () => {
     logger.info(`🚀 Real Shopify MCP Bridge server running on port ${PORT}`, {
         environment: process.env.NODE_ENV || 'development',
         version: process.env.npm_package_version || '2.0.0',
-        shopify_configured: !!(process.env.SHOPIFY_SHOP_URL && process.env.SHOPIFY_ACCESS_TOKEN)
+        shopify_configured: !!(process.env.SHOPIFY_SHOP_URL && process.env.SHOPIFY_ACCESS_TOKEN),
+        claude_model_tier: CLAUDE_CONFIG.modelTier,
+        claude_model_name: CLAUDE_CONFIG.getModelName()
     });
     
     // Initialize Shopify client on startup

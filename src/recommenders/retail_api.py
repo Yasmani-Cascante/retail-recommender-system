@@ -15,7 +15,8 @@ import traceback
 
 # Importar el gestor de catálogos (si existe)
 try:
-    from src.api.core.catalog_manager import CatalogManager
+    from src.api.core.catalog_manager_ import CatalogManager
+    # from src.api.core.catalog_manager_fixed import CatalogManager
     CATALOG_MANAGER_AVAILABLE = True
 except ImportError:
     CATALOG_MANAGER_AVAILABLE = False
@@ -55,8 +56,13 @@ class RetailAPIRecommender:
     
     def _process_predictions(self, response) -> List[Dict]:
         """
-        Procesa la respuesta de la API de Google Cloud Retail y extrae las recomendaciones.
-        Maneja múltiples formatos de respuesta para diferentes tipos de consultas.
+        ✅ FIXED: Procesa respuesta de Google Cloud Retail API con soporte completo para protobuf.
+        
+        PERFORMANCE FIX APLICADO:
+        - Manejo específico para PredictResponse protobuf objects
+        - Parsing directo de attributes sin diccionarios intermedios 
+        - Debugging avanzado para identificar estructuras desconocidas
+        - Fallback robusto con logs detallados
         
         Args:
             response: Respuesta de la API de Google Cloud Retail
@@ -66,156 +72,239 @@ class RetailAPIRecommender:
         """
         recommendations = []
         try:
-            # Log detallado de la estructura de respuesta para diagnóstico
-            logging.info(f"Tipo de respuesta: {type(response)}")
-            logging.debug(f"Estructura completa de respuesta: {response}")
+            # ✅ FIX #1: Logging mejorado con DEBUG tags
+            logging.info(f"[DEBUG] 📊 Tipo de respuesta: {type(response)}")
             
-            # Función auxiliar para extraer información de producto de diferentes estructuras
-            def extract_product_info(item, source_type):
-                product_info = {
-                    "id": "",
-                    "title": "Producto",  # Valor por defecto
-                    "description": "",
-                    "price": 0.0,
-                    "category": "",
-                    "score": 0.0,
-                    "source": "retail_api"
-                }
-                
-                # Registrar tipo de estructura para diagnóstico
-                logging.debug(f"Extrayendo información de producto desde {source_type}: {type(item)}")
-                
-                # Extraer ID (obligatorio)
-                if hasattr(item, 'id'):
-                    product_info["id"] = item.id
-                elif hasattr(item, 'product') and hasattr(item.product, 'id'):
-                    product_info["id"] = item.product.id
-                
-                # Si no hay ID, no podemos procesar este item
-                if not product_info["id"]:
-                    logging.warning(f"No se pudo extraer ID de producto desde {source_type}")
-                    return None
-                    
-                # Extraer título
-                if hasattr(item, 'title') and item.title:
-                    product_info["title"] = item.title
-                elif hasattr(item, 'product') and hasattr(item.product, 'title') and item.product.title:
-                    product_info["title"] = item.product.title
-                elif hasattr(item, 'name') and item.name:
-                    name_parts = item.name.split('/')
-                    if name_parts:
-                        product_info["title"] = name_parts[-1]
-                elif hasattr(item, 'product') and hasattr(item.product, 'name') and item.product.name:
-                    name_parts = item.product.name.split('/')
-                    if name_parts:
-                        product_info["title"] = name_parts[-1]
-                    
-                # Extraer descripción
-                if hasattr(item, 'description') and item.description:
-                    product_info["description"] = item.description
-                elif hasattr(item, 'product') and hasattr(item.product, 'description') and item.product.description:
-                    product_info["description"] = item.product.description
-                    
-                # Extraer precio
-                price = 0.0
-                if hasattr(item, 'price') and item.price:
-                    try:
-                        price = float(item.price)
-                    except (ValueError, TypeError):
-                        pass
-                elif hasattr(item, 'product') and hasattr(item.product, 'price_info') and item.product.price_info:
-                    try:
-                        price = float(item.product.price_info.price)
-                    except (ValueError, TypeError):
-                        pass
-                product_info["price"] = price
-                    
-                # Extraer categoría
-                if hasattr(item, 'category') and item.category:
-                    product_info["category"] = item.category
-                elif hasattr(item, 'product') and hasattr(item.product, 'categories') and item.product.categories:
-                    product_info["category"] = item.product.categories[0] if len(item.product.categories) > 0 else ""
-                    
-                # Extraer score
-                if hasattr(item, 'score') and item.score:
-                    product_info["score"] = float(item.score)
-                elif hasattr(item, 'metadata') and hasattr(item.metadata, 'get'):
-                    product_info["score"] = float(item.metadata.get("predictScore", 0.0))
-                    
-                # Intentar extraer información adicional si está disponible
-                if hasattr(item, 'product'):
-                    # Extraer URLs de imágenes si están disponibles
-                    if hasattr(item.product, 'images') and item.product.images:
-                        image_uris = [img.uri for img in item.product.images if hasattr(img, 'uri')]
-                        if image_uris:
-                            product_info["images"] = image_uris
-                    
-                    # Extraer atributos adicionales si están disponibles
-                    if hasattr(item.product, 'attributes') and item.product.attributes:
-                        attributes = {}
-                        for key, value in item.product.attributes.items():
-                            if hasattr(value, 'text') and value.text:
-                                attributes[key] = value.text[0] if value.text else None
-                        if attributes:
-                            product_info["attributes"] = attributes
-                
-                return product_info
-                
-            # Verificar si tiene el campo 'results'
+            # ✅ FIX #2: Manejar específicamente PredictResponse protobuf
             if hasattr(response, 'results') and response.results:
-                logging.info(f"Procesando respuesta con {len(response.results)} resultados en campo 'results'")
-                for result in response.results:
-                    product_info = extract_product_info(result, "results")
-                    if product_info:
-                        recommendations.append(product_info)
+                logging.info(f"[DEBUG] ✅ Procesando {len(response.results)} resultados de PredictResponse protobuf")
+                
+                for i, result in enumerate(response.results):
+                    try:
+                        # ✅ FIX #3: Extraer datos directamente del protobuf
+                        product_info = {
+                            "id": "",
+                            "title": "Producto",
+                            "description": "",
+                            "price": 0.0,
+                            "category": "",
+                            "score": 0.0,
+                            "source": "retail_api"
+                        }
                         
-            # Verificar estructura alternativa (recomendaciones basadas en usuario)
-            elif hasattr(response, 'recommendations'):
-                logging.info(f"Procesando respuesta con {len(response.recommendations)} elementos en campo 'recommendations'")
+                        # ✅ FIX #4: Extraer ID - múltiples estrategias
+                        if hasattr(result, 'id') and result.id:
+                            product_info["id"] = str(result.id)
+                            logging.info(f"[DEBUG] ✅ ID extraído directamente: {product_info['id']}")
+                        elif hasattr(result, 'product') and result.product and hasattr(result.product, 'id'):
+                            product_info["id"] = str(result.product.id)
+                            logging.info(f"[DEBUG] ✅ ID extraído de product.id: {product_info['id']}")
+                        
+                        # ✅ FIX #5: Manejar objetos Product anidados
+                        if hasattr(result, 'product') and result.product:
+                            product = result.product
+                            
+                            # Título del producto
+                            if hasattr(product, 'title') and product.title:
+                                product_info["title"] = str(product.title)
+                            elif hasattr(product, 'name') and product.name:
+                                # Extraer nombre del path completo
+                                name_parts = str(product.name).split('/')
+                                product_info["title"] = name_parts[-1] if name_parts else "Producto"
+                            
+                            # Descripción del producto
+                            if hasattr(product, 'description') and product.description:
+                                product_info["description"] = str(product.description)
+                            
+                            # Categorías - manejar repeated field
+                            if hasattr(product, 'categories') and product.categories:
+                                try:
+                                    # Protobuf repeated field puede ser una lista
+                                    if len(product.categories) > 0:
+                                        product_info["category"] = str(product.categories[0])
+                                except (IndexError, TypeError):
+                                    product_info["category"] = "General"
+                            
+                            # Precio - manejar PriceInfo protobuf
+                            if hasattr(product, 'price_info') and product.price_info:
+                                try:
+                                    if hasattr(product.price_info, 'price'):
+                                        product_info["price"] = float(product.price_info.price)
+                                except (ValueError, TypeError, AttributeError):
+                                    product_info["price"] = 0.0
+                        
+                        # ✅ FIX #6: Score del resultado
+                        if hasattr(result, 'score') and result.score:
+                            try:
+                                product_info["score"] = float(result.score)
+                            except (ValueError, TypeError):
+                                product_info["score"] = 0.0
+                        
+                        # ✅ FIX #7: Metadata adicional si existe
+                        if hasattr(result, 'metadata') and result.metadata:
+                            try:
+                                # Intentar extraer score de metadata
+                                if hasattr(result.metadata, 'get'):
+                                    predict_score = result.metadata.get("predictScore", 0.0)
+                                    if predict_score:
+                                        product_info["score"] = float(predict_score)
+                            except (AttributeError, ValueError, TypeError):
+                                pass
+                        
+                        # ✅ Validar que tenemos al menos un ID
+                        if product_info["id"]:
+                            recommendations.append(product_info)
+                            logging.info(f"[DEBUG] ✅ Producto {i+1} procesado: ID={product_info['id']}, Título={product_info['title'][:30]}..., Score={product_info['score']}")
+                        else:
+                            logging.warning(f"[DEBUG] ⚠️ Producto {i+1} sin ID válido descartado")
+                            
+                    except Exception as parse_error:
+                        logging.error(f"[DEBUG] ❌ Error parsing producto {i+1}: {parse_error}")
+                        continue
+                        
+            # ✅ FIX #8: Fallback mejorado para estructuras alternativas
+            elif hasattr(response, 'recommendations') and response.recommendations:
+                logging.info(f"[DEBUG] 🔄 Procesando estructura alternativa 'recommendations': {len(response.recommendations)} elementos")
                 
                 for rec in response.recommendations:
-                    product_info = extract_product_info(rec, "recommendations")
-                    if product_info:
-                        recommendations.append(product_info)
-            
-            # Verificar estructura con campo 'prediction_results' (nuevo formato posible)
-            elif hasattr(response, 'prediction_results'):
-                logging.info(f"Procesando respuesta con {len(response.prediction_results)} elementos en campo 'prediction_results'")
-                
-                for result in response.prediction_results:
-                    product_info = extract_product_info(result, "prediction_results")
-                    if product_info:
-                        recommendations.append(product_info)
+                    # Aplicar la misma lógica de extracción
+                    try:
+                        product_info = self._extract_product_from_protobuf(rec, "recommendations")
+                        if product_info and product_info.get("id"):
+                            recommendations.append(product_info)
+                    except Exception as e:
+                        logging.error(f"[DEBUG] Error en recommendations fallback: {e}")
+                        continue
                         
+            # ✅ FIX #9: Debugging avanzado para casos desconocidos
             else:
-                # Intentar procesar respuesta como diccionario
-                if hasattr(response, '__dict__') or isinstance(response, dict):
-                    response_dict = response.__dict__ if hasattr(response, '__dict__') else response
-                    logging.info(f"Intentando procesar respuesta como diccionario: {list(response_dict.keys())}")
+                logging.warning(f"[DEBUG] ⚠️ Estructura de respuesta no reconocida")
+                
+                # Inspeccionar attributes disponibles
+                if hasattr(response, '__dict__'):
+                    available_attrs = list(response.__dict__.keys())
+                    logging.info(f"[DEBUG] 🔍 Atributos disponibles en response: {available_attrs}")
                     
-                    # Buscar campos que puedan contener recomendaciones
-                    possible_fields = ['results', 'recommendations', 'prediction_results', 'items']
-                    for field in possible_fields:
-                        if field in response_dict and response_dict[field]:
-                            logging.info(f"Encontrado campo '{field}' con {len(response_dict[field])} elementos")
-                            for item in response_dict[field]:
-                                product_info = extract_product_info(item, field)
-                                if product_info:
-                                    recommendations.append(product_info)
-                            break
+                    # Buscar posibles campos con datos
+                    for attr_name in available_attrs:
+                        attr_value = getattr(response, attr_name, None)
+                        if attr_value and hasattr(attr_value, '__len__') and len(attr_value) > 0:
+                            logging.info(f"[DEBUG] 🔍 Campo potencial encontrado: {attr_name} (length: {len(attr_value)})")
+                
+                # Intentar acceder a _pb (internal protobuf representation)
+                if hasattr(response, '_pb') and response._pb:
+                    logging.info(f"[DEBUG] 🔍 Intentando acceso directo a _pb: {type(response._pb)}")
+                    try:
+                        pb_dict = {}
+                        for field, value in response._pb.ListFields():
+                            pb_dict[field.name] = value
+                        logging.info(f"[DEBUG] 🔍 Campos en _pb: {list(pb_dict.keys())}")
+                        
+                        # Si encontramos 'results' en _pb, intentar procesarlo
+                        if 'results' in pb_dict:
+                            logging.info(f"[DEBUG] ✅ Encontrados {len(pb_dict['results'])} resultados en _pb.results")
+                            # Procesar usando la lógica principal
+                            for result in pb_dict['results']:
+                                try:
+                                    product_info = self._extract_product_from_protobuf(result, "_pb_results")
+                                    if product_info and product_info.get("id"):
+                                        recommendations.append(product_info)
+                                except Exception as e:
+                                    logging.error(f"[DEBUG] Error procesando _pb result: {e}")
+                                    continue
+                    except Exception as pb_error:
+                        logging.error(f"[DEBUG] Error accediendo _pb: {pb_error}")
                 
                 if not recommendations:
-                    logging.warning("La respuesta no contiene resultados en un formato reconocido")
-                    logging.debug(f"Contenido de respuesta: {response}")
+                    logging.warning(f"[DEBUG] ⚠️ Google Retail API devolvió respuesta sin resultados procesables")
+                    logging.warning(f"[DEBUG] ⚠️ Tipo de respuesta: {type(response)}, Atributos: {dir(response)[:10]}...")
                     return []
                         
-            # Log de resultados
-            logging.info(f"Procesadas {len(recommendations)} recomendaciones")
+            # ✅ FIX #10: Log de resultados finales
+            if recommendations:
+                logging.info(f"[DEBUG] ✅ ÉXITO: Procesadas {len(recommendations)} recomendaciones de Google Retail API")
+                for i, rec in enumerate(recommendations[:3]):
+                    logging.info(f"[DEBUG] Rec {i+1}: ID={rec['id']}, Título={rec['title'][:40]}..., Score={rec['score']}")
+            else:
+                logging.warning(f"[DEBUG] ⚠️ No se procesaron recomendaciones desde Google Retail API")
+                
             return recommendations
+            
         except Exception as e:
-            logging.error(f"Error processing predictions: {str(e)}")
-            logging.error(f"Traceback: {traceback.format_exc()}")
+            logging.error(f"[DEBUG] ❌ Error crítico en _process_predictions: {e}")
+            import traceback
+            logging.error(f"[DEBUG] ❌ Traceback: {traceback.format_exc()}")
             return []
+    
+    def _extract_product_from_protobuf(self, item, source_type: str) -> Dict:
+        """
+        ✅ HELPER: Extrae información de producto desde objetos protobuf de forma robusta.
+        
+        Args:
+            item: Objeto protobuf del producto/resultado
+            source_type: Tipo de fuente para logging
+            
+        Returns:
+            Dict: Información del producto extraída
+        """
+        try:
+            product_info = {
+                "id": "",
+                "title": "Producto",
+                "description": "",
+                "price": 0.0,
+                "category": "",
+                "score": 0.0,
+                "source": "retail_api"
+            }
+            
+            # Extraer ID
+            if hasattr(item, 'id') and item.id:
+                product_info["id"] = str(item.id)
+            elif hasattr(item, 'product') and item.product and hasattr(item.product, 'id'):
+                product_info["id"] = str(item.product.id)
+            
+            # Si no hay ID, no procesar
+            if not product_info["id"]:
+                logging.warning(f"[DEBUG] ⚠️ No se pudo extraer ID desde {source_type}")
+                return None
+                
+            # Extraer datos del producto si existe
+            if hasattr(item, 'product') and item.product:
+                product = item.product
+                
+                if hasattr(product, 'title') and product.title:
+                    product_info["title"] = str(product.title)
+                    
+                if hasattr(product, 'description') and product.description:
+                    product_info["description"] = str(product.description)
+                    
+                if hasattr(product, 'categories') and product.categories:
+                    try:
+                        if len(product.categories) > 0:
+                            product_info["category"] = str(product.categories[0])
+                    except (IndexError, TypeError):
+                        pass
+                        
+                if hasattr(product, 'price_info') and product.price_info:
+                    try:
+                        if hasattr(product.price_info, 'price'):
+                            product_info["price"] = float(product.price_info.price)
+                    except (ValueError, TypeError, AttributeError):
+                        pass
+            
+            # Extraer score del resultado
+            if hasattr(item, 'score') and item.score:
+                try:
+                    product_info["score"] = float(item.score)
+                except (ValueError, TypeError):
+                    pass
+            
+            return product_info
+            
+        except Exception as e:
+            logging.error(f"[DEBUG] Error en _extract_product_from_protobuf ({source_type}): {e}")
+            return None
 
     async def process_shopify_orders(self, orders: List[Dict], user_id: str):
         """
@@ -977,7 +1066,7 @@ class RetailAPIRecommender:
             logging.info(f"[DEBUG] 📤 Request creado - page_size: {n_recommendations}")
 
             try:
-                # CORREGIDO: Ejecutar la solicitud directamente
+                # CORREGIDO: Ejecutar la solicitud directamente sin diagnóstico costoso
                 logging.info(f"[DEBUG] 🚀 Enviando petición a Google Cloud Retail API...")
                 response = self.predict_client.predict(request)
                 
@@ -995,6 +1084,12 @@ class RetailAPIRecommender:
                         logging.info(f"[DEBUG] Retail API Rec {i+1}: ID={rec.get('id')}, Título={rec.get('title', '')[:30]}..., Score={rec.get('score', 0)}")
                 else:
                     logging.warning(f"[DEBUG] ⚠️ Google Retail API devolvió respuesta vacía para user_id={user_id}, product_id={product_id}")
+                    logging.info(f"[DEBUG] 📝 POSIBLES CAUSAS:")
+                    logging.info(f"[DEBUG] 📝 1. Catálogo vacío - verificar importación con diagnóstico arriba")
+                    logging.info(f"[DEBUG] 📝 2. Producto no existe en catálogo - verificar product_id={product_id}")
+                    logging.info(f"[DEBUG] 📝 3. Usuario sin historial - necesita eventos previos para personalización")
+                    logging.info(f"[DEBUG] 📝 4. Serving config mal configurado - verificar {self.serving_config_id}")
+                    logging.info(f"[DEBUG] 📝 5. Modelo aún entrenándose - Google necesita tiempo para procesar datos")
                 
                 return results
                 

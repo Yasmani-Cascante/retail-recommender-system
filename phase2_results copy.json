@@ -1,0 +1,131 @@
+{
+  "validation_summary": {
+    "timestamp": "2025-07-29T00:40:56.298292",
+    "total_tests": 13,
+    "passed_tests": 9,
+    "failed_tests": 4,
+    "success_rate": 69.23076923076923,
+    "avg_execution_time_ms": 20596.538341962376,
+    "phase2_status": "NEEDS_IMPROVEMENT"
+  },
+  "test_results": [
+    {
+      "test_name": "System Health Check",
+      "passed": true,
+      "details": "Status: 200, Components: 4, Redis: Connected",
+      "execution_time_ms": 3687.7434253692627,
+      "error": null
+    },
+    {
+      "test_name": "MCP Bridge Connectivity",
+      "passed": true,
+      "details": "Bridge: Healthy, Shopify: connected",
+      "execution_time_ms": 10.002374649047852,
+      "error": null
+    },
+    {
+      "test_name": "Personalized Conversation",
+      "passed": true,
+      "details": "Response: True, Recommendations: 5, Strategy: hybrid, Score: 0.95",
+      "execution_time_ms": 10750.704765319824,
+      "error": null
+    },
+    {
+      "test_name": "Multi-Strategy Personalization",
+      "passed": false,
+      "details": "Strategies tested: 1, Used: ['hybrid']",
+      "execution_time_ms": 41457.17263221741,
+      "error": null
+    },
+    {
+      "test_name": "Market-Specific Personalization",
+      "passed": true,
+      "details": "Markets tested: 3, Culturally adapted: 2",
+      "execution_time_ms": 33381.569385528564,
+      "error": null
+    },
+    {
+      "test_name": "Real-Time Market Context",
+      "passed": true,
+      "details": "Market context: True, Currency: USD, Availability checked: True",
+      "execution_time_ms": 9985.37540435791,
+      "error": null
+    },
+    {
+      "test_name": "Dynamic Pricing Context",
+      "passed": true,
+      "details": "Products: 5, With prices: 5, With currency: 5",
+      "execution_time_ms": 10477.759838104248,
+      "error": null
+    },
+    {
+      "test_name": "Inventory Availability",
+      "passed": false,
+      "details": "Test failed with exception",
+      "execution_time_ms": 30099.31778907776,
+      "error": ""
+    },
+    {
+      "test_name": "Conversation State Persistence",
+      "passed": false,
+      "details": "Test failed with exception",
+      "execution_time_ms": 30008.387804031372,
+      "error": ""
+    },
+    {
+      "test_name": "Intent Evolution Tracking",
+      "passed": true,
+      "details": "Intents tracked: 4, Unique: 3, Progression: ['general', 'general', 'search', 'purchase']",
+      "execution_time_ms": 47745.370626449585,
+      "error": null
+    },
+    {
+      "test_name": "Response Times",
+      "passed": false,
+      "details": "Avg: 11261ms, Max: 11507ms, Tests: 3",
+      "execution_time_ms": 33784.02090072632,
+      "error": null
+    },
+    {
+      "test_name": "Metrics Endpoint",
+      "passed": true,
+      "details": "Metrics sections: 4, Personalization: False, Performance: False",
+      "execution_time_ms": 264.56642150878906,
+      "error": null
+    },
+    {
+      "test_name": "Concurrent Requests",
+      "passed": true,
+      "details": "Success rate: 100.0%, Avg time: 14081ms, Concurrent: 5",
+      "execution_time_ms": 16103.007078170776,
+      "error": null
+    }
+  ],
+  "critical_failures": [
+    {
+      "test_name": "Conversation State Persistence",
+      "error": "",
+      "details": "Test failed with exception"
+    }
+  ],
+  "warnings": [
+    {
+      "test_name": "Multi-Strategy Personalization",
+      "details": "Strategies tested: 1, Used: ['hybrid']"
+    },
+    {
+      "test_name": "Inventory Availability",
+      "details": "Test failed with exception"
+    },
+    {
+      "test_name": "Response Times",
+      "details": "Avg: 11261ms, Max: 11507ms, Tests: 3"
+    }
+  ],
+  "recommendations": [
+    "⚠️ Fase 2 necesita mejoras antes de proceder a Fase 3",
+    "🔧 Resolver problemas identificados en las validaciones",
+    "🚨 Resolver 1 problemas críticos identificados",
+    "⚠️ Revisar 3 warnings para optimización"
+  ]
+}

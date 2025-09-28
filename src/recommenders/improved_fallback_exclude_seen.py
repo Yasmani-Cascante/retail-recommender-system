@@ -506,7 +506,8 @@ class ImprovedFallbackStrategies:
         user_id: str,
         products: List[Dict],
         user_events: Optional[List[Dict]] = None,
-        n: int = 5
+        n: int = 5,
+        exclude_products: Optional[Set[str]] = None
     ) -> List[Dict]:
         """
         Estrategia de fallback inteligente que selecciona la mejor
@@ -517,12 +518,22 @@ class ImprovedFallbackStrategies:
             products: Lista de productos disponibles
             user_events: Lista de eventos previos del usuario (opcional)
             n: Número de recomendaciones a devolver
+            exclude_products: Set de IDs de productos a excluir (opcional)
             
         Returns:
             List[Dict]: Lista de productos recomendados
         """
         # Obtener productos con los que el usuario ha interactuado
         interacted_products = await ImprovedFallbackStrategies.get_user_interactions(user_id, user_events)
+        
+        # ✅ CRITICAL FIX: Combinar productos excluidos del contexto con interacciones del usuario
+        combined_exclude = set()
+        if interacted_products: # Del historial del usuario
+            combined_exclude.update(interacted_products)
+        if exclude_products:    # Del contexto conversacional (shown_products)
+            combined_exclude.update(exclude_products)
+            
+        logger.info(f"Smart fallback exclusions: {len(interacted_products)} from interactions + {len(exclude_products or set())} from context = {len(combined_exclude)} total")
         
         # Si tenemos eventos del usuario, usar recomendaciones personalizadas
         if user_events and len(user_events) > 0:
@@ -536,12 +547,12 @@ class ImprovedFallbackStrategies:
             return await ImprovedFallbackStrategies.get_popular_products(
                 products, 
                 n, 
-                exclude_products=interacted_products
+                exclude_products=combined_exclude
             )
         else:  # 30% del tiempo usar productos diversos para descubrimiento
             logger.info(f"Usando fallback diverso para usuario {user_id}")
             return await ImprovedFallbackStrategies.get_diverse_category_products(
                 products, 
                 n, 
-                exclude_products=interacted_products
+                exclude_products=combined_exclude
             )

@@ -1,0 +1,225 @@
+{
+  "diagnostic_timestamp": "2025-07-29T19:16:33.709483",
+  "profiling_results": {
+    "claude_api_call": {
+      "avg_ms": 8112.887579998642,
+      "min_ms": 8108.950800000457,
+      "max_ms": 8118.929899996147,
+      "std_dev": 4.07124506555348,
+      "all_times": [
+        8109.278500000073,
+        8118.929899996147,
+        8113.900600001216,
+        8108.950800000457,
+        8113.378099995316
+      ],
+      "sample_size": 5
+    },
+    "redis_operations": {
+      "avg_ms": 1542.5651999976253,
+      "min_ms": 1541.3387000007788,
+      "max_ms": 1544.950900002732,
+      "std_dev": 1.4885215055850796,
+      "all_times": [
+        1541.8335999929695,
+        1544.950900002732,
+        1541.3387000007788,
+        1541.6301999939606,
+        1543.0725999976858
+      ],
+      "sample_size": 5
+    },
+    "strategy_selection": {
+      "avg_ms": 1034.9162600003183,
+      "min_ms": 1025.0085999941803,
+      "max_ms": 1047.556600002281,
+      "std_dev": 8.17750352425968,
+      "all_times": [
+        1025.0085999941803,
+        1033.41100000398,
+        1036.1091000013403,
+        1032.49599999981,
+        1047.556600002281
+      ],
+      "sample_size": 5
+    },
+    "profile_operations": {
+      "avg_ms": 515.2824599994346,
+      "min_ms": 513.2350999992923,
+      "max_ms": 517.1151999966241,
+      "std_dev": 1.711003251765793,
+      "all_times": [
+        513.806900002237,
+        516.6537999975844,
+        513.2350999992923,
+        515.6013000014354,
+        517.1151999966241
+      ],
+      "sample_size": 5
+    },
+    "recommendation_generation": {
+      "avg_ms": 717.4877400015248,
+      "min_ms": 715.0336999984575,
+      "max_ms": 719.2408000046271,
+      "std_dev": 1.624942822772184,
+      "all_times": [
+        719.2408000046271,
+        717.3304000025382,
+        717.1843999967678,
+        715.0336999984575,
+        718.6494000052335
+      ],
+      "sample_size": 5
+    },
+    "end_to_end": {
+      "avg_total_ms": 13473.693966666664,
+      "max_total_ms": 13480.814399998053,
+      "min_total_ms": 13464.626599998155,
+      "component_breakdown": [
+        {
+          "load_conversation_state": 1541.0536999988835,
+          "strategy_selection": 1027.368299997761,
+          "load_user_profile": 517.9408999974839,
+          "generate_recommendations": 717.8396000017528,
+          "claude_api_call": 8115.508399998362,
+          "save_conversation_state": 1560.3101999950013
+        },
+        {
+          "load_conversation_state": 1541.5685000043595,
+          "strategy_selection": 1032.5708000018494,
+          "load_user_profile": 516.5089000001899,
+          "generate_recommendations": 718.2990000001155,
+          "claude_api_call": 8124.194000003627,
+          "save_conversation_state": 1541.744699999981
+        },
+        {
+          "load_conversation_state": 1543.3513000025414,
+          "strategy_selection": 1030.6343999982346,
+          "load_user_profile": 516.0780000005616,
+          "generate_recommendations": 718.7196999948355,
+          "claude_api_call": 8114.42129999341,
+          "save_conversation_state": 1540.3430000005756
+        }
+      ],
+      "sla_compliance": false,
+      "performance_grade": "F (Unacceptable)"
+    },
+    "concurrency_1": {
+      "total_time_ms": 8500.094399998488,
+      "avg_response_time_ms": 8499.999300001946,
+      "max_response_time_ms": 8499.999300001946,
+      "min_response_time_ms": 8499.999300001946,
+      "throughput_rps": 0.11764575226366637,
+      "error_rate": 0.0,
+      "successful_requests": 1
+    },
+    "concurrency_3": {
+      "total_time_ms": 8695.865100002266,
+      "avg_response_time_ms": 8601.107566668361,
+      "max_response_time_ms": 8695.777500004624,
+      "min_response_time_ms": 8505.782500003988,
+      "throughput_rps": 0.34499155236426315,
+      "error_rate": 0.0,
+      "successful_requests": 3
+    },
+    "concurrency_5": {
+      "total_time_ms": 8912.480500002857,
+      "avg_response_time_ms": 8711.003740000888,
+      "max_response_time_ms": 8912.348899997596,
+      "min_response_time_ms": 8505.869200002053,
+      "throughput_rps": 0.5610110451291755,
+      "error_rate": 0.0,
+      "successful_requests": 5
+    },
+    "concurrency_10": {
+      "total_time_ms": 9412.339700000302,
+      "avg_response_time_ms": 8960.627420000674,
+      "max_response_time_ms": 9412.202600004093,
+      "min_response_time_ms": 8506.839399997261,
+      "throughput_rps": 1.062435092520054,
+      "error_rate": 0.0,
+      "successful_requests": 10
+    },
+    "cache_cold_cache": {
+      "hit_rate": 0.1,
+      "avg_time_ms": 1363.5498700001335,
+      "cache_hits": 1,
+      "cache_misses": 9
+    },
+    "cache_warm_cache": {
+      "hit_rate": 0.3,
+      "avg_time_ms": 1075.3885299993271,
+      "cache_hits": 3,
+      "cache_misses": 7
+    },
+    "cache_hot_cache": {
+      "hit_rate": 0.8,
+      "avg_time_ms": 351.477079999313,
+      "cache_hits": 8,
+      "cache_misses": 2
+    }
+  },
+  "bottlenecks": [
+    {
+      "component": "claude_api_call",
+      "avg_time_ms": 8112.887579998642,
+      "severity": "critical"
+    },
+    {
+      "component": "redis_operations",
+      "avg_time_ms": 1542.5651999976253,
+      "severity": "significant"
+    },
+    {
+      "component": "strategy_selection",
+      "avg_time_ms": 1034.9162600003183,
+      "severity": "significant"
+    },
+    {
+      "component": "profile_operations",
+      "avg_time_ms": 515.2824599994346,
+      "severity": "significant"
+    },
+    {
+      "component": "recommendation_generation",
+      "avg_time_ms": 717.4877400015248,
+      "severity": "significant"
+    }
+  ],
+  "optimization_recommendations": [
+    {
+      "priority": 1,
+      "category": "API Optimization",
+      "issue": "Claude API calls taking 8112.9ms",
+      "solution": "Implement async batching and connection pooling",
+      "expected_improvement": "60-70% reduction",
+      "implementation_effort": "Medium"
+    },
+    {
+      "priority": 2,
+      "category": "Database Optimization",
+      "issue": "Redis operations taking 1542.6ms",
+      "solution": "Pipeline Redis operations and implement connection pooling",
+      "expected_improvement": "50-60% reduction",
+      "implementation_effort": "Low"
+    },
+    {
+      "priority": 2,
+      "category": "Caching",
+      "issue": "Cold cache performance is poor (1363.5ms)",
+      "solution": "Implement cache warming and smarter eviction policies",
+      "expected_improvement": "80-90% improvement in cache hit scenarios",
+      "implementation_effort": "Medium"
+    }
+  ],
+  "current_performance": {
+    "avg_response_time_ms": 13473.693966666664,
+    "sla_compliance": false,
+    "performance_grade": "F (Unacceptable)"
+  },
+  "target_performance": {
+    "target_response_time_ms": 2000,
+    "target_throughput_rps": 10,
+    "target_improvement_percentage": 85
+  }
+}

@@ -319,7 +319,8 @@ class ImprovedFallbackStrategies:
         user_id: str,
         products: List[Dict],
         user_events: Optional[List[Dict]] = None,
-        n: int = 5
+        n: int = 5,
+        exclude_products: Optional[set] = None
     ) -> List[Dict]:
         """
         Estrategia de fallback inteligente que selecciona la mejor
@@ -330,10 +331,21 @@ class ImprovedFallbackStrategies:
             products: Lista de productos disponibles
             user_events: Lista de eventos previos del usuario (opcional)
             n: Número de recomendaciones a devolver
+            exclude_products: Set de IDs de productos a excluir (opcional)
             
         Returns:
             List[Dict]: Lista de productos recomendados
         """
+        # ✅ NUEVO: Filtrar productos excluidos si se especifica
+        if exclude_products and len(exclude_products) > 0:
+            logger.info(f"Excluding {len(exclude_products)} products from fallback recommendations")
+            filtered_products = [
+                p for p in products 
+                if str(p.get('id', '')) not in exclude_products
+            ]
+            logger.info(f"Filtered products: {len(products)} -> {len(filtered_products)}")
+            products = filtered_products
+        
         # Si tenemos eventos del usuario, usar recomendaciones personalizadas
         if user_events and len(user_events) > 0:
             logger.info(f"Usando fallback personalizado para usuario {user_id} con {len(user_events)} eventos")

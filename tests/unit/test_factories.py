@@ -8,7 +8,7 @@ los diferentes componentes del sistema según la configuración.
 import os
 import pytest
 from unittest.mock import patch, MagicMock
-from src.api.factories import RecommenderFactory
+from src.api.factories.factories import RecommenderFactory
 from src.recommenders.tfidf_recommender import TFIDFRecommender
 from src.recommenders.retail_api import RetailAPIRecommender
 

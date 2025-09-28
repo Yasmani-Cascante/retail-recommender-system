@@ -1,0 +1,415 @@
+{
+  "test_date": "2025-08-01T23:54:47.558486",
+  "test_type": "Step 2 Endpoint Testing",
+  "base_url": "http://localhost:8000",
+  "results": {
+    "health": {
+      "status": "SUCCESS",
+      "data": {
+        "status": "ready",
+        "components": {
+          "recommender": {
+            "name": "tfidf_recommender",
+            "status": "operational",
+            "loaded": true,
+            "products_count": 3062,
+            "vectorizer_features": 5000,
+            "fallback_active": false,
+            "has_product_data": true,
+            "has_vectorizer": true,
+            "has_vectors": true
+          },
+          "startup": {
+            "status": "ready",
+            "uptime_seconds": 4138.128765583038,
+            "total_components": 1,
+            "loaded_components": 1,
+            "loading_components": 0,
+            "components": {
+              "recommender": {
+                "loaded": true,
+                "loading": false,
+                "duration": 0.09099888801574707,
+                "error": null,
+                "required": true
+              }
+            }
+          },
+          "cache": {
+            "status": "operational",
+            "redis_connection": "connected",
+            "hit_ratio": 0,
+            "stats": {
+              "hit_ratio": 0,
+              "total_requests": 0,
+              "redis_hits": 0,
+              "redis_misses": 0,
+              "local_catalog_hits": 0,
+              "shopify_hits": 0,
+              "gateway_hits": 0,
+              "total_failures": 0,
+              "ttl_seconds": 86400,
+              "access_frequency_top10": {},
+              "category_stats": {},
+              "market_popularity_summary": {}
+            },
+            "fallback_sources": {
+              "local_catalog": "available",
+              "shopify_client": "available"
+            }
+          },
+          "claude": {
+            "status": "healthy",
+            "model_tier": "claude-sonnet-4-20250514",
+            "error_rate": 0.0,
+            "sla_compliance": true,
+            "active_alerts": 0,
+            "unified_monitoring": true
+          }
+        },
+        "uptime_seconds": 4138.1217648983
+      }
+    },
+    "original_endpoint": {
+      "status": "SUCCESS",
+      "response_time_ms": 15563.863039016724,
+      "data": {
+        "answer": "```json\n{\n  \"response\": \"I've curated three standout pieces that align perfectly with your style preferences. The **Maxi Falda Pascuala in Black** ($18.25) offers versatile sophistication - it's that essential piece you can dress up or down for any occasion. The **Claire Sequined Party Dress in Black/Iridescent** ($47.50) brings glamour with its eye-catching sequin details, perfect for making a statement at special events. Finally, the **Colomba Long Sleeve Maxi Dress in Petrol Green** ($40.00) combines comfort with elegance - the rich color and flowing silhouette create an effortlessly chic look. These selections balance quality with value, giving you maximum versatility across different occasions. Each piece is designed to transition seamlessly from day to evening wear, making them smart investments for your wardrobe.\",\n  \"tone_adaptation\": \"direct\",\n  \"cultural_context\": {\n    \"elementos_culturales\": [\n      \"Value-focused messaging appealing to US consumer mindset\",\n      \"Emphasis on versatility and investment pieces\",\n      \"Direct product benefits without excessive embellishment\"\n    ]\n  },\n  \"personalization_elements\": [\n    \"Curated selection based on moderate price sensitivity\",\n    \"Emphasis on versatility matching standard conversation style\",\n    \"Balanced urgency reflecting 0.50 momentum score\"\n  ],\n  \"engagement_hooks\": [\n    \"Focus on wardrobe investment value\",\n    \"Highlighting day-to-evening versatility appeal\"\n  ]\n}\n```",
+        "recommendations": [
+          {
+            "id": "9978642235701",
+            "title": "maxi falda pascuala lycra dupont negra",
+            "description": "<span style=\"font-weight: 400;\">pascuala es una falda larga estilo pareo, confeccionado en</span> lycra dupont, que es una tela plana elasticada with una muy linda caída. tiene una pretina en la cintura and el borde inferior es recto. esta pollera puedes combinarla with cualquier básico, un body, crop top, polera ajustada and listo !! quedarás lista for una ocasión especial. combínalo with un top and arma tu look ideal! <p data-mce-fragment=\"1\"><span style=\"font-weight: 400;\" data-mce-style=\"font-weight: 400;\" data-mce-fragment=\"1\">su talla única abarca tallas xs, s, m, l and xl.</span> <p data-mce-fragment=\"1\"><span style=\"font-weight: 400;\" data-mce-style=\"font-weight: 400;\" data-mce-fragment=\"1\">long: 109 cm</span> <p data-mce-fragment=\"1\"><span style=\"font-weight: 400;\" data-mce-style=\"font-weight: 400;\" data-mce-fragment=\"1\">ancho: 120 cm</span> <p data-mce-fragment=\"1\"><span style=\"font-weight: 400;\" data-mce-style=\"font-weight: 400;\" data-mce-fragment=\"1\">confeccionado en chile with ❤️</span>",
+            "price": 18.25,
+            "currency": "USD",
+            "score": 0.8,
+            "reason": "Based on your preferences and market analysis",
+            "images": [],
+            "market_adapted": true,
+            "viability_score": 0.8,
+            "source": "validated",
+            "original_price": 72990.0,
+            "original_currency": "USD",
+            "original_title": "MAXI FALDA PASCUALA LYCRA DUPONT NEGRA",
+            "original_description": "<span style=\"font-weight: 400;\">Pascuala es una falda larga estilo pareo, confeccionado en</span> lycra dupont, que es una tela plana elasticada con una muy linda caída. Tiene una pretina en la cintura y el borde inferior es recto. Esta pollera puedes combinarla con cualquier básico, un body, crop top, polera ajustada y listo !! quedarás lista para una ocasión especial. Combínalo con un top y arma tu look ideal! <p data-mce-fragment=\"1\"><span style=\"font-weight: 400;\" data-mce-style=\"font-weight: 400;\" data-mce-fragment=\"1\">Su talla única abarca tallas XS, S, M, L y XL.</span> <p data-mce-fragment=\"1\"><span style=\"font-weight: 400;\" data-mce-style=\"font-weight: 400;\" data-mce-fragment=\"1\">Largo: 109 cm</span> <p data-mce-fragment=\"1\"><span style=\"font-weight: 400;\" data-mce-style=\"font-weight: 400;\" data-mce-fragment=\"1\">Ancho: 120 cm</span> <p data-mce-fragment=\"1\"><span style=\"font-weight: 400;\" data-mce-style=\"font-weight: 400;\" data-mce-fragment=\"1\">Confeccionado en Chile con ❤️</span>",
+            "adapted_for_market": "US",
+            "_market_adaptation": {
+              "adapted": true,
+              "market_id": "US",
+              "adapter_version": "2.0.0",
+              "timestamp": "2025-08-01T21:54:32.714332Z"
+            },
+            "behavioral_score": 0.9,
+            "description_tone": "concise",
+            "presentation_style": "feature-focused",
+            "contextual_score": 0.6,
+            "hybrid_score": 0.71,
+            "score_breakdown": {
+              "behavioral": 0.9,
+              "cultural": 0.7,
+              "contextual": 0.6,
+              "predictive": 0.6
+            }
+          },
+          {
+            "id": "9978604847413",
+            "title": "Vestido of fiesta long claire lentejuelas black/tornasol",
+            "description": "<meta charset=\"utf-8\"> claire es un vestido long of fiesta, confeccionado en tela cubierta completamente of lentejuelas tornasoladas. tiene un escote en v cruzado and corte en la cintura. posee dos tirantes with detalles of mostacillas que se cruzan arriba en la espalda and luego terminan en cada uno of los costados del escote en v que tiene el vestido. desde el corte en la cintura, cae una falda recta, que se ajusta en las caderas and lleva una abertura en el costado izquierdo que te permitirá moverte with mayor libertad. <p data-mce-fragment=\"1\">importado of usa.",
+            "price": 47.5,
+            "currency": "USD",
+            "score": 0.9,
+            "reason": "Based on your preferences and market analysis",
+            "images": [],
+            "market_adapted": true,
+            "viability_score": 0.8,
+            "source": "validated",
+            "original_price": 189990.0,
+            "original_currency": "USD",
+            "original_title": "Vestido de Fiesta Largo Claire Lentejuelas Negro/Tornasol",
+            "original_description": "<meta charset=\"utf-8\"> Claire es un vestido largo de fiesta, confeccionado en tela cubierta completamente de lentejuelas tornasoladas. Tiene un escote en V cruzado y corte en la cintura. Posee dos tirantes con detalles de mostacillas que se cruzan arriba en la espalda y luego terminan en cada uno de los costados del escote en V que tiene el vestido. Desde el corte en la cintura, cae una falda recta, que se ajusta en las caderas y lleva una abertura en el costado izquierdo que te permitirá moverte con mayor libertad. <p data-mce-fragment=\"1\">Importado de USA.",
+            "adapted_for_market": "US",
+            "_market_adaptation": {
+              "adapted": true,
+              "market_id": "US",
+              "adapter_version": "2.0.0",
+              "timestamp": "2025-08-01T21:54:32.715330Z"
+            },
+            "behavioral_score": 0.9,
+            "description_tone": "concise",
+            "presentation_style": "feature-focused",
+            "contextual_score": 0.6,
+            "hybrid_score": 0.71,
+            "score_breakdown": {
+              "behavioral": 0.9,
+              "cultural": 0.7,
+              "contextual": 0.6,
+              "predictive": 0.6
+            }
+          },
+          {
+            "id": "9978629521717",
+            "title": "Maxi Vestido Colomba Manga Larga Green Petroleo",
+            "description": "Nuestro vestido colomba, está confeccionado tela plana satinada. tiene mangas largas que terminan en forma globo. su diseño es envolvente, with escote en v en la parte delantera, and permite que se adapte muy bien a tu cuerpo.tiene un corte of cintura, desde donde cae su falda with una abertura en la pierna. este vestido lo puedes usar of día and noche, en matrimonios al aire libre or interior. el vestido es muy cómodo for quienes deseen utilizar ropa interior. su escote, abertura en la pierna and corte en la cintura, te resaltaran aún más la figura. nuestra modelo está usando talla s. importado of usa.",
+            "price": 40.0,
+            "currency": "USD",
+            "score": 0.85,
+            "reason": "Based on your preferences and market analysis",
+            "images": [],
+            "market_adapted": true,
+            "viability_score": 0.8,
+            "source": "validated",
+            "original_price": 160000.0,
+            "original_currency": "USD",
+            "original_title": "Maxi Vestido Colomba Manga Larga Verde Petroleo",
+            "original_description": "Nuestro vestido Colomba, está confeccionado tela plana satinada. Tiene mangas largas que terminan en forma globo. Su diseño es envolvente, con escote en V en la parte delantera, y permite que se adapte muy bien a tu cuerpo.Tiene un corte de cintura, desde donde cae su falda con una abertura en la pierna. Este vestido lo puedes usar de día y noche, en matrimonios al aire libre o interior. El vestido es muy cómodo para quienes deseen utilizar ropa interior. Su escote, abertura en la pierna y corte en la cintura, te resaltaran aún más la figura. Nuestra modelo está usando talla S. Importado de USA.",
+            "adapted_for_market": "US",
+            "_market_adaptation": {
+              "adapted": true,
+              "market_id": "US",
+              "adapter_version": "2.0.0",
+              "timestamp": "2025-08-01T21:54:32.716330Z"
+            },
+            "behavioral_score": 0.9,
+            "description_tone": "concise",
+            "presentation_style": "feature-focused",
+            "contextual_score": 0.6,
+            "hybrid_score": 0.71,
+            "score_breakdown": {
+              "behavioral": 0.9,
+              "cultural": 0.7,
+              "contextual": 0.6,
+              "predictive": 0.6
+            }
+          }
+        ],
+        "session_metadata": {
+          "session_id": "session_test_user_step2_1754085269",
+          "turn_number": 1,
+          "state_persisted": true,
+          "conversation_stage": "exploring",
+          "state_manager_active": true
+        },
+        "intent_analysis": {
+          "intent": "general",
+          "confidence": 0.8,
+          "attributes": [],
+          "urgency": "medium"
+        },
+        "market_context": {
+          "market_id": "US",
+          "currency": "USD",
+          "availability_checked": true,
+          "market_optimization": {}
+        },
+        "personalization_metadata": {
+          "strategy_used": "hybrid",
+          "strategy_auto_detected": false,
+          "personalization_score": 0.95,
+          "cultural_adaptation": {},
+          "behavioral_insights": {},
+          "market_optimization": {},
+          "processing_time_ms": 9480.485916137695
+        },
+        "metadata": {
+          "source": "mcp_aware_hybrid_corrected",
+          "query_processed": "Test query for original endpoint",
+          "user_validated": "test_user_step2",
+          "product_validated": null,
+          "fallback_used": false,
+          "mcp_integration_active": true,
+          "state_persistence_enabled": true,
+          "session_management": "active",
+          "total_recommendations": 3,
+          "market_id": "US",
+          "processing_time_ms": 1131.5884590148926,
+          "mcp_capabilities": {
+            "conversation": true,
+            "market_aware": true,
+            "cache_enabled": true
+          },
+          "interface_corrections_applied": 25,
+          "conversation_enhancement": {
+            "tone_adaptation": "standard",
+            "cultural_context": {},
+            "personalization_elements": [],
+            "engagement_hooks": []
+          },
+          "personalization_applied": true,
+          "conversation_stage": "exploring",
+          "intent_attributes": [],
+          "currency": "USD",
+          "availability_checked": true
+        },
+        "session_id": "session_test_user_step2_1754085269",
+        "took_ms": 13500.771522521973
+      }
+    },
+    "optimized_endpoint": {
+      "status": "SUCCESS",
+      "response_time_ms": 2203.1424045562744,
+      "data": {
+        "answer": "Here are 3 recommendations based on your query 'Test query for optimized endpoint'.",
+        "recommendations": [
+          {
+            "id": "9978505429301",
+            "title": "Vestido Largo Cordoba Blanco",
+            "description": "Nuestro vestido largo Cordoba está confeccionado en tela satinada, no elasticada. El escote es sutilmente drapeado y posee dos delgados tirantes que van hacia la espalda y luego regresan a la sisa en la parte delantera del vestido, permitiendo que la espalda quede totalmente despejada. Su espalda es completamente rebajada hasta altura de la cintura. El diseño tiene un corte que se ajusta sutilmente a las caderas y luego cae recto. Además tiene dos aplicaciones de flor, desde esta cae una cinta, esta flor la puedes incluir o sacar de tu vestido según tu preferencia. Muchas de nuestras novias utlizan este diseño para sus matrimonios civiles o como opción de segundo vestido para utilizar en su gran día, puede ser para matrimonios de día o de noche, también lo puedes utilizar en eventos de empresas, graduaciones, etc. Recomendamos dejar el escote libre para lucir el diseño drapeado del vestido. Este vestido estiliza tu cuello y hombro. Si tienes poco busto, este escote será perfecto para ti. También puedes añadir a tu compra una capa india de mostacilla y de esta manera agregaras un toque de brillo y elegancia a tu vestido. * La capa es un complemento que se vende por separado. Importado de Australia.",
+            "price": 168990.0,
+            "currency": "USD",
+            "score": 0.9,
+            "reason": "Match 1 for 'Test query for optimized endpoint'",
+            "images": [],
+            "market_adapted": true,
+            "viability_score": 0.8,
+            "source": "optimized_hybrid",
+            "personalization_score": 0.8
+          },
+          {
+            "id": "9978768884021",
+            "title": "VESTIDO LARGO ALANA GASA IVORY",
+            "description": "<span style=\"color: #9dd8d8;\"></span>Nuestro Maxi Alana es un vestido largo, confeccionado con tela de gasa y forro interior. Es un vestido envolvente, con escote en V cruzado, en el cual se distingue un delicado detalle de vuelos que acompaña el escote, el cual va hacia la espalda a través de los tirantes. El diseño tiene un corte de cintura, desde donde cae su falda que posee una abertura en la pierna, entregando mayor movilidad. El<span style=\"font-weight: 400;\"> escote de la espalda es completamente rebajado, en esta se cruzan los delgados tirantes que son ajustables y que poseen detalles de pequeños vuelos que le dan un toque romántico al diseño.</span> <i><span style=\"font-weight: 400;\">Este vestido lo puedes usar de día y noche, en matrimonios al aire libre o interior. Al tener un diseño romántico, te recomendamos utilizar tu cabello suelto o recogido con un tocado de flores, horquillas o una tiara y accesorio sútil. </span></i> <span style=\"font-weight: 400;\">Con este vestido estilizas tu cuello y piernas, disimularlas un poco tus brazos y te sentirás cómoda.</span> <span style=\"font-weight: 400;\">Con Maxi Alana, lucirás elegante y cómoda en ese día tan especial.</span>",
+            "price": 160000.0,
+            "currency": "USD",
+            "score": 0.85,
+            "reason": "Match 2 for 'Test query for optimized endpoint'",
+            "images": [],
+            "market_adapted": true,
+            "viability_score": 0.8,
+            "source": "optimized_hybrid",
+            "personalization_score": 0.7000000000000001
+          },
+          {
+            "id": "9978758037813",
+            "title": "VESTIDO LARGO MULTI LYCRA BURDEO",
+            "description": "<span style=\"font-weight: 400;\">Nuestro Maxi Multi es un vestido largo, confeccionado en lycra. Con este modelo tendrás la oportunidad de usar múltiples escotes y espaldas según lo que más te acomode. Posee un corte en la cintura, acompañado de dos largos lazos con los cuales podrás crear los diversos diseños. Tiene una falda que se ajusta muy bien a tu silueta, con una caída elegante que estiliza a cualquier tipo de cuerpo. Además, cuenta con un forro corto que te hará sentir muy segura</span> <span style=\"font-weight: 400;\">Este vestido puedes usarlo de día y de noche, para toda ocasión, matrimonios al aire libre o interior, graduaciones o eventos protocolares. Muchos grupos de amigas aman este modelo para usarlo como damas de honor. Los accesorios van a depender diseño escogido y del tipo de evento. Por ejemplo, si utilizas un escote asimétrico, puedes lucir aros grandes en colores clásicos como dorado o plateado. También puedes ser más atrevida y usar aros con flecos en colores que contrasten. En cambio, si utilizas un escote en v pronunciado puedes optar por un collar de cascada y aros pequeños.</span> <span style=\"font-weight: 400;\">Con este vestido, puedes lograr infinitas posturas, pero siempre lucirás elegante y estilizada.</span> <span style=\"font-weight: 400;\">Te dejamos algunas ideas, ¡¡atrévete a probarlas y crear las tuyas!!</span> <span style=\"font-weight: 400;\">Importado y confeccionado en UK.</span>",
+            "price": 124000.0,
+            "currency": "USD",
+            "score": 0.8,
+            "reason": "Match 3 for 'Test query for optimized endpoint'",
+            "images": [],
+            "market_adapted": true,
+            "viability_score": 0.8,
+            "source": "optimized_hybrid",
+            "personalization_score": 0.6000000000000001
+          }
+        ],
+        "session_metadata": {
+          "session_id": "opt_session_1754085285",
+          "turn_number": 1,
+          "state_persisted": true,
+          "conversation_stage": "exploring",
+          "optimization_applied": true,
+          "performance_mode": "enhanced"
+        },
+        "intent_analysis": {
+          "intent": "search",
+          "confidence": 0.8,
+          "attributes": [
+            "optimized_processing"
+          ],
+          "urgency": "medium"
+        },
+        "market_context": {
+          "market_id": "US",
+          "currency": "USD",
+          "availability_checked": true,
+          "market_optimization": {
+            "optimized": true,
+            "fast_path": false
+          }
+        },
+        "personalization_metadata": {
+          "strategy_used": "optimized_hybrid",
+          "personalization_score": 0.7,
+          "personalization_applied": true,
+          "optimization_applied": true,
+          "response_time_target": "<2000ms"
+        },
+        "metadata": {
+          "source": "optimized_endpoint",
+          "optimization_enabled": true,
+          "query_processed": "Test query for optimized endpoint",
+          "personalization_metadata": {
+            "strategy_used": "optimized_hybrid",
+            "personalization_score": 0.7,
+            "personalization_applied": true,
+            "optimization_applied": true,
+            "response_time_target": "<2000ms"
+          },
+          "intent": "general",
+          "intent_confidence": 0.6,
+          "intent_attributes": [
+            "exploration"
+          ],
+          "market_optimization": {
+            "optimized": true,
+            "fast_path": true
+          },
+          "optimization_applied": true,
+          "performance_stats": {
+            "total_time_ms": 1.0006427764892578,
+            "used_claude": null,
+            "parallel_operations": 3,
+            "target_achieved": true
+          }
+        },
+        "session_id": "opt_session_1754085285",
+        "took_ms": 1.0006427764892578,
+        "optimization_applied": true,
+        "performance_improvement": "89.9x faster than original"
+      }
+    },
+    "comparison_endpoint": {
+      "status": "SUCCESS",
+      "data": {
+        "endpoints": {
+          "original": {
+            "path": "/v1/mcp/conversation",
+            "expected_time_ms": "12,000-15,000",
+            "optimization_status": "baseline",
+            "features": [
+              "Full personalization",
+              "Complete MCP integration",
+              "State persistence"
+            ]
+          },
+          "optimized": {
+            "path": "/v1/mcp/conversation/optimized",
+            "expected_time_ms": "<2,000",
+            "optimization_status": "enhanced",
+            "features": [
+              "Optimized personalization",
+              "Parallel operations",
+              "Aggressive timeouts"
+            ]
+          }
+        },
+        "recommended_usage": {
+          "development": "Use /optimized for performance testing",
+          "production": "Use /optimized for critical performance requirements",
+          "comparison": "Use both endpoints to measure performance improvements"
+        },
+        "optimization_techniques": [
+          "Async-first operations",
+          "Parallel independent operations",
+          "Aggressive timeouts with fallbacks",
+          "Optimized Claude API calls",
+          "Smart caching"
+        ]
+      }
+    },
+    "performance_comparison": {
+      "status": "SUCCESS",
+      "original_time_ms": 15563.863039016724,
+      "optimized_time_ms": 2203.1424045562744,
+      "improvement_factor": 7.0643926633291665,
+      "improvement_percentage": 85.84450146449333,
+      "target_achieved": false
+    }
+  },
+  "summary": {
+    "tests_passed": 5,
+    "tests_total": 5,
+    "overall_success": true
+  }
+}

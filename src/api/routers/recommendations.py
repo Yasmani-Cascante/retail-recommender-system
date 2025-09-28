@@ -95,14 +95,25 @@ async def get_recommendations(
         # Entrenar el recomendador si es necesario
         content_recommender.fit(all_products)
         
-        # Obtener recomendaciones
-        hybrid_recommender.content_weight = content_weight
-        recommendations = await hybrid_recommender.get_recommendations(
-            user_id=user_id or "anonymous",
-            product_id=str(product_id),
-            n_recommendations=n,
-            exclude_seen=True  # Excluir productos vistos por defecto
-        )
+        # ✅ LOGÍCA INTELIGENTE: Solo usar Google Retail API con usuarios reales identificados
+        effective_user_id = user_id if user_id and user_id.strip() and user_id != "anonymous" else None
+        
+        if effective_user_id:
+            logging.info(f"[HYBRID] Usuario identificado: {effective_user_id} - usando sistema híbrido completo")
+            recommendations = await hybrid_recommender.get_recommendations(
+                user_id=effective_user_id,
+                product_id=str(product_id),
+                n_recommendations=n,
+                exclude_seen=True  # Excluir productos vistos por defecto
+            )
+        else:
+            logging.info(f"[HYBRID] Usuario no identificado - usando solo TF-IDF para mayor eficiencia")
+            # Solo usar recomendaciones basadas en contenido (más eficiente)
+            content_recommendations = content_recommender.get_recommendations(
+                product_id=str(product_id), 
+                n_recommendations=n
+            )
+            recommendations = content_recommendations
         
         # Registrar métricas
         end_time = time.time()
@@ -118,7 +129,7 @@ async def get_recommendations(
             },
             recommendations=recommendations,
             response_time_ms=response_time_ms,
-            user_id=user_id or "anonymous",
+            user_id=effective_user_id or "anonymous",
             product_id=product_id
         )
         

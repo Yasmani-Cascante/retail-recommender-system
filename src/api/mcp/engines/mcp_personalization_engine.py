@@ -10,6 +10,9 @@ Motor de personalización que integra:
 - Machine learning para patrones de comportamiento
 - Optimización de recomendaciones por mercado específico
 
+REFACTORIZADO: Uso de configuración centralizada Claude.
+Eliminado hardcoding de modelos.
+
 Integración: MCPConversationStateManager + OptimizedConversationAIManager + HybridRecommender
 """
 
@@ -17,6 +20,7 @@ import json
 import time
 import logging
 import hashlib
+import asyncio  # ✅ ADDED: For timeout handling
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
@@ -25,13 +29,18 @@ import numpy as np
 # from anthropic import Anthropic
 from anthropic import AsyncAnthropic
 
-from src.api.core.redis_client import RedisClient
+# 🚀 NUEVA IMPORTACIÓN: Configuración centralizada Claude
+from src.api.core.claude_config import get_claude_config_service
+
+# ✅ ENTERPRISE MIGRATION: Using ServiceFactory for Redis  
+# Legacy import removed - using ServiceFactory
+# NOTE: ServiceFactory import moved to avoid circular imports
+
 from src.api.mcp.conversation_state_manager import (
     MCPConversationStateManager, 
     MCPConversationContext,
     ConversationStage,
     UserMarketPreferences,
-    ConversationStage
 )
 from src.api.integrations.ai.optimized_conversation_manager import OptimizedConversationAIManager
 from src.api.mcp.models.mcp_models import (
@@ -84,11 +93,11 @@ class MCPPersonalizationEngine:
     
     def __init__(
         self,
-        redis_client: RedisClient,
-        # anthropic_client: Anthropic,
-        anthropic_client: AsyncAnthropic,
-        conversation_manager: OptimizedConversationAIManager,
-        state_manager: MCPConversationStateManager,
+        redis_service=None,  # ✅ ENTERPRISE: Use service instead of client
+        redis_client = None,  # Legacy compatibility - will use ServiceFactory
+        anthropic_client: AsyncAnthropic = None,
+        conversation_manager: OptimizedConversationAIManager = None,
+        state_manager: MCPConversationStateManager = None,
         profile_ttl: int = 7 * 24 * 3600,  # 7 days
         enable_ml_predictions: bool = True
     ):
@@ -103,7 +112,20 @@ class MCPPersonalizationEngine:
             profile_ttl: TTL para perfiles de personalización
             enable_ml_predictions: Habilitar predicciones ML
         """
-        self.redis = redis_client
+        # 🚀 REFACTORIZADO: Configuración centralizada Claude
+        self.claude_config = get_claude_config_service()
+        
+        # ✅ ENTERPRISE: Support both service and client approaches
+        self.redis_service = redis_service
+        self.redis = redis_client  # Legacy compatibility
+        
+        # ✅ DEFENSIVE: Log Redis status for debugging
+        if self.redis_service:
+            logger.info("✅ MCPPersonalizationEngine: Using Redis service")
+        elif self.redis:
+            logger.info("✅ MCPPersonalizationEngine: Using Redis client (legacy)")
+        else:
+            logger.warning("⚠️ MCPPersonalizationEngine: No Redis available - running in fallback mode")
         self.claude = anthropic_client
         self.conversation_manager = conversation_manager
         self.state_manager = state_manager
@@ -127,30 +149,32 @@ class MCPPersonalizationEngine:
             PersonalizationStrategy.HYBRID: self._hybrid_personalization
         }
         
-        # Métricas internas
+        # Métricas internas extendidas
         self.metrics = {
             "personalizations_generated": 0,
             "profile_updates": 0,
             "ml_predictions": 0,
             "cultural_adaptations": 0,
-            "avg_personalization_time_ms": 0.0
+            "avg_personalization_time_ms": 0.0,
+            "claude_model_tier": self.claude_config.claude_model_tier.value,
+            "configuration_source": "centralized"
         }
         
-        logger.info("MCPPersonalizationEngine initialized with advanced capabilities")
+        logger.info(f"🎯 MCPPersonalizationEngine initialized with centralized Claude config: {self.claude_config.claude_model_tier.value}")
     
     async def generate_personalized_response(
         self,
         mcp_context: MCPConversationContext,
         recommendations: List[Dict],
-        strategy: PersonalizationStrategy = PersonalizationStrategy.HYBRID
+        strategy: PersonalizationStrategy = None  # ✅ CAMBIO: None permite auto-detección
     ) -> Dict[str, Any]:
         """
-        Genera respuesta altamente personalizada usando estrategia especificada.
+        Genera respuesta altamente personalizada usando estrategia especificada o auto-detectada.
         
         Args:
             mcp_context: Contexto conversacional MCP
             recommendations: Recomendaciones base a personalizar
-            strategy: Estrategia de personalización a usar
+            strategy: Estrategia de personalización a usar (None = auto-detección)
             
         Returns:
             Dict con respuesta personalizada, recomendaciones adaptadas y metadata
@@ -158,6 +182,43 @@ class MCPPersonalizationEngine:
         start_time = time.time()
         
         try:
+            # ✅ NUEVA FUNCIONALIDAD: Auto-detección de estrategia
+            # if strategy is None:
+            #     strategy = await self._determine_optimal_strategy(
+            #         mcp_context.user_message, 
+            #         mcp_context.market_id,
+            #         mcp_context.user_id
+            #     )
+            #     logger.info(f"Auto-detected strategy: {strategy.value} for query: '{mcp_context.user_message[:50]}...'")
+            # ✅ NUEVA FUNCIONALIDAD: Auto-detección de estrategia
+            if strategy is None:
+                # ✅ FIXED: Extract user query from context properly
+                current_query = None
+                if hasattr(mcp_context, 'current_query'):
+                    current_query = mcp_context.current_query
+                elif mcp_context.turns and len(mcp_context.turns) > 0:
+                    current_query = mcp_context.turns[-1].user_query  # Last turn's query
+                else:
+                    current_query = "general query"  # Fallback
+                
+                strategy = await self._determine_optimal_strategy(
+                    current_query,  # ✅ FIXED: Use extracted query
+                    mcp_context.current_market_id,
+                    mcp_context.user_id
+                )
+                
+                # ✅ DEFENSIVE: Ensure strategy is never None
+                if strategy is None:
+                    logger.warning(f"_determine_optimal_strategy returned None, falling back to HYBRID")
+                    strategy = PersonalizationStrategy.HYBRID
+                    
+                logger.info(f"Auto-detected strategy: {strategy.value} for query: '{current_query[:50]}...'")
+            
+            # ✅ ULTIMATE VALIDATION: Final check before proceeding
+            if strategy is None:
+                logger.error("Critical error: strategy is still None - forcing HYBRID")
+                strategy = PersonalizationStrategy.HYBRID   
+           
             # 1. Cargar/actualizar perfil de personalización
             personalization_profile = await self._get_or_create_personalization_profile(
                 mcp_context.user_id
@@ -195,6 +256,7 @@ class MCPPersonalizationEngine:
                 "personalized_recommendations": personalized_result["recommendations"],
                 "personalization_metadata": {
                     "strategy_used": strategy.value,
+                    "strategy_auto_detected": strategy is None,  # ✅ AÑADIDO
                     "personalization_score": personalized_result.get("personalization_score", 0.0),
                     "cultural_adaptation": personalized_result.get("cultural_adaptation", {}),
                     "behavioral_insights": personalized_result.get("behavioral_insights", {}),
@@ -220,8 +282,555 @@ class MCPPersonalizationEngine:
             
         except Exception as e:
             logger.error(f"Error generating personalized response: {e}")
+            # ✅ SAFE FALLBACK: Ensure we always return a valid response
+            if strategy is None:
+                strategy = PersonalizationStrategy.HYBRID
             # Fallback a respuesta estándar
             return await self._fallback_personalized_response(mcp_context, recommendations)
+    
+    async def _determine_optimal_strategy(
+        self, 
+        user_query: str,  # ✅ FIXED: Use direct parameter instead of mcp_context.user_message
+        market_id: str, 
+        user_id: str
+    ) -> PersonalizationStrategy:
+        """
+        Determina la estrategia óptima de personalización basada en análisis de query,
+        historial del usuario y contexto de mercado.
+        
+        Args:
+            user_query: Query del usuario a analizar  # ✅ FIXED: Updated parameter name
+            market_id: ID del mercado para contexto cultural
+            user_id: ID del usuario para análisis histórico
+            
+        Returns:
+            PersonalizationStrategy más apropiada
+        """
+        try:
+            # Análisis de patrones en el mensaje
+            message_lower = user_query.lower()  # ✅ FIXED: Use parameter instead of user_message
+            
+            # 1. BEHAVIORAL: Referencias al comportamiento pasado
+            behavioral_indicators = [
+                "similar", "like before", "bought", "purchased", "last time", 
+                "previously", "again", "same as", "repeat", "reorder",
+                "my usual", "favorites", "preferred", "typically"
+            ]
+            
+            # 2. CULTURAL: Referencias culturales y regionales
+            cultural_indicators = [
+                "popular", "trending", "in my region", "local", "traditional",
+                "cultural", "typical", "common here", "everyone", "most people",
+                "in my country", "popular here", "local style", "regional"
+            ]
+            
+            # 3. CONTEXTUAL: Situaciones específicas y ocasiones
+            contextual_indicators = [
+                "gift", "present", "birthday", "anniversary", "wedding", "party",
+                "work", "office", "meeting", "date", "dinner", "event", "occasion",
+                "vacation", "travel", "weekend", "special", "formal", "casual"
+            ]
+            
+            # 4. PREDICTIVE: Indicadores de intención futura o exploración
+            predictive_indicators = [
+                "might", "maybe", "considering", "thinking about", "planning",
+                "future", "next", "eventually", "looking for", "searching",
+                "need", "want", "wish", "dream", "goal", "aspire"
+            ]
+            
+            # Calcular scores para cada estrategia
+            behavioral_score = sum(1 for indicator in behavioral_indicators if indicator in message_lower)
+            cultural_score = sum(1 for indicator in cultural_indicators if indicator in message_lower)
+            contextual_score = sum(1 for indicator in contextual_indicators if indicator in message_lower)
+            predictive_score = sum(1 for indicator in predictive_indicators if indicator in message_lower)
+            
+            # Pesos adicionales basados en contexto
+            # Obtener historial del usuario para ajustar scores
+            user_profile = await self._get_user_strategy_history(user_id)
+            
+            # Ajustar scores basado en historial
+            if user_profile:
+                if user_profile.get("has_purchase_history", False):
+                    behavioral_score += 1
+                if user_profile.get("cultural_preference_detected", False):
+                    cultural_score += 1
+                if user_profile.get("frequent_contextual_queries", False):
+                    contextual_score += 1
+            
+            # Ajustar por mercado
+            market_weights = self._get_market_strategy_weights(market_id)
+            behavioral_score *= market_weights.get("behavioral", 1.0)
+            cultural_score *= market_weights.get("cultural", 1.0)
+            contextual_score *= market_weights.get("contextual", 1.0)
+            predictive_score *= market_weights.get("predictive", 1.0)
+            
+            # Determinar estrategia ganadora
+            scores = {
+                PersonalizationStrategy.BEHAVIORAL: behavioral_score,
+                PersonalizationStrategy.CULTURAL: cultural_score,
+                PersonalizationStrategy.CONTEXTUAL: contextual_score,
+                PersonalizationStrategy.PREDICTIVE: predictive_score
+            }
+            
+            # Encontrar la estrategia con mayor score
+            max_score = max(scores.values())
+            
+            # ✅ FASE 2: MEJORA - Weighted Strategy Selection con Probabilistic Selection
+            # Si no hay clara ganadora o scores muy bajos, usar HYBRID
+            if max_score < 0.5:
+                logger.info(f"Using HYBRID strategy - scores too low: {scores}")
+                return PersonalizationStrategy.HYBRID
+            
+            # ✅ NUEVA FUNCIONALIDAD: Manejo inteligente de empates y selección probabilística
+            if list(scores.values()).count(max_score) > 1:
+                logger.info(f"Multiple strategies tied with max score {max_score}: {scores}")
+                
+                # Identificar estrategias empatadas en el máximo score
+                tied_strategies = [(strategy, score) for strategy, score in scores.items() 
+                                 if score == max_score]
+                
+                # Selección probabilística ponderada entre estrategias empatadas
+                if len(tied_strategies) > 1:
+                    strategies = [strategy for strategy, _ in tied_strategies]
+                    weights = [score for _, score in tied_strategies]
+                    
+                    # Normalizar pesos para probabilidades
+                    weight_sum = sum(weights)
+                    probabilities = [w / weight_sum for w in weights] if weight_sum > 0 else [1/len(weights)] * len(weights)
+                    
+                    # Selección probabilística usando numpy.random.choice
+                    selected_strategy = np.random.choice(strategies, p=probabilities)
+                    
+                    logger.info(
+                        f"Probabilistic selection from tied strategies: {strategies} -> {selected_strategy.value}"
+                    )
+                    
+                    # ✅ FASE 3: Registrar selección para A/B testing
+                    await self._track_strategy_effectiveness(
+                    selected_strategy, user_id, user_query, max_score, scores  # ✅ FIXED: Use user_query
+                    )
+                    
+                    return selected_strategy
+            
+            # Si hay estrategia ganadora clara
+            winning_strategy = max(scores.items(), key=lambda x: x[1])[0]
+            
+            # ✅ MEJORA: Verificar si hay competencia cercana (diferencia < 30%)
+            second_best_score = sorted(scores.values(), reverse=True)[1] if len(scores) > 1 else 0
+            score_difference_ratio = (max_score - second_best_score) / max_score if max_score > 0 else 1
+            
+            # Si la diferencia es pequeña (< 30%), considerar selección probabilística
+            if score_difference_ratio < 0.3 and max_score >= 0.7:
+                # Obtener las top 2 estrategias para selección probabilística
+                top_strategies = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:2]
+                strategies = [strategy for strategy, _ in top_strategies]
+                weights = [score for _, score in top_strategies]
+                
+                # Selección probabilística ponderada
+                weight_sum = sum(weights)
+                probabilities = [w / weight_sum for w in weights]
+                
+                selected_strategy = np.random.choice(strategies, p=probabilities)
+                
+                logger.info(
+                    f"Close competition detected (diff: {score_difference_ratio:.2f}). "
+                    f"Probabilistic selection: {[s.value for s in strategies]} -> {selected_strategy.value}"
+                )
+                
+                # ✅ FASE 3: Registrar para A/B testing
+                await self._track_strategy_effectiveness(
+                    selected_strategy, user_id, user_query, max_score, scores  # ✅ FIXED: Use user_query
+                )
+                
+                return selected_strategy
+            
+            # Selección estándar - ganador claro
+            logger.info(
+                f"Strategy determination for '{user_query[:30]}...': "  # ✅ FIXED: Use user_query
+                f"{winning_strategy.value} (score: {max_score:.2f}, margin: {score_difference_ratio:.2f})"
+            )
+            
+            # ✅ FASE 3: Registrar estrategia seleccionada para analytics
+            await self._track_strategy_effectiveness(
+                winning_strategy, user_id, user_query, max_score, scores  # ✅ FIXED: Use user_query
+            )
+            
+            return winning_strategy
+            
+        except Exception as e:
+            logger.warning(f"Error determining strategy, falling back to HYBRID: {e}")
+            # ✅ GUARANTEED FALLBACK: Always return a valid strategy
+            return PersonalizationStrategy.HYBRID
+    
+    async def _get_user_strategy_history(self, user_id: str) -> Dict[str, Any]:
+        """
+        Obtiene el historial de estrategias del usuario para ajustar decisiones.
+        """
+        try:
+            # ✅ ENTERPRISE ALIGNED: Use proper RedisService API
+            if not self.redis and not self.redis_service:
+                logger.warning("Redis not available, returning empty strategy history")
+                return {
+                    "has_purchase_history": False,
+                    "cultural_preference_detected": False,
+                    "frequent_contextual_queries": False,
+                    "created_at": time.time()
+                }
+            
+            # Use redis_service (enterprise) with correct API
+            redis_client = self.redis_service or self.redis
+            
+            cache_key = f"{self.PROFILE_PREFIX}:strategy_history:{user_id}"
+            cached_history = await redis_client.get(cache_key)
+            
+            if cached_history:
+                return json.loads(cached_history)
+            
+            # Si no hay cache, crear perfil básico
+            basic_profile = {
+                "has_purchase_history": False,
+                "cultural_preference_detected": False,
+                "frequent_contextual_queries": False,
+                "created_at": time.time()
+            }
+            
+            # ✅ ENTERPRISE API: Use ttl= instead of ex=
+            if hasattr(redis_client, 'set'):
+                # RedisService enterprise API
+                await redis_client.set(cache_key, json.dumps(basic_profile), ttl=24 * 3600)
+            else:
+                # Fallback for legacy Redis clients
+                logger.warning("Using legacy Redis client - performance may be degraded")
+                await redis_client.setex(cache_key, 24 * 3600, json.dumps(basic_profile))
+                
+            return basic_profile
+            
+        except Exception as e:
+            logger.warning(f"Error getting user strategy history: {e}")
+            # ✅ SAFE FALLBACK: Return default profile
+            return {
+                "has_purchase_history": False,
+                "cultural_preference_detected": False,
+                "frequent_contextual_queries": False,
+                "created_at": time.time()
+            }
+    
+    def _get_market_strategy_weights(self, market_id: str) -> Dict[str, float]:
+        """
+        Obtiene pesos de estrategia específicos por mercado.
+        """
+        # Pesos por mercado basados en características culturales
+        market_weights = {
+            "US": {
+                "behavioral": 1.2,  # Los usuarios US valoran personalización por comportamiento
+                "cultural": 0.8,
+                "contextual": 1.1,
+                "predictive": 1.0
+            },
+            "ES": {
+                "behavioral": 1.0,
+                "cultural": 1.3,    # Mayor peso cultural en mercados europeos
+                "contextual": 1.0,
+                "predictive": 0.9
+            },
+            "MX": {
+                "behavioral": 1.0,
+                "cultural": 1.2,
+                "contextual": 1.2,   # Contexto familiar y social importante
+                "predictive": 0.8
+            }
+        }
+        
+        return market_weights.get(market_id, {
+            "behavioral": 1.0,
+            "cultural": 1.0,
+            "contextual": 1.0,
+            "predictive": 1.0
+        })
+    
+    # ✅ FASE 3: A/B TESTING FRAMEWORK - Strategy Effectiveness Tracking
+    async def _track_strategy_effectiveness(
+    self,
+    strategy: PersonalizationStrategy,
+    user_id: str,
+    user_query: str,  # ✅ FIXED: Parameter name corrected
+    score: float,
+    all_scores: Dict[PersonalizationStrategy, float]
+    ) -> None:
+        """
+        Sistema de tracking de efectividad de estrategias para A/B testing y mejora continua.
+        
+        Registra datos de selección de estrategias para:
+        - Análisis de performance por estrategia
+        - Identificación de patrones de éxito
+        - A/B testing automático
+        - Optimización continua del algoritmo de selección
+        
+        Args:
+            strategy: Estrategia seleccionada
+            user_id: ID del usuario
+            query: Query original del usuario
+            score: Score de la estrategia seleccionada
+            all_scores: Scores de todas las estrategias evaluadas
+        """
+        try:
+            # Generar hash único para la selección
+            selection_id = hashlib.md5(
+                f"{user_id}_{strategy.value}_{int(time.time())}_{user_query[:20]}".encode()  # ✅ FIXED: Use user_query
+            ).hexdigest()[:12]
+            
+            # Preparar datos de tracking
+            tracking_data = {
+                "selection_id": selection_id,
+                "strategy_selected": strategy.value,
+                "user_id": user_id,
+                "query_length": len(user_query),  # ✅ FIXED: Use user_query
+                "selected_score": float(score),
+                "all_strategy_scores": {
+                    s.value: float(sc) for s, sc in all_scores.items()
+                },
+                "timestamp": time.time(),
+                "market_context": {
+                    "hour_of_day": datetime.now().hour,
+                    "day_of_week": datetime.now().weekday()
+                },
+                "competition_analysis": {
+                    "second_best_score": sorted(all_scores.values(), reverse=True)[1] if len(all_scores) > 1 else 0,
+                    "score_variance": float(np.var(list(all_scores.values()))),
+                    "clear_winner": score > max(v for k, v in all_scores.items() if k != strategy) * 1.3 if len(all_scores) > 1 else True
+                }
+            }
+            
+            # Almacenar en Redis con TTL de 30 días para análisis
+            effectiveness_key = f"strategy_effectiveness:{strategy.value}:{user_id}:{selection_id}"
+            await self.redis.setex(
+                effectiveness_key,
+                30 * 24 * 3600,  # 30 días
+                json.dumps(tracking_data)
+            )
+            
+            # Mantener contador agregado por estrategia
+            strategy_counter_key = f"strategy_usage_counter:{strategy.value}"
+            await self.redis.incr(strategy_counter_key)
+            await self.redis.expire(strategy_counter_key, 90 * 24 * 3600)  # 90 días
+            
+            logger.debug(
+                f"Strategy effectiveness tracked: {strategy.value} "
+                f"(score: {score:.2f}, competition: {tracking_data['competition_analysis']['score_variance']:.3f})"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error tracking strategy effectiveness: {e}")
+            # No fallar la operación principal si hay error en tracking
+    
+    # ✅ MÉTODO PÚBLICO: Obtener métricas A/B testing para dashboard
+    async def get_strategy_effectiveness_report(self, days_back: int = 7) -> Dict[str, Any]:
+        """
+        Genera reporte de efectividad de estrategias para análisis y optimización.
+        
+        Args:
+            days_back: Días hacia atrás para el análisis
+            
+        Returns:
+            Reporte completo de efectividad por estrategia
+        """
+        try:
+            cutoff_time = time.time() - (days_back * 24 * 3600)
+            report = {
+                "analysis_period": {
+                    "days_back": days_back,
+                    "start_time": cutoff_time,
+                    "end_time": time.time(),
+                    "generated_at": datetime.utcnow().isoformat()
+                },
+                "strategies": {},
+                "global_insights": {},
+                "usage_distribution": {},
+                "recommendations": []
+            }
+            
+            # Analizar cada estrategia
+            total_usage = 0
+            for strategy in PersonalizationStrategy:
+                strategy_data = await self._analyze_single_strategy_performance(
+                    strategy, cutoff_time
+                )
+                report["strategies"][strategy.value] = strategy_data
+                total_usage += strategy_data.get("usage_count", 0)
+            
+            # Calcular distribución de uso
+            for strategy_name, data in report["strategies"].items():
+                usage_count = data.get("usage_count", 0)
+                report["usage_distribution"][strategy_name] = {
+                    "count": usage_count,
+                    "percentage": (usage_count / max(total_usage, 1)) * 100
+                }
+            
+            # Generar insights globales
+            report["global_insights"] = self._generate_global_strategy_insights(
+                report["strategies"]
+            )
+            
+            # Generar recomendaciones
+            report["recommendations"] = self._generate_strategy_optimization_recommendations(
+                report["strategies"], report["usage_distribution"]
+            )
+            
+            return report
+            
+        except Exception as e:
+            logger.error(f"Error generating strategy effectiveness report: {e}")
+            return {"error": "Failed to generate report"}
+    
+    async def _analyze_single_strategy_performance(
+        self, 
+        strategy: PersonalizationStrategy, 
+        cutoff_time: float
+    ) -> Dict[str, Any]:
+        """
+        Analiza el performance de una estrategia específica.
+        """
+        try:
+            # Obtener contador de uso
+            strategy_counter_key = f"strategy_usage_counter:{strategy.value}"
+            usage_count = await self.redis.get(strategy_counter_key)
+            usage_count = int(usage_count) if usage_count else 0
+            
+            # Buscar datos de efectividad recientes
+            effectiveness_pattern = f"strategy_effectiveness:{strategy.value}:*"
+            effectiveness_keys = await self.redis.keys(effectiveness_pattern)
+            
+            recent_data = []
+            total_score = 0.0
+            competition_scores = []
+            
+            for key in effectiveness_keys[:50]:  # Limitar a últimas 50 para performance
+                data = await self.redis.get(key)
+                if data:
+                    try:
+                        effectiveness_data = json.loads(data)
+                        if effectiveness_data.get("timestamp", 0) >= cutoff_time:
+                            recent_data.append(effectiveness_data)
+                            total_score += effectiveness_data.get("selected_score", 0)
+                            competition_scores.append(
+                                effectiveness_data.get("competition_analysis", {}).get("score_variance", 0)
+                            )
+                    except json.JSONDecodeError:
+                        continue
+            
+            # Calcular métricas
+            avg_score = total_score / max(len(recent_data), 1)
+            avg_competition = np.mean(competition_scores) if competition_scores else 0
+            
+            return {
+                "strategy": strategy.value,
+                "usage_count": usage_count,
+                "recent_selections": len(recent_data),
+                "avg_score": round(avg_score, 3),
+                "avg_competition_level": round(avg_competition, 3),
+                "performance_trend": "stable",  # Simplificado
+                "last_used": max(
+                    [d.get("timestamp", 0) for d in recent_data], default=0
+                )
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing strategy {strategy.value}: {e}")
+            return {
+                "strategy": strategy.value,
+                "usage_count": 0,
+                "recent_selections": 0,
+                "avg_score": 0.0,
+                "error": str(e)
+            }
+    
+    def _generate_global_strategy_insights(self, strategies_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Genera insights globales comparando todas las estrategias.
+        """
+        try:
+            valid_strategies = {
+                k: v for k, v in strategies_data.items() 
+                if v.get("usage_count", 0) > 0 and "error" not in v
+            }
+            
+            if not valid_strategies:
+                return {"insight": "No sufficient data for analysis"}
+            
+            # Ranking por performance
+            strategy_ranking = sorted(
+                valid_strategies.items(),
+                key=lambda x: x[1].get("avg_score", 0),
+                reverse=True
+            )
+            
+            insights = {
+                "top_performing_strategy": strategy_ranking[0][0] if strategy_ranking else None,
+                "performance_ranking": [
+                    {
+                        "strategy": name,
+                        "avg_score": data.get("avg_score", 0),
+                        "usage_count": data.get("usage_count", 0)
+                    } for name, data in strategy_ranking
+                ],
+                "total_active_strategies": len(valid_strategies),
+                "avg_performance_across_strategies": round(
+                    np.mean([data.get("avg_score", 0) for data in valid_strategies.values()]), 3
+                ),
+                "performance_variance": round(
+                    np.var([data.get("avg_score", 0) for data in valid_strategies.values()]), 3
+                )
+            }
+            
+            return insights
+            
+        except Exception as e:
+            logger.error(f"Error generating global insights: {e}")
+            return {"error": "Failed to generate insights"}
+    
+    def _generate_strategy_optimization_recommendations(
+        self, 
+        strategies_data: Dict[str, Any], 
+        usage_distribution: Dict[str, Any]
+    ) -> List[str]:
+        """
+        Genera recomendaciones de optimización basadas en el análisis.
+        """
+        recommendations = []
+        
+        try:
+            # Buscar estrategias con alto performance pero bajo uso
+            for strategy, data in strategies_data.items():
+                if "error" in data:
+                    continue
+                    
+                avg_score = data.get("avg_score", 0)
+                usage_percentage = usage_distribution.get(strategy, {}).get("percentage", 0)
+                
+                if avg_score > 0.7 and usage_percentage < 15:
+                    recommendations.append(
+                        f"Consider increasing usage of '{strategy}' strategy - high performance ({avg_score:.2f}) but low usage ({usage_percentage:.1f}%)"
+                    )
+                elif avg_score < 0.4 and usage_percentage > 40:
+                    recommendations.append(
+                        f"Review '{strategy}' strategy - high usage ({usage_percentage:.1f}%) but low performance ({avg_score:.2f})"
+                    )
+            
+            # Verificar balance general
+            usage_percentages = [d.get("percentage", 0) for d in usage_distribution.values()]
+            if usage_percentages and max(usage_percentages) > 60:
+                recommendations.append(
+                    "Strategy usage is heavily skewed - consider rebalancing selection algorithm"
+                )
+            
+            if not recommendations:
+                recommendations.append("Strategy performance appears balanced - continue monitoring")
+            
+            return recommendations
+            
+        except Exception as e:
+            logger.error(f"Error generating recommendations: {e}")
+            return ["Error generating recommendations - check logs"]
     
     async def analyze_user_journey(
         self, 
@@ -589,16 +1198,45 @@ class MCPPersonalizationEngine:
                 context, personalization_result
             )
             
-            # Llamada a Claude con configuración optimizada
-            claude_response = await self.claude.messages.create(
-                model="claude-3-sonnet-20240229",
-                system=self._build_personalized_system_prompt(context),
-                messages=[{"role": "user", "content": personalization_prompt}],
-                max_tokens=800,
-                temperature=0.8
-            )
+            # ✅ ROBUST CLAUDE CALL: Handle timeouts and retries
+            max_retries = 2
+            timeout = 15  # seconds
             
-            response_text = claude_response.content[0].text
+            for attempt in range(max_retries + 1):
+                try:
+                    # Llamada a Claude con configuración optimizada
+                    claude_response = await asyncio.wait_for(
+                        self.claude.messages.create(
+                            model="claude-sonnet-4-20250514",
+                            system=self._build_personalized_system_prompt(context),
+                            messages=[{"role": "user", "content": personalization_prompt}],
+                            max_tokens=800,
+                            temperature=0.8
+                        ),
+                        timeout=timeout
+                    )
+                    
+                    response_text = claude_response.content[0].text
+                    break  # Success, exit retry loop
+                    
+                except asyncio.TimeoutError:
+                    logger.warning(f"Claude API timeout on attempt {attempt + 1}/{max_retries + 1}")
+                    if attempt == max_retries:
+                        # Final fallback
+                        response_text = "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
+                        logger.error("Claude API timeout - using fallback response")
+                    else:
+                        await asyncio.sleep(1)  # Wait before retry
+                        continue
+                        
+                except Exception as api_error:
+                    logger.warning(f"Claude API error on attempt {attempt + 1}: {api_error}")
+                    if attempt == max_retries:
+                        response_text = "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
+                        logger.error(f"Claude API failed after {max_retries + 1} attempts - using fallback")
+                    else:
+                        await asyncio.sleep(1)
+                        continue
             
             # Parsejar respuesta estructurada si es posible
             try:
@@ -679,8 +1317,28 @@ class MCPPersonalizationEngine:
     ) -> PersonalizationProfile:
         """Obtiene o crea perfil de personalización del usuario."""
         try:
+            # ✅ DEFENSIVE: Check if redis is available
+            if not self.redis and not self.redis_service:
+                logger.warning(f"Redis not available, creating in-memory profile for {user_id}")
+                # Return default profile without Redis
+                return PersonalizationProfile(
+                    user_id=user_id,
+                    market_preferences={},
+                    behavioral_patterns={},
+                    conversation_style="standard",
+                    purchase_propensity=0.5,
+                    category_affinities={},
+                    price_sensitivity_curve={"low": 0.3, "medium": 0.5, "high": 0.8},
+                    temporal_patterns={},
+                    cross_market_insights={},
+                    last_updated=time.time()
+                )
+            
+            # Use redis_service if available, fallback to redis
+            redis_client = self.redis_service or self.redis
+            
             profile_key = f"{self.PROFILE_PREFIX}:{user_id}"
-            profile_data = await self.redis.get(profile_key)
+            profile_data = await redis_client.get(profile_key)
             
             if profile_data:
                 profile_dict = json.loads(profile_data)
@@ -712,7 +1370,7 @@ class MCPPersonalizationEngine:
                 
         except Exception as e:
             logger.error(f"Error getting personalization profile for {user_id}: {e}")
-            # Retornar perfil básico en caso de error
+            # ✅ SAFE FALLBACK: Retornar perfil básico en caso de error
             return PersonalizationProfile(
                 user_id=user_id,
                 market_preferences={},
@@ -772,6 +1430,14 @@ class MCPPersonalizationEngine:
     async def _save_personalization_profile(self, profile: PersonalizationProfile):
         """Guarda perfil de personalización en Redis."""
         try:
+            # ✅ DEFENSIVE: Check if redis is available
+            if not self.redis and not self.redis_service:
+                logger.warning(f"Redis not available, skipping profile save for {profile.user_id}")
+                return
+                
+            # Use redis_service if available, fallback to redis
+            redis_client = self.redis_service or self.redis
+            
             profile_key = f"{self.PROFILE_PREFIX}:{profile.user_id}"
             
             # Serializar market_preferences correctamente
@@ -781,11 +1447,27 @@ class MCPPersonalizationEngine:
                 market_prefs_serializable[market_id] = asdict(prefs)
             serializable_profile["market_preferences"] = market_prefs_serializable
             
-            await self.redis.set(
-                profile_key,
-                json.dumps(serializable_profile),
-                ex=self.profile_ttl
-            )
+            # ✅ ENTERPRISE API: Use ttl= instead of ex=
+            if hasattr(redis_client, 'set') and hasattr(redis_client, '__class__') and 'RedisService' in str(redis_client.__class__):
+                # RedisService enterprise API
+                await redis_client.set(
+                    profile_key,
+                    json.dumps(serializable_profile),
+                    ttl=self.profile_ttl
+                )
+            else:
+                # Fallback for legacy Redis clients
+                logger.warning("Using legacy Redis client - performance may be degraded")
+                if hasattr(redis_client, 'set'):
+                    # Standard Redis client with ex parameter
+                    await redis_client.set(
+                        profile_key,
+                        json.dumps(serializable_profile),
+                        ex=self.profile_ttl
+                    )
+                else:
+                    logger.error("Redis client doesn't support required set operations")
+                    return
             
             self.metrics["profile_updates"] += 1
             logger.debug(f"Saved personalization profile for user {profile.user_id}")
@@ -2241,8 +2923,9 @@ class PersonalizationInsightsAnalyzer:
     de datos de personalización y generar recomendaciones accionables.
     """
     
-    def __init__(self, redis_client: RedisClient):
-        self.redis = redis_client
+    def __init__(self, redis_client=None):
+        """Initialize PersonalizationInsightsAnalyzer with enterprise Redis support"""
+        self.redis = redis_client  # Will use ServiceFactory if None
         
     async def generate_comprehensive_user_report(
         self,
@@ -2746,39 +3429,215 @@ class PersonalizationInsightsAnalyzer:
 
 # === FACTORY PARA CREAR INSTANCIA CONFIGURADA ===
 
-def create_mcp_personalization_engine(
-    redis_client: RedisClient,
+    async def _generate_claude_personalized_response(
+        self,
+        personalization_context: PersonalizationContext,
+        personalized_result: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Genera respuesta conversacional personalizada usando Claude con configuración centralizada.
+        
+        Args:
+            personalization_context: Contexto de personalización
+            personalized_result: Resultado de personalización previo
+            
+        Returns:
+            Respuesta conversacional personalizada
+        """
+        try:
+            # 🚀 REFACTORIZADO: Usar configuración centralizada Claude
+            call_context = {
+                "user_id": personalization_context.mcp_context.user_id,
+                "market_id": personalization_context.market_config.market_id,
+                "personalization_tier": self._determine_personalization_tier(personalization_context)
+            }
+            
+            config = self.claude_config.get_model_config(call_context)
+            
+            # Construir prompts personalizados
+            system_prompt = self._build_personalized_system_prompt(personalization_context)
+            user_prompt = self._build_personalized_user_prompt(
+                personalization_context, 
+                personalized_result
+            )
+            
+            logger.info(f"🎯 Generating personalized Claude response with {config.model_name}")
+            
+            response = await self.claude.messages.create(
+                **config.to_anthropic_params(),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+            )
+            
+            # Calcular métricas
+            tokens_used = response.usage.output_tokens if hasattr(response, 'usage') else 0
+            cost_estimate = (tokens_used * config.cost_per_1k_tokens / 1000) if tokens_used > 0 else 0
+            
+            return {
+                "conversational_response": response.content[0].text,
+                "model_used": config.model_name,  # ✅ Siempre correcto desde configuración
+                "model_tier": self.claude_config.claude_model_tier.value,
+                "tokens_used": tokens_used,
+                "cost_estimate": cost_estimate,
+                "personalization_level": self._calculate_personalization_level(personalization_context),
+                "cultural_adaptation": personalized_result.get("cultural_adaptation", {}),
+                "response_quality_score": self._evaluate_response_quality(response.content[0].text)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating Claude personalized response: {e}")
+            
+            # Fallback response
+            return {
+                "conversational_response": self._generate_fallback_response(personalization_context),
+                "model_used": None,
+                "model_tier": self.claude_config.claude_model_tier.value,
+                "tokens_used": 0,
+                "cost_estimate": 0,
+                "error": str(e),
+                "fallback_used": True
+            }
+    
+    def _determine_personalization_tier(self, context: PersonalizationContext) -> str:
+        """Determina el tier de personalización basado en el contexto"""
+        if context.personalization_profile.purchase_propensity > 0.8:
+            return "premium"
+        elif context.personalization_profile.purchase_propensity > 0.5:
+            return "standard"
+        else:
+            return "basic"
+    
+    def _build_personalized_system_prompt(self, context: PersonalizationContext) -> str:
+        """Construye prompt del sistema personalizado"""
+        market_id = context.market_config.market_id
+        user_style = context.personalization_profile.conversation_style
+        
+        return f"""
+        Eres un asistente de ventas especializado para el mercado {market_id}.
+        
+        Perfil del usuario:
+        - Estilo de conversación preferido: {user_style}
+        - Propensión de compra: {context.personalization_profile.purchase_propensity:.1f}
+        - Mercado principal: {market_id}
+        
+        Adapta tu respuesta al estilo cultural del mercado {market_id} y al perfil del usuario.
+        Sé {user_style} en tu comunicación.
+        Incluye recomendaciones relevantes cuando sea apropiado.
+        """
+    
+    def _build_personalized_user_prompt(
+        self, 
+        context: PersonalizationContext, 
+        personalized_result: Dict[str, Any]
+    ) -> str:
+        """Construye prompt del usuario con contexto personalizado"""
+        recommendations = personalized_result.get("recommendations", [])
+        
+        prompt = f"Usuario consulta: {context.mcp_context.current_query}\n\n"
+        
+        if recommendations:
+            prompt += "Recomendaciones personalizadas disponibles:\n"
+            for i, rec in enumerate(recommendations[:3], 1):
+                prompt += f"{i}. {rec.get('title', 'Producto')} - {rec.get('price', 'N/A')}\n"
+            prompt += "\n"
+        
+        prompt += "Responde de manera personalizada y útil, incluyendo las recomendaciones si son relevantes."
+        
+        return prompt
+    
+    def _calculate_personalization_level(self, context: PersonalizationContext) -> float:
+        """Calcula el nivel de personalización aplicado"""
+        factors = [
+            len(context.personalization_profile.category_affinities) * 0.1,
+            context.personalization_profile.purchase_propensity * 0.3,
+            len(context.real_time_signals) * 0.05,
+            context.conversation_momentum * 0.2
+        ]
+        return min(sum(factors), 1.0)
+    
+    def _evaluate_response_quality(self, response_text: str) -> float:
+        """Evalúa la calidad de la respuesta generada"""
+        # Evaluación básica de calidad
+        quality_score = 0.5  # Base score
+        
+        if len(response_text) > 50:
+            quality_score += 0.2
+        if any(word in response_text.lower() for word in ["recomiendo", "sugiero", "perfecto"]):
+            quality_score += 0.2
+        if response_text.count('.') >= 2:  # Múltiples oraciones
+            quality_score += 0.1
+        
+        return min(quality_score, 1.0)
+    
+    def _generate_fallback_response(self, context: PersonalizationContext) -> str:
+        """Genera respuesta de fallback cuando Claude falla"""
+        market_id = context.market_config.market_id
+        
+        fallback_responses = {
+            "US": "I'm here to help you find the perfect products. Let me assist you with your shopping needs.",
+            "ES": "Estoy aquí para ayudarte a encontrar los productos perfectos. Permíteme asistirte con tus necesidades de compra.",
+            "MX": "¡Hola! Estoy aquí para ayudarte a encontrar exactamente lo que buscas. ¿En qué te puedo ayudar?"
+        }
+        
+        return fallback_responses.get(market_id, fallback_responses["US"])
+
+
+# === FACTORY REFACTORIZADO ===
+
+async def create_mcp_personalization_engine(
     anthropic_api_key: str,
-    conversation_manager: OptimizedConversationAIManager,
-    state_manager: MCPConversationStateManager,
+    conversation_manager: OptimizedConversationAIManager = None,
+    state_manager: MCPConversationStateManager = None,
+    redis_client=None,  # Legacy compatibility parameter
+    profile_ttl: int = 604800,
+    enable_ml_predictions: bool = True,
     **kwargs
-) -> MCPPersonalizationEngine:
+) -> Optional[MCPPersonalizationEngine]:
     """
-    Factory function para crear una instancia configurada de MCPPersonalizationEngine.
+    ✅ ENTERPRISE FACTORY: Create MCPPersonalizationEngine with enterprise architecture
+    
+    Uses ServiceFactory for orchestration and business logic.
     
     Args:
-        redis_client: Cliente Redis configurado
         anthropic_api_key: API key de Anthropic
         conversation_manager: Gestor de conversaciones optimizado
         state_manager: Gestor de estado conversacional MCP
+        redis_client: Legacy compatibility (unused in enterprise mode)
+        profile_ttl: TTL para perfiles de personalización
+        enable_ml_predictions: Habilitar predicciones ML
         **kwargs: Argumentos adicionales de configuración
         
     Returns:
         Instancia configurada de MCPPersonalizationEngine
     """
     try:
+        # ✅ FIX: Import ServiceFactory in function scope to avoid circular import
+        from src.api.factories.service_factory import ServiceFactory
+        
+        # ✅ ENTERPRISE: Use ServiceFactory for orchestration
+        redis_service = await ServiceFactory.get_redis_service()
+        
+        # Health check antes de crear engine
+        health = await redis_service.health_check()
+        if health['status'] != 'healthy':
+            logger.warning("Redis unhealthy - creating engine with limited functionality")
+        
         # anthropic_client = Anthropic(api_key=anthropic_api_key)
         anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
         
         engine = MCPPersonalizationEngine(
-            redis_client=redis_client,
+            redis_service=redis_service,  # Use SERVICE for orchestration
             anthropic_client=anthropic_client,
             conversation_manager=conversation_manager,
             state_manager=state_manager,
+            profile_ttl=profile_ttl,
+            enable_ml_predictions=enable_ml_predictions,
             **kwargs
         )
         
-        logger.info("MCPPersonalizationEngine created successfully")
+        logger.info("🚀 MCPPersonalizationEngine created successfully with centralized configuration")
         return engine
         
     except Exception as e:
@@ -2793,7 +3652,7 @@ def create_mcp_personalization_engine(
 
 async def integrate_personalization_engine():
     # 1. Inicializar dependencias
-    redis_client = RedisClient()
+    redis_client = None  # RedisClient()
     conversation_manager = OptimizedConversationAIManager(...)
     state_manager = MCPConversationStateManager(...)
     

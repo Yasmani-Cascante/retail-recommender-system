@@ -48,7 +48,7 @@ class RecommenderSettings(BaseSettings):
     # Configuración de Shopify
     shopify_shop_url: Optional[str] = Field(default=None, env="SHOPIFY_SHOP_URL")
     shopify_access_token: Optional[str] = Field(default=None, env="SHOPIFY_ACCESS_TOKEN")
-    
+
     # Configuración de seguridad
     api_key: Optional[str] = Field(default=None, env="API_KEY")
     
@@ -82,6 +82,23 @@ class RecommenderSettings(BaseSettings):
     cache_prefix: str = Field(default="product:", env="CACHE_PREFIX")
     cache_enable_background_tasks: bool = Field(default=True, env="CACHE_ENABLE_BACKGROUND_TASKS")
     
+    # === CLAUDE/ANTHROPIC CONFIGURATION ===
+    # Configuración centralizada para Claude AI
+    claude_model_tier: str = Field(default="SONNET", env="CLAUDE_MODEL_TIER")
+    claude_region: str = Field(default="global", env="CLAUDE_REGION")
+    claude_enable_ab_testing: bool = Field(default=False, env="CLAUDE_ENABLE_AB_TESTING")
+    claude_ab_group: str = Field(default="default", env="CLAUDE_AB_GROUP")
+    claude_timeout: float = Field(default=30.0, env="CLAUDE_TIMEOUT")
+    claude_max_retries: int = Field(default=3, env="CLAUDE_MAX_RETRIES")
+    
+    # Claude API credentials
+    anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
+    
+    # Claude model overrides (optional)
+    claude_max_tokens: Optional[int] = Field(default=None, env="CLAUDE_MAX_TOKENS")
+    claude_temperature: Optional[float] = Field(default=None, env="CLAUDE_TEMPERATURE")
+    claude_top_p: Optional[float] = Field(default=None, env="CLAUDE_TOP_P")
+
     # Configuración para diferentes versiones de Pydantic
     if PYDANTIC_SETTINGS_AVAILABLE:
         # Pydantic v2 con pydantic-settings

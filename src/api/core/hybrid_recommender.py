@@ -86,10 +86,10 @@ class HybridRecommender:
         should_use_retail_api = not product_id or self.content_weight < 1.0
         logger.info(f"Retail API - content_weight={self.content_weight}, product_id={product_id}, using_retail_api={should_use_retail_api}")
         
-        if should_use_retail_api:
+        if should_use_retail_api and user_id != "anonymous":
             # Intentar obtener recomendaciones de Retail API
             try:
-                logger.info(f"[DEBUG] ⚙️ Intentando obtener recomendaciones de Retail API para user_id='{user_id}', product_id='{product_id}'")
+                logger.info(f"[DEBUG] ⚙️ Intentando obtener recomendaciones de Reil API para tauser_id='{user_id}', product_id='{product_id}'")
                 
                 retail_recs = await self.retail_recommender.get_recommendations(
                     user_id=user_id,
@@ -114,7 +114,8 @@ class HybridRecommender:
                 if user_id != "anonymous":
                     logger.warning(f"[DEBUG] ⚠️ PROBLEMA: Usuario real '{user_id}' no obtuvo recomendaciones personalizadas")
         else:
-            logger.info(f"⏭️ Saltando Retail API debido a content_weight=1.0 para recomendaciones de producto")
+            # Cuando user_id="anonymous" la lista de recomendaciones de google retail siempre es 0 (retail_recs=0) por esa razon fue que nos lo saltamos
+            logger.info(f"⏭️ Saltando Retail API debido a content_weight=1.0 para recomendaciones de producto o user_id='anonymous'")
         
         # Si no hay producto_id y tampoco recomendaciones de Retail API,
         # usar recomendaciones inteligentes de fallback
@@ -460,7 +461,7 @@ class HybridRecommender:
                     if product.get("images") and isinstance(product["images"], list) and len(product["images"]) > 0:
                         enriched_rec["image_url"] = product["images"][0].get("src", "")
                     
-                    logger.info(f"Producto ID={product_id} enriquecido: Título={enriched_rec['title'][:30]}..., Categoría={category}")
+                    logger.info(f"Producto {product_id} enriquecido: Título={enriched_rec['title'][:30]}..., Categoría={category}")
                 else:
                     # Si no se encuentra información completa en la caché
                     logger.warning(f"No se pudo obtener información completa para producto ID={product_id} (fuente: {rec.get('source', 'unknown')})")

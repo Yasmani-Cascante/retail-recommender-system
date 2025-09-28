@@ -1,0 +1,127 @@
+{
+  "validation_summary": {
+    "timestamp": "2025-07-29T15:04:24.078999",
+    "total_tests": 13,
+    "passed_tests": 10,
+    "failed_tests": 3,
+    "success_rate": 76.92307692307693,
+    "avg_execution_time_ms": 17892.82908806434,
+    "phase2_status": "ACCEPTABLE"
+  },
+  "test_results": [
+    {
+      "test_name": "System Health Check",
+      "passed": true,
+      "details": "Status: 200, Components: 4, Redis: Connected",
+      "execution_time_ms": 3953.0882835388184,
+      "error": null
+    },
+    {
+      "test_name": "MCP Bridge Connectivity",
+      "passed": true,
+      "details": "Bridge: Healthy, Shopify: connected",
+      "execution_time_ms": 4.999876022338867,
+      "error": null
+    },
+    {
+      "test_name": "Personalized Conversation",
+      "passed": true,
+      "details": "Response: True, Recommendations: 5, Strategy: fallback_hybrid, Score: 0.60",
+      "execution_time_ms": 12001.595258712769,
+      "error": null
+    },
+    {
+      "test_name": "Multi-Strategy Personalization",
+      "passed": true,
+      "details": "Strategies tested: 2, Used: ['fallback_hybrid', 'hybrid']",
+      "execution_time_ms": 43369.8353767395,
+      "error": null
+    },
+    {
+      "test_name": "Market-Specific Personalization",
+      "passed": false,
+      "details": "Markets tested: 3, Culturally adapted: 0",
+      "execution_time_ms": 32125.122785568237,
+      "error": null
+    },
+    {
+      "test_name": "Real-Time Market Context",
+      "passed": true,
+      "details": "Market context: True, Currency: USD, Availability checked: True",
+      "execution_time_ms": 10406.301975250244,
+      "error": null
+    },
+    {
+      "test_name": "Dynamic Pricing Context",
+      "passed": true,
+      "details": "Products: 5, With prices: 5, With currency: 5",
+      "execution_time_ms": 10179.430484771729,
+      "error": null
+    },
+    {
+      "test_name": "Inventory Availability",
+      "passed": true,
+      "details": "Products checked: 5, With availability: 5",
+      "execution_time_ms": 6124.336957931519,
+      "error": null
+    },
+    {
+      "test_name": "Conversation State Persistence",
+      "passed": false,
+      "details": "Session tracked: True, Turn: 1, ID match: False",
+      "execution_time_ms": 22806.2686920166,
+      "error": null
+    },
+    {
+      "test_name": "Intent Evolution Tracking",
+      "passed": true,
+      "details": "Intents tracked: 4, Unique: 3, Progression: ['general', 'general', 'search', 'purchase']",
+      "execution_time_ms": 43029.24180030823,
+      "error": null
+    },
+    {
+      "test_name": "Response Times",
+      "passed": false,
+      "details": "Avg: 10858ms, Max: 11219ms, Tests: 3",
+      "execution_time_ms": 32574.99384880066,
+      "error": null
+    },
+    {
+      "test_name": "Metrics Endpoint",
+      "passed": true,
+      "details": "Metrics sections: 4, Personalization: False, Performance: False",
+      "execution_time_ms": 262.00175285339355,
+      "error": null
+    },
+    {
+      "test_name": "Concurrent Requests",
+      "passed": true,
+      "details": "Success rate: 100.0%, Avg time: 13665ms, Concurrent: 5",
+      "execution_time_ms": 15769.561052322388,
+      "error": null
+    }
+  ],
+  "critical_failures": [
+    {
+      "test_name": "Conversation State Persistence",
+      "error": null,
+      "details": "Session tracked: True, Turn: 1, ID match: False"
+    }
+  ],
+  "warnings": [
+    {
+      "test_name": "Market-Specific Personalization",
+      "details": "Markets tested: 3, Culturally adapted: 0"
+    },
+    {
+      "test_name": "Response Times",
+      "details": "Avg: 10858ms, Max: 11219ms, Tests: 3"
+    }
+  ],
+  "recommendations": [
+    "⚠️ Fase 2 necesita mejoras antes de proceder a Fase 3",
+    "🔧 Resolver problemas identificados en las validaciones",
+    "🚨 Resolver 1 problemas críticos identificados",
+    "⚠️ Revisar 2 warnings para optimización"
+  ]
+}

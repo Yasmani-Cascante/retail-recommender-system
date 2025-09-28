@@ -7,7 +7,7 @@ en toda la aplicación, utilizando la fábrica para crear los componentes.
 
 import os
 import logging
-from src.api.factories import RecommenderFactory
+from src.api.factories.factories import RecommenderFactory
 from src.api.core.config import get_settings
 
 logger = logging.getLogger(__name__)

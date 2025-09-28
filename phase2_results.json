@@ -1,135 +1,123 @@
 {
   "validation_summary": {
-    "timestamp": "2025-07-18T01:18:56.036322",
+    "timestamp": "2025-08-28T15:01:37.843277",
     "total_tests": 13,
-    "passed_tests": 8,
-    "failed_tests": 5,
-    "success_rate": 61.53846153846154,
-    "avg_execution_time_ms": 11496.924235270573,
-    "phase2_status": "NEEDS_IMPROVEMENT"
+    "passed_tests": 11,
+    "failed_tests": 2,
+    "success_rate": 84.61538461538461,
+    "avg_execution_time_ms": 861.8054206554706,
+    "phase2_status": "GOOD"
   },
   "test_results": [
     {
       "test_name": "System Health Check",
-      "passed": true,
-      "details": "Status: 200, Components: 4, Redis: Connected",
-      "execution_time_ms": 262.19749450683594,
+      "passed": false,
+      "details": "Status: 200, Components: 0",
+      "execution_time_ms": 685.4362487792969,
       "error": null
     },
     {
       "test_name": "MCP Bridge Connectivity",
       "passed": true,
       "details": "Bridge: Healthy, Shopify: connected",
-      "execution_time_ms": 2.001047134399414,
+      "execution_time_ms": 22.000551223754883,
       "error": null
     },
     {
       "test_name": "Personalized Conversation",
       "passed": true,
       "details": "Response: True, Recommendations: 5, Strategy: hybrid, Score: 0.95",
-      "execution_time_ms": 7075.4101276397705,
+      "execution_time_ms": 106.99939727783203,
       "error": null
     },
     {
       "test_name": "Multi-Strategy Personalization",
-      "passed": false,
+      "passed": true,
       "details": "Strategies tested: 1, Used: ['hybrid']",
-      "execution_time_ms": 25206.307411193848,
+      "execution_time_ms": 444.0000057220459,
       "error": null
     },
     {
       "test_name": "Market-Specific Personalization",
-      "passed": false,
-      "details": "Markets tested: 3, Culturally adapted: 0",
-      "execution_time_ms": 20914.127826690674,
+      "passed": true,
+      "details": "Markets tested: 3, Culturally adapted: 3",
+      "execution_time_ms": 331.22801780700684,
       "error": null
     },
     {
       "test_name": "Real-Time Market Context",
       "passed": true,
       "details": "Market context: True, Currency: USD, Availability checked: True",
-      "execution_time_ms": 6229.412794113159,
+      "execution_time_ms": 109.99894142150879,
       "error": null
     },
     {
       "test_name": "Dynamic Pricing Context",
       "passed": true,
       "details": "Products: 5, With prices: 5, With currency: 5",
-      "execution_time_ms": 6483.860969543457,
+      "execution_time_ms": 111.00029945373535,
       "error": null
     },
     {
       "test_name": "Inventory Availability",
-      "passed": false,
-      "details": "Products checked: 50, With availability: 0",
-      "execution_time_ms": 11444.950103759766,
+      "passed": true,
+      "details": "Products checked: 5, With availability: 5",
+      "execution_time_ms": 5660.1996421813965,
       "error": null
     },
     {
       "test_name": "Conversation State Persistence",
-      "passed": false,
-      "details": "Session tracked: True, Turn: 1, ID match: False",
-      "execution_time_ms": 13086.795091629028,
+      "passed": true,
+      "details": "Session tracked: True, Turn: 2, ID match: True",
+      "execution_time_ms": 236.65952682495117,
       "error": null
     },
     {
       "test_name": "Intent Evolution Tracking",
       "passed": true,
-      "details": "Intents tracked: 4, Unique: 3, Progression: ['general', 'general', 'search', 'purchase']",
-      "execution_time_ms": 27468.705892562866,
+      "details": "Intents tracked: 4, Unique: 4, Progression: ['search', 'refined_search', 'recommendation', 'information_seeking']",
+      "execution_time_ms": 2497.776746749878,
       "error": null
     },
     {
       "test_name": "Response Times",
-      "passed": false,
-      "details": "Avg: 6368ms, Max: 6613ms, Tests: 3",
-      "execution_time_ms": 19104.353666305542,
+      "passed": true,
+      "details": "Avg: 207ms, Max: 364ms, Tests: 3",
+      "execution_time_ms": 620.2030181884766,
       "error": null
     },
     {
       "test_name": "Metrics Endpoint",
-      "passed": true,
-      "details": "Metrics sections: 4, Personalization: False, Performance: False",
-      "execution_time_ms": 258.00013542175293,
+      "passed": false,
+      "details": "HTTP 404",
+      "execution_time_ms": 1.0013580322265625,
       "error": null
     },
     {
       "test_name": "Concurrent Requests",
       "passed": true,
-      "details": "Success rate: 100.0%, Avg time: 11256ms, Concurrent: 5",
-      "execution_time_ms": 11923.892498016357,
+      "details": "Success rate: 100.0%, Avg time: 225ms, Concurrent: 5",
+      "execution_time_ms": 376.9667148590088,
       "error": null
     }
   ],
   "critical_failures": [
     {
-      "test_name": "Conversation State Persistence",
+      "test_name": "System Health Check",
       "error": null,
-      "details": "Session tracked: True, Turn: 1, ID match: False"
+      "details": "Status: 200, Components: 0"
     }
   ],
   "warnings": [
     {
-      "test_name": "Multi-Strategy Personalization",
-      "details": "Strategies tested: 1, Used: ['hybrid']"
-    },
-    {
-      "test_name": "Market-Specific Personalization",
-      "details": "Markets tested: 3, Culturally adapted: 0"
-    },
-    {
-      "test_name": "Inventory Availability",
-      "details": "Products checked: 50, With availability: 0"
-    },
-    {
-      "test_name": "Response Times",
-      "details": "Avg: 6368ms, Max: 6613ms, Tests: 3"
+      "test_name": "Metrics Endpoint",
+      "details": "HTTP 404"
     }
   ],
   "recommendations": [
-    "⚠️ Fase 2 necesita mejoras antes de proceder a Fase 3",
-    "🔧 Resolver problemas identificados en las validaciones",
+    "✅ Fase 2 en buen estado, proceder con precaución a Fase 3",
+    "🔍 Revisar warnings menores antes del deployment",
     "🚨 Resolver 1 problemas críticos identificados",
-    "⚠️ Revisar 4 warnings para optimización"
+    "⚠️ Revisar 1 warnings para optimización"
   ]
 }

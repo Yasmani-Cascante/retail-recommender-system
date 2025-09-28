@@ -9,7 +9,7 @@ import logging
 import time
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict
-from src.api.security import get_current_user
+from src.api.security_auth import get_current_user
 from src.api.core.metrics import recommendation_metrics, analyze_metrics_file
 
 logger = logging.getLogger(__name__)

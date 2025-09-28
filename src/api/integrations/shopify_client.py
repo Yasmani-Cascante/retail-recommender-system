@@ -18,18 +18,31 @@ class ShopifyIntegration:
         logging.info(f"API URL: {self.api_url}")
         logging.info(f"Access Token: {self.access_token[:4]}...")
 
-    def get_products(self) -> List[Dict]:
+    def get_products(self, limit: int = None, offset: int = 0) -> List[Dict]:
         """
-        Obtiene productos de Shopify con paginación utilizando el enfoque correcto para la API 2024-01.
+        Obtiene productos de Shopify con paginación y límites específicos.
+        
+        Args:
+            limit (int, optional): Número máximo de productos a retornar. None para todos.
+            offset (int): Número de productos a saltar (para paginación).
         
         Returns:
-            List[Dict]: Lista de productos completa
+            List[Dict]: Lista de productos paginada
         """
         try:
             all_products = []
             
-            # Iniciar con la primera página
-            url = f"{self.api_url}/products.json?limit=250"  # Usar el límite máximo permitido por Shopify
+            # Optimización: Si el límite es pequeño, usar directamente
+            if limit and limit <= 50:
+                url = f"{self.api_url}/products.json?limit={limit}"
+                logging.info(f"Using optimized fetch for small limit: {limit}")
+            else:
+                # Para límites grandes o sin límite, usar paginación estándar
+                url = f"{self.api_url}/products.json?limit=250"
+            
+            # Manejar offset saltando productos si es necesario
+            products_to_skip = offset
+            products_collected = 0
             
             # Continuar paginando mientras haya páginas siguientes
             while url:
@@ -44,7 +57,34 @@ class ShopifyIntegration:
                 
                 if products:
                     logging.info(f"Received {len(products)} products")
+                    
+                    # Aplicar offset (saltar productos si es necesario)
+                    if products_to_skip > 0:
+                        if products_to_skip >= len(products):
+                            # Saltar toda esta página
+                            products_to_skip -= len(products)
+                            url = self._get_next_page_url(response)
+                            continue
+                        else:
+                            # Saltar parte de esta página
+                            products = products[products_to_skip:]
+                            products_to_skip = 0
+                    
+                    # Aplicar límite si está especificado
+                    if limit is not None:
+                        remaining_needed = limit - products_collected
+                        if remaining_needed <= 0:
+                            break
+                        if len(products) > remaining_needed:
+                            products = products[:remaining_needed]
+                    
                     all_products.extend(products)
+                    products_collected += len(products)
+                    
+                    # Si hemos alcanzado el límite exacto, parar
+                    if limit is not None and products_collected >= limit:
+                        logging.info(f"Reached target limit of {limit} products")
+                        break
                 else:
                     logging.info("No products found in current page")
                     break

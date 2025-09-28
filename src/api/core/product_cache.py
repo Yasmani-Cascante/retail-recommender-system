@@ -28,7 +28,7 @@ class ProductCache:
     
     def __init__(
         self, 
-        redis_client, 
+        redis_service, 
         local_catalog=None, 
         shopify_client=None, 
         product_gateway=None,
@@ -39,14 +39,14 @@ class ProductCache:
         Inicializa el sistema de caché de productos.
         
         Args:
-            redis_client: Cliente Redis inicializado
+            redis_service: Servicio Redis inicializado
             local_catalog: Catálogo local (TFIDFRecommender)
             shopify_client: Cliente de Shopify para fallback
             product_gateway: Gateway para productos externos (opcional)
             ttl_seconds: Tiempo de vida en caché (segundos)
             prefix: Prefijo para claves en Redis
         """
-        self.redis = redis_client
+        self.redis = redis_service
         self.local_catalog = local_catalog
         self.shopify_client = shopify_client
         self.product_gateway = product_gateway
@@ -72,6 +72,51 @@ class ProductCache:
         self.health_task = None
         logger.info(f"Sistema de caché de productos inicializado. TTL: {ttl_seconds}s, Prefix: {prefix}")
         
+    
+    async def get_cached_product_ids(self, pattern: str = None) -> List[str]:
+        """
+        Obtiene IDs de productos en cache.
+        
+        Args:
+            pattern: Patrón para filtrar keys
+            
+        Returns:
+            Lista de IDs de productos en cache
+        """
+        try:
+            if not self.redis:
+                return []
+            
+            # Usar pattern o default
+            search_pattern = pattern or f"{self.prefix}*"
+            
+            # Get keys usando Redis
+            if hasattr(self.redis, 'keys'):
+                keys = await self.redis.keys(search_pattern)
+            else:
+                # Fallback si no hay método keys
+                return []
+            
+            # Extraer IDs de productos
+            product_ids = []
+            for key in keys:
+                if isinstance(key, bytes):
+                    key = key.decode('utf-8')
+                
+                # Solo incluir keys de productos, no de metadata
+                if key.startswith(self.prefix) and not any(
+                    exclude in key for exclude in ['recent_products_', 'popular_', 'stats_']
+                ):
+                    product_id = key.replace(self.prefix, '')
+                    if product_id:
+                        product_ids.append(product_id)
+            
+            return product_ids
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo cached product IDs: {e}")
+            return []
+
     async def start_background_tasks(self):
         """Inicia tareas en segundo plano."""
         self.health_task = asyncio.create_task(self._periodic_health_check())
@@ -143,7 +188,7 @@ class ProductCache:
         self.last_access[product_id] = datetime.now()
         
         # 1. Intentar obtener de Redis
-        if self.redis and self.redis.connected:
+        if self.redis and self.redis._connected:
             redis_key = f"{self.prefix}{product_id}"
             cached_data = await self.redis.get(redis_key)
             
@@ -306,14 +351,15 @@ class ProductCache:
         Returns:
             bool: True si la operación fue exitosa, False en caso contrario
         """
-        if not self.redis or not self.redis.connected:
+        if not self.redis or not self.redis._connected:
             return False
             
         try:
             redis_key = f"{self.prefix}{product_id}"
             json_data = json.dumps(product_data)
             ttl = ttl_override if ttl_override is not None else self.ttl_seconds
-            return await self.redis.set(redis_key, json_data, ex=ttl)
+            # return await self.redis.set(redis_key, json_data, ex=ttl)
+            return await self.redis.set(redis_key, json_data, ttl=ttl)
         except Exception as e:
             logger.error(f"Error guardando producto {product_id} en Redis: {str(e)}")
             logger.debug(f"Traceback: {traceback.format_exc()}")
@@ -353,7 +399,7 @@ class ProductCache:
         Returns:
             bool: True si se invalidó correctamente, False en caso contrario
         """
-        if not self.redis or not self.redis.connected:
+        if not self.redis or not self.redis._connected:
             return False
             
         try:
@@ -375,7 +421,7 @@ class ProductCache:
         Returns:
             int: Número de productos invalidados correctamente
         """
-        if not self.redis or not self.redis.connected:
+        if not self.redis or not self.redis._connected:
             return 0
             
         success_count = 0
@@ -512,7 +558,25 @@ class ProductCache:
                     logger.debug(f"Encontrados {len(popular_ids)} productos populares para mercado {market_id}")
                     return popular_ids
             
-            # Fallback: usar catálogo local con filtrado por mercado simulado
+            # Fallback 1: Productos recientes en cache
+            cached_ids = await self.get_cached_product_ids()
+            if cached_ids:
+                # Simular popularidad para productos en cache
+                popular_cached = cached_ids[:limit]
+                if popular_cached:
+                    logger.debug(f"Usando {len(popular_cached)} productos del cache para {market_id}")
+                    return popular_cached
+            
+            # Fallback 1: Productos recientes en cache (NUEVO)
+            cached_ids = await self.get_cached_product_ids()
+            if cached_ids:
+                # Usar productos en cache como "populares"
+                popular_cached = cached_ids[:limit]
+                if popular_cached:
+                    logger.debug(f"Using {len(popular_cached)} cached products as popular for {market_id}")
+                    return popular_cached
+            
+            # Fallback 2: usar catálogo local con filtrado por mercado simulado
             if self.local_catalog and hasattr(self.local_catalog, 'product_data'):
                 all_products = self.local_catalog.product_data
                 

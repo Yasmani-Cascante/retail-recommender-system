@@ -1,0 +1,4 @@
+Method,Name,Error,Occurrences
+GET,/health,"ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None)",126
+POST,/v1/mcp/conversation/optimized,CatchResponseError('Got 0'),37706
+GET,/health,"ConnectionRefusedError(10061, '[WinError 10061] No connection could be made because the target machine actively refused it.')",12292

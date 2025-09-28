@@ -1,0 +1,11 @@
+# BACKUP CREATED BEFORE FIX #1: Conversation State Persistence
+# Date: $(date)
+# Purpose: Backup before applying conversation state persistence fix
+
+# This backup was created before implementing Fix #1 to resolve the critical issue where
+# turn_number was always 1 instead of incrementing properly with conversation persistence.
+
+# Original file: src/api/routers/mcp_router.py
+# Issue: turn_number calculated BEFORE registering turn, causing always turn_number = 1
+# Fix: Move turn registration BEFORE building final response to get real turn_number
+
