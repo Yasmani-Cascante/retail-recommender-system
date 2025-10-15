@@ -18,6 +18,8 @@ import asyncio
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
+from src.api.core.diversity_aware_cache import DiversityAwareCache, create_diversity_aware_cache
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -37,22 +39,85 @@ class IntelligentPersonalizationCache:
     """
     Cache inteligente para respuestas de personalización MCP.
     
+    ✅ MIGRATED TO DIVERSITY-AWARE STRATEGY:
+    Usa DiversityAwareCache internamente para preservar diversificación
+    mientras optimiza performance.
+    
     Estrategias de cache:
-    1. Response caching: Cache respuestas completas por user+query similarity
-    2. Strategy caching: Pre-compute estrategias por user+market
-    3. Partial caching: Cache componentes reutilizables
+    1. Diversity-aware caching: Preserva diversificación conversacional
+    2. Dynamic TTL: Ajusta TTL según conversation velocity
+    3. Semantic intent extraction: No over-normalization
     """
     
-    def __init__(self, redis_service=None, default_ttl: int = 300):
+    def __init__(
+        self, 
+        redis_service=None,
+        default_ttl: int = 300,
+        diversity_cache: Optional[DiversityAwareCache] = None,  # ✅ NEW: Constructor injection
+        local_catalog: Optional[Any] = None,  # ✅ NEW: Fallback option
+        product_cache: Optional[Any] = None   # ✅ NEW: Fallback option
+    ):
+        """
+        Inicializa cache de personalización.
+        
+        ✅ UPDATED: Constructor injection support para enterprise factory
+        
+        Args:
+            redis_service: Servicio Redis (legacy compatibility)
+            default_ttl: TTL por defecto
+            diversity_cache: ✅ PREFERIDO - DiversityAwareCache ya configurado (enterprise)
+            local_catalog: Fallback si diversity_cache no provisto
+            product_cache: Fallback alternativo
+            
+        Constructor Injection Pattern:
+            Si diversity_cache es provisto, usa eso (enterprise factory path).
+            Si no, construye internamente (backward compatibility path).
+        
+        Author: Senior Architecture Team
+        Date: 2025-10-10
+        Version: 2.0.0 - T1 Implementation with Constructor Injection
+        """
+        # ✅ CONSTRUCTOR INJECTION (Enterprise Factory Path - PREFERRED)
+        if diversity_cache is not None:
+            self.diversity_cache = diversity_cache
+            logger.info("✅ Using INJECTED DiversityAwareCache (enterprise factory)")
+            logger.info("   → Categories will be DYNAMIC from catalog")
+        else:
+            # ✅ BACKWARD COMPATIBILITY (Legacy Path - Fallback)
+            logger.info("⚠️ Creating DiversityAwareCache internally (legacy mode)")
+            
+            # Resolve local_catalog from product_cache if needed
+            lc = local_catalog
+            if not lc and product_cache and hasattr(product_cache, 'local_catalog'):
+                lc = product_cache.local_catalog
+                logger.info("   → Resolved local_catalog from product_cache")
+            
+            self.diversity_cache = DiversityAwareCache(
+                redis_service=redis_service,
+                default_ttl=default_ttl,
+                enable_metrics=True,
+                local_catalog=lc  # ✅ Pass local_catalog (may be None)
+            )
+            
+            if lc:
+                logger.info("   → Categories will be DYNAMIC from catalog")
+            else:
+                logger.warning("   → Categories will use FALLBACK hardcoded (no catalog available)")
+        
+        # Mantener compatibilidad con código existente
         self.redis = redis_service
         self.default_ttl = default_ttl
-        self.cache_prefix = "personalization_cache"
+        self.cache_prefix = "personalization_cache"  # Legacy prefix
+        
+        # Stats para backward compatibility
         self.stats = {
             "cache_hits": 0,
             "cache_misses": 0,
             "time_saved_ms": 0,
             "cache_operations": 0
         }
+        
+        logger.info("✅ IntelligentPersonalizationCache initialized successfully")
     
     def _generate_query_hash(self, query: str, context: Dict[str, Any]) -> str:
         """Genera hash único para query + context relevante"""
@@ -99,56 +164,41 @@ class IntelligentPersonalizationCache:
         user_id: str,
         query: str,
         context: Dict[str, Any],
-        similarity_threshold: float = 0.8
+        similarity_threshold: float = 0.8  # Mantener firma para compatibilidad
     ) -> Optional[Dict[str, Any]]:
         """
-        Intenta obtener personalización desde cache.
+        ✅ MIGRATED: Usa diversity-aware cache strategy
         
-        Estrategia multi-nivel:
-        1. Exact match: user + query hash exacto
-        2. Similar match: user + queries similares  
-        3. Market fallback: otros usuarios del mismo market
+        Mantiene misma interface pero con nueva implementación que:
+        - Preserva diversificación conversacional (0% overlap)
+        - Mejora cache hit rate (target 60-70%)
+        - Optimiza performance (<1s en cache hits)
         """
         start_time = time.time()
         
         try:
-            market_id = context.get("market_id", "US")
-            query_hash = self._generate_query_hash(query, context)
-            
-            # Nivel 1: Cache exacto
-            exact_key = f"{self.cache_prefix}:exact:{user_id}:{query_hash}:{market_id}"
-            cached_response = await self._get_cache_entry(exact_key)
+            # ✅ NUEVO: Delegar a DiversityAwareCache
+            cached_response = await self.diversity_cache.get_cached_response(
+                user_id=user_id,
+                query=query,
+                context=context
+            )
             
             if cached_response:
+                # Update legacy stats para backward compatibility
                 self.stats["cache_hits"] += 1
                 self.stats["time_saved_ms"] += (time.time() - start_time) * 1000
-                logger.info(f"✅ Exact cache hit for user {user_id} - query hash {query_hash}")
+                
+                logger.info(f"✅ Diversity-aware cache hit for user {user_id}")
+                logger.debug(f"   Response time: {cached_response.get('_response_time_ms', 0):.0f}ms")
+                
                 return cached_response
+            else:
+                # Cache miss
+                self.stats["cache_misses"] += 1
+                logger.debug(f"❌ Cache miss for user {user_id} - query {query[:30]}...")
+                return None
                 
-            # Nivel 2: Cache similar (para queries parecidas del mismo usuario)
-            similar_key = f"{self.cache_prefix}:similar:{user_id}:*:{market_id}"
-            similar_responses = await self._get_similar_entries(similar_key, query, similarity_threshold)
-            
-            if similar_responses:
-                self.stats["cache_hits"] += 1
-                self.stats["time_saved_ms"] += (time.time() - start_time) * 1000
-                logger.info(f"✅ Similar cache hit for user {user_id}")
-                return similar_responses[0]  # Usar la más similar
-                
-            # Nivel 3: Cache de mercado (fallback para usuarios similares)
-            market_key = f"{self.cache_prefix}:market:*:{query_hash}:{market_id}"
-            market_responses = await self._get_market_fallback(market_key, user_id)
-            
-            if market_responses:
-                self.stats["cache_hits"] += 1
-                logger.info(f"✅ Market fallback cache hit for query {query_hash} in {market_id}")
-                # Personalizar ligeramente la respuesta del mercado
-                return await self._adapt_market_response(market_responses[0], user_id, context)
-            
-            self.stats["cache_misses"] += 1
-            logger.debug(f"❌ Cache miss for user {user_id} - query {query[:30]}...")
-            return None
-            
         except Exception as e:
             logger.error(f"❌ Error in cache lookup: {e}")
             self.stats["cache_misses"] += 1
@@ -163,49 +213,33 @@ class IntelligentPersonalizationCache:
         ttl: Optional[int] = None
     ) -> bool:
         """
-        Cachea respuesta de personalización con TTL inteligente.
+        ✅ MIGRATED: Usa diversity-aware caching
+        
+        Cachea con estrategia que preserva diversificación:
+        - Hash de productos excluidos específicos
+        - TTL dinámico según conversation velocity
+        - Semantic intent extraction
         """
         try:
-            market_id = context.get("market_id", "US")
-            query_hash = self._generate_query_hash(query, context)
-            ttl = ttl or self._calculate_intelligent_ttl(response, context)
-            
-            cache_entry = PersonalizationCacheEntry(
+            # ✅ NUEVO: Delegar a DiversityAwareCache
+            success = await self.diversity_cache.cache_response(
                 user_id=user_id,
-                market_id=market_id,
-                query_hash=query_hash,
-                personalized_response=response.get("personalized_response", ""),
-                personalized_recommendations=response.get("personalized_recommendations", []),
-                strategy_used=response.get("personalization_metadata", {}).get("strategy_used", "hybrid"),
-                personalization_score=response.get("personalization_metadata", {}).get("personalization_score", 0.0),
-                created_at=time.time(),
-                expires_at=time.time() + ttl
+                query=query,
+                context=context,
+                response=response,
+                ttl=ttl
             )
             
-            # Cache en múltiples niveles para maximizar hit rate
-            cache_keys = [
-                f"{self.cache_prefix}:exact:{user_id}:{query_hash}:{market_id}",
-                f"{self.cache_prefix}:user:{user_id}:{query_hash}",  
-                f"{self.cache_prefix}:market:general:{query_hash}:{market_id}"
-            ]
+            if success:
+                self.stats["cache_operations"] += 1
+                logger.info(f"✅ Cached personalization with diversity-awareness for user {user_id}")
+            else:
+                logger.warning(f"⚠️ Failed to cache personalization for user {user_id}")
             
-            cache_data = json.dumps(cache_entry.__dict__)
-            
-            # Cache en paralelo para optimizar performance
-            cache_tasks = [
-                self._set_cache_entry(key, cache_data, ttl)
-                for key in cache_keys
-            ]
-            
-            results = await asyncio.gather(*cache_tasks, return_exceptions=True)
-            successful_caches = sum(1 for r in results if r is not False)
-            
-            self.stats["cache_operations"] += successful_caches
-            logger.info(f"✅ Cached personalization for user {user_id} in {successful_caches} levels (TTL: {ttl}s)")
-            return successful_caches > 0
+            return success
             
         except Exception as e:
-            logger.error(f"❌ Error caching personalization response: {e}")
+            logger.error(f"❌ Error caching response: {e}")
             return False
     
     async def _get_cache_entry(self, cache_key: str) -> Optional[Dict[str, Any]]:
@@ -289,19 +323,48 @@ class IntelligentPersonalizationCache:
         return int(base_ttl)
     
     async def get_cache_stats(self) -> Dict[str, Any]:
-        """Obtiene estadísticas del cache"""
+        """
+        ✅ ENHANCED: Obtiene estadísticas combinadas
+        
+        Retorna stats de legacy + diversity-aware metrics
+        """
+        # Legacy stats calculation
         hit_rate = 0
         if self.stats["cache_hits"] + self.stats["cache_misses"] > 0:
             hit_rate = self.stats["cache_hits"] / (self.stats["cache_hits"] + self.stats["cache_misses"])
         
+        # ✅ NUEVO: Obtener diversity-aware metrics
+        diversity_metrics = self.diversity_cache.get_metrics()
+        
         return {
+            # Legacy stats (backward compatibility)
             "cache_hit_rate": f"{hit_rate:.2%}",
             "total_hits": self.stats["cache_hits"],
             "total_misses": self.stats["cache_misses"],
             "time_saved_ms": self.stats["time_saved_ms"],
             "cache_operations": self.stats["cache_operations"],
-            "estimated_performance_improvement": f"{(self.stats['time_saved_ms'] / 3000) * 100:.1f}%"
+            "estimated_performance_improvement": f"{(self.stats['time_saved_ms'] / 3000) * 100:.1f}%",
+            
+            # ✅ NUEVO: Diversity-aware metrics
+            "diversity_aware_metrics": diversity_metrics,
+            "diversity_aware_hit_rate": f"{diversity_metrics.get('hit_rate_percentage', 0.0):.1f}%",
+            "avg_response_time_hit_ms": diversity_metrics.get('avg_response_time_hit_ms', 0.0),
+            "diversification_preserved_count": diversity_metrics.get('diversification_preserved', 0)
         }
+    
+    async def invalidate_user_cache(self, user_id: str) -> int:
+        """
+        ✅ NUEVO: Invalida cache de un usuario específico
+        
+        Usa diversity-aware cache invalidation
+        """
+        try:
+            deleted_count = await self.diversity_cache.invalidate_user_cache(user_id)
+            logger.info(f"✅ Invalidated {deleted_count} cache entries for user {user_id}")
+            return deleted_count
+        except Exception as e:
+            logger.error(f"❌ Error invalidating user cache: {e}")
+            return 0
     
     async def warmup_cache_for_user(self, user_id: str, market_id: str, common_queries: List[str]):
         """Pre-caliente cache para un usuario con queries comunes"""

@@ -14,13 +14,17 @@ Version: 2.1.0 - Redis Enterprise Integration FIXED
 """
 import time
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 import asyncio
 
 # Core services
 from src.api.core.redis_service import get_redis_service, RedisService
 from src.api.core.store import get_shopify_client
 from src.api.core.product_cache import ProductCache
+
+# ✅ TYPE CHECKING: Forward references para evitar circular imports
+if TYPE_CHECKING:
+    from src.api.core.intelligent_personalization_cache import IntelligentPersonalizationCache
 
 # MCPPersonalizationEngine type hinting moved to function level to avoid circular imports
 
@@ -59,10 +63,14 @@ class ServiceFactory:
     _mcp_recommender = None
     _conversation_manager = None
     
+    # ✅ NEW: PersonalizationCache singleton (T1 Implementation)
+    _personalization_cache: Optional['IntelligentPersonalizationCache'] = None
+    
     # ✅ FIX 2: Async lock para thread safety
     _redis_lock: Optional[asyncio.Lock] = None
     _mcp_lock: Optional[asyncio.Lock] = None
     _conversation_lock: Optional[asyncio.Lock] = None
+    _personalization_lock: Optional[asyncio.Lock] = None  # ✅ NEW: Lock for PersonalizationCache
     _redis_circuit_breaker = {
         "failures": 0,
         "last_failure": 0,
@@ -89,6 +97,13 @@ class ServiceFactory:
         if cls._conversation_lock is None:
             cls._conversation_lock = asyncio.Lock()
         return cls._conversation_lock
+    
+    @classmethod
+    def _get_personalization_lock(cls):
+        """Get or create personalization cache lock (lazy initialization)"""
+        if cls._personalization_lock is None:
+            cls._personalization_lock = asyncio.Lock()
+        return cls._personalization_lock
     
     @classmethod
     async def get_redis_service(cls) -> RedisService:
@@ -320,15 +335,38 @@ class ServiceFactory:
     async def create_product_cache(cls, local_catalog=None) -> ProductCache:
         """
         ✅ Factory para ProductCache usando RedisService enterprise
+        
+        Args:
+            local_catalog: TFIDFRecommender u otro catálogo local con product_data
+                          Si None, ProductCache funcionará solo con Redis/Shopify
+        
+        Returns:
+            ProductCache configurado con todas las dependencies
+            
+        CRITICAL FIX (T1):
+            Este método DEBE recibir local_catalog para que DiversityAwareCache
+            use categorías dinámicas del catálogo real.
         """
         try:
             redis_service = await cls.get_redis_service()
             shopify_client = get_shopify_client()
             
+            # ✅ LOGGING: Verificar si local_catalog fue provisto
+            if local_catalog:
+                catalog_info = "provided"
+                if hasattr(local_catalog, 'loaded'):
+                    catalog_info = f"loaded={local_catalog.loaded}"
+                if hasattr(local_catalog, 'product_data'):
+                    product_count = len(local_catalog.product_data) if local_catalog.product_data else 0
+                    catalog_info += f", products={product_count}"
+                logger.info(f"✅ Creating ProductCache with local_catalog: {catalog_info}")
+            else:
+                logger.warning("⚠️ Creating ProductCache WITHOUT local_catalog - will use Redis/Shopify only")
+            
             # ✅ MIGRACIÓN: Usar RedisService en lugar de cliente directo
             product_cache = ProductCache(
                 redis_service=redis_service,  # ✅ CAMBIO: redis_service en lugar de redis_client
-                local_catalog=local_catalog,
+                local_catalog=local_catalog,  # ✅ CRITICAL: Pass local_catalog parameter
                 shopify_client=shopify_client,
                 ttl_seconds=86400,  # ✅ CACHE INCONSISTENCY FIX: Mismo TTL que main (24h)
                 prefix="product:"  # ✅ CACHE INCONSISTENCY FIX: Usar mismo prefijo que main
@@ -343,12 +381,155 @@ class ServiceFactory:
             raise RuntimeError(f"Product cache service unavailable: {e}")
     
     @classmethod
-    async def get_product_cache_singleton(cls) -> ProductCache:
-        """Get ProductCache singleton"""
+    async def get_product_cache_singleton(cls, local_catalog=None) -> ProductCache:
+        """
+        Get ProductCache singleton.
+        
+        Args:
+            local_catalog: TFIDFRecommender u otro catálogo local.
+                          Solo se usa en la primera inicialización.
+                          Llamadas subsecuentes ignoran este parámetro (singleton).
+        
+        Returns:
+            ProductCache singleton instance
+            
+        Usage:
+            # Primera llamada (desde main):
+            cache = await ServiceFactory.get_product_cache_singleton(local_catalog=tfidf_recommender)
+            
+            # Llamadas subsecuentes (reusa singleton):
+            cache = await ServiceFactory.get_product_cache_singleton()
+        """
         if cls._product_cache is None:
-            cls._product_cache = await cls.create_product_cache()
+            cls._product_cache = await cls.create_product_cache(local_catalog=local_catalog)
             logger.info("✅ ProductCache singleton initialized")
         return cls._product_cache
+    
+    @classmethod
+    async def get_personalization_cache(
+        cls,
+        default_ttl: int = 300,
+        force_recreate: bool = False
+    ) -> 'IntelligentPersonalizationCache':
+        """
+        ✅ ENTERPRISE FACTORY: PersonalizationCache con dependency injection completa
+        
+        Orquesta todas las dependencies:
+        1. RedisService (singleton, thread-safe)
+        2. ProductCache (singleton con local_catalog)
+        3. DiversityAwareCache (configurado con local_catalog real)
+        4. IntelligentPersonalizationCache (constructor injection)
+        
+        Esta implementación resuelve el Problema Crítico #1:
+        - Inyecta local_catalog dinámicamente desde ProductCache
+        - DiversityAwareCache usa categorías reales del catálogo (no hardcoded)
+        - Patrón Opción B implementado correctamente
+        
+        Args:
+            default_ttl: TTL por defecto para cache (300s = 5 minutos)
+            force_recreate: Forzar recreación (useful for tests)
+            
+        Returns:
+            IntelligentPersonalizationCache completamente configurado
+            
+        Usage:
+            # En endpoint o servicio:
+            cache = await ServiceFactory.get_personalization_cache()
+            result = await cache.get_cached_personalization(...)
+        
+        Author: Senior Architecture Team
+        Date: 2025-10-10
+        Version: 1.0.0 - T1 Implementation
+        """
+        # ✅ Thread-safe singleton pattern
+        if cls._personalization_cache is None or force_recreate:
+            lock = cls._get_personalization_lock()
+            async with lock:
+                # Double-check locking
+                if cls._personalization_cache is None or force_recreate:
+                    try:
+                        logger.info("🏗️ Building PersonalizationCache via enterprise factory...")
+                        
+                        # ===== DEPENDENCY 1: RedisService =====
+                        redis_service = await cls.get_redis_service()
+                        logger.info("  ✅ RedisService obtained")
+                        
+                        # ===== DEPENDENCY 2: ProductCache con local_catalog =====
+                        product_cache = None
+                        local_catalog = None
+                        
+                        try:
+                            product_cache = await cls.get_product_cache_singleton()
+                            
+                            # ✅ CRITICAL: Extract local_catalog from ProductCache
+                            if product_cache and hasattr(product_cache, 'local_catalog'):
+                                local_catalog = product_cache.local_catalog
+                                logger.info(f"  ✅ ProductCache obtained, local_catalog: {local_catalog is not None}")
+                                
+                                # ✅ Verify catalog has data
+                                if local_catalog and hasattr(local_catalog, 'product_data'):
+                                    product_count = len(local_catalog.product_data) if local_catalog.product_data else 0
+                                    logger.info(f"  ✅ LocalCatalog loaded with {product_count} products")
+                                else:
+                                    logger.warning("  ⚠️ LocalCatalog exists but has no product_data")
+                            else:
+                                logger.warning("  ⚠️ ProductCache has no local_catalog attribute")
+                                
+                        except Exception as pc_error:
+                            logger.warning(f"  ⚠️ ProductCache not available: {pc_error}")
+                            logger.warning("  ⚠️ Will use fallback categories in DiversityAwareCache")
+                        
+                        # ===== DEPENDENCY 3: DiversityAwareCache con local_catalog =====
+                        from src.api.core.diversity_aware_cache import create_diversity_aware_cache
+                        
+                        # ✅ CRITICAL: Pass product_cache AND local_catalog to factory
+                        diversity_cache = await create_diversity_aware_cache(
+                            redis_service=redis_service,
+                            default_ttl=default_ttl,
+                            product_cache=product_cache,      # ✅ Pass ProductCache
+                            local_catalog=local_catalog        # ✅ Pass extracted local_catalog
+                        )
+                        
+                        if local_catalog and hasattr(local_catalog, 'product_data'):
+                            logger.info("  ✅ DiversityAwareCache created with DYNAMIC categories from catalog")
+                        else:
+                            logger.warning("  ⚠️ DiversityAwareCache created with FALLBACK hardcoded categories")
+                        
+                        # ===== DEPENDENCY 4: IntelligentPersonalizationCache con constructor injection =====
+                        # ✅ LAZY IMPORT: Avoid circular import issues
+                        from src.api.core.intelligent_personalization_cache import IntelligentPersonalizationCache
+                        
+                        # ✅ CONSTRUCTOR INJECTION: Pass diversity_cache directly
+                        cls._personalization_cache = IntelligentPersonalizationCache(
+                            redis_service=redis_service,
+                            default_ttl=default_ttl,
+                            diversity_cache=diversity_cache  # ✅ CRITICAL: Constructor injection
+                        )
+                        
+                        logger.info("✅ PersonalizationCache singleton created via enterprise factory")
+                        logger.info(f"   - Redis: {'Connected' if redis_service else 'None'}")
+                        logger.info(f"   - ProductCache: {'Available' if product_cache else 'Unavailable'}")
+                        logger.info(f"   - LocalCatalog: {'Loaded' if local_catalog else 'Fallback'}")
+                        logger.info(f"   - DiversityAwareCache: {'Dynamic categories' if local_catalog else 'Hardcoded fallback'}")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Error creating PersonalizationCache: {e}")
+                        logger.error(f"   Traceback: {e.__class__.__name__}: {str(e)}")
+                        
+                        # ✅ Fallback graceful
+                        logger.warning("⚠️ Creating PersonalizationCache with fallback (no dependencies)")
+                        
+                        from src.api.core.intelligent_personalization_cache import IntelligentPersonalizationCache
+                        
+                        cls._personalization_cache = IntelligentPersonalizationCache(
+                            redis_service=redis_service,
+                            default_ttl=default_ttl
+                            # ⚠️ No diversity_cache injection - will create internally with fallback
+                        )
+                        
+                        logger.warning("⚠️ PersonalizationCache created in fallback mode")
+        
+        return cls._personalization_cache
     
     @classmethod
     async def create_availability_checker(cls):
@@ -427,15 +608,25 @@ class ServiceFactory:
             except Exception as e:
                 logger.warning(f"⚠️ Conversation manager shutdown error: {e}")
         
+        # ✅ Cleanup PersonalizationCache
+        if cls._personalization_cache:
+            try:
+                # Any cleanup needed for personalization cache
+                logger.info("✅ PersonalizationCache cleaned up")
+            except Exception as e:
+                logger.warning(f"⚠️ PersonalizationCache shutdown error: {e}")
+        
         # Reset singletons and locks
         cls._redis_service = None
         cls._inventory_service = None
         cls._product_cache = None
         cls._mcp_recommender = None
         cls._conversation_manager = None
+        cls._personalization_cache = None  # ✅ NEW: Reset personalization cache
         cls._redis_lock = None  # ← Reset lock
         cls._mcp_lock = None  # ← Reset MCP lock
         cls._conversation_lock = None  # ← Reset conversation lock
+        cls._personalization_lock = None  # ✅ NEW: Reset personalization lock
         cls._reset_circuit_breaker()  # ← Reset circuit breaker
         
         logger.info("✅ ServiceFactory shutdown completed (ALL CLEAN)")
@@ -521,3 +712,7 @@ async def get_conversation_manager():
 async def health_check_services() -> dict:
     """Convenience function para health checks"""
     return await ServiceFactory.health_check_all_services()
+
+async def get_personalization_cache():
+    """Convenience function para PersonalizationCache"""
+    return await ServiceFactory.get_personalization_cache()

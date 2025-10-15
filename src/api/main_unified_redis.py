@@ -315,27 +315,41 @@ async def lifespan(app: FastAPI):
                 logger.error(f"❌ Error en startup manager: {e}")
         
         # ============================================================================
-        # 🎯 PASO 5: CREAR PRODUCT CACHE CON DEPENDENCY INJECTION CORREGIDA
+        # 🎯 PASO 5: CREAR PRODUCT CACHE CON DEPENDENCY INJECTION CORREGIDA (OPCIÓN B)
         # ============================================================================
         
-        logger.info("🗄️ Creating ProductCache with corrected dependency injection...")
+        logger.info("🗄️ Creating ProductCache via ServiceFactory with local_catalog injection...")
         
         product_cache = None
         try:
             if redis_initialized and redis_service:
-                # ✅ CORRECCIÓN CRÍTICA: Pasar local_catalog entrenado
-                logger.info("🔧 Creating ProductCache with trained TF-IDF catalog...")
+                # ✅ OPCIÓN B: Usar ServiceFactory para crear ProductCache singleton
+                # Esto garantiza que TODAS las partes del sistema usen la MISMA instancia
+                logger.info("🔧 Creating ProductCache singleton via ServiceFactory with TF-IDF catalog...")
                 
-                product_cache = ProductCache(
-                    # redis_client=redis_service._client if redis_service else None,  # Redis enterprise
-                    redis_service=redis_service,  # Redis enterprise
-                    local_catalog=tfidf_recommender,     # ✅ DEPENDENCY INJECTION FIX
-                    shopify_client=shopify_client,       # Shopify fallback
-                    ttl_seconds=settings.cache_ttl,      # Configuration
-                    prefix=settings.cache_prefix         # Configuration
+                # ✅ CRITICAL: Pasar tfidf_recommender como local_catalog
+                product_cache = await ServiceFactory.get_product_cache_singleton(
+                    local_catalog=tfidf_recommender  # ✅ DEPENDENCY INJECTION FIX (OPCIÓN B)
                 )
                 
-                logger.info("✅ ProductCache created with CORRECTED dependency injection")
+                logger.info("✅ ProductCache singleton created via ServiceFactory with CORRECTED dependency injection")
+                logger.info(f"ProductCache ID: {id(product_cache)}")
+                logger.info(f"Has local_catalog: {hasattr(product_cache, 'local_catalog')}")
+                logger.info(f"local_catalog is None: {product_cache.local_catalog is None}")
+                
+                # ✅ VERIFICACIÓN: Confirmar que local_catalog tiene datos
+                if product_cache.local_catalog:
+                    if hasattr(product_cache.local_catalog, 'loaded'):
+                        logger.info(f"  → local_catalog.loaded: {product_cache.local_catalog.loaded}")
+                    if hasattr(product_cache.local_catalog, 'product_data'):
+                        product_count = len(product_cache.local_catalog.product_data) if product_cache.local_catalog.product_data else 0
+                        logger.info(f"  → local_catalog.product_data: {product_count} products")
+                        if product_count > 0:
+                            logger.info("✅ OPCIÓN B SUCCESSFUL: ProductCache has access to trained catalog!")
+                        else:
+                            logger.warning("⚠️ local_catalog.product_data is empty")
+                else:
+                    logger.error("❌ OPCIÓN B FAILED: product_cache.local_catalog is None")
                 
                 # ✅ Verificar configuración del cache
                 cache_stats = product_cache.get_stats()
@@ -353,7 +367,7 @@ async def lifespan(app: FastAPI):
                 logger.warning("⚠️ ProductCache creation skipped - Redis not available")
                 
         except Exception as cache_error:
-            logger.error(f"❌ Error creating ProductCache: {cache_error}")
+            logger.error(f"❌ Error creating ProductCache via ServiceFactory: {cache_error}")
             product_cache = None
         
         # ============================================================================
@@ -483,7 +497,8 @@ async def lifespan(app: FastAPI):
             logger.info(f"   📊 Cache initial state: {cache_stats}")
         
         logger.info("🎉 CORRECTED Enterprise startup completed successfully")
-        logger.info("🔧 DEPENDENCY INJECTION FIX APPLIED - ProductCache should now have 80%+ hit ratio")
+        logger.info("🔧 DEPENDENCY INJECTION FIX (OPCIÓN B) APPLIED - ProductCache singleton via ServiceFactory")
+        logger.info("✅ T1 CRITICAL FIX: local_catalog injected, DiversityAwareCache should use DYNAMIC categories")
         
     except Exception as e:
         logger.error(f"❌ Enterprise startup encountered error: {e}")

@@ -24,6 +24,7 @@ from src.api.core.config import get_settings
 from src.recommenders.tfidf_recommender import TFIDFRecommender
 from src.recommenders.retail_api import RetailAPIRecommender
 from typing import Dict, Any, Optional, Union
+from src.api.core.diversity_aware_cache import create_diversity_aware_cache
 
 
 logger = logging.getLogger(__name__)
@@ -264,7 +265,8 @@ class MCPFactory:
             except Exception as fallback_error:
                 logger.error(f"Error en fallback MCP client: {fallback_error}")
                 return None
-    
+            
+    # ...existing class methods...
     @staticmethod
     def create_market_manager():
         """
@@ -1169,3 +1171,40 @@ class RecommenderFactory:
         except Exception as e:
             logger.error(f"❌ Failed to create enterprise UserEventStore: {e}")
             return None
+
+
+    # ========== DIVERSITY CACHE - ENTERPRISE HELPER (module-level) ==========
+    async def create_diversity_aware_cache_enterprise(default_ttl: int = 300, redis_service=None):
+        """
+        Crea DiversityAwareCache intentando derivar categorías reales desde el ProductCache singleton.
+
+        Intenta usar ServiceFactory.get_product_cache_singleton() si está disponible. Devuelve
+        una instancia de DiversityAwareCache creada por create_diversity_aware_cache.
+        """
+        product_cache = None
+        local_catalog = None
+
+        if ENTERPRISE_INTEGRATION_AVAILABLE:
+            try:
+                # Prefer the fully managed singleton
+                product_cache = await ServiceFactory.get_product_cache_singleton()
+            except Exception:
+                # Fallback: try convenience function if present
+                try:
+                    from .service_factory import get_product_cache
+                    product_cache = await get_product_cache()
+                except Exception:
+                    product_cache = None
+
+        if product_cache:
+            local_catalog = getattr(product_cache, 'local_catalog', None)
+
+        cache = await create_diversity_aware_cache(
+            redis_service=redis_service,
+            default_ttl=default_ttl,
+            product_categories=None,
+            product_cache=product_cache,
+            local_catalog=local_catalog
+        )
+
+        return cache

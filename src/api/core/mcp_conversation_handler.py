@@ -342,21 +342,15 @@ async def get_mcp_conversation_recommendations(
             }
         }
 
-        # ✅ NUEVA OPTIMIZACIÓN: Cache inteligente para personalización
+        # ✅ NUEVA OPTIMIZACIÓN: Cache inteligente para personalización via ServiceFactory
         if mcp_engine and mcp_context and base_recommendations:
             try:
-                # Importar cache inteligente
-                from src.api.core.intelligent_personalization_cache import get_personalization_cache
+                # ✅ FIX LEGACY MODE: Usar ServiceFactory para obtener cache configurado correctamente
+                from src.api.factories.service_factory import ServiceFactory
                 
-                # Obtener Redis service para cache
-                cache_redis_service = None
-                try:
-                    from src.api.factories.service_factory import ServiceFactory
-                    cache_redis_service = await ServiceFactory.get_redis_service()
-                except Exception:
-                    pass  # Continuar sin cache si no hay Redis
-                
-                personalization_cache = get_personalization_cache(cache_redis_service)
+                # ✅ CRITICAL: Obtener PersonalizationCache desde ServiceFactory
+                # Esto garantiza que DiversityAwareCache tenga acceso al local_catalog
+                personalization_cache = await ServiceFactory.get_personalization_cache()
                 
                 # Preparar contexto de cache con información conversacional
                 # ✅ CORRECCIÓN 3: Incluir turn number y shown products para diversificación
