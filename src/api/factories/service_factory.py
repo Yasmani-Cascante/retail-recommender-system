@@ -25,6 +25,9 @@ from src.api.core.product_cache import ProductCache
 # ✅ TYPE CHECKING: Forward references para evitar circular imports
 if TYPE_CHECKING:
     from src.api.core.intelligent_personalization_cache import IntelligentPersonalizationCache
+    from src.recommenders.tfidf_recommender import TFIDFRecommender
+    from src.recommenders.retail_api import RetailAPIRecommender
+    from src.api.core.hybrid_recommender import HybridRecommender
 
 # MCPPersonalizationEngine type hinting moved to function level to avoid circular imports
 
@@ -66,11 +69,19 @@ class ServiceFactory:
     # ✅ NEW: PersonalizationCache singleton (T1 Implementation)
     _personalization_cache: Optional['IntelligentPersonalizationCache'] = None
     
+    # ✅ FASE 1: Recommender singletons
+    _tfidf_recommender: Optional['TFIDFRecommender'] = None
+    _retail_recommender: Optional['RetailAPIRecommender'] = None
+    _hybrid_recommender: Optional['HybridRecommender'] = None
+    
     # ✅ FIX 2: Async lock para thread safety
     _redis_lock: Optional[asyncio.Lock] = None
     _mcp_lock: Optional[asyncio.Lock] = None
     _conversation_lock: Optional[asyncio.Lock] = None
     _personalization_lock: Optional[asyncio.Lock] = None  # ✅ NEW: Lock for PersonalizationCache
+    _tfidf_lock: Optional[asyncio.Lock] = None  # ✅ FASE 1
+    _retail_lock: Optional[asyncio.Lock] = None  # ✅ FASE 1
+    _hybrid_lock: Optional[asyncio.Lock] = None  # ✅ FASE 1
     _redis_circuit_breaker = {
         "failures": 0,
         "last_failure": 0,
@@ -104,6 +115,27 @@ class ServiceFactory:
         if cls._personalization_lock is None:
             cls._personalization_lock = asyncio.Lock()
         return cls._personalization_lock
+    
+    @classmethod
+    def _get_tfidf_lock(cls):
+        """Get or create TF-IDF lock (lazy initialization)"""  
+        if cls._tfidf_lock is None:
+            cls._tfidf_lock = asyncio.Lock()
+        return cls._tfidf_lock
+    
+    @classmethod
+    def _get_retail_lock(cls):
+        """Get or create Retail API lock (lazy initialization)"""
+        if cls._retail_lock is None:
+            cls._retail_lock = asyncio.Lock()
+        return cls._retail_lock
+    
+    @classmethod
+    def _get_hybrid_lock(cls):
+        """Get or create Hybrid lock (lazy initialization)"""
+        if cls._hybrid_lock is None:
+            cls._hybrid_lock = asyncio.Lock()
+        return cls._hybrid_lock
     
     @classmethod
     async def get_redis_service(cls) -> RedisService:
@@ -405,6 +437,199 @@ class ServiceFactory:
             logger.info("✅ ProductCache singleton initialized")
         return cls._product_cache
     
+    # ============================================================================
+    # 🤖 RECOMMENDER SINGLETONS - Fase 1 Implementation
+    # ============================================================================
+    
+    @classmethod
+    async def get_tfidf_recommender(cls, auto_load: bool = False) -> 'TFIDFRecommender':
+        """
+        ✅ FASE 1: Get TF-IDF recommender singleton.
+        
+        Args:
+            auto_load: If True, load model immediately (for tests).
+                      If False, return unloaded instance (compatible with StartupManager).
+        
+        Returns:
+            TFIDFRecommender instance (loaded or unloaded based on auto_load)
+        
+        Examples:
+            # For production (with StartupManager):
+            recommender = await ServiceFactory.get_tfidf_recommender()
+            # StartupManager will call recommender.load() later
+            
+            # For testing (immediate load):
+            recommender = await ServiceFactory.get_tfidf_recommender(auto_load=True)
+            # Model is loaded and ready to use
+        
+        Author: Senior Architecture Team
+        Date: 2025-10-15
+        Version: 1.0.0 - Fase 1 Implementation
+        """
+        from src.recommenders.tfidf_recommender import TFIDFRecommender
+        from src.api.core.config import get_settings
+        
+        if cls._tfidf_recommender is None:
+            tfidf_lock = cls._get_tfidf_lock()
+            async with tfidf_lock:
+                # Double-check locking pattern
+                if cls._tfidf_recommender is None:
+                    settings = get_settings()
+                    model_path = getattr(settings, 'tfidf_model_path', 'data/tfidf_model.pkl')
+                    
+                    logger.info(f"✅ Creating TF-IDF recommender singleton: {model_path}")
+                    cls._tfidf_recommender = TFIDFRecommender(model_path=model_path)
+                    
+                    # Optional: Auto-load for testing scenarios
+                    if auto_load:
+                        logger.info("🔄 Auto-loading TF-IDF model...")
+                        import os
+                        if os.path.exists(model_path):
+                            success = await cls._tfidf_recommender.load()
+                            if success:
+                                product_count = len(cls._tfidf_recommender.product_data) if hasattr(cls._tfidf_recommender, 'product_data') else 0
+                                logger.info(f"✅ TF-IDF model auto-loaded: {product_count} products")
+                            else:
+                                logger.warning("⚠️ TF-IDF auto-load failed")
+                        else:
+                            logger.warning(f"⚠️ Model file not found: {model_path}")
+        
+        return cls._tfidf_recommender
+    
+    @classmethod
+    async def get_retail_recommender(cls) -> 'RetailAPIRecommender':
+        """
+        ✅ FASE 1: Get Google Retail API recommender singleton.
+        
+        Returns:
+            RetailAPIRecommender instance configured with project settings
+        
+        Note:
+            First call may take 4+ seconds due to Google Cloud service
+            initialization. This is normal and expected behavior.
+            
+            ALTS warnings are normal when running outside GCP:
+            "ALTS creds ignored. Not running on GCP"
+        
+        Author: Senior Architecture Team
+        Date: 2025-10-15
+        Version: 1.0.0 - Fase 1 Implementation
+        """
+        from src.recommenders.retail_api import RetailAPIRecommender
+        from src.api.core.config import get_settings
+        
+        if cls._retail_recommender is None:
+            retail_lock = cls._get_retail_lock()
+            async with retail_lock:
+                # Double-check locking
+                if cls._retail_recommender is None:
+                    settings = get_settings()
+                    
+                    logger.info("✅ Creating Retail API recommender singleton")
+                    logger.info(f"   Project: {settings.google_project_number}")
+                    logger.info(f"   Location: {settings.google_location}")
+                    logger.info(f"   Catalog: {settings.google_catalog}")
+                    
+                    cls._retail_recommender = RetailAPIRecommender(
+                        project_number=settings.google_project_number,
+                        location=settings.google_location,
+                        catalog=settings.google_catalog,
+                        serving_config_id=settings.google_serving_config
+                    )
+                    
+                    logger.info("✅ Retail API recommender singleton created successfully")
+        
+        return cls._retail_recommender
+    
+    @classmethod
+    async def get_hybrid_recommender(
+        cls,
+        content_recommender=None,
+        retail_recommender=None,
+        product_cache=None
+    ) -> 'HybridRecommender':
+        """
+        ✅ FASE 1: Get Hybrid recommender singleton with auto-wiring.
+        
+        Args:
+            content_recommender: Optional TF-IDF recommender (auto-fetched if None)
+            retail_recommender: Optional Retail recommender (auto-fetched if None)
+            product_cache: Optional ProductCache (auto-fetched if None)
+        
+        Returns:
+            HybridRecommender with all dependencies wired automatically
+        
+        Note:
+            When dependencies are None, they are automatically fetched from
+            ServiceFactory singletons. This ensures consistency and reduces
+            boilerplate code.
+            
+        Examples:
+            # Auto-wiring (recommended):
+            hybrid = await ServiceFactory.get_hybrid_recommender()
+            
+            # Manual injection (for testing):
+            hybrid = await ServiceFactory.get_hybrid_recommender(
+                content_recommender=mock_tfidf,
+                retail_recommender=mock_retail
+            )
+        
+        Author: Senior Architecture Team
+        Date: 2025-10-15
+        Version: 1.0.0 - Fase 1 Implementation
+        """
+        from src.api.core.config import get_settings
+        
+        if cls._hybrid_recommender is None:
+            hybrid_lock = cls._get_hybrid_lock()
+            async with hybrid_lock:
+                # Double-check locking
+                if cls._hybrid_recommender is None:
+                    settings = get_settings()
+                    
+                    logger.info("✅ Creating Hybrid recommender singleton with auto-wiring")
+                    
+                    # ✅ AUTO-WIRING: Fetch dependencies from ServiceFactory
+                    if content_recommender is None:
+                        logger.info("   🔄 Auto-fetching TF-IDF recommender...")
+                        content_recommender = await cls.get_tfidf_recommender(auto_load=False)
+                    
+                    if retail_recommender is None:
+                        logger.info("   🔄 Auto-fetching Retail recommender...")
+                        retail_recommender = await cls.get_retail_recommender()
+                    
+                    if product_cache is None:
+                        logger.info("   🔄 Auto-fetching ProductCache...")
+                        product_cache = await cls.get_product_cache_singleton()
+                    
+                    # ✅ Create hybrid recommender based on settings
+                    if settings.exclude_seen_products:
+                        from src.api.core.hybrid_recommender import HybridRecommenderWithExclusion
+                        logger.info("   Using HybridRecommenderWithExclusion")
+                        
+                        cls._hybrid_recommender = HybridRecommenderWithExclusion(
+                            content_recommender=content_recommender,
+                            retail_recommender=retail_recommender,
+                            content_weight=settings.content_weight,
+                            product_cache=product_cache
+                        )
+                    else:
+                        from src.api.core.hybrid_recommender import HybridRecommender
+                        logger.info("   Using HybridRecommender (basic)")
+                        
+                        cls._hybrid_recommender = HybridRecommender(
+                            content_recommender=content_recommender,
+                            retail_recommender=retail_recommender,
+                            content_weight=settings.content_weight,
+                            product_cache=product_cache
+                        )
+                    
+                    logger.info("✅ Hybrid recommender singleton created successfully")
+                    logger.info(f"   Content weight: {settings.content_weight}")
+                    logger.info(f"   Exclude seen products: {settings.exclude_seen_products}")
+        
+        return cls._hybrid_recommender
+    
     @classmethod
     async def get_personalization_cache(
         cls,
@@ -623,10 +848,16 @@ class ServiceFactory:
         cls._mcp_recommender = None
         cls._conversation_manager = None
         cls._personalization_cache = None  # ✅ NEW: Reset personalization cache
+        cls._tfidf_recommender = None  # ✅ FASE 1: Reset TF-IDF
+        cls._retail_recommender = None  # ✅ FASE 1: Reset Retail API
+        cls._hybrid_recommender = None  # ✅ FASE 1: Reset Hybrid
         cls._redis_lock = None  # ← Reset lock
         cls._mcp_lock = None  # ← Reset MCP lock
         cls._conversation_lock = None  # ← Reset conversation lock
         cls._personalization_lock = None  # ✅ NEW: Reset personalization lock
+        cls._tfidf_lock = None  # ✅ FASE 1: Reset TF-IDF lock
+        cls._retail_lock = None  # ✅ FASE 1: Reset Retail lock
+        cls._hybrid_lock = None  # ✅ FASE 1: Reset Hybrid lock
         cls._reset_circuit_breaker()  # ← Reset circuit breaker
         
         logger.info("✅ ServiceFactory shutdown completed (ALL CLEAN)")
