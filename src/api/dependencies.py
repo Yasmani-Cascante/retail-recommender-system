@@ -112,6 +112,8 @@ if TYPE_CHECKING:
     from src.api.core.product_cache import ProductCache
     from src.api.core.redis_service import RedisService
     from src.api.inventory.inventory_service import InventoryService
+    from src.api.inventory.availability_checker import AvailabilityChecker
+    
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -172,6 +174,12 @@ InventoryServiceDep = Annotated[
     Depends(lambda: ServiceFactory.get_inventory_service_singleton())
 ]
 """Type alias for InventoryService dependency injection."""
+
+AvailabilityCheckerDep = Annotated[
+    'AvailabilityChecker',
+    Depends(lambda: ServiceFactory.create_availability_checker())
+]
+"""Type alias for AvailabilityChecker dependency injection."""
 
 # ============================================================================
 # EXPLICIT DEPENDENCY PROVIDER FUNCTIONS
@@ -548,6 +556,55 @@ async def get_inventory_service() -> 'InventoryService':
         raise
 
 
+async def get_availability_checker():
+    """
+    Get AvailabilityChecker instance via create_availability_checker.
+    
+    AvailabilityChecker usa InventoryService para verificar disponibilidad
+    de productos en diferentes mercados.
+    
+    Returns
+    -------
+    AvailabilityChecker
+        Instance del AvailabilityChecker con InventoryService inyectado.
+    
+    Notes
+    -----
+    - **Market-aware**: Verifica disponibilidad por mercado
+    - **InventoryService integration**: Usa inventory singleton
+    - **Filtering**: Puede filtrar productos no disponibles
+    - **Thread-safe**: Basado en InventoryService thread-safe
+    
+    Examples
+    --------
+    En un endpoint:
+    
+    >>> @router.get("/products/available")
+    >>> async def get_available_products(
+    ...     market_id: str,
+    ...     checker: AvailabilityChecker = Depends(get_availability_checker)
+    ... ):
+    ...     products = await get_products()
+    ...     available = await checker.filter_available_products(
+    ...         products, market_id
+    ...     )
+    ...     return {"products": available}
+    """
+    try:
+        # Get InventoryService singleton
+        inventory = await get_inventory_service()
+        
+        # Create AvailabilityChecker with inventory
+        from src.api.inventory.availability_checker import create_availability_checker
+        checker = create_availability_checker(inventory)
+        
+        logger.debug("AvailabilityChecker dependency injected")
+        return checker
+    except Exception as e:
+        logger.error(f"Failed to get AvailabilityChecker: {e}")
+        raise
+
+
 # ============================================================================
 # COMPOSITE DEPENDENCIES - Bundle Multiple Components
 # ============================================================================
@@ -669,6 +726,7 @@ def get_all_dependency_providers() -> Dict[str, Any]:
         "product_cache": get_product_cache,
         "redis_service": get_redis_service,
         "inventory_service": get_inventory_service,
+        "availability_checker": get_availability_checker,  # ✅ NEW: Phase 2 Day 3
         "recommendation_context": get_recommendation_context
     }
 
@@ -685,6 +743,7 @@ __all__ = [
     "ProductCacheDep",
     "RedisServiceDep",
     "InventoryServiceDep",
+    "AvailabilityCheckerDep",  # ✅ NEW: Phase 2 Day 3
     
     # Explicit Provider Functions
     "get_tfidf_recommender",
@@ -693,6 +752,7 @@ __all__ = [
     "get_product_cache",
     "get_redis_service",
     "get_inventory_service",
+    "get_availability_checker",  # ✅ NEW: Phase 2 Day 3
     
     # Composite Dependencies
     "get_recommendation_context",
@@ -701,6 +761,6 @@ __all__ = [
     "get_all_dependency_providers"
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"  # ✅ Updated: Phase 2 Day 3 - Added AvailabilityChecker
 __author__ = "Senior Architecture Team"
 __status__ = "Production"
