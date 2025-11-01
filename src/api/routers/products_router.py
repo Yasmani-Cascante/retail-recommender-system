@@ -21,7 +21,7 @@ import logging
 import time
 from typing import Dict, List, Optional, Any
 import json
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Path, status
 from pydantic import BaseModel, Field
 
 # Imports del sistema original (mantenidos)
@@ -49,6 +49,17 @@ from src.api.core.product_cache import ProductCache
 # ✅ CORRECCIÓN CRÍTICA: Dependency injection unificada (ORIGINAL)
 from src.api.core.redis_service import get_redis_service, RedisService
 from src.api.core.redis_config_fix import PatchedRedisClient  # ✅ Añadir import faltante
+
+
+# ============================================================================
+# VALIDATION PATTERNS - Input validation for security and correctness
+# ============================================================================
+
+# Product ID validation pattern
+# Allows: letters, numbers, hyphens, underscores, dots
+# Prevents: special characters that could cause API issues
+VALID_PRODUCT_ID_PATTERN = r'^[a-zA-Z0-9_\-\.]+$'
+
 
 logger = logging.getLogger(__name__)
 
@@ -445,24 +456,32 @@ async def products_health_check(
     description="Obtiene lista paginada de productos con información de inventario incluida"
 )
 async def get_products(
-    limit: int = Query(default=10, ge=1, le=100, description="Número máximo de productos a retornar"),
-    page: int = Query(default=1, ge=1, description="Página de resultados"),
+    limit: int = Query(default=10, ge=1, description="Número máximo de productos a retornar"),
+    page: Optional[int] = Query(default=None, ge=1, description="Página de resultados (alternativa a offset)"),
+    offset: Optional[int] = Query(default=None, ge=0, description="Offset para paginación (alternativa a page)"),
     market_id: str = Query(default="US", description="ID del mercado para verificar disponibilidad"),
     include_inventory: bool = Query(default=True, description="Incluir información de inventario"),
     category: Optional[str] = Query(default=None, description="Filtrar por categoría"),
     available_only: bool = Query(default=False, description="Solo productos disponibles"),
     api_key: str = Depends(get_api_key),
-    # ✅ NEW: FastAPI Dependency Injection (Phase 2 Day 3)
     inventory: InventoryService = Depends(get_inventory_service)
 ):
     """
     Obtener lista de productos con información de inventario.
     
     MIGRATED: ✅ Using FastAPI Dependency Injection (Phase 2 Day 3)
+    FIXED: ✅ Supports both page and offset pagination
+    
+    Pagination:
+        - Use 'page' parameter for page-based pagination (page=1, page=2, etc.)
+        - Use 'offset' parameter for offset-based pagination (offset=0, offset=10, etc.)
+        - If both provided, 'offset' takes precedence
+        - If neither provided, defaults to page=1 (offset=0)
     
     Args:
-        limit: Número máximo de productos a retornar
-        page: Página de resultados
+        limit: Número máximo de productos a retornar (max will be capped at 100)
+        page: Página de resultados (optional, alternative to offset)
+        offset: Offset para paginación (optional, alternative to page)
         market_id: ID del mercado
         include_inventory: Incluir información de inventario
         category: Filtrar por categoría (opcional)
@@ -472,40 +491,69 @@ async def get_products(
     
     Returns:
         ProductListResponse con productos y metadata
-    
+
     Notes:
         - Obtiene productos desde Shopify
         - Enriquece con información de inventario
         - Filtra por disponibilidad si se requiere
         - Retorna resultados paginados
+
     """
     try:
         start_time = time.time()
-        logger.info(f"Getting products: limit={limit}, page={page}, market={market_id}")
+        
+        # ============================================================================
+        # ✅ FIX 1: Graceful Limit Cap
+        # ============================================================================
+        MAX_ALLOWED_LIMIT = 100
+        original_limit = limit
+        
+        if limit > MAX_ALLOWED_LIMIT:
+            limit = MAX_ALLOWED_LIMIT
+            logger.info(f"⚠️ Limit capped: requested={original_limit}, applied={limit}")
+        
+        # ============================================================================
+        # ✅ FIX 2: Support both page and offset pagination
+        # ============================================================================
+        if offset is not None:
+            # Offset explícito tiene precedencia
+            calculated_offset = offset
+            calculated_page = (offset // limit) + 1
+            logger.info(f"📄 Offset-based pagination: offset={offset}, limit={limit}, calculated_page={calculated_page}")
+        elif page is not None:
+            # Usar page si offset no especificado
+            calculated_offset = (page - 1) * limit
+            calculated_page = page
+            logger.info(f"📄 Page-based pagination: page={page}, limit={limit}, calculated_offset={calculated_offset}")
+        else:
+            # Default: página 1
+            calculated_offset = 0
+            calculated_page = 1
+            logger.info(f"📄 Default pagination: page=1, limit={limit}")
+        
+        logger.info(f"Getting products: limit={limit}, offset={calculated_offset}, market={market_id}")
         
         # 1. Obtener productos desde Shopify
         shopify_client = get_shopify_client()
         if not shopify_client:
             # Fallback con productos simulados si no hay Shopify
-            products = await _get_sample_products(limit, page)
+            products = await _get_sample_products(limit, calculated_page)
         else:
-            # Calcular offset para paginación
-            offset = (page - 1) * limit
-            products = await _get_shopify_products(shopify_client, limit, offset, category)
+            # Usar calculated_offset
+            products = await _get_shopify_products(shopify_client, limit, calculated_offset, category)
         
         if not products:
             return ProductListResponse(
                 products=[],
                 total=0,
-                page=page,
+                page=calculated_page,
                 limit=limit,
                 has_next=False,
                 market_id=market_id,
                 inventory_summary={}
             )
         
-        # 2. ✅ UPDATED: Usar inventory inyectado
-        # Enriquecer con información de inventario si se requiere
+        # 2. Enriquecer con información de inventario si se requiere
         if include_inventory:
             enriched_products = await inventory.enrich_products_with_inventory(
                 products, market_id
@@ -515,7 +563,6 @@ async def get_products(
         
         # 3. Filtrar por disponibilidad si se requiere
         if available_only:
-            # Note: availability_checker se puede obtener via Depends también si se necesita frecuentemente
             from src.api.inventory.availability_checker import create_availability_checker
             availability_checker = create_availability_checker(inventory)
             enriched_products = await availability_checker.filter_available_products(
@@ -550,42 +597,33 @@ async def get_products(
                 logger.warning(f"Error processing product {product.get('id')}: {e}")
                 continue
         
-        # 5. Generar resumen de inventario
-        inventory_summary = {}
-        if include_inventory and product_responses:
-            # Crear diccionario de inventario para el resumen
-            inventory_dict = {
-                p.id: type('InventoryInfo', (), {
-                    'status': type('Status', (), {'value': p.inventory_status})(),
-                    'available_quantity': p.stock_quantity
-                })()
-                for p in product_responses
-            }
-            inventory_summary = inventory.get_market_availability_summary(inventory_dict)
+        # 5. Calcular metadata
+        total = len(enriched_products)  # Total en esta página
+        has_next = len(enriched_products) >= limit  # Puede haber más páginas
         
-        # 6. Determinar si hay página siguiente
-        has_next = len(enriched_products) > limit
+        # Performance metrics
+        response_time = (time.time() - start_time) * 1000
         
-        # 7. Crear respuesta final
-        response = ProductListResponse(
+        logger.info(f"✅ Returned {len(product_responses)} products in {response_time:.1f}ms")
+        
+        return ProductListResponse(
             products=product_responses,
-            total=len(product_responses),
-            page=page,
+            total=total,
+            page=calculated_page,
             limit=limit,
             has_next=has_next,
             market_id=market_id,
-            inventory_summary=inventory_summary
+            inventory_summary={},
+            performance_metrics={
+                "response_time_ms": response_time,
+                "products_returned": len(product_responses)
+            }
         )
         
-        execution_time = (time.time() - start_time) * 1000
-        logger.info(f"✅ Products endpoint: {len(product_responses)} products, {execution_time:.1f}ms")
-        
-        return response
-        
     except Exception as e:
-        logger.error(f"Error in get_products: {e}")
+        logger.error(f"❌ Error getting products: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving products: {str(e)}"
         )
 
@@ -596,7 +634,14 @@ async def get_products(
     description="Obtiene información detallada de un producto específico con datos de inventario"
 )
 async def get_product(
-    product_id: str,
+    product_id: str = Path(
+        ...,
+        description="Product ID (alphanumeric, underscore, hyphen, dot allowed)",
+        regex=VALID_PRODUCT_ID_PATTERN,
+        min_length=1,
+        max_length=100,
+        example="prod_12345"
+    ),
     market_id: str = Query(default="US", description="ID del mercado"),
     include_inventory: bool = Query(default=True, description="Incluir información de inventario"),
     api_key: str = Depends(get_api_key),
@@ -608,6 +653,7 @@ async def get_product(
     Obtener información detallada de un producto específico.
     
     MIGRATED: ✅ Using FastAPI Dependency Injection (Phase 2 Day 3)
+    FIXED: ✅ Proper 404 error handling for missing products
     
     Args:
         product_id: ID del producto
@@ -619,6 +665,10 @@ async def get_product(
     
     Returns:
         ProductResponse con información completa del producto
+        
+    Raises:
+        404: Product not found
+        500: Internal server error
     
     Notes:
         - Cache-first strategy para performance
@@ -627,17 +677,28 @@ async def get_product(
     """
     try:
         start_time = time.time()
-        logger.info(f"Getting individual product {product_id} for market {market_id}")
-        
-        # 1. ✅ UPDATED: Usar cache inyectado
-        # CACHE-FIRST STRATEGY: Intentar ProductCache primero
+        logger.info(f"🔍 Getting individual product {product_id} for market {market_id}")
+
+        # import re
+        # if not re.match(VALID_PRODUCT_ID_PATTERN, product_id):
+        #     logger.warning(f"⚠️ Invalid product ID format: {product_id}")
+        #     raise HTTPException(
+        #         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        #         detail=f"Invalid product ID format. Allowed characters: alphanumeric, underscore, hyphen, dot"
+        #     )
+        # ============================================================================
+        # STEP 1: Cache-First Strategy
+        # ============================================================================
         product = None
+        cache_hit = False
+        
         try:
             cached_product = await cache.get_product(product_id)
             if cached_product:
                 response_time = (time.time() - start_time) * 1000
-                logger.info(f"✅ ProductCache hit for individual product {product_id}: {response_time:.1f}ms")
+                logger.info(f"✅ ProductCache hit for product {product_id}: {response_time:.1f}ms")
                 product = cached_product
+                cache_hit = True
                 # Set cache hit flag for response metadata
                 if isinstance(cached_product, dict):
                     cached_product["cache_hit"] = True
@@ -645,13 +706,23 @@ async def get_product(
                 logger.info(f"🔍 ProductCache miss for product {product_id}, fetching from Shopify...")
         except Exception as cache_error:
             logger.warning(f"⚠️ ProductCache error for product {product_id}: {cache_error}")
+            # Continue to Shopify fetch
         
-        # 2. CACHE MISS: Obtener desde Shopify usando DIRECT API CALL
+        # ============================================================================
+        # STEP 2: Shopify Fetch (if cache miss)
+        # ============================================================================
         if not product:
             shopify_client = get_shopify_client()
             if not shopify_client:
-                # Fallback con producto simulado
-                product = await _get_sample_product(product_id)
+                logger.warning(f"⚠️ Shopify client not available for product {product_id}")
+                # ✅ FIX: Solo intentar sample product si el ID tiene formato de muestra
+                if product_id.startswith("prod_"):
+                    product = await _get_sample_product(product_id)
+                    if not product:
+                        logger.info(f"❌ Sample product {product_id} not found (invalid or out of range)")
+                else:
+                    logger.info(f"❌ Cannot fetch product {product_id}: Shopify unavailable and not a sample ID")
+                    product = None
             else:
                 # ✅ ARCHITECTURAL FIX: Usar llamada directa O(1) en lugar de búsqueda O(n)
                 logger.info(f"🎯 Using direct API call for product {product_id}")
@@ -662,33 +733,48 @@ async def get_product(
                     logger.warning(f"⚠️ Direct API failed, trying optimized search for {product_id}")
                     product = await _get_shopify_product_optimized(shopify_client, product_id)
                 
-                # 3. CACHE SAVE: Guardar en cache SOLO si es producto real
+                # ============================================================================
+                # STEP 3: Cache Save (solo productos reales)
+                # ============================================================================
                 if product and cache and not product.get("is_sample", False):
                     try:
                         await cache._save_to_redis(product_id, product)
-                        logger.info(f"✅ Cached real individual product {product_id} for future requests")
+                        logger.info(f"✅ Cached real product {product_id} for future requests")
                     except Exception as save_error:
                         logger.warning(f"⚠️ Failed to cache product {product_id}: {save_error}")
                 elif product and product.get("is_sample", False):
-                    logger.warning(f"⚠️ Not caching sample product {product_id} - waiting for real data")
+                    logger.warning(f"⚠️ Not caching sample product {product_id}")
         
+        # ============================================================================
+        # ✅ FIX: EXPLICIT NOT FOUND HANDLING
+        # ============================================================================
         if not product:
+            logger.warning(f"❌ Product {product_id} not found in any source")
             raise HTTPException(
-                status_code=404,
-                detail=f"Product {product_id} not found"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Product with ID '{product_id}' not found"
             )
         
-        # 2. ✅ UPDATED: Usar inventory inyectado
-        # Enriquecer con información de inventario
-        if include_inventory:
-            enriched_products = await inventory.enrich_products_with_inventory(
-                [product], market_id
-            )
-            enriched_product = enriched_products[0] if enriched_products else product
+        # ============================================================================
+        # STEP 4: Enrich with Inventory
+        # ============================================================================
+        if include_inventory and inventory:
+            try:
+                enriched_products = await inventory.enrich_products_with_inventory(
+                    [product], market_id
+                )
+                enriched_product = enriched_products[0] if enriched_products else product
+            except Exception as inv_error:
+                logger.warning(f"⚠️ Inventory enrichment failed for {product_id}: {inv_error}")
+                enriched_product = product
         else:
             enriched_product = product
         
-        # 3. Crear respuesta
+        # ============================================================================
+        # STEP 5: Build Response
+        # ============================================================================
+        response_time = (time.time() - start_time) * 1000
+        
         product_response = ProductResponse(
             id=str(enriched_product.get("id", product_id)),
             title=enriched_product.get("title", ""),
@@ -698,27 +784,34 @@ async def get_product(
             image_url=enriched_product.get("image_url") or enriched_product.get("featured_image"),
             category=enriched_product.get("category") or enriched_product.get("product_type"),
             
-            # Campos de inventario
+            # Inventory data
             availability=enriched_product.get("availability", "available"),
             in_stock=enriched_product.get("in_stock", True),
-            stock_quantity=enriched_product.get("stock_quantity", 10),
+            stock_quantity=enriched_product.get("stock_quantity", 0),
             inventory_status=enriched_product.get("inventory_status", "available"),
-            market_availability=enriched_product.get("market_availability", {market_id: True}),
+            market_availability=enriched_product.get("market_availability", {}),
             low_stock_warning=enriched_product.get("low_stock_warning", False),
             estimated_restock=enriched_product.get("estimated_restock"),
-            inventory_last_updated=enriched_product.get("inventory_last_updated")
+            inventory_last_updated=enriched_product.get("inventory_last_updated"),
+            
+            # Metadata
+            cache_hit=cache_hit,
+            service_version="3.0.1"  # Updated version with fixes
         )
         
-        logger.info(f"✅ Product {product_id}: {product_response.availability}")
+        logger.info(f"✅ Product {product_id} retrieved successfully in {response_time:.1f}ms")
         return product_response
-        
+    
     except HTTPException:
+        # ✅ FIX: Re-raise HTTP exceptions (404, etc.) without modification
         raise
+    
     except Exception as e:
-        logger.error(f"Error getting product {product_id}: {e}")
+        # ✅ FIX: Catch-all for unexpected errors (SERVER error - 500)
+        logger.error(f"❌ Unexpected error fetching product {product_id}: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
-            detail=f"Error retrieving product: {str(e)}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error fetching product"
         )
 
 # ============================================================================
@@ -979,7 +1072,12 @@ async def _get_shopify_products_direct(
         return await _get_sample_products(limit, offset // limit + 1, category)
 
 async def _get_sample_products(limit: int, page: int = 1, category: Optional[str] = None) -> List[Dict]:
-    """Generar productos de ejemplo para testing (ORIGINAL)"""
+    """
+    Generar productos de ejemplo para testing
+    
+    FIXED: Implementa paginación correcta para que diferentes páginas retornen diferentes productos
+    """
+    # Generar 100 productos de ejemplo (más que antes para testing de paginación)
     products = [
         {
             "id": f"prod_{i:03d}",
@@ -988,53 +1086,83 @@ async def _get_sample_products(limit: int, page: int = 1, category: Optional[str
             "price": 25.99 + (i * 5.0),
             "currency": "USD",
             "featured_image": f"https://example.com/image_{i}.jpg",
-            "product_type": "clothing" if i % 2 == 0 else "accessories",
-            "category": "clothing" if i % 2 == 0 else "accessories"
+            "image_url": f"https://example.com/image_{i}.jpg",
+            "product_type": "clothing" if i % 3 == 0 else "accessories" if i % 3 == 1 else "electronics",
+            "category": "clothing" if i % 3 == 0 else "accessories" if i % 3 == 1 else "electronics",
+            "vendor": f"Vendor {i % 5 + 1}",
+            "handle": f"producto-ejemplo-{i}",
+            "sku": f"SKU-{i:05d}",
+            "inventory_quantity": 10 + (i % 20),
+            "is_sample": True  # Marcar como datos de ejemplo
         }
-        for i in range(1, 51)  # 50 productos de ejemplo
+        for i in range(1, 101)  # ✅ FIX: 100 productos para mejor testing
     ]
     
     # Filtrar por categoría si se especifica
     if category:
         products = [p for p in products if p.get("category") == category]
     
-    # Paginación
+    # ✅ FIX: Paginación correcta
     start_idx = (page - 1) * limit
     end_idx = start_idx + limit
     
-    return products[start_idx:end_idx]
+    paginated = products[start_idx:end_idx]
+    
+    logger.debug(f"Sample products: page={page}, limit={limit}, start={start_idx}, end={end_idx}, returned={len(paginated)}")
+    
+    return paginated
 
 async def _get_sample_product(product_id: str) -> Optional[Dict]:
-    """Obtener producto de ejemplo específico (ORIGINAL)"""
+    """
+    Obtener producto de ejemplo específico
+    
+    FIXED: Retorna None para IDs que no existen en datos de muestra.
+    Solo retorna productos que existen en el rango válido (prod_001 a prod_100).
+    """
     try:
-        # Extraer número del ID
+        # Solo retornar productos de muestra para IDs en formato correcto
         if product_id.startswith("prod_"):
-            num = int(product_id.split("_")[1])
+            try:
+                # Extraer número del ID (ej: "prod_005" → 5)
+                num_str = product_id.split("_")[1]
+                num = int(num_str)
+                
+                # ✅ FIX CRÍTICO: Solo retornar si el ID está en el rango válido (1-100)
+                if 1 <= num <= 100:
+                    return {
+                        "id": product_id,
+                        "title": f"Producto Ejemplo {num}",
+                        "description": f"Descripción detallada del producto ejemplo número {num}",
+                        "price": 25.99 + (num * 5.0),
+                        "currency": "USD",
+                        "featured_image": f"https://example.com/image_{num}.jpg",
+                        "image_url": f"https://example.com/image_{num}.jpg",
+                        "product_type": "clothing" if num % 2 == 0 else "accessories",
+                        "category": "clothing" if num % 2 == 0 else "accessories",
+                        "vendor": f"Vendor {(num % 5) + 1}",
+                        "handle": f"producto-ejemplo-{num}",
+                        "sku": f"SKU-{num:05d}",
+                        "inventory_quantity": 10 + (num % 20),
+                        "is_sample": True
+                    }
+                else:
+                    # ID fuera de rango válido
+                    logger.debug(f"❌ Sample product ID {product_id} out of valid range (1-100)")
+                    return None
+                    
+            except (ValueError, IndexError) as e:
+                # ID en formato incorrecto (ej: "prod_abc")
+                logger.debug(f"❌ Invalid sample product ID format: {product_id} - {e}")
+                return None
         else:
-            num = 1
-        
-        return {
-            "id": product_id,
-            "title": f"Producto Ejemplo {num}",
-            "description": f"Descripción detallada del producto ejemplo número {num}",
-            "price": 25.99 + (num * 5.0),
-            "currency": "USD",
-            "featured_image": f"https://example.com/image_{num}.jpg",
-            "product_type": "clothing" if num % 2 == 0 else "accessories",
-            "category": "clothing" if num % 2 == 0 else "accessories",
-       }
-    except:
-       return {
-           "id": product_id,
-           "title": "Producto Ejemplo",
-           "description": "Descripción de ejemplo",
-           "price": 29.99,
-           "currency": "USD",
-           "featured_image": "https://example.com/image.jpg",
-           "product_type": "clothing",
-           "category": "clothing",
-           "is_sample": True  # Marcar como datos de ejemplo
-       }
+            # ID no es de muestra (no empieza con "prod_")
+            logger.debug(f"❌ Product ID {product_id} is not a sample product ID")
+            return None
+            
+    except Exception as e:
+        # Error inesperado
+        logger.error(f"❌ Error getting sample product {product_id}: {e}")
+        return None
    
 
 async def _get_shopify_product_direct_api(shopify_client, product_id: str) -> Optional[Dict]:
@@ -1321,7 +1449,9 @@ async def _get_shopify_product_optimized(shopify_client, product_id: str) -> Opt
        
    except Exception as e:
        logger.error(f"❌ Error fetching individual product {product_id}: {e}")
-       return await _get_sample_product(product_id)
+    #    return await _get_sample_product(product_id)
+    # ✅ FIX: NO retornar sample fallback - dejar que el endpoint maneje 404
+       return None
 
 async def _get_shopify_product(shopify_client, product_id: str) -> Optional[Dict]:
    """

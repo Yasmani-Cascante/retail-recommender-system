@@ -282,10 +282,10 @@ def test_app_with_mocks(
         mock_startup_class.return_value = mock_startup_manager
         
         # Ahora importar la aplicación con todos los mocks en su lugar
-        from src.api.main_unified import app
+        from src.api.main_unified_redis import app
         
         # Configurar dependency overrides para autenticación
-        from src.api.security import get_api_key, get_current_user
+        from src.api.security_auth import get_api_key, get_current_user
         app.dependency_overrides[get_api_key] = mock_get_api_key
         app.dependency_overrides[get_current_user] = mock_get_current_user
         
@@ -314,7 +314,7 @@ def test_client_no_auth(test_app_with_mocks):
     # Crear una app limpia para evitar problemas de estado entre pruebas
     from fastapi import HTTPException
     from fastapi.testclient import TestClient
-    from src.api.security import get_api_key, get_current_user
+    from src.api.security_auth import get_api_key, get_current_user
     
     # Función que siempre falla la autenticación
     async def always_fail_auth():
