@@ -294,7 +294,7 @@ class TestProductDetailEndpoint:
             assert "not found" in error_message.lower(), \
                 f"Mensaje de error debe mencionar 'not found' para {product_id}"
             
-            print(f"✅ Product '{product_id}' correctly returns 404")
+            print(f" Product '{product_id}' correctly returns 404")
     
     def test_get_product_with_numeric_id(self, test_client):
         """

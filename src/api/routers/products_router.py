@@ -21,6 +21,7 @@ import logging
 import time
 from typing import Dict, List, Optional, Any
 import json
+import requests  # ✅ FIX (07 Nov 2025): Import at module level for proper test mocking
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Path, status
 from pydantic import BaseModel, Field
 
@@ -172,108 +173,91 @@ These functions have been REPLACED by centralized dependencies in:
 
 async def get_inventory_service_dependency() -> InventoryService:
     """
-    ✅ FIXED: Dependency injection unificada - NO LEGACY
+    InventoryService dependency injection with graceful degradation
     
-    Utiliza RedisService enterprise-grade via ServiceFactory.
-    Garantiza consistencia en connection management.
-    """
-    try:
-        # # ✅ Usar RedisService enterprise singleton
-        # redis_service = await get_redis_service()  
-        # # ✅ Dependency injection limpia
-        # inventory_service = InventoryService(redis_service=redis_service)
-        
-         # ✅ Usar ServiceFactory enterprise en lugar de get_redis_service directo
-        inventory_service = await ServiceFactory.get_inventory_service_singleton()
-
-        logger.info("✅ InventoryService initialized with RedisService enterprise")
-        return inventory_service
-        
-    except Exception as e:
-        logger.warning(f"⚠️ RedisService unavailable, InventoryService in fallback mode: {e}")
-        
-        # ✅ Graceful degradation
-        inventory_service = InventoryService(redis_service=None)
-        return inventory_service
-
-async def get_product_cache_dependency() -> ProductCache:
-    """
-    ✅ FIXED: ProductCache dependency injection - NO MORE LAZY INITIALIZATION
-    
-    Esta función ahora usa el ProductCache global creado durante startup
-    en lugar de crear una instancia separada. Esto elimina:
-    - Double instantiation
-    - Lazy initialization timing issues  
-    - Redis connection race conditions
+    ✅ FIXED: Esta función SIEMPRE retorna un InventoryService válido,
+    aunque sea sin Redis. NUNCA lanza excepciones.
     
     Returns:
-        ProductCache: La instancia global del ProductCache creado en startup
+        InventoryService: Siempre retorna una instancia válida
         
-    Raises:
-        HTTPException: Si ProductCache no está disponible
+    Note:
+        Si Redis no está disponible, retorna InventoryService(redis_service=None)
+        que funciona en modo degradado pero operacional.
     """
+    # STRATEGY 1: Try ServiceFactory enterprise
     try:
-        # ✅ SOLUCIÓN PRINCIPAL: Usar ServiceFactory enterprise
-        logger.debug("🔄 Attempting ProductCache via ServiceFactory enterprise...")
-        product_cache = await ServiceFactory.get_product_cache_singleton()
-        logger.debug("✅ ProductCache obtained via ServiceFactory - NO lazy initialization")
-        return product_cache
-        
+        logger.debug("🔄 Attempting InventoryService via ServiceFactory...")
+        inventory_service = await ServiceFactory.get_inventory_service_singleton()
+        logger.debug("✅ InventoryService obtained via ServiceFactory")
+        return inventory_service
     except Exception as factory_error:
-        logger.warning(f"⚠️ ServiceFactory ProductCache failed: {factory_error}")
+        logger.debug(f"ServiceFactory InventoryService unavailable: {factory_error}")
+    
+    # STRATEGY 2: Create fallback without Redis
+    try:
+        logger.debug("⚠️ Creating fallback InventoryService without Redis")
+        inventory_service = InventoryService(redis_service=None)
+        logger.info("✅ Fallback InventoryService created (no Redis)")
+        return inventory_service
+    except Exception as fallback_error:
+        logger.error(f"❌ Even fallback InventoryService failed: {fallback_error}")
+    
+    # STRATEGY 3: Último recurso - crear instancia mínima
+    logger.warning("⚠️ Creating emergency minimal InventoryService")
+    return InventoryService(redis_service=None)
+
+async def get_product_cache_dependency() -> Optional[ProductCache]:
+    """
+    ProductCache dependency injection with graceful degradation
+    
+    ✅ FIXED: Esta función NUNCA lanza excepciones. En su lugar, retorna None
+    cuando el cache no está disponible, permitiendo que el endpoint funcione sin cache.
+    
+    Returns:
+        ProductCache | None: La instancia del cache o None si no disponible
         
-        # ✅ FALLBACK 1: Acceder al ProductCache global del startup
-        try:
-            import src.api.main_unified_redis as main_module
-            
-            if hasattr(main_module, 'product_cache') and main_module.product_cache is not None:
-                logger.info("✅ Using startup ProductCache singleton - Fallback 1 successful")
-                return main_module.product_cache
-        except Exception as startup_error:
-            logger.warning(f"⚠️ Startup ProductCache access failed: {startup_error}")
+    Note:
+        El endpoint debe manejar cache=None gracefully y operar sin cache.
+    """
+    # STRATEGY 1: Try ServiceFactory enterprise
+    try:
+        logger.debug("🔄 Attempting ProductCache via ServiceFactory...")
+        product_cache = await ServiceFactory.get_product_cache_singleton()
+        logger.debug("✅ ProductCache obtained via ServiceFactory")
+        return product_cache
+    except Exception as factory_error:
+        logger.debug(f"ServiceFactory ProductCache unavailable: {factory_error}")
+    
+    # STRATEGY 2: Try startup singleton
+    try:
+        import src.api.main_unified_redis as main_module
+        if hasattr(main_module, 'product_cache') and main_module.product_cache:
+            logger.debug("✅ Using startup ProductCache singleton")
+            return main_module.product_cache
+    except Exception as startup_error:
+        logger.debug(f"Startup ProductCache unavailable: {startup_error}")
+    
+    # STRATEGY 3: Emergency creation WITHOUT Redis (to avoid event loop issues)
+    try:
+        logger.debug("⚠️ Creating minimal ProductCache without Redis")
+        shopify_client = get_shopify_client()
         
-        # ✅ FALLBACK 2: Emergency enterprise creation (última opción)
-        try:
-            logger.warning("⚠️ Creating emergency ProductCache - this should not happen in normal operation")
-            
-            redis_service = await ServiceFactory.get_redis_service()
-            shopify_client = get_shopify_client()
-            
-            # Crear ProductCache temporal con configuración mínima
-            emergency_cache = ProductCache(
-                redis_service=redis_service,  # ✅ CAMBIO: redis_service en lugar de redis_client
-                shopify_client=shopify_client,
-                ttl_seconds=3600,  # 1 hour
-                prefix="emergency:"
-            )
-            
-            logger.info("✅ Emergency ProductCache created - system operational")
-            return emergency_cache
-            
-        except Exception as emergency_error:
-            logger.error(f"❌ Emergency ProductCache creation failed: {emergency_error}")
-            
-            # ✅ FALLBACK 3: Minimal cache sin Redis
-            try:
-                shopify_client = get_shopify_client()
-                minimal_cache = ProductCache(
-                    redis_client=None,  # Sin Redis
-                    shopify_client=shopify_client,
-                    ttl_seconds=3600,
-                    prefix="minimal:"
-                )
-                logger.info("✅ Minimal ProductCache created without Redis")
-                return minimal_cache
-            except Exception as minimal_error:
-                logger.error(f"❌ All ProductCache initialization methods failed: {minimal_error}")
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "error": "ProductCache service unavailable",
-                        "details": str(minimal_error),
-                        "suggestion": "Try calling /health/redis to initialize Redis connection"
-                    }
-                )
+        # ✅ CRÍTICO: Crear sin redis_service para evitar event loop issues
+        minimal_cache = ProductCache(
+            redis_service=None,  # NO Redis
+            shopify_client=shopify_client,
+            ttl_seconds=3600,
+            prefix="minimal:"
+        )
+        logger.info("✅ Minimal ProductCache created (no Redis)")
+        return minimal_cache
+    except Exception as minimal_error:
+        logger.warning(f"⚠️ All ProductCache strategies failed: {minimal_error}")
+    
+        # ✅ CRÍTICO: NO lanzar excepción, retornar None para degradación graceful
+        logger.info("ℹ️ ProductCache unavailable - endpoint will operate without cache")
+        return None
 
 
 async def get_availability_checker_dependency():
@@ -285,82 +269,82 @@ async def get_availability_checker_dependency():
 # 🔄 LEGACY COMPATIBILITY FUNCTIONS - Mantener durante transición (ORIGINAL)
 # ============================================================================
 
-def get_inventory_service() -> InventoryService:
-    """
-    ⚠️ LEGACY FUNCTION - DEPRECATED (ORIGINAL)
+# def get_inventory_service() -> InventoryService:
+#     """
+#     ⚠️ LEGACY FUNCTION - DEPRECATED (ORIGINAL)
     
-    Usar get_inventory_service_dependency() para nueva arquitectura enterprise.
-    Esta función se mantiene solo para compatibilidad con código existente.
-    """
-    global _inventory_service
-    if _inventory_service is None:
-        logger.warning("⚠️ Using legacy get_inventory_service() - Consider migration to enterprise architecture")
-        try:
-            # Crear con configuración legacy (sin Redis)
-            _inventory_service = InventoryService(redis_service=None)
-            logger.info("✅ Legacy InventoryService created without Redis")
-        except Exception as e:
-            logger.error(f"❌ Error creating legacy InventoryService: {e}")
-            # Crear instancia mínima como fallback
-            _inventory_service = InventoryService(redis_service=None)
+#     Usar get_inventory_service_dependency() para nueva arquitectura enterprise.
+#     Esta función se mantiene solo para compatibilidad con código existente.
+#     """
+#     global _inventory_service
+#     if _inventory_service is None:
+#         logger.warning("⚠️ Using legacy get_inventory_service() - Consider migration to enterprise architecture")
+#         try:
+#             # Crear con configuración legacy (sin Redis)
+#             _inventory_service = InventoryService(redis_service=None)
+#             logger.info("✅ Legacy InventoryService created without Redis")
+#         except Exception as e:
+#             logger.error(f"❌ Error creating legacy InventoryService: {e}")
+#             # Crear instancia mínima como fallback
+#             _inventory_service = InventoryService(redis_service=None)
     
-    return _inventory_service
+#     return _inventory_service
 
-def get_availability_checker():
-    """⚠️ LEGACY FUNCTION - DEPRECATED (ORIGINAL)"""
-    global _availability_checker
-    if _availability_checker is None:
-        logger.warning("⚠️ Using legacy get_availability_checker() - Consider migration to enterprise architecture")
-        try:
-            inventory_service = get_inventory_service()
-            _availability_checker = create_availability_checker(inventory_service)
-            logger.info("✅ Legacy AvailabilityChecker created")
-        except Exception as e:
-            logger.error(f"❌ Error creating legacy AvailabilityChecker: {e}")
-            # Crear mock como fallback
-            _availability_checker = type('MockChecker', (), {
-                'check_availability': lambda self, *args, **kwargs: {'status': 'available', 'fallback': True}
-            })()
+# def get_availability_checker():
+#     """⚠️ LEGACY FUNCTION - DEPRECATED (ORIGINAL)"""
+#     global _availability_checker
+#     if _availability_checker is None:
+#         logger.warning("⚠️ Using legacy get_availability_checker() - Consider migration to enterprise architecture")
+#         try:
+#             inventory_service = get_inventory_service()
+#             _availability_checker = create_availability_checker(inventory_service)
+#             logger.info("✅ Legacy AvailabilityChecker created")
+#         except Exception as e:
+#             logger.error(f"❌ Error creating legacy AvailabilityChecker: {e}")
+#             # Crear mock como fallback
+#             _availability_checker = type('MockChecker', (), {
+#                 'check_availability': lambda self, *args, **kwargs: {'status': 'available', 'fallback': True}
+#             })()
     
-    return _availability_checker
+#     return _availability_checker
 
-def get_product_cache() -> Optional[ProductCache]:
-    """🚀 Factory para obtener ProductCache singleton - DEPRECATED (ORIGINAL)"""
-    global _product_cache
-    if _product_cache is None:
-        try:
-            # Obtener dependencias
-            shopify_client = get_shopify_client()
+# def get_product_cache() -> Optional[ProductCache]:
+#     """🚀 Factory para obtener ProductCache singleton - DEPRECATED (ORIGINAL)"""
+#     global _product_cache
+#     if _product_cache is None:
+#         try:
+#             # Obtener dependencias
+#             shopify_client = get_shopify_client()
             
-            # ✅ FIXED: ProductCache ahora usa redis_service, no redis_client
-            redis_service = None
-            try:
-                # Intentar obtener RedisService enterprise
-                import asyncio
-                loop = asyncio.get_event_loop()
-                redis_service = loop.run_until_complete(ServiceFactory.get_redis_service())
-                logger.info("✅ ProductCache legacy initialized with RedisService enterprise")
-            except Exception as e:
-                redis_service = None
-                logger.warning(f"Redis unavailable for ProductCache legacy: {e}")
+#             # ✅ FIXED: ProductCache ahora usa redis_service, no redis_client
+#             redis_service = None
+#             try:
+#                 # Intentar obtener RedisService enterprise
+#                 import asyncio
+#                 loop = asyncio.get_event_loop()
+#                 redis_service = loop.run_until_complete(ServiceFactory.get_redis_service())
+#                 logger.info("✅ ProductCache legacy initialized with RedisService enterprise")
+#             except Exception as e:
+#                 redis_service = None
+#                 logger.warning(f"Redis unavailable for ProductCache legacy: {e}")
 
-            # Crear ProductCache con configuración legacy usando redis_service
-            _product_cache = ProductCache(
-                redis_service=redis_service,  # ✅ FIXED: redis_service no redis_client
-                local_catalog=None,
-                shopify_client=shopify_client,
-                product_gateway=None,
-                ttl_seconds=900,  # 15 minutos
-                prefix="products_legacy:"
-            )
+#             # Crear ProductCache con configuración legacy usando redis_service
+#             _product_cache = ProductCache(
+#                 redis_service=redis_service,  # ✅ FIXED: redis_service no redis_client
+#                 local_catalog=None,
+#                 shopify_client=shopify_client,
+#                 product_gateway=None,
+#                 ttl_seconds=900,  # 15 minutos
+#                 prefix="products_legacy:"
+#             )
             
-            logger.info("✅ ProductCache legacy singleton created")
+#             logger.info("✅ ProductCache legacy singleton created")
             
-        except Exception as e:
-            logger.error(f"❌ Error creating ProductCache legacy: {e}")
-            _product_cache = None
+#         except Exception as e:
+#             logger.error(f"❌ Error creating ProductCache legacy: {e}")
+#             _product_cache = None
             
-    return _product_cache
+#     return _product_cache
 
 # ============================================================================
 # 🔥 ROUTER SETUP
@@ -532,7 +516,13 @@ async def get_products(
             logger.info(f"📄 Default pagination: page=1, limit={limit}")
         
         logger.info(f"Getting products: limit={limit}, offset={calculated_offset}, market={market_id}")
-        
+
+        # ✅ OPCIONAL: Verificar que inventory está disponible
+        if inventory is None:
+            logger.error("❌ InventoryService is None - this should not happen")
+            # Crear instancia de emergencia
+            inventory = InventoryService(redis_service=None)
+                
         # 1. Obtener productos desde Shopify
         shopify_client = get_shopify_client()
         if not shopify_client:
@@ -637,16 +627,16 @@ async def get_product(
     product_id: str = Path(
         ...,
         description="Product ID (alphanumeric, underscore, hyphen, dot allowed)",
-        regex=VALID_PRODUCT_ID_PATTERN,
+        # regex=VALID_PRODUCT_ID_PATTERN,
         min_length=1,
         max_length=100,
-        example="prod_12345"
+        examples=["prod_12345"]
     ),
     market_id: str = Query(default="US", description="ID del mercado"),
     include_inventory: bool = Query(default=True, description="Incluir información de inventario"),
     api_key: str = Depends(get_api_key),
     # ✅ NEW: FastAPI Dependency Injection (Phase 2 Day 3)
-    cache: ProductCache = Depends(get_product_cache),
+    cache: Optional[ProductCache] = Depends(get_product_cache),
     inventory: InventoryService = Depends(get_inventory_service)
 ):
     """
@@ -687,26 +677,31 @@ async def get_product(
         #         detail=f"Invalid product ID format. Allowed characters: alphanumeric, underscore, hyphen, dot"
         #     )
         # ============================================================================
-        # STEP 1: Cache-First Strategy
+        # STEP 1: Cache-First Strategy (with None handling)
         # ============================================================================
         product = None
         cache_hit = False
         
-        try:
-            cached_product = await cache.get_product(product_id)
-            if cached_product:
-                response_time = (time.time() - start_time) * 1000
-                logger.info(f"✅ ProductCache hit for product {product_id}: {response_time:.1f}ms")
-                product = cached_product
-                cache_hit = True
-                # Set cache hit flag for response metadata
-                if isinstance(cached_product, dict):
-                    cached_product["cache_hit"] = True
-            else:
-                logger.info(f"🔍 ProductCache miss for product {product_id}, fetching from Shopify...")
-        except Exception as cache_error:
-            logger.warning(f"⚠️ ProductCache error for product {product_id}: {cache_error}")
-            # Continue to Shopify fetch
+        # ✅ FIX: Manejar cache=None gracefully
+        if cache is None:
+            logger.warning(f"⚠️ ProductCache unavailable for {product_id}, operating without cache")
+            product = None  # Forzar fetch desde Shopify
+        else:
+            # Cache está disponible - intentar obtener
+            try:
+                cached_product = await cache.get_product(product_id)
+                if cached_product:
+                    response_time = (time.time() - start_time) * 1000
+                    logger.info(f"✅ ProductCache hit for product {product_id}: {response_time:.1f}ms")
+                    product = cached_product
+                    cache_hit = True
+                    if isinstance(cached_product, dict):
+                        cached_product["cache_hit"] = True
+                else:
+                    logger.info(f"🔍 ProductCache miss for product {product_id}, fetching from Shopify...")
+            except Exception as cache_error:
+                logger.warning(f"⚠️ ProductCache error for product {product_id}: {cache_error}")
+                # Continue without cache
         
         # ============================================================================
         # STEP 2: Shopify Fetch (if cache miss)

@@ -18,9 +18,11 @@ try:
     from src.api.mcp_services.market_config.service import MarketConfigService
     from src.api.mcp_services.currency.service import CurrencyConversionService
     mcp_available = True
-    print("✅ MCP services disponibles")
+    # print("✅ MCP services disponibles")
+    print(" MCP services disponibles")
 except ImportError as e:
-    print(f"⚠️ WARNING: MCP services not available: {e}")
+    # print(f"⚠️ WARNING: MCP services not available: {e}")
+    print(f"WARNING: MCP services not available: {e}")
     mcp_available = False
 
 logger = logging.getLogger(__name__)
@@ -349,28 +351,28 @@ def format_price_for_market(price: float, market_id: str) -> str:
 
 def test_event_loop_handling():
     """Test para verificar que el manejo de event loop funciona"""
-    print("🧪 Testing event loop handling...")
+    print("Testing event loop handling...")
     
     try:
         # Test 1: Sync context
         print("   Testing sync context...")
         result1 = convert_price_to_market_currency(100.0, "USD", "ES")
         assert result1["conversion_successful"] == True
-        print("   ✅ Sync context works")
+        print("   Sync context works")
         
         # Test 2: Health check
         print("   Testing health check...")
         health = health_check()
         assert health["status"] in ["healthy", "error"]  # Either is acceptable
-        print(f"   ✅ Health check: {health['status']}")
+        print(f"   Health check: {health['status']}")
         
         return True
         
     except Exception as e:
-        print(f"   ❌ Error: {e}")
+        print(f"  Error: {e}")
         return False
 
 if __name__ == "__main__":
-    print("🔧 Testing fixed event loop handling...")
+    print(" Testing fixed event loop handling...")
     success = test_event_loop_handling()
-    print(f"Result: {'✅ SUCCESS' if success else '❌ FAILED'}")
+    print(f"Result: {'SUCCESS' if success else ' FAILED'}")

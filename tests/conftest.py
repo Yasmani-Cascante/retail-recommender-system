@@ -3,6 +3,9 @@ Configuración mejorada para pruebas de integración del sistema de recomendacio
 
 Este módulo configura fixtures y configuraciones robustas para todas las pruebas,
 incluyendo mocks correctamente configurados y datos de prueba consistentes.
+
+✅ FIXED (07 Nov 2025): Corregido mock_shopify_client para retornar None/[] 
+en lugar de lanzar exceptions cuando productos no son encontrados.
 """
 
 import pytest
@@ -179,7 +182,18 @@ def mock_hybrid_recommender(mock_tfidf_recommender, mock_retail_recommender):
 
 @pytest.fixture
 def mock_shopify_client():
-    """Mock robusto para el cliente de Shopify."""
+    """
+    Mock robusto para el cliente de Shopify.
+    
+    ✅ FIXED (07 Nov 2025): Corregido para retornar None/[] en lugar de lanzar exceptions
+    cuando productos no son encontrados. Esto asegura que los tests repliquen el 
+    comportamiento real del ShopifyClient en producción.
+    
+    Comportamiento correcto:
+    - get_product(id): Retorna None si no encuentra (NO lanza Exception)
+    - get_products(): Retorna [] si no hay productos (NO lanza Exception)
+    - Excepciones solo para errores verdaderamente inesperados
+    """
     client = MagicMock()
     
     # Datos de clientes de prueba consistentes
@@ -188,27 +202,100 @@ def mock_shopify_client():
         {"id": "test_customer_2", "email": "test2@example.com", "first_name": "Test", "last_name": "User2"}
     ]
     
-    client.get_products.return_value = SAMPLE_PRODUCTS
+    # ✅ FIX: get_products debe retornar lista (puede ser vacía, NO exception)
+    def mock_get_products(*args, **kwargs):
+        """
+        Mock de get_products que retorna lista de productos o lista vacía.
+        NUNCA lanza Exception para productos no encontrados.
+        """
+        # Por defecto retorna todos los productos de muestra
+        limit = kwargs.get('limit', len(SAMPLE_PRODUCTS))
+        offset = kwargs.get('offset', 0)
+        
+        # Aplicar paginación
+        end = offset + limit
+        products = SAMPLE_PRODUCTS[offset:end]
+        
+        return products if products else []  # Lista vacía, NO exception
+    
+    client.get_products = mock_get_products
     client.get_customers.return_value = test_customers
     
-    # Configurar método get_product para búsqueda individual
+    # ✅ FIX: get_product debe retornar None si no encuentra (NO exception)
     def mock_get_product(product_id):
+        """
+        Mock de get_product para búsqueda individual.
+        Retorna None si producto no existe (NO lanza Exception).
+        """
+        # Normalizar product_id a string
+        product_id_str = str(product_id)
+        
+        # Buscar en productos de muestra
         for product in SAMPLE_PRODUCTS:
-            if str(product.get('id', '')) == str(product_id):
+            if str(product.get('id', '')) == product_id_str:
                 return product
+        
+        # ✅ CRÍTICO: Retornar None, NO lanzar Exception
         return None
     
     client.get_product = mock_get_product
     
+    # ✅ FIX: get_product_by_id debe comportarse igual
+    client.get_product_by_id = mock_get_product
+    
+    # ✅ FIX: Agregar atributos que el código puede verificar
+    client.shop_url = "test-shop.myshopify.com"
+    client.api_url = "https://test-shop.myshopify.com/admin/api/2024-01"
+    client.access_token = "test_access_token_123"
+    
+    # ✅ FIX: Método _request para simular llamadas API directas
+    def mock_request(method, endpoint, **kwargs):
+        """
+        Mock del método _request interno del client.
+        Retorna None si no encuentra recurso (simula 404).
+        """
+        # Extraer product_id del endpoint si es una llamada individual
+        if '/products/' in endpoint and method.upper() == 'GET':
+            try:
+                # Extraer ID del endpoint (ej: "products/123.json")
+                product_id = endpoint.split('/products/')[1].replace('.json', '')
+                product = mock_get_product(product_id)
+                
+                if product:
+                    return {'product': product}
+                else:
+                    # Simular respuesta 404 (NO exception)
+                    return None
+            except (IndexError, ValueError):
+                return None
+        
+        # Para otros endpoints, retornar datos de prueba genéricos
+        # return {'data': 'test_response'}
+        return None
+    
+    client._request = mock_request
+    client.request = mock_request  # Alias
+    
     # Configurar órdenes por cliente
     def mock_get_orders_by_customer(customer_id):
+        """
+        Mock de get_orders_by_customer.
+        Retorna lista vacía si no hay órdenes (NO exception).
+        """
         if customer_id.startswith("test_"):
             return [
                 {"id": "order_1", "customer_id": customer_id, "line_items": [{"product_id": "test_prod_1"}]}
             ]
-        return []
+        return []  # Lista vacía, NO exception
     
     client.get_orders_by_customer = mock_get_orders_by_customer
+    
+    # ✅ FIX: Método get_product_count para debugging
+    def mock_get_product_count():
+        """Retorna count de productos de muestra."""
+        return len(SAMPLE_PRODUCTS)
+    
+    client.get_product_count = mock_get_product_count
     
     return client
 
@@ -264,41 +351,115 @@ def test_app_with_mocks(
 ):
     """
     Fixture que proporciona una app FastAPI completamente mockeada para pruebas.
+    
+    ✅ CRITICAL FIX (07 Nov 2025): Patchea requests.get para evitar llamadas HTTP reales.
+    El código del endpoint intenta hacer llamadas HTTP directas a Shopify cuando detecta
+    shop_url y access_token en el mock, lo cual causaba comportamiento impredecible.
     """
-    # Patch los módulos antes de importar la aplicación
-    with patch('src.api.factories.RecommenderFactory.create_tfidf_recommender') as mock_create_tfidf, \
-         patch('src.api.factories.RecommenderFactory.create_retail_recommender') as mock_create_retail, \
-         patch('src.api.factories.RecommenderFactory.create_hybrid_recommender') as mock_create_hybrid, \
-         patch('src.api.core.store.get_shopify_client') as mock_get_shopify, \
-         patch('src.api.core.store.init_shopify') as mock_init_shopify, \
-         patch('src.api.startup_helper.StartupManager') as mock_startup_class:
+    # ========================================================================
+    # ✅ CRITICAL FIX: Patch requests.get para evitar llamadas HTTP reales
+    # ========================================================================
+    # with patch('requests.get') as mock_requests_get:
+    with patch('src.api.routers.products_router.requests.get') as mock_requests_get:
+            # Configurar respuesta 404 para todas las llamadas HTTP
+            mock_response = MagicMock()
+            mock_response.status_code = 404
+            mock_response.text = '{"errors": "Product not found"}'
+            mock_response.json.return_value = {"errors": "Product not found"}
+            mock_requests_get.return_value = mock_response
+            
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("✅ HTTP requests.get patched - all HTTP calls will return 404")
+            # Patch los módulos antes de importar la aplicación
+            with patch('src.api.factories.RecommenderFactory.create_tfidf_recommender') as mock_create_tfidf, \
+                    patch('src.api.factories.RecommenderFactory.create_retail_recommender') as mock_create_retail, \
+                    patch('src.api.factories.RecommenderFactory.create_hybrid_recommender') as mock_create_hybrid, \
+                    patch('src.api.core.store.get_shopify_client') as mock_get_shopify, \
+                    patch('src.api.core.store.init_shopify') as mock_init_shopify, \
+                    patch('src.api.startup_helper.StartupManager') as mock_startup_class:
         
-        # Configurar los mocks de las fábricas
-        mock_create_tfidf.return_value = mock_tfidf_recommender
-        mock_create_retail.return_value = mock_retail_recommender
-        mock_create_hybrid.return_value = mock_hybrid_recommender
-        mock_get_shopify.return_value = mock_shopify_client
-        mock_init_shopify.return_value = mock_shopify_client
-        mock_startup_class.return_value = mock_startup_manager
+                # Configurar los mocks de las fábricas
+                mock_create_tfidf.return_value = mock_tfidf_recommender
+                mock_create_retail.return_value = mock_retail_recommender
+                mock_create_hybrid.return_value = mock_hybrid_recommender
+                mock_get_shopify.return_value = mock_shopify_client
+                mock_init_shopify.return_value = mock_shopify_client
+                mock_startup_class.return_value = mock_startup_manager
         
-        # Ahora importar la aplicación con todos los mocks en su lugar
-        from src.api.main_unified_redis import app
+                # Ahora importar la aplicación con todos los mocks en su lugar
+                from src.api.main_unified_redis import app
+                
+                # Configurar dependency overrides para autenticación
+                from src.api.security_auth import get_api_key, get_current_user
+                app.dependency_overrides[get_api_key] = mock_get_api_key
+                app.dependency_overrides[get_current_user] = mock_get_current_user
+
+
+                # ========================================================================
+                # ✅ FIX: Override product router dependencies para tests
+                # ========================================================================
+                # Las funciones legacy de products_router pueden fallar en tests debido a
+                # event loop issues. Proveemos overrides que funcionan correctamente.
+                
+                try:
+                    from src.api.routers.products_router import (
+                        get_product_cache, 
+                        get_inventory_service,
+                        get_availability_checker
+                    )
+                    from src.api.inventory.inventory_service import InventoryService
+                    from src.api.core.product_cache import ProductCache
+                    
+                    # Mock para ProductCache que retorna None (testing sin cache)
+                    def mock_get_product_cache_for_tests() -> Optional['ProductCache']:
+                        """
+                        Mock de ProductCache para tests.
+                        Retorna None para simular cache unavailable, lo cual es manejado
+                        gracefully por el endpoint.
+                        """
+                        return None
+                    
+                    # Mock para InventoryService funcional sin Redis
+                    def mock_get_inventory_service_for_tests() -> 'InventoryService':
+                        """
+                        Mock de InventoryService para tests.
+                        Retorna una instancia funcional sin Redis.
+                        """
+                        return InventoryService(redis_service=None)
+                    
+                    # Mock para AvailabilityChecker
+                    def mock_get_availability_checker_for_tests():
+                        """
+                        Mock de AvailabilityChecker para tests.
+                        Retorna un checker básico funcional.
+                        """
+                        from src.api.inventory.availability_checker import create_availability_checker
+                        inventory_service = InventoryService(redis_service=None)
+                        return create_availability_checker(inventory_service)
+                    
+                    # Aplicar overrides
+                    app.dependency_overrides[get_product_cache] = mock_get_product_cache_for_tests
+                    app.dependency_overrides[get_inventory_service] = mock_get_inventory_service_for_tests
+                    app.dependency_overrides[get_availability_checker] = mock_get_availability_checker_for_tests
+                    
+                except ImportError as e:
+                    # Si no se pueden importar las funciones, continuar sin overrides
+                    # El código debe manejar cache=None gracefully
+                    pass
+                # ========================================================================
+
+
+                # Asegurar que los componentes globales están disponibles
+                app.state.tfidf_recommender = mock_tfidf_recommender
+                app.state.retail_recommender = mock_retail_recommender
+                app.state.hybrid_recommender = mock_hybrid_recommender
+                app.state.startup_manager = mock_startup_manager
         
-        # Configurar dependency overrides para autenticación
-        from src.api.security_auth import get_api_key, get_current_user
-        app.dependency_overrides[get_api_key] = mock_get_api_key
-        app.dependency_overrides[get_current_user] = mock_get_current_user
-        
-        # Asegurar que los componentes globales están disponibles
-        app.state.tfidf_recommender = mock_tfidf_recommender
-        app.state.retail_recommender = mock_retail_recommender
-        app.state.hybrid_recommender = mock_hybrid_recommender
-        app.state.startup_manager = mock_startup_manager
-        
-        yield app
-        
-        # Limpiar dependency overrides
-        app.dependency_overrides.clear()
+                yield app
+                
+                # Limpiar dependency overrides
+                app.dependency_overrides.clear()
 
 @pytest.fixture
 def test_client(test_app_with_mocks):
