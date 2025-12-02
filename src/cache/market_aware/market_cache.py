@@ -7,17 +7,22 @@ Esta implementación proporciona caché segmentada por mercado.
 import logging
 import json
 import asyncio
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from datetime import datetime
 
+
+if TYPE_CHECKING:
+    from src.api.core.redis_service import RedisService
+    from src.api.core.product_cache import ProductCache
+
 # CORREGIDO: Importar y adaptar RedisCache para uso asíncrono
-try:
-    from src.api.core.cache import get_redis_client, AsyncRedisWrapper, get_async_redis_wrapper
-except ImportError as e:
-    logging.error(f"Error importando cache: {e}")
-    get_redis_client = None
-    AsyncRedisWrapper = None
-    get_async_redis_wrapper = None
+# try:
+#     from src.api.core.cache import get_redis_client, AsyncRedisWrapper, get_async_redis_wrapper
+# except ImportError as e:
+#     logging.error(f"Error importando cache: {e}")
+#     get_redis_client = None
+#     AsyncRedisWrapper = None
+#     get_async_redis_wrapper = None
 
 logger = logging.getLogger(__name__)
 
@@ -27,35 +32,34 @@ class MarketAwareProductCache:
     Implementa estrategias específicas para multi-market commerce.
     """
     
-    def __init__(self, redis_client=None):
+    def __init__(
+        self, 
+        redis_service: 'RedisService',
+        base_product_cache: Optional['ProductCache'] = None,
+        default_ttl: int = 3600
+    ):
         """
-        Inicializar caché market-aware.
+        Initialize Market-Aware Product Cache with Redis enterprise service.
         
         Args:
-            redis_client: Cliente Redis (opcional, se crea automáticamente)
+            redis_service: RedisService instance (from ServiceFactory).
+                        Handles graceful degradation internally.
+            base_product_cache: Optional ProductCache instance for fallback.
+            default_ttl: Default TTL in seconds (default: 3600 = 1 hour)
+        
+        Architecture:
+            - ALWAYS use ServiceFactory.get_market_cache_service() to obtain instances
+            - RedisService manages connection, pooling, and graceful degradation internally
+            - No fallback needed - service layer handles all error cases
+            
+        Author: Senior Architecture Team
+        Version: 2.0.0 - Enterprise Migration
+        Date: 2025-11-29
         """
-        try:
-            if redis_client:
-                self.redis = redis_client
-            elif get_async_redis_wrapper:
-                self.redis = get_async_redis_wrapper()
-            else:
-                logger.warning("No se pudo crear cliente Redis - usando modo degradado")
-                self.redis = None
-            
-            # Verificar que el cliente Redis esté funcionando
-            if self.redis and hasattr(self.redis, 'connected') and self.redis.connected:
-                logger.info("MarketAwareProductCache: Cliente Redis disponible")
-            else:
-                logger.warning("MarketAwareProductCache: Cliente Redis no disponible - modo degradado")
-                self.redis = None
-                
-        except Exception as e:
-            logger.error(f"Error inicializando MarketAwareProductCache: {e}")
-            self.redis = None
-            
+        self.redis = redis_service
+        self.base_product_cache = base_product_cache
         self.cache_prefix = "market_cache:"
-        self.default_ttl = 3600  # 1 hora
+        self.default_ttl = default_ttl
         
         self.stats = {
             "hits": 0,
@@ -64,7 +68,10 @@ class MarketAwareProductCache:
             "total_requests": 0
         }
         
-        logger.info("MarketAwareProductCache inicializado")
+        logger.info(
+            f"✅ MarketAwareProductCache initialized with RedisService (enterprise) | "
+            f"Default TTL: {default_ttl}s"
+        )
     
     async def get_product(self, product_id: str, market_id: str = "default") -> Optional[Dict]:
         """
@@ -83,7 +90,8 @@ class MarketAwareProductCache:
         cache_key = f"{self.cache_prefix}{market_id}:product:{product_id}"
         
         try:
-            cached_data = await self.redis.get(cache_key)
+            # cached_data = await self.redis.get(cache_key)
+            cached_data = await self.redis.get_json(cache_key)
             
             if cached_data:
                 self.stats["hits"] += 1
@@ -125,8 +133,8 @@ class MarketAwareProductCache:
                 }
             }
             
-            success = await self.redis.set(cache_key, enriched_data, expiration=ttl)
-            
+            # success = await self.redis.set(cache_key, enriched_data, expiration=ttl)
+            success = await self.redis.set_json(cache_key, enriched_data, ttl=ttl)
             if success:
                 logger.debug(f"Producto {product_id} guardado en cache para mercado {market_id}")
             
@@ -267,7 +275,7 @@ class MarketAwareProductCache:
         """
         status = {
             "status": "operational" if self.redis else "unavailable",
-            "redis_connected": bool(self.redis and hasattr(self.redis, 'client') and self.redis.client),
+            "redis_connected": bool(self.redis),
             "market_segments_active": len(self.stats["market_segments"]),
             "total_requests_processed": self.stats["total_requests"],
             "cache_hit_ratio": self.stats["hits"] / max(self.stats["total_requests"], 1)

@@ -98,6 +98,18 @@ class RecommenderSettings(BaseSettings):
     claude_max_tokens: Optional[int] = Field(default=None, env="CLAUDE_MAX_TOKENS")
     claude_temperature: Optional[float] = Field(default=None, env="CLAUDE_TEMPERATURE")
     claude_top_p: Optional[float] = Field(default=None, env="CLAUDE_TOP_P")
+    
+    # MCP Bridge Settings
+    mcp_bridge_host: str = "localhost"
+    mcp_bridge_port: int = 3001
+    
+    # MCP Circuit Breaker
+    mcp_circuit_breaker_threshold: int = 3
+    mcp_circuit_breaker_timeout: int = 30
+    
+    # MCP Caching
+    mcp_local_cache_enabled: bool = True
+    mcp_cache_ttl: int = 300
 
     # Configuración para diferentes versiones de Pydantic
     if PYDANTIC_SETTINGS_AVAILABLE:

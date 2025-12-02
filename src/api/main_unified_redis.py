@@ -1127,8 +1127,8 @@ async def get_products_by_category(
 # ============================================================================
 
 # ✅ Register enterprise routers
-app.include_router(products_router.router, tags=["Products Enterprise"])
-app.include_router(mcp_router.router, tags=["MCP Enterprise"])
+app.include_router(products_router.router, tags=["Products Enterprise DI"])
+app.include_router(mcp_router.router, tags=["MCP Enterprise DI"])
 
 # Añadir router de recomendaciones modular bajo el prefijo /v1
 app.include_router(recommendations_module.router, prefix="/v1", tags=["Recommendations"])

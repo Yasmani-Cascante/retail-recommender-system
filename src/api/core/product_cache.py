@@ -188,9 +188,17 @@ class ProductCache:
         self.last_access[product_id] = datetime.now()
         
         # 1. Intentar obtener de Redis
-        if self.redis and self.redis._connected:
-            redis_key = f"{self.prefix}{product_id}"
-            cached_data = await self.redis.get(redis_key)
+        # if self.redis and self.redis._connected:
+        #     redis_key = f"{self.prefix}{product_id}"
+        #     cached_data = await self.redis.get(redis_key)
+        if self.redis and self.redis.is_connected():
+            try:
+                redis_key = f"{self.prefix}{product_id}"
+                cached_data = await self.redis.get(redis_key)
+            except Exception as e:
+                logger.error(f"Error getting product {product_id} from Redis: {e}")
+                cached_data = None
+                self.stats["redis_misses"] += 1
             
             if cached_data:
                 try:
@@ -351,7 +359,7 @@ class ProductCache:
         Returns:
             bool: True si la operación fue exitosa, False en caso contrario
         """
-        if not self.redis or not self.redis._connected:
+        if not self.redis or not self.redis.is_connected():
             return False
             
         try:

@@ -109,209 +109,17 @@ if TYPE_CHECKING:
     from src.recommenders.tfidf_recommender import TFIDFRecommender
     from src.recommenders.retail_api import RetailAPIRecommender
     from src.api.core.hybrid_recommender import HybridRecommender
-    # Runtime decide dinámicamente (Enhanced o Basic)
-    # from src.api.core.enhanced_hybrid_recommender import EnhancedHybridRecommender
     from src.api.core.product_cache import ProductCache
     from src.api.core.redis_service import RedisService
     from src.api.inventory.inventory_service import InventoryService
     from src.api.inventory.availability_checker import AvailabilityChecker
-
-    # MCP Components
-    # from src.api.mcp.mcp_client import MCPClient
-    from src.api.mcp.client.mcp_client_enhanced import MCPClientEnhanced as MCPClient
-    # from src.api.core.market.adapter import MarketContextManager
-    from src.api.mcp.adapters.market_manager import MarketContextManager
-    # from src.api.core.market.cache import MarketAwareProductCache
-    from src.cache.market_aware.market_cache import MarketAwareProductCache
-    # from src.api.mcp.personalization_engine import MCPPersonalizationEngine
-    from src.api.mcp.engines.mcp_personalization_engine import MCPPersonalizationEngine
+    
 
 # ============================================================================
 # LOGGING CONFIGURATION
 # ============================================================================
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# ASYNC DEPENDENCY PROVIDER FUNCTIONS
-# ============================================================================
-# ✅ FIX: Funciones async explícitas para que FastAPI las awaitee correctamente
-# Antes: lambdas síncronos → retornaban coroutines
-# Ahora: funciones async → FastAPI awaitea automáticamente
-# ============================================================================
-
-# ============================================================================
-# MCP COMPONENTS - Enterprise Integration
-# ============================================================================
-
-async def get_mcp_client() -> 'MCPClient':
-    """
-    Get MCPClient singleton (Enhanced o Basic) via ServiceFactory.
-    
-    MCPClient proporciona conexión al Shopify MCP Bridge (Node.js) para
-    procesamiento conversacional avanzado con Claude AI.
-    
-    Returns
-    -------
-    MCPClient or MCPClientEnhanced
-        Singleton instance del MCP client. Prefiere Enhanced (circuit breaker,
-        local cache, retry logic) con fallback a Basic si Enhanced no disponible.
-    
-    Notes
-    -----
-    - **Enhanced First**: Intenta MCPClientEnhanced con features avanzadas
-    - **Graceful Degradation**: Fallback a MCPClient basic si import falla
-    - **Bridge Connection**: Conecta a localhost:3001 (configurable)
-    - **Thread-safe**: Usa async lock internamente
-    - **Singleton**: Una instancia compartida globalmente
-    
-    Examples
-    --------
-    En un endpoint:
-    
-    >>> @router.post("/mcp/conversation")
-    >>> async def process_conversation(
-    ...     request: ConversationRequest,
-    ...     mcp_client: MCPClient = Depends(get_mcp_client)
-    ... ):
-    ...     result = await mcp_client.process_conversation(
-    ...         query=request.query,
-    ...         session_id=request.session_id
-    ...     )
-    ...     return result
-    """
-    try:
-        client = await ServiceFactory.get_mcp_client()
-        logger.debug(
-            f"MCP Client dependency injected: "
-            f"type={type(client).__name__}, "
-            f"enhanced={hasattr(client, 'circuit_breaker')}"
-        )
-        return client
-    except Exception as e:
-        logger.error(f"Failed to get MCP Client: {e}")
-        raise
-
-
-async def get_market_context_manager() -> 'MarketContextManager':
-    """
-    Get MarketContextManager singleton via ServiceFactory.
-    
-    MarketContextManager gestiona contextos de múltiples mercados incluyendo
-    configuración de currency, language, cultural preferences, y adaptaciones.
-    
-    Returns
-    -------
-    MarketContextManager
-        Singleton instance del market context manager con todos los mercados
-        configurados (US, ES, MX, etc.).
-    
-    Notes
-    -----
-    - **Multi-market**: Soporte para US, ES, MX, CL, etc.
-    - **Cultural Adaptation**: Adapta contenido por mercado
-    - **Currency Conversion**: Convierte precios automáticamente
-    - **Thread-safe**: Usa async lock internamente
-    
-    Examples
-    --------
-    >>> @router.get("/markets/{market_id}/context")
-    >>> async def get_context(
-    ...     market_id: str,
-    ...     manager: MarketContextManager = Depends(get_market_manager)
-    ... ):
-    ...     context = await manager.get_market_context(market_id)
-    ...     return context
-    """
-    try:
-        manager = await ServiceFactory.get_market_context_manager()
-        logger.debug("MarketContextManager dependency injected")
-        return manager
-    except Exception as e:
-        logger.error(f"Failed to get MarketContextManager: {e}")
-        raise
-
-async def get_market_cache_service() -> 'MarketAwareProductCache':
-    """
-    Get MarketAwareProductCache singleton via ServiceFactory.
-    
-    MarketAwareProductCache extiende ProductCache con awareness de mercados,
-    cacheando productos adaptados por mercado (precios, currency, availability).
-    
-    Returns
-    -------
-    MarketAwareProductCache
-        Singleton instance del market-aware cache con Redis backend.
-    
-    Notes
-    -----
-    - **Market-specific Caching**: Cache separado por mercado
-    - **Auto-adaptation**: Adapta productos al obtenerlos
-    - **Currency Conversion**: Precios en currency correcta
-    - **Availability Checking**: Verifica disponibilidad por mercado
-    
-    Examples
-    --------
-    >>> @router.get("/products/{product_id}/market/{market_id}")
-    >>> async def get_market_product(
-    ...     product_id: str,
-    ...     market_id: str,
-    ...     cache: MarketAwareProductCache = Depends(get_market_cache)
-    ... ):
-    ...     product = await cache.get_product_for_market(product_id, market_id)
-    ...     return product
-    """
-    try:
-        cache = await ServiceFactory.get_market_cache_service()
-        logger.debug("MarketAwareProductCache dependency injected")
-        return cache
-    except Exception as e:
-        logger.error(f"Failed to get MarketAwareProductCache: {e}")
-        raise
-
-
-async def get_mcp_recommender() -> 'MCPPersonalizationEngine':
-    """
-    Get MCPPersonalizationEngine singleton via ServiceFactory.
-    
-    MCPPersonalizationEngine combina recommendations con personalización
-    conversacional usando Claude AI para contexto enriquecido.
-    
-    Returns
-    -------
-    MCPPersonalizationEngine
-        Singleton instance del MCP-aware recommender con HybridRecommender,
-        MCPClient, y MarketContextManager auto-wired.
-    
-    Notes
-    -----
-    - **Auto-wired**: Todas las dependencies inyectadas automáticamente
-    - **Conversational**: Usa Claude AI para entender intención
-    - **Market-aware**: Adapta recommendations por mercado
-    - **Personalized**: Considera user behavior y preferences
-    
-    Examples
-    --------
-    >>> @router.post("/recommendations/conversation")
-    >>> async def conversational_recommendations(
-    ...     request: ConversationRequest,
-    ...     mcp_rec: MCPPersonalizationEngine = Depends(get_mcp_recommender)
-    ... ):
-    ...     result = await mcp_rec.get_personalized_recommendations(
-    ...         user_id=request.user_id,
-    ...         query=request.query,
-    ...         market_id=request.market_id
-    ...     )
-    ...     return result
-    """
-    try:
-        recommender = await ServiceFactory.get_mcp_recommender()
-        logger.debug("MCPPersonalizationEngine dependency injected")
-        return recommender
-    except Exception as e:
-        logger.error(f"Failed to get MCPPersonalizationEngine: {e}")
-        raise
 
 # ============================================================================
 # TYPE ALIASES - Modern FastAPI Pattern (Python 3.9+)
@@ -360,30 +168,6 @@ RedisServiceDep = Annotated[
     Depends(lambda: ServiceFactory.get_redis_service())
 ]
 """Type alias for RedisService dependency injection."""
-
-MCPClientDep = Annotated[
-    'MCPClient',
-    Depends(get_mcp_client)
-]
-"""Type alias for MCP Client dependency injection."""
-
-MarketManagerDep = Annotated[
-    'MarketContextManager',
-    Depends(get_market_context_manager)
-]
-"""Type alias for Market Context Manager dependency injection."""
-
-MarketCacheDep = Annotated[
-    'MarketAwareProductCache',
-    Depends(get_market_cache_service)
-]
-"""Type alias for Market-Aware ProductCache dependency injection."""
-
-MCPRecommenderDep = Annotated[
-    'MCPPersonalizationEngine',
-    Depends(get_mcp_recommender)
-]
-"""Type alias for MCPPersonalizationEngine dependency injection."""
 
 InventoryServiceDep = Annotated[
     'InventoryService',
@@ -725,98 +509,6 @@ async def get_redis_service() -> 'RedisService':
         raise
 
 
-# # ============================================================================
-# # MCP COMPONENTS - Enterprise Integration
-# # ============================================================================
-
-# async def get_mcp_client() -> 'MCPClient':
-#     """
-#     Get MCPClient singleton (Enhanced o Basic) via ServiceFactory.
-    
-#     MCPClient proporciona conexión al Shopify MCP Bridge (Node.js) para
-#     procesamiento conversacional avanzado con Claude AI.
-    
-#     Returns
-#     -------
-#     MCPClient or MCPClientEnhanced
-#         Singleton instance del MCP client. Prefiere Enhanced (circuit breaker,
-#         local cache, retry logic) con fallback a Basic si Enhanced no disponible.
-    
-#     Notes
-#     -----
-#     - **Enhanced First**: Intenta MCPClientEnhanced con features avanzadas
-#     - **Graceful Degradation**: Fallback a MCPClient basic si import falla
-#     - **Bridge Connection**: Conecta a localhost:3001 (configurable)
-#     - **Thread-safe**: Usa async lock internamente
-#     - **Singleton**: Una instancia compartida globalmente
-    
-#     Examples
-#     --------
-#     En un endpoint:
-    
-#     >>> @router.post("/mcp/conversation")
-#     >>> async def process_conversation(
-#     ...     request: ConversationRequest,
-#     ...     mcp_client: MCPClient = Depends(get_mcp_client)
-#     ... ):
-#     ...     result = await mcp_client.process_conversation(
-#     ...         query=request.query,
-#     ...         session_id=request.session_id
-#     ...     )
-#     ...     return result
-#     """
-#     try:
-#         client = await ServiceFactory.get_mcp_client()
-#         logger.debug(
-#             f"MCP Client dependency injected: "
-#             f"type={type(client).__name__}, "
-#             f"enhanced={hasattr(client, 'circuit_breaker')}"
-#         )
-#         return client
-#     except Exception as e:
-#         logger.error(f"Failed to get MCP Client: {e}")
-#         raise
-
-
-# async def get_market_context_manager() -> 'MarketContextManager':
-#     """
-#     Get MarketContextManager singleton via ServiceFactory.
-    
-#     MarketContextManager gestiona contextos de múltiples mercados incluyendo
-#     configuración de currency, language, cultural preferences, y adaptaciones.
-    
-#     Returns
-#     -------
-#     MarketContextManager
-#         Singleton instance del market context manager con todos los mercados
-#         configurados (US, ES, MX, etc.).
-    
-#     Notes
-#     -----
-#     - **Multi-market**: Soporte para US, ES, MX, CL, etc.
-#     - **Cultural Adaptation**: Adapta contenido por mercado
-#     - **Currency Conversion**: Convierte precios automáticamente
-#     - **Thread-safe**: Usa async lock internamente
-    
-#     Examples
-#     --------
-#     >>> @router.get("/markets/{market_id}/context")
-#     >>> async def get_context(
-#     ...     market_id: str,
-#     ...     manager: MarketContextManager = Depends(get_market_manager)
-#     ... ):
-#     ...     context = await manager.get_market_context(market_id)
-#     ...     return context
-#     """
-#     try:
-#         manager = await ServiceFactory.get_market_context_manager()
-#         logger.debug("MarketContextManager dependency injected")
-#         return manager
-#     except Exception as e:
-#         logger.error(f"Failed to get MarketContextManager: {e}")
-#         raise
-
-
 async def get_inventory_service() -> 'InventoryService':
     """
     Get InventoryService singleton via ServiceFactory.
@@ -1033,10 +725,6 @@ def get_all_dependency_providers() -> Dict[str, Any]:
         "hybrid_recommender": get_hybrid_recommender,
         "product_cache": get_product_cache,
         "redis_service": get_redis_service,
-        "mcp_client": get_mcp_client,
-        "market_manager": get_market_context_manager,
-        "market_cache": get_market_cache_service,
-        "mcp_recommender": get_mcp_recommender,
         "inventory_service": get_inventory_service,
         "availability_checker": get_availability_checker,  # ✅ NEW: Phase 2 Day 3
         "recommendation_context": get_recommendation_context
@@ -1054,10 +742,6 @@ __all__ = [
     "HybridRecommenderDep",
     "ProductCacheDep",
     "RedisServiceDep",
-    "MCPClientDep",
-    "MarketManagerDep",
-    "MarketCacheDep",
-    "MCPRecommenderDep",
     "InventoryServiceDep",
     "AvailabilityCheckerDep",  # ✅ NEW: Phase 2 Day 3
     
@@ -1067,10 +751,6 @@ __all__ = [
     "get_hybrid_recommender",
     "get_product_cache",
     "get_redis_service",
-    "get_mcp_client",
-    "get_market_manager",
-    "get_market_cache",
-    "get_mcp_recommender",
     "get_inventory_service",
     "get_availability_checker",  # ✅ NEW: Phase 2 Day 3
     

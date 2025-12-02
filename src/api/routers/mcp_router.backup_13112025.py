@@ -3,7 +3,7 @@ import time
 import logging
 import asyncio
 import json  # Added for response transformation
-from datetime import datetime, timezone  # Fix: Use datetime to avoid all time shadowing issues
+from datetime import datetime  # Fix: Use datetime to avoid all time shadowing issues
 
 # ASYNC-FIRST IMPORTS - CORRECCIÓN CRÍTICA
 from src.api.utils.market_utils import (
@@ -39,22 +39,11 @@ from src.api.core.performance_optimizer import (
 #     execute_mcp_operations_parallel, get_parallel_metrics, ParallelTask
 # )
 
+
 from src.api.security_auth import get_current_user
-
-# ✅ MIGRACIÓN FASE 3B: Type aliases desde dependencies
-from src.api.dependencies import (
-    # Functions
-    get_mcp_client,
-    get_market_context_manager,
-    get_market_cache_service,
-    get_mcp_recommender,
-    # Type Aliases para dependency injection
-    MCPClientDep,
-    MarketManagerDep,
-    MarketCacheDep,
-    MCPRecommenderDep
-)
-
+from src.api.mcp.client.mcp_client import MCPClient
+from src.api.mcp.adapters.market_manager import MarketContextManager
+from src.cache.market_aware.market_cache import MarketAwareProductCache
 from src.api.mcp.models.mcp_models import (
     ConversationContext, MCPRecommendationRequest, MCPRecommendationResponse,
     MarketID, IntentType
@@ -180,173 +169,77 @@ class MarketSupportedResponse(BaseModel):
 # Crear router MCP
 router = APIRouter(
     prefix="/v1/mcp",
-    tags=["MCP Enterprise DI"],
+    tags=["Market Context Protocol"],
     dependencies=[Depends(get_current_user)],
     responses={404: {"description": "No encontrado"}},
 )
 
 # Factorías e instancias necesarias para MCP
-# def get_mcp_client():
-#     """Obtiene el cliente MCP global"""
-#     # Importar la instancia global desde main_unified_redis
-#     from src.api import main_unified_redis
+def get_mcp_client():
+    """Obtiene el cliente MCP global"""
+    # Importar la instancia global desde main_unified_redis
+    from src.api import main_unified_redis
     
-#     # Verificar si hay una instancia MCP global disponible
-#     if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
-#         if hasattr(main_unified_redis.mcp_recommender, 'mcp_client'):
-#             return main_unified_redis.mcp_recommender.mcp_client
+    # Verificar si hay una instancia MCP global disponible
+    if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
+        if hasattr(main_unified_redis.mcp_recommender, 'mcp_client'):
+            return main_unified_redis.mcp_recommender.mcp_client
     
-#     # Fallback a crear uno nuevo si no hay instancia global
-#     from src.api.factories.factories import MCPFactory
-#     return MCPFactory.create_mcp_client()
-# async def get_mcp_client():
-#     """
-#     Obtiene el cliente MCP usando ServiceFactory (singleton enterprise)
-    
-#     Returns:
-#         MCPClient: Cliente MCP singleton (Enhanced o Basic)
-#     """
-#     try:
-#         from src.api.factories.service_factory import ServiceFactory
-#         return await ServiceFactory.get_mcp_client()
-#     except Exception as e:
-#         logger.warning(f"⚠️ Could not get MCP client from ServiceFactory: {e}")
-        
-#         # Fallback: Try old pattern
-#         try:
-#             from src.api import main_unified_redis
-#             if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
-#                 if hasattr(main_unified_redis.mcp_recommender, 'mcp_client'):
-#                     return main_unified_redis.mcp_recommender.mcp_client
-#         except:
-#             pass
-        
-#         logger.error("❌ MCP Client no disponible")
-#         return None
+    # Fallback a crear uno nuevo si no hay instancia global
+    from src.api.factories.factories import MCPFactory
+    return MCPFactory.create_mcp_client()
 
-# def get_market_manager():
-#     """Obtiene el gestor de mercados global"""
-#     # Importar la instancia global desde main_unified_redis
-#     from src.api import main_unified_redis
+def get_market_manager():
+    """Obtiene el gestor de mercados global"""
+    # Importar la instancia global desde main_unified_redis
+    from src.api import main_unified_redis
     
-#     # Verificar si hay una instancia MCP global disponible
-#     if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
-#         if hasattr(main_unified_redis.mcp_recommender, 'market_manager'):
-#             return main_unified_redis.mcp_recommender.market_manager
+    # Verificar si hay una instancia MCP global disponible
+    if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
+        if hasattr(main_unified_redis.mcp_recommender, 'market_manager'):
+            return main_unified_redis.mcp_recommender.market_manager
     
-#     # Fallback a crear uno nuevo si no hay instancia global
-#     from src.api.factories.factories import MCPFactory
-#     return MCPFactory.create_market_manager()
-# async def get_market_manager():
-#     """
-#     Obtiene el Market Context Manager usando ServiceFactory
-    
-#     Returns:
-#         MarketContextManager: Gestor de contexto de mercado singleton
-#     """
-#     try:
-#         from src.api.factories.service_factory import ServiceFactory
-#         return await ServiceFactory.get_market_context_manager()
-#     except Exception as e:
-#         logger.warning(f"⚠️ Could not get Market Manager from ServiceFactory: {e}")
-        
-#         # Fallback: Try old pattern
-#         try:
-#             from src.api import main_unified_redis
-#             if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
-#                 if hasattr(main_unified_redis.mcp_recommender, 'market_manager'):
-#                     return main_unified_redis.mcp_recommender.market_manager
-#         except:
-#             pass
-        
-#         logger.error("❌ Market Manager no disponible")
-#         return None
+    # Fallback a crear uno nuevo si no hay instancia global
+    from src.api.factories.factories import MCPFactory
+    return MCPFactory.create_market_manager()
 
-# def get_market_cache():
-#     """Obtiene el cache market-aware global"""
-#     # Importar la instancia global desde main_unified_redis
-#     from src.api import main_unified_redis
+def get_market_cache():
+    """Obtiene el cache market-aware global"""
+    # Importar la instancia global desde main_unified_redis
+    from src.api import main_unified_redis
     
-#     # Verificar si hay una instancia MCP global disponible
-#     if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
-#         if hasattr(main_unified_redis.mcp_recommender, 'market_cache'):
-#             return main_unified_redis.mcp_recommender.market_cache
+    # Verificar si hay una instancia MCP global disponible
+    if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
+        if hasattr(main_unified_redis.mcp_recommender, 'market_cache'):
+            return main_unified_redis.mcp_recommender.market_cache
     
-#     # Fallback a crear uno nuevo si no hay instancia global
-#     from src.api.factories.factories import MCPFactory
-#     return MCPFactory.create_market_cache()
-# async def get_market_cache():
-#     """
-#     Obtiene el Market-Aware Cache usando ServiceFactory (singleton enterprise)
-    
-#     Este método provee acceso al caché market-aware que gestiona productos
-#     adaptados por mercado con TTL configurable.
-    
-#     Returns:
-#         MarketAwareProductCache: Instancia singleton del market cache o None si no disponible
-        
-#     Flow:
-#         1. Intenta obtener desde ServiceFactory (patrón enterprise)
-#         2. Fallback a main_unified_redis (compatibilidad legacy)
-#         3. Retorna None si ambos fallan (graceful degradation)
-    
-#     Author: Senior Architecture Team
-#     Date: 2025-11-14
-#     Version: 2.1.1 - ServiceFactory Integration
-#     """
-#     try:
-#         # ✅ PATRÓN ENTERPRISE: Usar ServiceFactory para singleton management
-#         from src.api.factories.service_factory import ServiceFactory
-#         cache = await ServiceFactory.get_market_cache_service()
-        
-#         if cache:
-#             logger.info("✅ Market cache obtained from ServiceFactory")
-#             return cache
-#         else:
-#             logger.warning("⚠️ ServiceFactory returned None for market cache")
-            
-#     except Exception as e:
-#         logger.warning(f"⚠️ Could not get Market Cache from ServiceFactory: {e}")
-    
-#     # ✅ FALLBACK: Intentar patrón legacy por compatibilidad
-#     try:
-#         from src.api import main_unified_redis
-        
-#         if hasattr(main_unified_redis, 'mcp_recommender') and main_unified_redis.mcp_recommender:
-#             if hasattr(main_unified_redis.mcp_recommender, 'market_cache'):
-#                 logger.info("⚠️ Using legacy pattern for market cache (fallback)")
-#                 return main_unified_redis.mcp_recommender.market_cache
-#     except Exception as fallback_error:
-#         logger.error(f"❌ Legacy fallback also failed: {fallback_error}")
-    
-#     # ✅ GRACEFUL DEGRADATION: Si todo falla, retornar None
-#     logger.error("❌ Market Cache no disponible - endpoints usarán fallback")
-#     return None
-
+    # Fallback a crear uno nuevo si no hay instancia global
+    from src.api.factories.factories import MCPFactory
+    return MCPFactory.create_market_cache()
 
 # ✅ NEW: Dependency injection para MCP Recommender
-# async def get_mcp_recommender():
-#     """Obtiene el MCP recommender usando dependency injection"""
-#     try:
-#         # Usar ServiceFactory para obtener el singleton
-#         from src.api.factories.service_factory import ServiceFactory
-#         return await ServiceFactory.get_mcp_recommender()
-#     except Exception as e:
-#         logger.warning(f"⚠️ Could not get MCP recommender from ServiceFactory: {e}")
+async def get_mcp_recommender():
+    """Obtiene el MCP recommender usando dependency injection"""
+    try:
+        # Usar ServiceFactory para obtener el singleton
+        from src.api.factories.service_factory import ServiceFactory
+        return await ServiceFactory.get_mcp_recommender()
+    except Exception as e:
+        logger.warning(f"⚠️ Could not get MCP recommender from ServiceFactory: {e}")
         
-#         # Fallback: Try to get from app state
-#         from fastapi import Request
-#         try:
-#             # Si tenemos acceso al request, usar app.state
-#             request = Request.get_current_request()  # Esto puede no funcionar siempre
-#             if hasattr(request.app.state, 'mcp_recommender') and request.app.state.mcp_recommender:
-#                 return request.app.state.mcp_recommender
-#         except:
-#             pass
+        # Fallback: Try to get from app state
+        from fastapi import Request
+        try:
+            # Si tenemos acceso al request, usar app.state
+            request = Request.get_current_request()  # Esto puede no funcionar siempre
+            if hasattr(request.app.state, 'mcp_recommender') and request.app.state.mcp_recommender:
+                return request.app.state.mcp_recommender
+        except:
+            pass
         
-#         # Último recurso: return None y manejar gracefully
-#         logger.error("❌ MCP Recommender no disponible - endpoints usarán fallback")
-#         return None
+        # Último recurso: return None y manejar gracefully
+        logger.error("❌ MCP Recommender no disponible - endpoints usarán fallback")
+        return None
     
 # def get_mcp_recommender():
 #     """Obtiene el recomendador MCP-aware global (ya entrenado)"""
@@ -366,29 +259,25 @@ router = APIRouter(
 #     logger.warning("No hay instancia global de mcp_recommender disponible")
 #     return None
 
-# def get_personalization_engine():
-#     """Obtiene el motor de personalización MCP global"""
-#     try:
-#         from src.api import main_unified_redis
+def get_personalization_engine():
+    """Obtiene el motor de personalización MCP global"""
+    try:
+        from src.api import main_unified_redis
         
-#         if hasattr(main_unified_redis, 'personalization_engine'):
-#             return main_unified_redis.personalization_engine
+        if hasattr(main_unified_redis, 'personalization_engine'):
+            return main_unified_redis.personalization_engine
         
-#         logger.warning("PersonalizationEngine not available in global scope")
-#         return None
+        logger.warning("PersonalizationEngine not available in global scope")
+        return None
         
-#     except Exception as e:
-#         logger.error(f"Error accessing PersonalizationEngine: {e}")
-#         return None
+    except Exception as e:
+        logger.error(f"Error accessing PersonalizationEngine: {e}")
+        return None
 
 
 @router.post("/conversation", response_model=ConversationResponse)
 async def process_conversation(
     conversation: ConversationRequest,
-    mcp_client: MCPClientDep,
-    market_manager: MarketManagerDep,
-    market_cache: MarketCacheDep,
-    mcp_recommender: MCPRecommenderDep, # MCPPersonalizationEngine inyected,
     current_user: str = Depends(get_current_user)
 ):
     """
@@ -473,14 +362,14 @@ async def process_conversation(
             logger.warning("⚠️ Using fallback session generation - state persistence disabled")    
               
         # Obtener componentes necesarios con manejo robusto
-        # mcp_client = None
-        # mcp_recommender = None
+        mcp_client = None
+        mcp_recommender = None
         
-        # try:
-        #     mcp_client = await get_mcp_client()
-        #     mcp_recommender = await get_mcp_recommender()
-        # except Exception as e:
-        #     logger.warning(f"Error getting MCP components: {e}")
+        try:
+            mcp_client = get_mcp_client()
+            mcp_recommender = await get_mcp_recommender()
+        except Exception as e:
+            logger.warning(f"Error getting MCP components: {e}")
         
         # Si no hay componentes MCP, usar fallback directo
         if not mcp_client or not mcp_recommender:
@@ -602,13 +491,13 @@ async def process_conversation(
             }
         
         # Validación de parámetros de entrada
-        # validated_user_id = conversation.user_id
-        # if not validated_user_id or validated_user_id.lower() in ['string', 'null', 'undefined', 'none']:
-        #     validated_user_id = "anonymous"
+        validated_user_id = conversation.user_id
+        if not validated_user_id or validated_user_id.lower() in ['string', 'null', 'undefined', 'none']:
+            validated_user_id = "anonymous"
             
-        # validated_product_id = conversation.product_id
-        # if validated_product_id and validated_product_id.lower() in ['string', 'null', 'undefined', 'none']:
-        #     validated_product_id = None
+        validated_product_id = conversation.product_id
+        if validated_product_id and validated_product_id.lower() in ['string', 'null', 'undefined', 'none']:
+            validated_product_id = None
             
         # Loggear la información de la consulta para debugging
         logger.info(f"Processing conversation query: {conversation.query}")
@@ -764,7 +653,6 @@ async def process_conversation(
                 # Verificar si tiene estructura MCP (con 'product' anidado)
                 if "product" in rec:
                     product = rec["product"]
-                    logger.debug(f"🔍 Product ID: {product.get('id')}, Price: {product.get('price')}")
                     result = {
                         "id": str(product.get("id", "unknown")),
                         "title": str(product.get("title", "Producto")),
@@ -852,19 +740,16 @@ async def process_conversation(
         personalization_result = {}
         
         # Paso 1: Obtener PersonalizationEngine del sistema global
-        # personalization_engine = get_personalization_engine()
-        # if personalization_engine:
-        #     logger.info("PersonalizationEngine found and ready")
-        # else:
-        #     logger.info("PersonalizationEngine not available - continuing without personalization")
-
-        # ✅ NUEVO: Usar mcp_recommender (es MCPPersonalizationEngine) ya inyectado via DI
-        # mcp_recommender ya está disponible como parámetro del endpoint
-
+        personalization_engine = get_personalization_engine()
+        if personalization_engine:
+            logger.info("PersonalizationEngine found and ready")
+        else:
+            logger.info("PersonalizationEngine not available - continuing without personalization")
+        
         # Paso 2: Aplicar personalización si está disponible
-        if mcp_recommender and len(safe_recommendations) > 0:
+        if personalization_engine and len(safe_recommendations) > 0:
             try:
-                logger.info("Applying personalization to recommendations using injected mcp_recommender")
+                logger.info("Applying personalization to recommendations")
                 
                 # Construir contexto MCP para personalización  
                 # Imports específicos para evitar dependencias circulares
@@ -1118,14 +1003,14 @@ async def process_conversation(
                 try:
                     # 🚀 PERFORMANCE: Optimized personalization call
                     async def personalization_call():
-                        return await mcp_recommender.generate_personalized_response(
+                        return await personalization_engine.generate_personalized_response(
                             mcp_context=mcp_context,
                             recommendations=safe_recommendations,
                             strategy=PersonalizationStrategy.HYBRID
                         )
                     
                     personalization_result = await execute_personalization_call(personalization_call)
-                    logger.info("✅ Personalization applied successfully with optimization using injected mcp_recommender")
+                    logger.info("✅ Personalization applied successfully with optimization")
                     
                 except Exception as personalization_error:
                     logger.warning(f"⚠️ Personalization failed, using robust fallback: {personalization_error}")
@@ -1149,7 +1034,7 @@ async def process_conversation(
                     "personalization_applied": True
                 })
                 
-                logger.info("Personalization processing completed using injected mcp_recommender (either real or fallback)")
+                logger.info("Personalization processing completed (either real or fallback)")
                 
             except Exception as e:
                 logger.error(f"Error in personalization wrapper: {e}")
@@ -1446,21 +1331,22 @@ async def process_conversation(
 
 @router.get("/markets", response_model=MarketSupportedResponse)
 async def get_supported_markets(
-    market_manager: MarketManagerDep,  # ✅ AÑADIDO DI
     current_user: str = Depends(get_current_user)
 ):
     """
     Devuelve los mercados soportados y sus configuraciones
-    
-    ✅ DI: Usa MarketManagerDep inyectado
     """
     try:
-        # ✅ Usar dependency inyectada (NO await get_market_context_manager())
+        # Obtener gestor de mercados
+        market_manager = get_market_manager()
+        
         if not market_manager:
             raise HTTPException(status_code=503, detail="Market manager not initialized")
         
+        # Obtener mercados soportados
         markets = await market_manager.get_supported_markets()
         
+        # Simplificar para API
         market_info = []
         for market_id, config in markets.items():
             market_info.append({
@@ -1489,122 +1375,59 @@ async def get_supported_markets(
 @router.get("/recommendations/{product_id}", response_model=Dict)
 async def get_market_recommendations(
     product_id: str,
-    mcp_recommender: MCPRecommenderDep,  # ✅ AÑADIDO DI
     market_id: str = Query(MarketID.DEFAULT, description="ID del mercado"),
     user_id: Optional[str] = Header(None),
     n: int = Query(5, gt=0, le=20),
-    # ✅ NUEVO: Añadir session_id como query parameter OPCIONAL
-    session_id: Optional[str] = Query(
-        None, 
-        description="ID de sesión para mantener contexto conversacional. "
-                    "Si no se provee, se generará uno nuevo por mercado con una duración de 24 horas."
-    ),
     current_user: str = Depends(get_current_user)
 ):
     """
     Obtiene recomendaciones basadas en producto adaptadas al mercado
-    
-    ✅ DI: Usa MCPRecommenderDep inyectado
-
-    Args:
-        product_id: ID del producto
-        mcp_recommender: Recommender MCP (inyectado)
-        market_id: ID del mercado (US, ES, MX)
-        user_id: ID del usuario (opcional)
-        n: Número de recomendaciones (1-20)
-        session_id: ID de sesión (NUEVO - opcional)
-        current_user: Usuario autenticado
-        
-    ✅ MEJORADO: Session management automático con opción manual
-    
-    Lógica:
-    1. Si cliente envía session_id → usa ese (manual)
-    2. Si NO envía → genera session determinista por user+fecha (automático)
-    
-    Session determinista: Mismo usuario en mismo día = mismo session_id
     """
     start_time = time.time()
     
     try:
+        # Obtener recomendador MCP
+        mcp_recommender = await get_mcp_recommender()
+        
         if not mcp_recommender:
             raise HTTPException(status_code=503, detail="MCP recommender not initialized")
         
-        # ✅ VALIDACIÓN: user_id
+        # ✅ Validación de parámetros de entrada
+        # Evitar que se pasen strings literales como IDs
         validated_user_id = user_id
         if not validated_user_id or validated_user_id.lower() in ['string', 'null', 'undefined', 'none']:
             validated_user_id = "anonymous"
             
-        # ✅ VALIDACIÓN: product_id
         validated_product_id = product_id
         if not validated_product_id or validated_product_id.lower() in ['string', 'null', 'undefined', 'none']:
             raise HTTPException(status_code=400, detail="Valid product_id is required")
-        
-        # ✅ NUEVO: GESTIÓN DE SESSION_ID
-        # Si el cliente envía session_id, usar ese
-        # Si no, generar uno nuevo
-        if session_id:
-            # CASO 1: Cliente envió session_id explícito (comportamiento manual)
-            effective_session_id = session_id
-            session_source = "client_provided"
-            logger.info(f"📌 Using existing session from client: {effective_session_id}")
-        else:
-            # CASO 2: Cliente NO envió session_id → Generar deterministamente
-        
-            # Obtener fecha actual en UTC
-            current_date = datetime.now(timezone.utc).strftime("%Y%m%d")
-
-            # Session ID determinista: user + fecha + market
-            # MISMO usuario + MISMO día + MISMO market = MISMO session
-            effective_session_id = f"market_rec_{validated_user_id}_{current_date}_{market_id}"
-
-            # Session ID con con timestamp, mas dimanmica, cambia en cada llamada (menos recomendable)
-            # effective_session_id = f"market_rec_{validated_user_id}_{int(time.time())}"
-            session_source = "server_generated"
-            logger.info(f"🆕 Generated new session for client: {effective_session_id}")
             
-        logger.info(
-            f"Getting market recommendations - "
-            f"Product: {validated_product_id}, "
-            f"Market: {market_id}, "
-            f"Session: {effective_session_id} ({session_source})"
-        )
+        # Loggear información para debugging
+        logger.info(f"Getting market recommendations - Product: {validated_product_id}, Market: {market_id}, User: {validated_user_id}")
         
+        # ✅ CORRECCIÓN: Obtener recomendaciones con timeout y fallback robusto
         import asyncio
         
+        # ✅ MCP ARCHITECTURE FIX: Use corrected architecture flow for market recommendations
         try:
+            # ✅ Use corrected market recommendations handler instead of problematic mcp_recommender.get_recommendations()
             response_dict = await get_mcp_market_recommendations(
                 product_id=validated_product_id,
                 market_id=market_id,
                 user_id=validated_user_id,
-                n_recommendations=n,
-                session_id=effective_session_id
+                n_recommendations=n
             )
             
+            # Transform response to expected format for market recommendations endpoint
             recommendations = response_dict.get("recommendations", [])
+            ai_response = response_dict.get("ai_response", f"Market recommendations for product {validated_product_id}")
             metadata = response_dict.get("metadata", {})
             
-            logger.info("✅ MCP market recommendations obtained successfully")
-            logger.info(f"🔍metadata: {metadata}")
-            
-            # # 🔍 AÑADIR ESTE DEBUG CRÍTICO
-            # if recommendations:
-            #     logger.debug(f"🔍 First recommendation FULL structure:")
-            #     logger.debug(f"🔍 {recommendations[0]}")
-                
-            #     # Ver todas las keys disponibles
-            #     if isinstance(recommendations[0], dict):
-            #         logger.debug(f"🔍 Available keys: {list(recommendations[0].keys())}")
-                    
-            #         # Buscar campos relacionados con score
-            #         score_keys = [k for k in recommendations[0].keys() if 'score' in k.lower()]
-            #         logger.debug(f"🔍 Score-related keys: {score_keys}")
-                    
-            #         # Buscar campos relacionados con reason
-            #         reason_keys = [k for k in recommendations[0].keys() if 'reason' in k.lower() or 'explanation' in k.lower()]
-            #         logger.info(f"🔍 Reason-related keys: {reason_keys}")
+            logger.info("✅ MCP market recommendations obtained successfully with corrected architecture")
             
         except asyncio.TimeoutError:
-            logger.warning("MCP recommender timed out, using fallback")
+            logger.warning("MCP recommender timed out, using base recommender fallback")
+            # Fallback al recomendador base si MCP se cuelga
             from src.api import main_unified_redis
             if hasattr(main_unified_redis, 'hybrid_recommender') and main_unified_redis.hybrid_recommender:
                 response_dict = await main_unified_redis.hybrid_recommender.get_recommendations(
@@ -1613,10 +1436,12 @@ async def get_market_recommendations(
                     n_recommendations=n
                 )
             else:
+                # Fallback final: lista vacía
                 response_dict = []
                 
         except Exception as e:
-            logger.error(f"Error in MCP recommender, using fallback: {e}")
+            logger.error(f"Error in MCP recommender, using base recommender fallback: {e}")
+            # Fallback al recomendador base si MCP falla
             from src.api import main_unified_redis
             if hasattr(main_unified_redis, 'hybrid_recommender') and main_unified_redis.hybrid_recommender:
                 response_dict = await main_unified_redis.hybrid_recommender.get_recommendations(
@@ -1625,105 +1450,85 @@ async def get_market_recommendations(
                     n_recommendations=n
                 )
             else:
+                # Fallback final: lista vacía
                 response_dict = []
         
+        # ✅ Manejo robusto de la respuesta del mcp_recommender  
+        # El método puede retornar List[Dict] o Dict según el contexto
         if isinstance(response_dict, list):
+            # Es una lista directa de recomendaciones
             recommendations = response_dict
             market_context = {}
+            logger.info(f"Received direct list response with {len(recommendations)} recommendations")
         elif isinstance(response_dict, dict):
-            recommendations = response_dict.get("recommendations", [])
-            market_context = response_dict.get("market_context", {})
+            # Es un diccionario con estructura completa
+            if hasattr(response_dict, 'recommendations'):  # Es un objeto Pydantic
+                recommendations = response_dict.recommendations
+                market_context = response_dict.market_context
+            else:  # Es un diccionario simple
+                recommendations = response_dict.get("recommendations", [])
+                market_context = response_dict.get("market_context", {})
+            logger.info(f"Received dict response with {len(recommendations)} recommendations")
         else:
+            # Tipo inesperado, usar valores por defecto
+            logger.warning(f"Unexpected response type: {type(response_dict)}. Using fallback values.")
             recommendations = []
             market_context = {}
-    
-        simplified_recs = []
+        
+        # Transformar para API
+        simplified_recs = []  # ✅ CORRECCIÓN: Inicializar simplified_recs antes de usarla
         for rec in recommendations:
-            reason = (
-                rec.get("reason") or
-                rec.get("explanation") or
-                rec.get("recommendation_reason") or
-                (rec.get("metadata", {}).get("reason") if isinstance(rec.get("metadata"), dict) else None) or
-                f"Recommended based on similarity to {rec.get('title', 'your preferences')}"
-            )
-            reason = str(reason).strip() if reason else "Recommended for you"
-
-            if hasattr(rec, 'product'):
+            # Verificar si rec es un objeto RecommendationMCP o un diccionario
+            if hasattr(rec, 'product'):  # Es un objeto Pydantic
                 product = rec.product
                 simplified_rec = {
-                    "id": rec.id,
-                    "title": rec.localized_title or rec.title,
-                    "price": rec.price,
-                    "currency": rec.currency,
-                    "score": rec.similarity_score or 0.0,
-                    "reason": reason,
+                    "id": product.id,
+                    "title": product.localized_title or product.title,
+                    "price": product.market_price,
+                    "currency": product.currency,
+                    "score": rec.market_score,
+                    "reason": rec.reason,
                     "market_adapted": True,
                     "source": getattr(rec, 'metadata', {}).get("source", "unknown")
                 }
-            else:
+            else:  # Es un diccionario
                 product = rec.get("product", {})
                 simplified_rec = {
-                    "id": rec.get("id"),
-                    "title": rec.get("localized_title") or rec.get("title"),
-                    "price": rec.get("price"),
-                    "currency": rec.get("currency"),
-                    "score": rec.get("similarity_score", 0.0),
-                    "reason": reason,
+                    "id": product.get("id"),
+                    "title": product.get("localized_title") or product.get("title"),
+                    "price": product.get("market_price"),
+                    "currency": product.get("currency"),
+                    "score": rec.get("market_score"),
+                    "reason": rec.get("reason"),
                     "market_adapted": True,
-                    "source": rec.get("metadata", {}).get("source", "mcp")
+                    "source": rec.get("metadata", {}).get("source", "unknown")
                 }
             
-            # try:
-            #     adapter = get_market_adapter()
-            #     simplified_rec = await adapter.adapt_product(simplified_rec, market_id)
-            # except Exception as e:
-            #     logger.error(f"Market adaptation failed: {e}")
+            # ✅ Aplica la adaptación de mercado
+            try:
+                adapter = get_market_adapter()
+                simplified_rec = await adapter.adapt_product(
+                    simplified_rec,
+                    market_id  # Usar el market_id del parámetro
+                )
+            except Exception as e:
+                logger.error(f"Market adaptation failed: {e}")
 
             simplified_recs.append(simplified_rec)
             
-        response = {
+        return {
             "product_id": validated_product_id,
             "market_id": market_id,
             "recommendations": simplified_recs,
-            
-            # ✅ NUEVO: Session management metadata
-            "session_id": effective_session_id,  # ← Cliente DEBE guardar esto
-            "session_metadata": {
-                "session_id": effective_session_id,
-                "session_source": session_source,
-                "is_new_session": session_source == "server_generated",
-                # "persist_for_next_request": True,
-                "expires_at": "midnight UTC" if session_source == "server_generated" else "configurable",
-                "usage": (
-                    f"This session persists automatically for user {validated_user_id} "
-                    f"on date {current_date} in market {market_id}"
-                    if session_source == "deterministic_auto"
-                    else f"Include this session_id in next request: ?session_id={effective_session_id}"
-                )
-            },
-            
             "metadata": {
                 "total_recommendations": len(simplified_recs),
                 "market_context": market_context,
                 "user_validated": validated_user_id,
                 "product_validated": validated_product_id,
-                "took_ms": (time.time() - start_time) * 1000,
-                "di_complete": True,
-                
-                # ✅ NUEVO: Session info en metadata también
-                "session_managed": True,
-                "session_source": session_source
+                "took_ms": (time.time() - start_time) * 1000
             }
         }
         
-        # ✅ LOGGING para monitoring
-        if session_source == "client_provided":
-            logger.info(f"✅ Session continued successfully: {effective_session_id}")
-        else:
-            logger.info(f"🆕 New session created and returned to client: {effective_session_id}")
-        
-        return response
-          
     except Exception as e:
         logger.error(f"Error getting market recommendations: {e}")
         raise HTTPException(
@@ -1770,18 +1575,15 @@ async def get_performance_metrics(
 
 @router.get("/cache/stats", response_model=Dict)
 async def get_cache_stats(
-    market_cache: MarketCacheDep,  # ✅ AÑADIDO DI
     market_id: Optional[str] = None,
     current_user: str = Depends(get_current_user)
 ):
     """
     Obtiene estadísticas del caché market-aware
-
-    ✅ DI: Usa MarketCacheDep inyectado
     """
     try:
-        # market_cache = await get_market_cache_service()
-        # ✅ Usar dependency inyectada
+        market_cache = get_market_cache()
+        
         if not market_cache:
             raise HTTPException(status_code=503, detail="Market cache not initialized")
         
@@ -1789,8 +1591,7 @@ async def get_cache_stats(
         
         return {
             "stats": stats,
-            "timestamp": time.time(),
-            "di_complete": True  # ✅ Indicador
+            "timestamp": time.time()
         }
         
     except Exception as e:
@@ -1803,31 +1604,33 @@ async def get_cache_stats(
 @router.post("/cache/warmup/{market_id}", response_model=Dict)
 async def warmup_market_cache(
     market_id: str,
-    market_cache: MarketCacheDep,  # ✅ AÑADIDO DI
     current_user: str = Depends(get_current_user)
 ):
     """
     Inicia el proceso de pre-carga del caché para un mercado
-
-    ✅ DI: Usa MarketCacheDep inyectado
     """
     try:
-        # ✅ Usar dependency inyectada
+        market_cache = get_market_cache()
+        
         if not market_cache:
             raise HTTPException(status_code=503, detail="Market cache not initialized")
         
+        # Obtener productos prioritarios (implementación simple)
+        # En producción, esto vendría de un análisis de popularidad
         from src.api.factories.factories import RecommenderFactory
         base_recommender = RecommenderFactory.create_tfidf_recommender()
         
         if not base_recommender.loaded:
             raise HTTPException(
                 status_code=503, 
-                detail="Base recommender not loaded"
+                detail="Base recommender not loaded, cannot determine priority products"
             )
         
+        # Usar top productos como prioritarios
         all_products = base_recommender.product_data
-        priority_ids = [str(p.get('id')) for p in all_products[:100]]
+        priority_ids = [str(p.get('id')) for p in all_products[:100]]  # Top 100
         
+        # Iniciar pre-carga en background
         import asyncio
         asyncio.create_task(
             market_cache.warm_cache_for_market(market_id, priority_ids)
@@ -1837,16 +1640,8 @@ async def warmup_market_cache(
             "status": "warming",
             "market_id": market_id,
             "priority_products": len(priority_ids),
-            "message": "Cache warming process started",
-            "di_complete": True  # ✅ Indicador
+            "message": "Cache warming process started in background"
         }
-        
-    except Exception as e:
-        logger.error(f"Error warming market cache: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error warming market cache: {str(e)}"
-        )
         
     except Exception as e:
         logger.error(f"Error warming market cache: {e}")
@@ -1858,17 +1653,15 @@ async def warmup_market_cache(
 @router.post("/cache/invalidate/{market_id}", response_model=Dict)
 async def invalidate_market_cache(
     market_id: str,
-    market_cache: MarketCacheDep,  # ✅ AÑADIDO DI
     entity_type: Optional[str] = None,
     current_user: str = Depends(get_current_user)
 ):
     """
     Invalida el caché de un mercado completo o por tipo de entidad
-    
-    ✅ DI: Usa MarketCacheDep inyectado
     """
     try:
-        # ✅ Usar dependency inyectada
+        market_cache = get_market_cache()
+        
         if not market_cache:
             raise HTTPException(status_code=503, detail="Market cache not initialized")
         
@@ -1878,8 +1671,7 @@ async def invalidate_market_cache(
             "status": "success",
             "market_id": market_id,
             "entity_type": entity_type or "all",
-            "message": f"Cache invalidated for market {market_id}",
-            "di_complete": True  # ✅ Indicador
+            "message": f"Cache invalidated for market {market_id}"
         }
         
     except Exception as e:

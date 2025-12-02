@@ -350,7 +350,7 @@ async def get_availability_checker_dependency():
 # 🔥 ROUTER SETUP
 # ============================================================================
 
-router = APIRouter(prefix="/v1", tags=["Products"])
+router = APIRouter(prefix="/v1", tags=["Products Enterprise DI"])
 
 # ============================================================================
 # 📊 HEALTH CHECK ENDPOINT - Enterprise Monitoring (ORIGINAL + ENHANCED)

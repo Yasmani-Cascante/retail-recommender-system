@@ -28,16 +28,7 @@ if TYPE_CHECKING:
     from src.recommenders.tfidf_recommender import TFIDFRecommender
     from src.recommenders.retail_api import RetailAPIRecommender
     from src.api.core.hybrid_recommender import HybridRecommender
-    # Runtime decide dinámicamente (Enhanced o Basic)
-    # from src.api.core.enhanced_hybrid_recommender import EnhancedHybridRecommender
-    
-    # MCP Components
-    # from src.api.mcp.client.mcp_client import MCPClient 
-    from src.api.mcp.client.mcp_client_enhanced import MCPClientEnhanced as MCPClient
-    # from src.api.core.market.adapter import MarketContextManager
-    from src.api.mcp.adapters.market_manager import MarketContextManager
-    # from src.api.core.market.cache import MarketAwareProductCache
-    from src.cache.market_aware.market_cache import MarketAwareProductCache
+
 # MCPPersonalizationEngine type hinting moved to function level to avoid circular imports
 
 # ✅ SOLUCIÓN 3: Redis Configuration Optimizada
@@ -77,17 +68,7 @@ class ServiceFactory:
     
     # ✅ NEW: PersonalizationCache singleton (T1 Implementation)
     _personalization_cache: Optional['IntelligentPersonalizationCache'] = None
-
-    # ✅ FASE 3B: MCP Router Dependencies  
-    _mcp_client = None
-    # _mcp_client = Optional[MCPClient] = None
-    _market_context_manager = None
-    # _market_context_manager = Optional[MarketContextManager] = None
-    _market_cache_service = None
-    # _market_cache_service = Optional[MarketContextManager] = None
-
-    _conversation_state_manager = None
-
+    
     # ✅ FASE 1: Recommender singletons
     _tfidf_recommender: Optional['TFIDFRecommender'] = None
     _retail_recommender: Optional['RetailAPIRecommender'] = None
@@ -101,11 +82,6 @@ class ServiceFactory:
     _tfidf_lock: Optional[asyncio.Lock] = None  # ✅ FASE 1
     _retail_lock: Optional[asyncio.Lock] = None  # ✅ FASE 1
     _hybrid_lock: Optional[asyncio.Lock] = None  # ✅ FASE 1
-    # ✅ FASE 3B: Locks for MCP Router dependencies
-    _mcp_client_lock: Optional[asyncio.Lock] = None
-    _market_manager_lock: Optional[asyncio.Lock] = None
-    _market_cache_lock: Optional[asyncio.Lock] = None
-    _state_manager_lock: Optional[asyncio.Lock] = None
     _redis_circuit_breaker = {
         "failures": 0,
         "last_failure": 0,
@@ -160,34 +136,6 @@ class ServiceFactory:
         if cls._hybrid_lock is None:
             cls._hybrid_lock = asyncio.Lock()
         return cls._hybrid_lock
-    
-    @classmethod
-    def _get_mcp_client_lock(cls):
-        """Get or create MCP Client lock (lazy initialization)"""
-        if cls._mcp_client_lock is None:
-            cls._mcp_client_lock = asyncio.Lock()
-        return cls._mcp_client_lock
-    
-    @classmethod
-    def _get_market_manager_lock(cls):
-        """Get or create Market Manager lock (lazy initialization)"""
-        if cls._market_manager_lock is None:
-            cls._market_manager_lock = asyncio.Lock()
-        return cls._market_manager_lock
-    
-    @classmethod
-    def _get_market_cache_lock(cls):
-        """Get or create Market Cache lock (lazy initialization)"""
-        if cls._market_cache_lock is None:
-            cls._market_cache_lock = asyncio.Lock()
-        return cls._market_cache_lock
-    
-    @classmethod
-    def _get_state_manager_lock(cls):
-        """Get or create State Manager lock (lazy initialization)"""
-        if cls._state_manager_lock is None:
-            cls._state_manager_lock = asyncio.Lock()
-        return cls._state_manager_lock
     
     @classmethod
     async def get_redis_service(cls) -> RedisService:
@@ -654,57 +602,21 @@ class ServiceFactory:
                         logger.info("   🔄 Auto-fetching ProductCache...")
                         product_cache = await cls.get_product_cache_singleton()
                     
-                    # ✅ Prefer EnhancedHybridRecommender when product_cache is available
-                    try:
-                        settings = get_settings()
-                        if product_cache is not None:
-                            try:
-                                from src.api.core.enhanced_hybrid_recommender import (
-                                    EnhancedHybridRecommender,
-                                    EnhancedHybridRecommenderWithExclusion
-                                )
-                                if settings.exclude_seen_products:
-                                    logger.info("   Using EnhancedHybridRecommenderWithExclusion (product_cache available)")
-                                    cls._hybrid_recommender = EnhancedHybridRecommenderWithExclusion(
-                                        content_recommender=content_recommender,
-                                        retail_recommender=retail_recommender,
-                                        product_cache=product_cache,
-                                        content_weight=settings.content_weight
-                                    )
-                                else:
-                                    logger.info("   Using EnhancedHybridRecommender (product_cache available)")
-                                    cls._hybrid_recommender = EnhancedHybridRecommender(
-                                        content_recommender=content_recommender,
-                                        retail_recommender=retail_recommender,
-                                        product_cache=product_cache,
-                                        content_weight=settings.content_weight
-                                    )
-                            except ImportError as ie:
-                                logger.warning(f"⚠️ EnhancedHybridRecommender not available, falling back: {ie}")
-                                raise
-                        # If no product_cache or enhanced import failed, use original Hybrid implementations
-                        from src.api.core.hybrid_recommender import HybridRecommender, HybridRecommenderWithExclusion
-                        if settings.exclude_seen_products:
-                            logger.info("   Using HybridRecommenderWithExclusion (fallback)")
-                            cls._hybrid_recommender = HybridRecommenderWithExclusion(
-                                content_recommender=content_recommender,
-                                retail_recommender=retail_recommender,
-                                content_weight=settings.content_weight,
-                                product_cache=product_cache
-                            )
-                        else:
-                            logger.info("   Using HybridRecommender (basic, fallback)")
-                            cls._hybrid_recommender = HybridRecommender(
-                                content_recommender=content_recommender,
-                                retail_recommender=retail_recommender,
-                                content_weight=settings.content_weight,
-                                product_cache=product_cache
-                            )
-                    
-                    except Exception:
-                        # In case of any unexpected error, ensure we still create a basic HybridRecommender
+                    # ✅ Create hybrid recommender based on settings
+                    if settings.exclude_seen_products:
+                        from src.api.core.hybrid_recommender import HybridRecommenderWithExclusion
+                        logger.info("   Using HybridRecommenderWithExclusion")
+                        
+                        cls._hybrid_recommender = HybridRecommenderWithExclusion(
+                            content_recommender=content_recommender,
+                            retail_recommender=retail_recommender,
+                            content_weight=settings.content_weight,
+                            product_cache=product_cache
+                        )
+                    else:
                         from src.api.core.hybrid_recommender import HybridRecommender
-                        logger.warning("⚠️ Error creating enhanced hybrid recommender, creating basic HybridRecommender as last resort")
+                        logger.info("   Using HybridRecommender (basic)")
+                        
                         cls._hybrid_recommender = HybridRecommender(
                             content_recommender=content_recommender,
                             retail_recommender=retail_recommender,
@@ -928,31 +840,7 @@ class ServiceFactory:
                 logger.info("✅ PersonalizationCache cleaned up")
             except Exception as e:
                 logger.warning(f"⚠️ PersonalizationCache shutdown error: {e}")
-        # ✅ FASE 3B: Cleanup MCP Router dependencies
-        if cls._mcp_client:
-            try:
-                logger.info("✅ MCP Client cleaned up")
-            except Exception as e:
-                logger.warning(f"⚠️ MCP Client shutdown error: {e}")
         
-        if cls._market_context_manager:
-            try:
-                logger.info("✅ Market Context Manager cleaned up")
-            except Exception as e:
-                logger.warning(f"⚠️ Market Context Manager shutdown error: {e}")
-        
-        if cls._market_cache_service:
-            try:
-                logger.info("✅ Market Cache Service cleaned up")
-            except Exception as e:
-                logger.warning(f"⚠️ Market Cache Service shutdown error: {e}")
-        
-        if cls._conversation_state_manager:
-            try:
-                logger.info("✅ Conversation State Manager cleaned up")
-            except Exception as e:
-                logger.warning(f"⚠️ State Manager shutdown error: {e}")
-
         # Reset singletons and locks
         cls._redis_service = None
         cls._inventory_service = None
@@ -970,16 +858,6 @@ class ServiceFactory:
         cls._tfidf_lock = None  # ✅ FASE 1: Reset TF-IDF lock
         cls._retail_lock = None  # ✅ FASE 1: Reset Retail lock
         cls._hybrid_lock = None  # ✅ FASE 1: Reset Hybrid lock
-        # ✅ FASE 3B: Reset MCP Router singletons
-        cls._mcp_client = None
-        cls._market_context_manager = None
-        cls._market_cache_service = None
-        cls._conversation_state_manager = None
-        cls._mcp_client_lock = None
-        cls._market_manager_lock = None
-        cls._market_cache_lock = None
-        cls._state_manager_lock = None
-
         cls._reset_circuit_breaker()  # ← Reset circuit breaker
         
         logger.info("✅ ServiceFactory shutdown completed (ALL CLEAN)")
@@ -1038,143 +916,6 @@ class ServiceFactory:
                         raise
         return cls._mcp_recommender
 
-    @classmethod
-    async def get_mcp_client(cls) -> 'MCPClient':
-        if cls._mcp_client is None:
-            lock = cls._get_mcp_client_lock()
-            async with lock:
-                if cls._mcp_client is None:
-                    try:
-                        from src.api.core.config import get_settings
-                        settings = get_settings()
-                        
-                        # ✅ TRY ENHANCED FIRST
-                        try:
-                            from src.api.mcp.client.mcp_client_enhanced import MCPClientEnhanced
-                            
-                            cls._mcp_client = MCPClientEnhanced(
-                                bridge_host=getattr(settings, 'mcp_bridge_host', 'localhost'),
-                                bridge_port=getattr(settings, 'mcp_bridge_port', 3001),
-                                enable_circuit_breaker=True,
-                                enable_local_cache=True,
-                                cache_ttl=300
-                            )
-                            
-                        except ImportError:
-                            from src.api.mcp.client.mcp_client import MCPClient
-                            
-                            cls._mcp_client = MCPClient(
-                                bridge_host=getattr(settings, 'mcp_bridge_host', 'localhost'),
-                                bridge_port=getattr(settings, 'mcp_bridge_port', 3001)
-                            )
-                            
-                    except Exception as e:
-                        logger.error(f"❌ Failed: {e}")
-                        return None
-        
-        return cls._mcp_client
-    
-    @classmethod
-    async def get_market_context_manager(cls) -> 'MarketContextManager':
-        """
-        ✅ FASE 3B: Get Market Context Manager singleton.
-        
-        Returns:
-            MarketContextManager instance or None if unavailable
-        """
-        if cls._market_context_manager is None:
-            lock = cls._get_market_manager_lock()
-            async with lock:
-                if cls._market_context_manager is None:
-                    try:
-                        logger.info("✅ Creating Market Context Manager singleton")
-                        
-                        from src.api.mcp.adapters.market_manager import MarketContextManager
-                        from src.api.core.config import get_settings
-                        
-                        settings = get_settings()
-                        redis_service = await cls.get_redis_service()
-                        
-                        cls._market_context_manager = MarketContextManager(
-                            redis_service=redis_service,
-                            default_market=getattr(settings, 'default_market', 'US')
-                        )
-                        
-                        await cls._market_context_manager.initialize()
-                        
-                        logger.info("✅ Market Context Manager singleton created successfully")
-                        
-                    except Exception as e:
-                        logger.error(f"❌ Failed to create Market Context Manager: {e}")
-                        return None
-    
-        return cls._market_context_manager
-        
-    @classmethod
-    async def get_market_cache_service(cls) -> 'MarketAwareProductCache':
-        """
-        ✅ FASE 3B: Get Market-Aware Product Cache singleton.
-        
-        Returns:
-            MarketAwareProductCache instance or None if unavailable
-        """
-        if cls._market_cache_service is None:
-            lock = cls._get_market_cache_lock()
-            async with lock:
-                if cls._market_cache_service is None:
-                    try:
-                        logger.info("✅ Creating Market-Aware Cache singleton")
-                        
-                        from src.cache.market_aware.market_cache import MarketAwareProductCache
-                        
-                        redis_service = await cls.get_redis_service()
-                        product_cache = await cls.get_product_cache_singleton()
-                        
-                        cls._market_cache_service = MarketAwareProductCache(
-                            redis_service=redis_service,
-                            base_product_cache=product_cache,
-                            default_ttl=3600
-                        )
-                        
-                        logger.info("✅ Market-Aware Cache singleton created successfully")
-                        
-                    except Exception as e:
-                        logger.error(f"❌ Failed to create Market-Aware Cache: {e}")
-                        return None
-        
-        return cls._market_cache_service
-    
-    @classmethod
-    async def get_conversation_state_manager(cls):
-        """
-        ✅ FASE 3B: Get Conversation State Manager singleton.
-        
-        Returns:
-            ConversationStateManager instance or None if unavailable
-        """
-        if cls._conversation_state_manager is None:
-            lock = cls._get_state_manager_lock()
-            async with lock:
-                if cls._conversation_state_manager is None:
-                    try:
-                        logger.info("✅ Creating Conversation State Manager singleton")
-                        
-                        from src.api.mcp.conversation_state_manager import MCPConversationStateManager
-                        
-                        redis_service = await cls.get_redis_service()
-                        
-                        cls._conversation_state_manager = MCPConversationStateManager(
-                            redis_service=redis_service,
-                            default_ttl=86400
-                        )
-                        
-                        logger.info("✅ Conversation State Manager singleton created successfully")
-                        
-                    except Exception as e:
-                        logger.error(f"❌ Failed to create Conversation State Manager: {e}")
-                        return None
-        
-        return cls._conversation_state_manager
 # ============================================================================
 # 🔧 CONVENIENCE FUNCTIONS - Backward Compatibility
 # ============================================================================
@@ -1206,23 +947,3 @@ async def health_check_services() -> dict:
 async def get_personalization_cache():
     """Convenience function para PersonalizationCache"""
     return await ServiceFactory.get_personalization_cache()
-
-# ============================================================================
-# 🔧 FASE 3B: MCP Router Convenience Functions
-# ============================================================================
-
-async def get_mcp_client():
-    """Convenience function for MCP Client"""
-    return await ServiceFactory.get_mcp_client()
-
-async def get_market_context_manager():
-    """Convenience function for Market Context Manager"""
-    return await ServiceFactory.get_market_context_manager()
-
-async def get_market_cache_service():
-    """Convenience function for Market-Aware Cache"""
-    return await ServiceFactory.get_market_cache_service()
-
-async def get_conversation_state_manager_service():
-    """Convenience function for Conversation State Manager"""
-    return await ServiceFactory.get_conversation_state_manager()

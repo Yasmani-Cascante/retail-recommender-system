@@ -157,7 +157,6 @@ export class RealShopifyMCPClient {
                             vendor
                             tags
                             status
-                            availableForSale
                             totalInventory
                             createdAt
                             updatedAt
@@ -171,8 +170,6 @@ export class RealShopifyMCPClient {
                                         availableForSale
                                         inventoryQuantity
                                         inventoryPolicy
-                                        weight
-                                        weightUnit
                                     }
                                 }
                             }
@@ -213,9 +210,12 @@ export class RealShopifyMCPClient {
                 vendor: edge.node.vendor,
                 tags: edge.node.tags,
                 status: edge.node.status,
-                availableForSale: edge.node.availableForSale,
+                
+                // ✅ CORRECCIÓN: Calcular availableForSale del producto
+                availableForSale: edge.node.status === 'ACTIVE' && edge.node.totalInventory > 0,
                 totalInventory: edge.node.totalInventory,
                 createdAt: edge.node.createdAt,
+                
                 variants: edge.node.variants.edges.map(v => ({
                     id: v.node.id,
                     title: v.node.title,
@@ -223,9 +223,11 @@ export class RealShopifyMCPClient {
                     compareAtPrice: v.node.compareAtPrice ? parseFloat(v.node.compareAtPrice) : null,
                     available: v.node.availableForSale,
                     inventory: v.node.inventoryQuantity,
-                    weight: v.node.weight,
-                    weightUnit: v.node.weightUnit
+                    // ✅ CORRECCIÓN: weight y weightUnit removidos o usar valores por defecto
+                    weight: null,  // No disponible en Admin API
+                    weightUnit: null  // No disponible en Admin API
                 })),
+                
                 images: edge.node.images.edges.map(i => ({
                     url: i.node.url,
                     alt: i.node.altText,
@@ -235,7 +237,7 @@ export class RealShopifyMCPClient {
                 seo: edge.node.seo
             }));
             
-            console.log(`🔍 Found ${products.length} relevant products for query: \"${query}\"`);
+            console.log(`🔍 Found ${products.length} relevant products for query: "${query}"`);
             return products;
             
         } catch (error) {
@@ -382,7 +384,6 @@ export class RealShopifyMCPClient {
                             id
                             title
                             handle
-                            availableForSale
                             totalInventory
                             status
                             variants(first: 10) {
@@ -412,8 +413,6 @@ export class RealShopifyMCPClient {
                                                 }
                                             }
                                         }
-                                        weight
-                                        weightUnit
                                     }
                                 }
                             }

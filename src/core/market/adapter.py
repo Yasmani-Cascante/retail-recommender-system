@@ -231,24 +231,97 @@ class MarketAdapter:
             return error_product
     
     async def _adapt_currency(self, product: Dict[str, Any], market: MarketConfiguration) -> Dict[str, Any]:
-        """Convert product price to market currency"""
+        """Convert product price to market currency with robust validation"""
         if "price" not in product:
             return product
         
         try:
-            # Get original price
-            original_price = Decimal(str(product["price"]))
+            # ✅ PASO 1: Obtener valor del precio
+            price_value = product.get("price")
+            
+            # ✅ PASO 2: Validar None o vacío
+            if price_value is None or price_value == "":
+                logger.warning(
+                    f"Invalid price (None/empty) for product {product.get('id', 'unknown')}: {price_value}"
+                )
+                # Mantener producto sin adaptación de moneda
+                product["currency"] = market.currency_code
+                product["price_unavailable"] = True
+                product["_price_validation"] = "none_or_empty"
+                return product
+            
+            # ✅ PASO 3: Convertir a string y limpiar espacios
+            price_str = str(price_value).strip()
+            
+            # ✅ PASO 4: Detectar valores no numéricos comunes
+            non_numeric_values = [
+                "N/A", "n/a", "NA", "na",
+                "TBD", "tbd",
+                "Free", "free", "FREE",
+                "Gratis", "gratis",
+                "Unavailable", "unavailable",
+                "-", "--", "---"
+            ]
+            if price_str in non_numeric_values:
+                logger.warning(
+                    f"Non-numeric price for product {product.get('id', 'unknown')}: '{price_str}'"
+                )
+                product["currency"] = market.currency_code
+                product["price_special"] = price_str
+                product["price"] = 0.00  # Placeholder para evitar errores downstream
+                product["_price_validation"] = "non_numeric"
+                return product
+            
+            # ✅ PASO 5: Detectar strings vacíos o solo espacios
+            if not price_str:
+                logger.warning(
+                    f"Empty price string for product {product.get('id', 'unknown')}"
+                )
+                product["currency"] = market.currency_code
+                product["price_unavailable"] = True
+                product["_price_validation"] = "empty_string"
+                return product
+            
+            # ✅ PASO 6: Intentar conversión a Decimal
+            try:
+                original_price = Decimal(price_str)
+                
+                # ✅ PASO 7: Validar que el precio sea positivo
+                if original_price < 0:
+                    logger.warning(
+                        f"Negative price for product {product.get('id', 'unknown')}: {original_price}"
+                    )
+                    product["currency"] = market.currency_code
+                    product["price"] = 0.00
+                    product["_price_validation"] = "negative"
+                    return product
+                    
+            # except (decimal.InvalidOperation, ValueError, decimal.ConversionSyntax) as e:
+            except (ValueError, TypeError) as e:
+                logger.error(
+                    f"Cannot convert price to Decimal for product {product.get('id', 'unknown')}: "
+                    f"'{price_str}' - Error: {type(e).__name__}: {e}"
+                )
+                # Retornar sin adaptación pero sin crashear
+                product["currency"] = market.currency_code
+                product["price_conversion_failed"] = True
+                product["price_original_value"] = price_str
+                product["_price_validation"] = "conversion_failed"
+                return product
+            
+            # ✅ PASO 8: Conversión exitosa - continuar con lógica normal
             original_currency = product.get("currency", "COP")
             
             # Preserve original values
             product["original_price"] = float(original_price)
             product["original_currency"] = original_currency
+            product["_price_validation"] = "success"
             
             # Detect if price is already in COP despite wrong currency label
             if original_price > 1000 and original_currency in ["USD", "EUR"]:
                 logger.warning(
                     f"Suspicious price: {original_price} {original_currency}, "
-                    f"treating as COP"
+                    f"treating as COP for product {product.get('id', 'unknown')}"
                 )
                 original_currency = "COP"
             
@@ -265,7 +338,8 @@ class MarketAdapter:
                 
                 logger.debug(
                     f"Price converted: {original_price} COP -> "
-                    f"{final_price} {market.currency_code}"
+                    f"{final_price} {market.currency_code} "
+                    f"for product {product.get('id', 'unknown')}"
                 )
             else:
                 # Update currency even if no conversion needed
@@ -273,8 +347,16 @@ class MarketAdapter:
             
             return product
             
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error converting price: {e}")
+        except Exception as e:
+            # ✅ Catch-all para cualquier otro error inesperado
+            logger.error(
+                f"Unexpected error converting price for product {product.get('id', 'unknown')}: {e}",
+                exc_info=True
+            )
+            # Retornar producto original sin adaptación
+            product["currency"] = market.currency_code if hasattr(market, 'currency_code') else "USD"
+            product["_price_validation"] = "unexpected_error"
+            product["_price_error"] = str(e)
             return product
     
     async def _adapt_text(self, product: Dict[str, Any], market: MarketConfiguration) -> Dict[str, Any]:

@@ -581,12 +581,17 @@ async def get_mcp_market_recommendations(
     product_id: str,
     market_id: str,
     user_id: str,
-    n_recommendations: int = 5
+    n_recommendations: int = 5,
+    session_id: Optional[str] = None  # ✅ NUEVO parámetro
 ) -> Dict[str, Any]:
     """
     Función auxiliar para el endpoint de recomendaciones por mercado.
     Usa el mismo flujo arquitectónico paralelo.
     
+    Obtiene recomendaciones de mercado con personalización MCP
+    
+    ✅ MEJORADO: Acepta session_id para contexto conversacional
+
     Args:
         product_id: ID del producto base
         market_id: ID del mercado
@@ -596,13 +601,21 @@ async def get_mcp_market_recommendations(
     Returns:
         Dict con recomendaciones adaptadas al mercado usando parallel processing
     """
+
+    # ✅ USAR session_id si se provee, como por ejemplo desde mcp_router
+    # if session_id:
+    #     logger.info(f"Using provided session_id: {session_id}")
+    # else:
+    #     session_id = f"market_rec_{user_id}_{int(time.time())}"
+    #     logger.info(f"Generated new session_id: {session_id}")
+
     return await get_mcp_conversation_recommendations(
         validated_user_id=user_id,
         validated_product_id=product_id,
         conversation_query=f"Show me products similar to {product_id}",
         market_id=market_id,
         n_recommendations=n_recommendations,
-        session_id=f"market_rec_{user_id}_{int(time.time())}"
+        session_id=session_id
     )
 
 
