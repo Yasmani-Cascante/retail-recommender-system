@@ -563,21 +563,15 @@ async def get_products(
         
         # 4. Convertir a modelos de respuesta
         product_responses = []
-        for product in enriched_products[:limit]:  # Asegurar límite     
+        for product in enriched_products[:limit]:  # Asegurar límite
             try:
-                # Para obtener el precio y la imagen, revisar variantes
-                variants = product.get('variants', [])
-                first_variant = variants[0] if variants else {}
-                images = product.get('images', [])
-                image_url = images[0].get('src') if images else None
-
                 product_response = ProductResponse(
                     id=str(product.get("id", "")),
                     title=product.get("title", ""),
-                    description=product.get("body_html", ""),
-                    price=float(first_variant.get("price", 0)) if first_variant.get("price") else None,
+                    description=product.get("description", ""),
+                    price=float(product.get("price", 0)) if product.get("price") else None,
                     currency=product.get("currency", "USD"),
-                    image_url=image_url,
+                    image_url=product.get("image_url") or product.get("featured_image"),
                     category=product.get("category") or product.get("product_type"),
                     
                     # Campos de inventario
@@ -624,190 +618,7 @@ async def get_products(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving products: {str(e)}"
         )
-    
-# ============================================================================
-@router.get("/products/search/")
-async def search_products(
-    q: str = Query(..., description="Texto a buscar en nombre o descripción"),
-    limit: int = Query(default=20, ge=1, le=100, description="Productos por página (máx 100)"),
-    offset: int = Query(default=0, ge=0, description="Offset para paginación"),
-    tfidf_recommender: TFIDFRecommender = Depends(get_tfidf_recommender),
-    current_user: str = Depends(get_current_user)
-):
-    """
-    Busca productos por nombre o descripción con paginación.
-    
-    Args:
-        q: Query string para búsqueda
-        limit: Número de productos por página (default: 20, max: 100)
-        offset: Offset para paginación (default: 0)
-        tfidf_recommender: Recomendador TF-IDF inyectado
-        current_user: Usuario autenticado
-    
-    Returns:
-        Dict: Productos paginados con metadatos de paginación
-        {
-            "products": [...],
-            "pagination": {
-                "total": 150,
-                "limit": 20,
-                "offset": 0,
-                "returned": 20,
-                "has_next": true,
-                "next_offset": 20,
-                "page": 1,
-                "total_pages": 8
-            },
-            "metadata": {
-                "query": "aros",
-                "response_time_ms": 25.30,
-                "lookup_method": "TF-IDF search"
-            }
-        }
-    
-    Raises:
-        503: Catálogo no cargado
-        500: Error interno
-    """
-    try:
-        start_time = time.time()
-        
-        # Verificar que el catálogo esté cargado
-        if not tfidf_recommender.loaded or not tfidf_recommender.product_data:
-            raise HTTPException(
-                status_code=503,
-                detail="Product catalog not loaded yet. Please wait for system initialization."
-            )
-        
-        # Realizar la búsqueda (lógica existente)
-        q = q.lower()
-        matching_products = []
-        for product in tfidf_recommender.product_data:
-            name = str(product.get("title", ""))
-            desc = str(product.get("body_html", ""))
-            if q in name.lower() or q in desc.lower():
-                matching_products.append(product)
-        
-        # Aplicar paginación
-        total_products = len(matching_products)
-        end_idx = offset + limit
-        paginated_products = matching_products[offset:end_idx]
-        
-        # Calcular metadatos de paginación
-        has_next = end_idx < total_products
-        next_offset = end_idx if has_next else None
-        
-        response_time_ms = (time.time() - start_time) * 1000
-        
-        logger.info(
-            f"✅ Search completed for query '{q}': {len(paginated_products)}/{total_products} products "
-            f"(offset={offset}, limit={limit}) in {response_time_ms:.2f}ms"
-        )
-        
-        return {
-            "products": paginated_products,
-            "pagination": {
-                "total": total_products,
-                "limit": limit,
-                "offset": offset,
-                "returned": len(paginated_products),
-                "has_next": has_next,
-                "next_offset": next_offset,
-                "page": (offset // limit) + 1,
-                "total_pages": (total_products + limit - 1) // limit  # Ceiling division
-            },
-            "metadata": {
-                "query": q,
-                "response_time_ms": round(response_time_ms, 2),
-                "lookup_method": "TF-IDF search"
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error in product search: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
 
-# ============================================================================
-@router.get("/products/categories")
-async def get_available_categories(
-    tfidf_recommender: TFIDFRecommender = Depends(get_tfidf_recommender),
-    current_user: str = Depends(get_current_user)
-):
-    """
-    List all available product categories.
-    
-    Returns:
-        Dict with 'categories' (sorted list) and 'total' (count) and metadata
-    
-    Example:
-        {
-            "categories": ["ACCESSORIES", "CLOTHING", "LENCERIA"],
-            "total": 3
-        }
-    """
-    try:
-        logger.info(f"🔍 Checking TFIDFRecommender: loaded={tfidf_recommender.loaded}, product_data={len(tfidf_recommender.product_data) if tfidf_recommender.product_data else 0}")
-        start_time = time.time()
-        
-        # Verificar que el catálogo esté cargado
-        if not tfidf_recommender.loaded or not tfidf_recommender.product_data:
-            raise HTTPException(
-                status_code=503,
-                detail="Product catalog not loaded yet"
-            )
-        
-        # ✅ OPTIMIZACIÓN: Usar category_index si está disponible (O(1))
-        if hasattr(tfidf_recommender, 'category_index') and tfidf_recommender.category_index:
-            categories = set(tfidf_recommender.category_index.keys())
-            lookup_method = "O(1) index"
-        else:
-            # ⚠️ FALLBACK OPTIMIZADO: Construir index on-demand pero con límite de tiempo
-            logger.warning("⚠️ category_index not available, building on-demand (this may be slow)")
-            
-            # Limitar la iteración para evitar timeouts (procesar máximo 10,000 productos)
-            max_products_to_scan = 10000
-            categories = set()
-            
-            for i, p in enumerate(tfidf_recommender.product_data):
-                if i >= max_products_to_scan:
-                    logger.warning(f"⚠️ Stopped scanning at {max_products_to_scan} products to avoid timeout")
-                    break
-                category = p.get("product_type", "").upper()
-                if category:
-                    categories.add(category)
-            
-            lookup_method = f"O(n) scan (limited to {max_products_to_scan})"
-        
-        response_time_ms = (time.time() - start_time) * 1000
-        
-        logger.info(
-            f"✅ Categories retrieved: {len(categories)} categories in {response_time_ms:.2f}ms "
-            f"(method: {lookup_method})"
-        )
-        
-        return {
-            "categories": sorted(categories),
-            "total": len(categories),
-            "metadata": {
-                "response_time_ms": round(response_time_ms, 2),
-                "lookup_method": lookup_method,
-                "catalog_size": len(tfidf_recommender.product_data) if tfidf_recommender.product_data else 0
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Error getting categories: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
-
-# ============================================================================
 @router.get(
     "/products/{product_id}",
     response_model=ProductResponse,
@@ -964,8 +775,7 @@ async def get_product(
         product_response = ProductResponse(
             id=str(enriched_product.get("id", product_id)),
             title=enriched_product.get("title", ""),
-            # description=enriched_product.get("description", ""),
-            description=enriched_product.get("body_html", ""),
+            description=enriched_product.get("description", ""),
             price=float(enriched_product.get("price", 0)) if enriched_product.get("price") else None,
             currency=enriched_product.get("currency", "USD"),
             image_url=enriched_product.get("image_url") or enriched_product.get("featured_image"),
@@ -1000,74 +810,83 @@ async def get_product(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error fetching product"
         )
-     
+
+@router.get("/products/search/")
+def search_products(
+    q: str = Query(..., description="Texto a buscar en nombre o descripción"),
+    tfidf_recommender: TFIDFRecommender = Depends(get_tfidf_recommender),  # ✅ NEW: DI: TFIDFRecommender = Depends(get_tfidf_recommender),  # ✅ NEW: DI
+    # cache: Optional[ProductCache] = Depends(get_product_cache),  # ✅ NEW: DI
+    current_user: str = Depends(get_current_user)
+):
+    """
+    Busca productos por nombre o descripción.
+    
+    Args:
+        q: Query string para búsqueda
+    
+    Returns:
+        Lista de productos que coinciden con la búsqueda
+    """
+    try:
+        # client = get_shopify_client()
+        # if not client:
+        #     raise HTTPException(status_code=500, detail="Shopify client not initialized")
+            
+        # all_products = client.get_products()
+        # logger.info(f"Got {len(all_products)} products from Shopify")
+        # if all_products:
+        #     logger.info(f"Sample product structure: {all_products[0]}")
+            
+        q = q.lower()
+        matching_products = []
+        # if cache.local_catalog:
+        #      logger.info(f"Cosa Gorda")
+        # for product in all_products:
+        for product in tfidf_recommender.product_data:
+            name = str(product.get("title", ""))
+            desc = str(product.get("body_html", ""))
+            
+            if q in name.lower() or q in desc.lower():
+                matching_products.append(product)
+        
+        return matching_products
+    except Exception as e:
+        logger.error(f"Error searching products: {str(e)}")
+        # logger.error(f"Products structure: {all_products if 'all_products' in locals() else 'Not loaded'}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============================================================================
 # ✅ FIX: GET PRODUCTS BY CATEGORY - USAR LOCAL CATALOG
 # ============================================================================
 
 @router.get("/products/category/{category}")
-async def get_products_by_category(
+async def get_products_by_category(  # ✅ CHANGED: async
     category: str,
-    limit: int = Query(default=20, ge=1, le=100, description="Productos por página (máx 100)"),
-    offset: int = Query(default=0, ge=0, description="Offset para paginación"),
-    tfidf_recommender: TFIDFRecommender = Depends(get_tfidf_recommender),
+    tfidf_recommender: TFIDFRecommender = Depends(get_tfidf_recommender),  # ✅ NEW: DI
     current_user: str = Depends(get_current_user)
 ):
     """
-    Get products by category using local catalog with pagination.
+    Get products by category using local catalog.
     
-    ✅ IMPROVEMENTS:
-    - Uses local_catalog instead of Shopify API (1000x-1800x faster) ⚡
-    - Implements pagination for better performance
-    - Response time: ~25ms (was 440ms for 523 products)
-    - Supports up to 100 products per page
+    ✅ FIXED: Uses local_catalog instead of Shopify API
+    Performance: ~10ms (was 10-18s)
+    Speedup: 1000x-1800x ⚡
     
     Args:
         category: Category name (case-insensitive)
-        limit: Number of products per page (default: 20, max: 100)
-        offset: Pagination offset (default: 0)
         tfidf_recommender: Injected TFIDFRecommender with local catalog
         current_user: Authenticated user
     
     Returns:
-        Dict: Paginated products with metadata
-        {
-            "products": [...],
-            "pagination": {
-                "total": 523,
-                "limit": 20,
-                "offset": 0,
-                "returned": 20,
-                "has_next": true,
-                "next_offset": 20,
-                "page": 1,
-                "total_pages": 27
-            },
-            "metadata": {
-                "category": "Aros",
-                "category_normalized": "AROS",
-                "lookup_time_ms": 0.00,
-                "response_time_ms": 25.30,
-                "lookup_method": "O(1) index"
-            }
-        }
+        List[Dict]: Products in the category
     
     Raises:
         503: Catalog not loaded
         404: Category not found
-    
-    Examples:
-        GET /v1/products/category/Aros
-        GET /v1/products/category/Aros?limit=50
-        GET /v1/products/category/Aros?limit=20&offset=20  # Page 2
-        GET /v1/products/category/Aros?limit=20&offset=40  # Page 3
     """
     try:
-        start_time = time.time()
-        
-        # ============================================================================
-        # STEP 1: Verify catalog is loaded
-        # ============================================================================
+        # ✅ STEP 1: Verify catalog is loaded
         if not tfidf_recommender.loaded or not tfidf_recommender.product_data:
             logger.error("❌ Product catalog not loaded")
             raise HTTPException(
@@ -1075,9 +894,7 @@ async def get_products_by_category(
                 detail="Product catalog not loaded yet. Please wait for system initialization."
             )
         
-        # ============================================================================
-        # STEP 2: Get all valid categories
-        # ============================================================================
+        # ✅ STEP 2: Get all valid categories
         all_categories = {
             p.get("product_type", "").upper()
             for p in tfidf_recommender.product_data
@@ -1086,9 +903,7 @@ async def get_products_by_category(
         
         category_upper = category.upper()
         
-        # ============================================================================
-        # STEP 3: Validate category exists
-        # ============================================================================
+        # ✅ STEP 3: Validate category exists
         if category_upper not in all_categories:
             logger.warning(f"❌ Category '{category}' not found in catalog")
             raise HTTPException(
@@ -1096,86 +911,37 @@ async def get_products_by_category(
                 detail=f"Category '{category}' not found. Available categories: {sorted(all_categories)}"
             )
         
-        # ============================================================================
-        # STEP 4: Get ALL products from category (O(1) lookup with index)
-        # ============================================================================
-        lookup_start = time.time()
-        
+        # ✅ STEP 4: Get products from category index with fallback
+        start_time = time.time()
+
         if (hasattr(tfidf_recommender, 'category_index') and 
             tfidf_recommender.category_index and 
             category_upper in tfidf_recommender.category_index):
             # ✅ Usar índice si está disponible (O(1))
-            all_category_products = tfidf_recommender.category_index[category_upper]
-            lookup_method = "O(1) index"
+            category_products = tfidf_recommender.category_index[category_upper]
+            # category_products = tfidf_recommender.category_index.get(category_upper, [])
             logger.debug(f"Used category_index for {category_upper} (O(1))")
         else:
             # ⚠️ Fallback a filtrado directo (O(n))
             logger.warning(f"category_index not available, using direct filter (O(n))")
-            all_category_products = [
+            category_products = [
                 p for p in tfidf_recommender.product_data
                 if p.get("product_type", "").upper() == category_upper
             ]
-            lookup_method = "O(n) filter"
-        
-        lookup_time_ms = (time.time() - lookup_start) * 1000
-        
-        # ============================================================================
-        # STEP 5: Validate products exist
-        # ============================================================================
-        if not all_category_products:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No products found in category '{category}'"
-            )
-        
-        # ============================================================================
-        # STEP 6: Apply pagination
-        # ============================================================================
-        total_products = len(all_category_products)
-        end_idx = offset + limit
-        paginated_products = all_category_products[offset:end_idx]
-        
-        # ============================================================================
-        # STEP 7: Calculate pagination metadata
-        # ============================================================================
-        has_next = end_idx < total_products
-        next_offset = end_idx if has_next else None
-        
-        response_time_ms = (time.time() - start_time) * 1000
-        
-        # ============================================================================
-        # STEP 8: Build response
-        # ============================================================================
+
+        response_time_ms = (time.time() - start_time) * 1000       
         logger.info(
-            f"✅ Returned {len(paginated_products)}/{total_products} products "
-            f"in category '{category}' (offset={offset}, limit={limit}) "
-            f"in {response_time_ms:.2f}ms (lookup: {lookup_time_ms:.2f}ms)"
+            f"✅ Found {len(category_products)} products in category '{category}' "
+            f"from local catalog in {response_time_ms:.2f}ms"
         )
         
-        return {
-            "products": paginated_products,
-            "pagination": {
-                "total": total_products,
-                "limit": limit,
-                "offset": offset,
-                "returned": len(paginated_products),
-                "has_next": has_next,
-                "next_offset": next_offset,
-                "page": (offset // limit) + 1,
-                "total_pages": (total_products + limit - 1) // limit  # Ceiling division
-            },
-            "metadata": {
-                "category": category,
-                "category_normalized": category_upper,
-                "lookup_time_ms": round(lookup_time_ms, 2),
-                "response_time_ms": round(response_time_ms, 2),
-                "lookup_method": lookup_method
-            }
-        }
-    
-    except HTTPException:
-        # Re-raise HTTP exceptions without modification
-        raise
+        if not category_products:
+            raise HTTPException(
+                    status_code=404,
+                    detail=f"No products found in category '{category}' not found"
+                )
+        
+        return category_products   
     
     except Exception as e:
         logger.error(f"❌ Error in category search: {str(e)}", exc_info=True)
@@ -1184,35 +950,6 @@ async def get_products_by_category(
             detail=f"Internal server error: {str(e)}"
         )
 
-# ============================================================================
-@router.get("/health/detailed")
-async def detailed_health_check(
-    tfidf_recommender: TFIDFRecommender = Depends(get_tfidf_recommender)
-):
-    """
-    Health check comprehensivo que verifica estado del sistema.
-    """
-    return {
-        "timestamp": time.time(),
-        "service": "tfidf_recommender",
-        "status": {
-            "loaded": tfidf_recommender.loaded,
-            "product_data_available": tfidf_recommender.product_data is not None,
-            "product_count": len(tfidf_recommender.product_data) if tfidf_recommender.product_data else 0,
-            "category_index_built": hasattr(tfidf_recommender, 'category_index') and tfidf_recommender.category_index is not None,
-            "categories_count": len(tfidf_recommender.category_index) if hasattr(tfidf_recommender, 'category_index') and tfidf_recommender.category_index else 0,
-            "categories": sorted(tfidf_recommender.category_index.keys()) if hasattr(tfidf_recommender, 'category_index') and tfidf_recommender.category_index else []
-        },
-        "architecture": {
-            "singleton": True,
-            "factory": "ServiceFactory",
-            "dependency_injection": True
-        },
-        "performance": {
-            "lookup_complexity": "O(1)" if hasattr(tfidf_recommender, 'category_index') else "O(n)",
-            "expected_response_time": "<2ms for O(1), <500ms for O(n)"
-        }
-    }
 
 # ============================================================================
 # 🔧 FUNCIONES HELPER PARA OBTENER PRODUCTOS (ORIGINAL PRESERVED)
@@ -1905,6 +1642,45 @@ async def debug_shopify_connection(shopify_client) -> Dict:
            }
        }
 
+
+@router.get("/products/categories")
+async def get_available_categories(
+    tfidf_recommender: TFIDFRecommender = Depends(get_tfidf_recommender)  # ✅ Añadir type hint
+):
+    """
+    List all available product categories.
+    
+    Returns:
+        Dict with 'categories' (sorted list) and 'total' (count)
+    
+    Example:
+        {
+            "categories": ["ACCESSORIES", "CLOTHING", "LENCERIA"],
+            "total": 3
+        }
+    """
+    # Verificar que el catálogo esté cargado
+    if not tfidf_recommender.loaded or not tfidf_recommender.product_data:
+        raise HTTPException(
+            status_code=503,
+            detail="Product catalog not loaded yet"
+        )
+    
+    # Usar category_index si está disponible (más rápido)
+    if hasattr(tfidf_recommender, 'category_index') and tfidf_recommender.category_index:
+        categories = set(tfidf_recommender.category_index.keys())
+    else:
+        # Fallback a construcción on-demand
+        categories = {
+            p.get("product_type", "").upper()
+            for p in tfidf_recommender.product_data
+            if p.get("product_type")  # ✅ Filtrar vacíos
+        }
+    
+    return {
+        "categories": sorted(categories),
+        "total": len(categories)
+    }
 
 # ============================================================================
 # 📊 ENTERPRISE MONITORING ENDPOINTS

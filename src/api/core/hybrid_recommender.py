@@ -3,6 +3,9 @@ Implementación del recomendador híbrido con variantes.
 
 Este módulo proporciona implementaciones del recomendador híbrido,
 incluyendo la versión base y la versión con exclusión de productos ya vistos.
+
+Este recomendador es usado como (fallback) por service_factory.py en caso de poder
+usar el enhanced_hybrid_recommender.py
 """
 
 import logging
@@ -283,6 +286,7 @@ class HybridRecommender:
         user_id: str,
         event_type: str,
         product_id: Optional[str] = None,
+        recommendation_id: Optional[str] = None,
         purchase_amount: Optional[float] = None
     ) -> Dict:
         """
@@ -292,16 +296,18 @@ class HybridRecommender:
             user_id: ID del usuario
             event_type: Tipo de evento
             product_id: ID del producto (opcional)
+            recommendation_id: ID de la recomendación (opcional)
             purchase_amount: Monto de la compra (para eventos de compra)
             
         Returns:
             Dict: Resultado del registro del evento
         """
-        logger.info(f"Registrando evento de usuario: user_id={user_id}, event_type={event_type}, product_id={product_id}, purchase_amount={purchase_amount}")
+        logger.info(f"Registrando evento de usuario: user_id={user_id}, event_type={event_type}, product_id={product_id}, recommendation_id={recommendation_id}, purchase_amount={purchase_amount}")
         return await self.retail_recommender.record_user_event(
             user_id=user_id,
             event_type=event_type,
             product_id=product_id,
+            recommendation_id=recommendation_id,
             purchase_amount=purchase_amount 
         )
         

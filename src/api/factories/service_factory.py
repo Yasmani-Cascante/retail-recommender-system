@@ -681,25 +681,43 @@ class ServiceFactory:
                                     )
                             except ImportError as ie:
                                 logger.warning(f"⚠️ EnhancedHybridRecommender not available, falling back: {ie}")
-                                raise
-                        # If no product_cache or enhanced import failed, use original Hybrid implementations
-                        from src.api.core.hybrid_recommender import HybridRecommender, HybridRecommenderWithExclusion
-                        if settings.exclude_seen_products:
-                            logger.info("   Using HybridRecommenderWithExclusion (fallback)")
-                            cls._hybrid_recommender = HybridRecommenderWithExclusion(
-                                content_recommender=content_recommender,
-                                retail_recommender=retail_recommender,
-                                content_weight=settings.content_weight,
-                                product_cache=product_cache
-                            )
+                                # Fallback to basic Hybrid implementations
+                                from src.api.core.hybrid_recommender import HybridRecommender, HybridRecommenderWithExclusion
+                                if settings.exclude_seen_products:
+                                    logger.info("   Using HybridRecommenderWithExclusion (fallback)")
+                                    cls._hybrid_recommender = HybridRecommenderWithExclusion(
+                                        content_recommender=content_recommender,
+                                        retail_recommender=retail_recommender,
+                                        content_weight=settings.content_weight,
+                                        product_cache=product_cache
+                                    )
+                                else:
+                                    logger.info("   Using HybridRecommender (basic, fallback)")
+                                    cls._hybrid_recommender = HybridRecommender(
+                                        content_recommender=content_recommender,
+                                        retail_recommender=retail_recommender,
+                                        content_weight=settings.content_weight,
+                                        product_cache=product_cache
+                                    )
                         else:
-                            logger.info("   Using HybridRecommender (basic, fallback)")
-                            cls._hybrid_recommender = HybridRecommender(
-                                content_recommender=content_recommender,
-                                retail_recommender=retail_recommender,
-                                content_weight=settings.content_weight,
-                                product_cache=product_cache
-                            )
+                            # No product_cache, use basic Hybrid implementations
+                            from src.api.core.hybrid_recommender import HybridRecommender, HybridRecommenderWithExclusion
+                            if settings.exclude_seen_products:
+                                logger.info("   Using HybridRecommenderWithExclusion (no cache)")
+                                cls._hybrid_recommender = HybridRecommenderWithExclusion(
+                                    content_recommender=content_recommender,
+                                    retail_recommender=retail_recommender,
+                                    content_weight=settings.content_weight,
+                                    product_cache=product_cache
+                                )
+                            else:
+                                logger.info("   Using HybridRecommender (basic, no cache)")
+                                cls._hybrid_recommender = HybridRecommender(
+                                    content_recommender=content_recommender,
+                                    retail_recommender=retail_recommender,
+                                    content_weight=settings.content_weight,
+                                    product_cache=product_cache
+                                )
                     
                     except Exception:
                         # In case of any unexpected error, ensure we still create a basic HybridRecommender

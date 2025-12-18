@@ -1,0 +1,358 @@
+{
+  "products": [
+    {
+      "id": "TEST_PRODUCT_001",
+      "title": "Classic White T-Shirt",
+      "description": "Premium cotton t-shirt in classic white",
+      "price": 29.99,
+      "currency": "USD",
+      "category": "Clothing",
+      "subcategory": "T-Shirts",
+      "brand": "Test Brand",
+      "stock_quantity": 150,
+      "images": [
+        "https://example.com/images/tshirt-white-front.jpg",
+        "https://example.com/images/tshirt-white-back.jpg"
+      ],
+      "tags": ["cotton", "casual", "basic", "unisex"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_002",
+      "title": "Running Shoes Pro",
+      "description": "Professional running shoes with advanced cushioning",
+      "price": 129.99,
+      "currency": "USD",
+      "category": "Shoes",
+      "subcategory": "Running",
+      "brand": "Test Athletic",
+      "stock_quantity": 75,
+      "images": [
+        "https://example.com/images/shoes-running-blue.jpg"
+      ],
+      "tags": ["athletic", "running", "performance", "breathable"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_003",
+      "title": "Denim Jeans Slim Fit",
+      "description": "Modern slim fit jeans in classic blue denim",
+      "price": 79.99,
+      "currency": "USD",
+      "category": "Clothing",
+      "subcategory": "Jeans",
+      "brand": "Test Denim Co",
+      "stock_quantity": 200,
+      "images": [
+        "https://example.com/images/jeans-blue-front.jpg",
+        "https://example.com/images/jeans-blue-side.jpg"
+      ],
+      "tags": ["denim", "casual", "slim-fit", "blue"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_004_MX",
+      "title": "Camisa Blanca Clásica",
+      "description": "Camisa de algodón premium en color blanco",
+      "price": 549.99,
+      "currency": "MXN",
+      "category": "Ropa",
+      "subcategory": "Camisas",
+      "brand": "Marca de Prueba",
+      "stock_quantity": 150,
+      "images": [
+        "https://example.com/images/camisa-blanca-frente.jpg"
+      ],
+      "tags": ["algodón", "casual", "básico"],
+      "market": "MX",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_005",
+      "title": "Winter Jacket Premium",
+      "description": "Insulated winter jacket for extreme cold",
+      "price": 199.99,
+      "currency": "USD",
+      "category": "Clothing",
+      "subcategory": "Jackets",
+      "brand": "Test Outerwear",
+      "stock_quantity": 50,
+      "images": [
+        "https://example.com/images/jacket-black-front.jpg",
+        "https://example.com/images/jacket-black-back.jpg",
+        "https://example.com/images/jacket-black-detail.jpg"
+      ],
+      "tags": ["winter", "insulated", "waterproof", "warm"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_006",
+      "title": "Yoga Mat Eco-Friendly",
+      "description": "Non-slip yoga mat made from recycled materials",
+      "price": 45.99,
+      "currency": "USD",
+      "category": "Sports",
+      "subcategory": "Yoga",
+      "brand": "Test Eco Sports",
+      "stock_quantity": 300,
+      "images": [
+        "https://example.com/images/yoga-mat-purple.jpg"
+      ],
+      "tags": ["yoga", "eco-friendly", "non-slip", "fitness"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_007",
+      "title": "Wireless Headphones",
+      "description": "Premium wireless headphones with noise cancellation",
+      "price": 249.99,
+      "currency": "USD",
+      "category": "Electronics",
+      "subcategory": "Audio",
+      "brand": "Test Audio Tech",
+      "stock_quantity": 100,
+      "images": [
+        "https://example.com/images/headphones-black.jpg"
+      ],
+      "tags": ["wireless", "audio", "noise-cancellation", "bluetooth"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_008",
+      "title": "Laptop Backpack",
+      "description": "Durable laptop backpack with multiple compartments",
+      "price": 69.99,
+      "currency": "USD",
+      "category": "Accessories",
+      "subcategory": "Bags",
+      "brand": "Test Bags Co",
+      "stock_quantity": 180,
+      "images": [
+        "https://example.com/images/backpack-grey-front.jpg",
+        "https://example.com/images/backpack-grey-open.jpg"
+      ],
+      "tags": ["laptop", "backpack", "travel", "durable"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_009",
+      "title": "Stainless Steel Water Bottle",
+      "description": "Insulated water bottle keeps drinks cold for 24 hours",
+      "price": 34.99,
+      "currency": "USD",
+      "category": "Accessories",
+      "subcategory": "Drinkware",
+      "brand": "Test Hydration",
+      "stock_quantity": 500,
+      "images": [
+        "https://example.com/images/bottle-blue.jpg"
+      ],
+      "tags": ["hydration", "insulated", "eco-friendly", "stainless-steel"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_010",
+      "title": "Smartwatch Fitness Tracker",
+      "description": "Advanced fitness tracking with heart rate monitor",
+      "price": 299.99,
+      "currency": "USD",
+      "category": "Electronics",
+      "subcategory": "Wearables",
+      "brand": "Test Tech Wearables",
+      "stock_quantity": 85,
+      "images": [
+        "https://example.com/images/smartwatch-black.jpg"
+      ],
+      "tags": ["smartwatch", "fitness", "health", "wearable"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_011_ES",
+      "title": "Vestido Elegante Negro",
+      "description": "Vestido de noche elegante en color negro",
+      "price": 89.99,
+      "currency": "EUR",
+      "category": "Ropa",
+      "subcategory": "Vestidos",
+      "brand": "Marca de Prueba EU",
+      "stock_quantity": 60,
+      "images": [
+        "https://example.com/images/vestido-negro.jpg"
+      ],
+      "tags": ["elegante", "noche", "negro", "formal"],
+      "market": "ES",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_012",
+      "title": "Kitchen Knife Set Professional",
+      "description": "Professional chef knife set with 8 pieces",
+      "price": 149.99,
+      "currency": "USD",
+      "category": "Home",
+      "subcategory": "Kitchen",
+      "brand": "Test Chef Tools",
+      "stock_quantity": 120,
+      "images": [
+        "https://example.com/images/knife-set-complete.jpg"
+      ],
+      "tags": ["kitchen", "chef", "knives", "professional"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_013",
+      "title": "Sunglasses UV Protection",
+      "description": "Stylish sunglasses with 100% UV protection",
+      "price": 89.99,
+      "currency": "USD",
+      "category": "Accessories",
+      "subcategory": "Eyewear",
+      "brand": "Test Eyewear",
+      "stock_quantity": 250,
+      "images": [
+        "https://example.com/images/sunglasses-aviator.jpg"
+      ],
+      "tags": ["sunglasses", "uv-protection", "fashion", "summer"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_014_CL",
+      "title": "Polera Deportiva",
+      "description": "Polera deportiva de material transpirable",
+      "price": 29990,
+      "currency": "CLP",
+      "category": "Ropa",
+      "subcategory": "Deportiva",
+      "brand": "Marca Prueba Chile",
+      "stock_quantity": 180,
+      "images": [
+        "https://example.com/images/polera-deportiva.jpg"
+      ],
+      "tags": ["deportiva", "transpirable", "fitness"],
+      "market": "CL",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_015",
+      "title": "Desk Lamp LED Adjustable",
+      "description": "Modern LED desk lamp with adjustable brightness",
+      "price": 54.99,
+      "currency": "USD",
+      "category": "Home",
+      "subcategory": "Lighting",
+      "brand": "Test Home Lighting",
+      "stock_quantity": 140,
+      "images": [
+        "https://example.com/images/desk-lamp-white.jpg"
+      ],
+      "tags": ["lamp", "led", "adjustable", "office"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_016",
+      "title": "Basketball Official Size",
+      "description": "Official size basketball for indoor and outdoor play",
+      "price": 39.99,
+      "currency": "USD",
+      "category": "Sports",
+      "subcategory": "Basketball",
+      "brand": "Test Sports Equipment",
+      "stock_quantity": 200,
+      "images": [
+        "https://example.com/images/basketball-orange.jpg"
+      ],
+      "tags": ["basketball", "sports", "outdoor", "indoor"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_017",
+      "title": "Coffee Maker Automatic",
+      "description": "Programmable automatic coffee maker with timer",
+      "price": 79.99,
+      "currency": "USD",
+      "category": "Home",
+      "subcategory": "Kitchen Appliances",
+      "brand": "Test Home Appliances",
+      "stock_quantity": 95,
+      "images": [
+        "https://example.com/images/coffee-maker-black.jpg"
+      ],
+      "tags": ["coffee", "automatic", "programmable", "kitchen"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_018",
+      "title": "Canvas Sneakers Classic",
+      "description": "Classic canvas sneakers in white",
+      "price": 49.99,
+      "currency": "USD",
+      "category": "Shoes",
+      "subcategory": "Sneakers",
+      "brand": "Test Footwear",
+      "stock_quantity": 300,
+      "images": [
+        "https://example.com/images/sneakers-white-canvas.jpg"
+      ],
+      "tags": ["sneakers", "canvas", "casual", "white"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_019",
+      "title": "Portable Bluetooth Speaker",
+      "description": "Waterproof portable speaker with 12-hour battery",
+      "price": 59.99,
+      "currency": "USD",
+      "category": "Electronics",
+      "subcategory": "Audio",
+      "brand": "Test Audio Portable",
+      "stock_quantity": 175,
+      "images": [
+        "https://example.com/images/speaker-blue-portable.jpg"
+      ],
+      "tags": ["bluetooth", "speaker", "waterproof", "portable"],
+      "market": "US",
+      "available": true
+    },
+    {
+      "id": "TEST_PRODUCT_020",
+      "title": "Leather Wallet Men's",
+      "description": "Genuine leather wallet with RFID protection",
+      "price": 44.99,
+      "currency": "USD",
+      "category": "Accessories",
+      "subcategory": "Wallets",
+      "brand": "Test Leather Goods",
+      "stock_quantity": 220,
+      "images": [
+        "https://example.com/images/wallet-brown-leather.jpg"
+      ],
+      "tags": ["wallet", "leather", "rfid", "men"],
+      "market": "US",
+      "available": true
+    }
+  ],
+  "metadata": {
+    "total_products": 20,
+    "markets": ["US", "MX", "ES", "CL"],
+    "currencies": ["USD", "MXN", "EUR", "CLP"],
+    "categories": ["Clothing", "Shoes", "Sports", "Electronics", "Accessories", "Home"],
+    "created_for_testing": true,
+    "version": "1.0",
+    "last_updated": "2025-12-16"
+  }
+}

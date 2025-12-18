@@ -1,6 +1,6 @@
 # src/api/routers/mcp_router_optimized.py
 """
-MCP Router Optimizado - Solución Crítica para Performance de Conversaciones
+MCP Router Optimizado (Legacy) - Solución Crítica para Performance de Conversaciones
 ==========================================================================
 
 OPTIMIZACIÓN CRÍTICA: Reduce response times de 12,234ms → <2,000ms

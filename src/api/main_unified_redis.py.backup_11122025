@@ -51,7 +51,7 @@ from src.api.factories import (
     validate_factory_architecture
 )
 
-# from src.api.factories.factories import RecommenderFactory
+from src.api.factories.factories import RecommenderFactory
 from src.api.core.product_cache import ProductCache
 
 # ✅ OBSERVABILITY MANAGER ENTERPRISE
@@ -256,31 +256,27 @@ async def lifespan(app: FastAPI):
             logger.warning(f"⚠️ Shopify initialization error: {e}")
         
         # ============================================================================
-        # 🎯 PASO 3: CREAR RECOMENDADORES (ANTES DE PRODUCT CACHE) (revisar_11.12.2025 logica de Fallback)
+        # 🎯 PASO 3: CREAR RECOMENDADORES (ANTES DE PRODUCT CACHE)
         # ============================================================================
         
         logger.info("🤖 Creating recommendation components...")
         
         try:
             # ✅ Crear recomendadores usando fábricas
-            tfidf_recommender = await ServiceFactory.get_tfidf_recommender()
-            # tfidf_recommender = RecommenderFactory.create_tfidf_recommender()
-            retail_recommender = await ServiceFactory.get_retail_recommender()
-            # retail_recommender = RecommenderFactory.create_retail_recommender()
+            tfidf_recommender = RecommenderFactory.create_tfidf_recommender()
+            retail_recommender = RecommenderFactory.create_retail_recommender()
             logger.info("✅ TF-IDF and Retail recommenders created")
             
         except Exception as e:
-            logger.error(f"❌ CRITICAL: ServiceFactory failed to create recommenders: {e}")
-            # # Crear componentes mínimos para evitar crashes
-            # try:
-            #     tfidf_recommender = RecommenderFactory.create_tfidf_recommender()
-            #     # tfidf_recommender = ServiceFactory.get_tfidf_recommender()
-            #     retail_recommender = RecommenderFactory.create_retail_recommender()
-            #     # retail_recommender = ServiceFactory.get_retail_recommender()
-            #     logger.info("✅ Fallback recommendation components created")
-            # except Exception as fallback_error:
-            #     logger.error(f"❌ Failed to create fallback components: {fallback_error}")
-            raise RuntimeError(f"Cannot initialize recommendation system: {e}") # Critical failure
+            logger.error(f"❌ Error creating recommendation components: {e}")
+            # Crear componentes mínimos para evitar crashes
+            try:
+                tfidf_recommender = RecommenderFactory.create_tfidf_recommender()
+                retail_recommender = RecommenderFactory.create_retail_recommender()
+                logger.info("✅ Fallback recommendation components created")
+            except Exception as fallback_error:
+                logger.error(f"❌ Failed to create fallback components: {fallback_error}")
+                raise  # Critical failure
         
         # ============================================================================
         # 🎯 PASO 4: REGISTRAR Y EJECUTAR STARTUP MANAGER (CRÍTICO)
@@ -384,8 +380,7 @@ async def lifespan(app: FastAPI):
         
         try:
             # ✅ Crear recomendador híbrido con ProductCache optimizado
-            # hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
-            hybrid_recommender = await ServiceFactory.get_hybrid_recommender(
+            hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
                 tfidf_recommender, 
                 retail_recommender,
                 product_cache=product_cache  # ✅ Usar enterprise ProductCache con dependency injection
@@ -399,10 +394,10 @@ async def lifespan(app: FastAPI):
         except Exception as hybrid_error:
             logger.error(f"❌ Error creating hybrid recommender: {hybrid_error}")
             # Crear versión fallback sin cache
-            # hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
-            #     tfidf_recommender, retail_recommender
-            # )
-            # logger.info("✅ Hybrid recommender created in fallback mode")
+            hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
+                tfidf_recommender, retail_recommender
+            )
+            logger.info("✅ Hybrid recommender created in fallback mode")
         
         # ============================================================================
         # 🎯 PASO 7: INVENTORY SERVICE INITIALIZATION
@@ -514,23 +509,23 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
         
         # ✅ EMERGENCY FALLBACK: Crear componentes mínimos
-        # try:
-        #     logger.info("🚨 Attempting emergency fallback initialization...")
-        #     if not settings:
-        #         settings = get_settings()
-        #     if not startup_manager:
-        #         startup_manager = StartupManager()
-        #     if not tfidf_recommender:
-        #         tfidf_recommender = RecommenderFactory.create_tfidf_recommender()
-        #     if not retail_recommender:
-        #         retail_recommender = RecommenderFactory.create_retail_recommender()
-        #     if not hybrid_recommender:
-        #         hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
-        #             tfidf_recommender, retail_recommender
-        #         )
-        #     logger.info("✅ Emergency fallback components created")
-        # except Exception as emergency_error:
-        #     logger.error(f"❌ Emergency fallback failed: {emergency_error}")
+        try:
+            logger.info("🚨 Attempting emergency fallback initialization...")
+            if not settings:
+                settings = get_settings()
+            if not startup_manager:
+                startup_manager = StartupManager()
+            if not tfidf_recommender:
+                tfidf_recommender = RecommenderFactory.create_tfidf_recommender()
+            if not retail_recommender:
+                retail_recommender = RecommenderFactory.create_retail_recommender()
+            if not hybrid_recommender:
+                hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
+                    tfidf_recommender, retail_recommender
+                )
+            logger.info("✅ Emergency fallback components created")
+        except Exception as emergency_error:
+            logger.error(f"❌ Emergency fallback failed: {emergency_error}")
             # Don't raise - let system start in minimal mode
     
     # ============================================================================
@@ -971,7 +966,7 @@ async def get_user_recommendations(
             detail=f"Error obteniendo recomendaciones: {str(e)}"
         )
 
-@app.post("/v1/legacy/events/user/{user_id}" , deprecated=True)
+@app.post("/v1/events/user/{user_id}")
 async def record_user_event(
     user_id: str,
     event_type: str = Query(..., description="Tipo de evento (detail-page-view, add-to-cart, purchase-complete, etc.)"),
@@ -1048,7 +1043,7 @@ async def record_user_event(
             detail=f"Error al registrar el evento: {str(e)}. Asegúrate de usar un tipo de evento válido (detail-page-view, add-to-cart, purchase-complete, category-page-view, home-page-view, search)."
         )
 
-@app.get("/v1/legacy/ustomers/" , deprecated=True)
+@app.get("/v1/customers/")
 async def get_customers(
     current_user: str = Depends(get_current_user)
 ):

@@ -191,7 +191,7 @@ class ProductCache:
         # if self.redis and self.redis._connected:
         #     redis_key = f"{self.prefix}{product_id}"
         #     cached_data = await self.redis.get(redis_key)
-        if self.redis and self.redis.is_connected():
+        if self.redis and self.redis._connected:
             try:
                 redis_key = f"{self.prefix}{product_id}"
                 cached_data = await self.redis.get(redis_key)
@@ -359,7 +359,8 @@ class ProductCache:
         Returns:
             bool: True si la operación fue exitosa, False en caso contrario
         """
-        if not self.redis or not self.redis.is_connected():
+        # if not self.redis or not self.redis.is_connected():
+        if not self.redis or not self.redis._connected:
             return False
             
         try:

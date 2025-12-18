@@ -1027,9 +1027,13 @@ class RetailAPIRecommender:
                 event_type = "detail-page-view"
                 logging.info(f"[DEBUG] 👁️ Creando evento de vista de producto para product_id={product_id}")
                 
+                # from google.protobuf import timestamp_pb2
+                from datetime import datetime
                 user_event = retail_v2.UserEvent(
                     event_type=event_type,
                     visitor_id=str(user_id),
+                    # event_time=timestamp_pb2.Timestamp(seconds=int(datetime.utcnow().timestamp()))
+                    # event_time=datetime.utcnow().isoformat()
                     event_time=datetime.utcnow()
                 )
                 

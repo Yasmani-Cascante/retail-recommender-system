@@ -386,6 +386,7 @@ class EnhancedHybridRecommender:
         user_id: str,
         event_type: str,
         product_id: Optional[str] = None,
+        recommendation_id: Optional[str] = None,
         purchase_amount: Optional[float] = None
     ) -> Dict:
         """
@@ -395,18 +396,56 @@ class EnhancedHybridRecommender:
             user_id: ID del usuario
             event_type: Tipo de evento
             product_id: ID del producto (opcional)
+            recommendation_id: ID de la recomendación (opcional) - puede no ser soportado
             purchase_amount: Monto de la compra (para eventos de compra)
             
         Returns:
             Dict: Resultado del registro del evento
         """
-        logger.info(f"Registrando evento de usuario: user_id={user_id}, event_type={event_type}, product_id={product_id}, purchase_amount={purchase_amount}")
-        return await self.retail_recommender.record_user_event(
-            user_id=user_id,
-            event_type=event_type,
-            product_id=product_id,
-            purchase_amount=purchase_amount 
+        logger.info(
+            f"Registrando evento de usuario: user_id={user_id}, "
+            f"event_type={event_type}, product_id={product_id}"
         )
+        
+        # ✅ FIX: Intentar con todos los parámetros primero
+        try:
+            return await self.retail_recommender.record_user_event(
+                user_id=user_id,
+                event_type=event_type,
+                product_id=product_id,
+                recommendation_id=recommendation_id,
+                purchase_amount=purchase_amount
+            )
+        except TypeError as e:
+            # ✅ Si falla por parámetros incorrectos, reintentar sin recommendation_id
+            if "recommendation_id" in str(e):
+                logger.warning(
+                    f"retail_recommender no acepta recommendation_id, "
+                    f"reintentando sin este parámetro"
+                )
+                try:
+                    return await self.retail_recommender.record_user_event(
+                        user_id=user_id,
+                        event_type=event_type,
+                        product_id=product_id,
+                        purchase_amount=purchase_amount
+                    )
+                except TypeError as e2:
+                    # ✅ Si aún falla, intentar solo con parámetros mínimos
+                    if "purchase_amount" in str(e2):
+                        logger.warning(
+                            f"retail_recommender tampoco acepta purchase_amount, "
+                            f"usando parámetros mínimos"
+                        )
+                        return await self.retail_recommender.record_user_event(
+                            user_id=user_id,
+                            event_type=event_type,
+                            product_id=product_id
+                        )
+                    else:
+                        raise
+            else:
+                raise
         
     def get_stats(self) -> Dict[str, Any]:
         """

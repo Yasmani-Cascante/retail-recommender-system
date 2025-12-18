@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  redis-test:
+    image: redis:7-alpine
+    container_name: redis-test
+    ports:
+      - "6380:6379"  # Puerto diferente para no conflictuar con Redis dev
+    # command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --appendfsync no
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    environment:
+      - REDIS_REPLICATION_MODE=master
+    volumes:
+      - redis-test-data:/data
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Opcional: PostgreSQL para tests que requieren DB relacional
+  # postgres-test:
+  #   image: postgres:15-alpine
+  #   container_name: retail-recommender-postgres-test
+  #   environment:
+  #     POSTGRES_DB: retail_test
+  #     POSTGRES_USER: test_user
+  #     POSTGRES_PASSWORD: test_password
+  #   ports:
+  #     - "5433:5432"
+  #   networks:
+  #     - test-network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U test_user"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 5
+
+volumes:
+  redis-test-data:
+
+networks:
+  test-network:
+    driver: bridge
+
+# ==============================================================================
+# USAGE:
+# ==============================================================================
+#
+# Start test environment:
+#   docker-compose -f docker-compose.test.yml up -d
+#
+# Stop test environment:
+#   docker-compose -f docker-compose.test.yml down
+#
+# Clean test data:
+#   docker-compose -f docker-compose.test.yml down -v
+#
+# View logs:
+#   docker-compose -f docker-compose.test.yml logs -f redis-test
+#
+# ==============================================================================

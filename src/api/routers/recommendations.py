@@ -26,6 +26,7 @@ import math
 import logging
 import time
 import inspect
+from datetime import datetime
 
 # ============================================================================
 # FASTAPI DEPENDENCY INJECTION - NEW PATTERN
@@ -160,89 +161,89 @@ async def get_customers(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/products/category/{category}")
-def get_products_by_category(
-    category: str,
-    current_user: str = Depends(get_current_user)
-):
-    """
-    Obtiene productos filtrados por categoría.
+# @router.get("/products/category/{category}")
+# def get_products_by_category(
+#     category: str,
+#     current_user: str = Depends(get_current_user)
+# ):
+#     """
+#     Obtiene productos filtrados por categoría.
     
-    Args:
-        category: Nombre de la categoría a filtrar
+#     Args:
+#         category: Nombre de la categoría a filtrar
     
-    Returns:
-        Lista de productos en la categoría
-    """
-    try:
-        client = get_shopify_client()
-        if not client:
-            raise HTTPException(status_code=500, detail="Shopify client not initialized")
+#     Returns:
+#         Lista de productos en la categoría
+#     """
+#     try:
+#         client = get_shopify_client()
+#         if not client:
+#             raise HTTPException(status_code=500, detail="Shopify client not initialized")
             
-        logger.info(f"Fetching products for category: {category}")
-        products = client.get_products()
-        logger.info(f"Retrieved {len(products)} total products")
+#         logger.info(f"Fetching products for category: {category}")
+#         products = client.get_products()
+#         logger.info(f"Retrieved {len(products)} total products")
         
-        category_products = [
-            p for p in products 
-            if p.get("product_type", "").lower() == category.lower()
-        ]
+#         category_products = [
+#             p for p in products 
+#             if p.get("product_type", "").lower() == category.lower()
+#         ]
         
-        logger.info(f"Found {len(category_products)} products in category {category}")
+#         logger.info(f"Found {len(category_products)} products in category {category}")
         
-        if not category_products:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No products found in category: {category}"
-            )
-        return category_products
-    except Exception as e:
-        logger.error(f"Error in category search: {str(e)}")
-        if 'products' in locals():
-            sample_product = products[0] if products else None
-            logger.error(f"Sample product structure: {sample_product}")
-        raise HTTPException(status_code=500, detail=str(e))
+#         if not category_products:
+#             raise HTTPException(
+#                 status_code=404,
+#                 detail=f"No products found in category: {category}"
+#             )
+#         return category_products
+#     except Exception as e:
+#         logger.error(f"Error in category search: {str(e)}")
+#         if 'products' in locals():
+#             sample_product = products[0] if products else None
+#             logger.error(f"Sample product structure: {sample_product}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/products/search/")
-def search_products(
-    q: str = Query(..., description="Texto a buscar en nombre o descripción"),
-    current_user: str = Depends(get_current_user)
-):
-    """
-    Busca productos por nombre o descripción.
+# @router.get("/products/search/")
+# def search_products(
+#     q: str = Query(..., description="Texto a buscar en nombre o descripción"),
+#     current_user: str = Depends(get_current_user)
+# ):
+#     """
+#     Busca productos por nombre o descripción.
     
-    Args:
-        q: Query string para búsqueda
+#     Args:
+#         q: Query string para búsqueda
     
-    Returns:
-        Lista de productos que coinciden con la búsqueda
-    """
-    try:
-        client = get_shopify_client()
-        if not client:
-            raise HTTPException(status_code=500, detail="Shopify client not initialized")
+#     Returns:
+#         Lista de productos que coinciden con la búsqueda
+#     """
+#     try:
+#         client = get_shopify_client()
+#         if not client:
+#             raise HTTPException(status_code=500, detail="Shopify client not initialized")
             
-        all_products = client.get_products()
-        logger.info(f"Got {len(all_products)} products from Shopify")
-        if all_products:
-            logger.info(f"Sample product structure: {all_products[0]}")
+#         all_products = client.get_products()
+#         logger.info(f"Got {len(all_products)} products from Shopify")
+#         if all_products:
+#             logger.info(f"Sample product structure: {all_products[0]}")
             
-        q = q.lower()
-        matching_products = []
+#         q = q.lower()
+#         matching_products = []
         
-        for product in all_products:
-            name = str(product.get("title", ""))
-            desc = str(product.get("body_html", ""))
+#         for product in all_products:
+#             name = str(product.get("title", ""))
+#             desc = str(product.get("body_html", ""))
             
-            if q in name.lower() or q in desc.lower():
-                matching_products.append(product)
+#             if q in name.lower() or q in desc.lower():
+#                 matching_products.append(product)
         
-        return matching_products
-    except Exception as e:
-        logger.error(f"Error searching products: {str(e)}")
-        logger.error(f"Products structure: {all_products if 'all_products' in locals() else 'Not loaded'}")
-        raise HTTPException(status_code=500, detail=str(e))
+#         return matching_products
+#     except Exception as e:
+#         logger.error(f"Error searching products: {str(e)}")
+#         logger.error(f"Products structure: {all_products if 'all_products' in locals() else 'Not loaded'}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/metrics")
@@ -273,7 +274,8 @@ async def get_recommendation_metrics(
             "status": "success",
             "realtime_metrics": metrics,
             "historical_metrics": file_metrics,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")
+            # "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")
+            "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
         logger.error(f"Error al obtener métricas: {str(e)}")
@@ -646,7 +648,8 @@ async def record_user_event(
                 "user_id": user_id,
                 "event_type": event_type,
                 "product_id": product_id,
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%f"),
+                # "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.%f"),
+                "timestamp": datetime.utcnow().isoformat(),
                 "note": "El evento fue registrado correctamente y ayudará a mejorar las recomendaciones futuras.",
                 "di_migration": "phase2_complete"  # ✅ NEW: Migration flag
             }

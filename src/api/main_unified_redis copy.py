@@ -51,7 +51,7 @@ from src.api.factories import (
     validate_factory_architecture
 )
 
-# from src.api.factories.factories import RecommenderFactory
+from src.api.factories.factories import RecommenderFactory
 from src.api.core.product_cache import ProductCache
 
 # ✅ OBSERVABILITY MANAGER ENTERPRISE
@@ -270,17 +270,17 @@ async def lifespan(app: FastAPI):
             logger.info("✅ TF-IDF and Retail recommenders created")
             
         except Exception as e:
-            logger.error(f"❌ CRITICAL: ServiceFactory failed to create recommenders: {e}")
-            # # Crear componentes mínimos para evitar crashes
-            # try:
-            #     tfidf_recommender = RecommenderFactory.create_tfidf_recommender()
-            #     # tfidf_recommender = ServiceFactory.get_tfidf_recommender()
-            #     retail_recommender = RecommenderFactory.create_retail_recommender()
-            #     # retail_recommender = ServiceFactory.get_retail_recommender()
-            #     logger.info("✅ Fallback recommendation components created")
-            # except Exception as fallback_error:
-            #     logger.error(f"❌ Failed to create fallback components: {fallback_error}")
-            raise RuntimeError(f"Cannot initialize recommendation system: {e}") # Critical failure
+            logger.error(f"❌ Error creating recommendation components from ServiceFactory: {e}")
+            # Crear componentes mínimos para evitar crashes
+            try:
+                tfidf_recommender = RecommenderFactory.create_tfidf_recommender()
+                # tfidf_recommender = ServiceFactory.get_tfidf_recommender()
+                retail_recommender = RecommenderFactory.create_retail_recommender()
+                # retail_recommender = ServiceFactory.get_retail_recommender()
+                logger.info("✅ Fallback recommendation components created")
+            except Exception as fallback_error:
+                logger.error(f"❌ Failed to create fallback components: {fallback_error}")
+                raise  # Critical failure
         
         # ============================================================================
         # 🎯 PASO 4: REGISTRAR Y EJECUTAR STARTUP MANAGER (CRÍTICO)
@@ -399,10 +399,10 @@ async def lifespan(app: FastAPI):
         except Exception as hybrid_error:
             logger.error(f"❌ Error creating hybrid recommender: {hybrid_error}")
             # Crear versión fallback sin cache
-            # hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
-            #     tfidf_recommender, retail_recommender
-            # )
-            # logger.info("✅ Hybrid recommender created in fallback mode")
+            hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
+                tfidf_recommender, retail_recommender
+            )
+            logger.info("✅ Hybrid recommender created in fallback mode")
         
         # ============================================================================
         # 🎯 PASO 7: INVENTORY SERVICE INITIALIZATION
@@ -514,23 +514,23 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
         
         # ✅ EMERGENCY FALLBACK: Crear componentes mínimos
-        # try:
-        #     logger.info("🚨 Attempting emergency fallback initialization...")
-        #     if not settings:
-        #         settings = get_settings()
-        #     if not startup_manager:
-        #         startup_manager = StartupManager()
-        #     if not tfidf_recommender:
-        #         tfidf_recommender = RecommenderFactory.create_tfidf_recommender()
-        #     if not retail_recommender:
-        #         retail_recommender = RecommenderFactory.create_retail_recommender()
-        #     if not hybrid_recommender:
-        #         hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
-        #             tfidf_recommender, retail_recommender
-        #         )
-        #     logger.info("✅ Emergency fallback components created")
-        # except Exception as emergency_error:
-        #     logger.error(f"❌ Emergency fallback failed: {emergency_error}")
+        try:
+            logger.info("🚨 Attempting emergency fallback initialization...")
+            if not settings:
+                settings = get_settings()
+            if not startup_manager:
+                startup_manager = StartupManager()
+            if not tfidf_recommender:
+                tfidf_recommender = RecommenderFactory.create_tfidf_recommender()
+            if not retail_recommender:
+                retail_recommender = RecommenderFactory.create_retail_recommender()
+            if not hybrid_recommender:
+                hybrid_recommender = RecommenderFactory.create_hybrid_recommender(
+                    tfidf_recommender, retail_recommender
+                )
+            logger.info("✅ Emergency fallback components created")
+        except Exception as emergency_error:
+            logger.error(f"❌ Emergency fallback failed: {emergency_error}")
             # Don't raise - let system start in minimal mode
     
     # ============================================================================
