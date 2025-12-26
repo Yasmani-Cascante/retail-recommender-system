@@ -65,7 +65,7 @@ class EnhancedHybridRecommender:
         user_id: str,
         product_id: Optional[str] = None,
         n_recommendations: int = 5,
-        user_query: Optional[str] = None  # ✨ AGREGADO
+        user_query: Optional[str] = None  # ✨ AGREGADO PARA FASE 4
     ) -> List[Dict]:
         """
         Obtiene recomendaciones híbridas combinando ambos enfoques.
@@ -74,6 +74,7 @@ class EnhancedHybridRecommender:
             user_id: ID del usuario
             product_id: ID del producto (opcional)
             n_recommendations: Número de recomendaciones a devolver
+            user_query: Query del usuario en lenguaje natural (opcional) - FASE 4
             
         Returns:
             List[Dict]: Lista de productos recomendados
@@ -109,7 +110,7 @@ class EnhancedHybridRecommender:
         # usar recomendaciones inteligentes de fallback
         if not product_id and not retail_recs:
             logger.info("Usando recomendaciones mejoradas de fallback")
-            recs = await self._get_fallback_recommendations(user_id, n_recommendations, user_query)
+            recs = await self._get_fallback_recommendations(user_id, n_recommendations, user_query)  # ✨ MODIFICADO - FASE 4
             self.stats["fallback_used"] += 1
             
             # Enriquecer recomendaciones si hay caché disponible
@@ -190,7 +191,7 @@ class EnhancedHybridRecommender:
         self, 
         user_id: str, 
         n_recommendations: int = 5,
-        user_query: Optional[str] = None  # ✨ AGREGADO
+        user_query: Optional[str] = None  # ✨ AGREGADO PARA FASE 4
     ) -> List[Dict]:
         """
         Proporciona recomendaciones de respaldo cuando no es posible obtener recomendaciones
@@ -199,12 +200,14 @@ class EnhancedHybridRecommender:
         Args:
             user_id: ID del usuario
             n_recommendations: Número de recomendaciones a devolver
+            user_query: Query del usuario en lenguaje natural (opcional) - FASE 4
             
         Returns:
             List[Dict]: Lista de productos recomendados
-        """ 
+        """
         logger.info("Generando recomendaciones de fallback")
-
+        
+        # ✨ AGREGADO PARA FASE 4
         if user_query:
             logger.info(f"🎯 Fallback with query awareness: '{user_query[:50]}...'")
         
@@ -228,7 +231,7 @@ class EnhancedHybridRecommender:
                 products=self.content_recommender.product_data,
                 user_events=user_events,
                 n=n_recommendations,
-                user_query=user_query  # ✨ AGREGADO
+                user_query=user_query  # ✨ AGREGADO PARA FASE 4
             )
         except Exception as e:
             logger.error(f"Error usando fallback mejorado: {str(e)}, usando fallback básico")
@@ -306,78 +309,29 @@ class EnhancedHybridRecommender:
         for rec in recommendations:
             product_id = rec.get("id")
             if not product_id:
-                # Si no hay ID de producto, añadir la recomendación sin cambios
-                enriched_recommendations.append(rec)
                 continue
                 
-            enriched_rec = rec.copy()
-            
             try:
-                # Obtener información completa del producto usando la caché
-                product = await self.product_cache.get_product(product_id)
+                # Obtener datos enriquecidos del caché
+                enriched_data = await self.product_cache.get_product(str(product_id))
                 
-                if product:
-                    # Enriquecer con datos del producto
-                    enriched_rec["title"] = product.get("title", product.get("name", rec.get("title", "Producto")))
-                    
-                    # Extraer descripción
-                    description = (
-                        product.get("body_html") or 
-                        product.get("description") or 
-                        product.get("body", "")
-                    )
-                    # Eliminar tags HTML básicos si están presentes
-                    description = description.replace("<p>", "").replace("</p>", "")
-                    enriched_rec["description"] = description
-                    
-                    # Extraer precio
-                    price = 0.0
-                    if product.get("variants") and len(product["variants"]) > 0:
-                        try:
-                            price = float(product["variants"][0].get("price", 0.0))
-                        except (ValueError, TypeError):
-                            price = product.get("price", 0.0)
-                    else:
-                        price = product.get("price", 0.0)
-                    
-                    enriched_rec["price"] = price
-                    
-                    # Extraer categoría
-                    category = (
-                        product.get("product_type") or 
-                        product.get("category", "")
-                    )
-                    enriched_rec["category"] = category
-                    
-                    # Extraer imágenes si están disponibles
-                    if product.get("images") and isinstance(product["images"], list) and len(product["images"]) > 0:
-                        if isinstance(product["images"][0], dict) and "src" in product["images"][0]:
-                            enriched_rec["image_url"] = product["images"][0].get("src", "")
-                        elif isinstance(product["images"][0], str):
-                            enriched_rec["image_url"] = product["images"][0]
-                    
-                    # Marcar si es un producto mínimo
-                    if product.get("_is_minimal"):
-                        enriched_rec["_is_minimal"] = True
-                    
+                if enriched_data:
+                    # Combinar datos básicos de la recomendación con datos enriquecidos
+                    enriched_rec = {
+                        **rec,  # Mantener score y metadata de la recomendación
+                        **enriched_data  # Sobrescribir con datos completos del producto
+                    }
+                    enriched_recommendations.append(enriched_rec)
                     success_count += 1
-                    logger.debug(f"Producto ID={product_id} enriquecido: Título={enriched_rec['title'][:30]}...")
                 else:
-                    # Si no se encuentra información completa
-                    logger.warning(f"No se pudo obtener información para producto ID={product_id}")
+                    # Si no se pudo enriquecer, mantener datos básicos
+                    enriched_recommendations.append(rec)
+                    logger.warning(f"No se pudo enriquecer producto {product_id}")
                     
-                    # Usar información existente o valores predeterminados
-                    if not enriched_rec.get("title") or enriched_rec["title"] == "Producto":
-                        enriched_rec["title"] = f"Producto {product_id}"
-                        
-                    # Marcar para diagnóstico
-                    enriched_rec["_incomplete_data"] = True
             except Exception as e:
-                logger.error(f"Error enriqueciendo producto {product_id}: {str(e)}")
-                # Marcar el error pero mantener la recomendación
-                enriched_rec["_enrichment_error"] = True
-            
-            enriched_recommendations.append(enriched_rec)
+                logger.error(f"Error al enriquecer producto {product_id}: {str(e)}")
+                # En caso de error, mantener la recomendación básica
+                enriched_recommendations.append(rec)
         
         # Actualizar estadísticas
         self.stats["successful_enrichments"] += success_count
@@ -391,30 +345,30 @@ class EnhancedHybridRecommender:
         self,
         user_id: str,
         event_type: str,
-        product_id: Optional[str] = None,
+        product_id: str,
         recommendation_id: Optional[str] = None,
         purchase_amount: Optional[float] = None
-    ) -> Dict:
+    ) -> Dict[str, Any]:
         """
-        Registra eventos de usuario para mejorar las recomendaciones futuras.
+        Registra un evento del usuario en Google Cloud Retail API.
+        
+        Esta es una función de conveniencia que delega al retail_recommender.
+        Incluye manejo robusto de diferentes firmas de método.
         
         Args:
             user_id: ID del usuario
-            event_type: Tipo de evento
-            product_id: ID del producto (opcional)
-            recommendation_id: ID de la recomendación (opcional) - puede no ser soportado
-            purchase_amount: Monto de la compra (para eventos de compra)
+            event_type: Tipo de evento (detail-page-view, add-to-cart, purchase-complete, etc.)
+            product_id: ID del producto relacionado con el evento
+            recommendation_id: ID de la recomendación (opcional)
+            purchase_amount: Monto de la compra (solo para purchase-complete)
             
         Returns:
-            Dict: Resultado del registro del evento
+            Dict con el resultado del registro
         """
-        logger.info(
-            f"Registrando evento de usuario: user_id={user_id}, "
-            f"event_type={event_type}, product_id={product_id}"
-        )
+        logger.info(f"Registrando evento de usuario: user_id={user_id}, event_type={event_type}, product_id={product_id}")
         
-        # ✅ FIX: Intentar con todos los parámetros primero
         try:
+            # ✅ Intentar primero con todos los parámetros (firma completa)
             return await self.retail_recommender.record_user_event(
                 user_id=user_id,
                 event_type=event_type,
@@ -423,7 +377,7 @@ class EnhancedHybridRecommender:
                 purchase_amount=purchase_amount
             )
         except TypeError as e:
-            # ✅ Si falla por parámetros incorrectos, reintentar sin recommendation_id
+            # ✅ Si falla, intentar sin recommendation_id
             if "recommendation_id" in str(e):
                 logger.warning(
                     f"retail_recommender no acepta recommendation_id, "
@@ -544,7 +498,7 @@ class EnhancedHybridRecommenderWithExclusion(EnhancedHybridRecommender):
         user_id: str,
         product_id: Optional[str] = None,
         n_recommendations: int = 5,
-        user_query: Optional[str] = None  # ✨ AGREGADO
+        user_query: Optional[str] = None  # ✨ AGREGADO PARA FASE 4
     ) -> List[Dict]:
         """
         Obtiene recomendaciones híbridas excluyendo productos ya vistos.
@@ -553,6 +507,7 @@ class EnhancedHybridRecommenderWithExclusion(EnhancedHybridRecommender):
             user_id: ID del usuario
             product_id: ID del producto (opcional)
             n_recommendations: Número de recomendaciones a devolver
+            user_query: Query del usuario en lenguaje natural (opcional) - FASE 4
             
         Returns:
             List[Dict]: Lista de productos recomendados
@@ -571,7 +526,7 @@ class EnhancedHybridRecommenderWithExclusion(EnhancedHybridRecommender):
             user_id=user_id,
             product_id=product_id,
             n_recommendations=total_recommendations,
-            user_query=user_query  # ✨ AGREGADO
+            user_query=user_query  # ✨ AGREGADO PARA FASE 4
         )
         
         # Filtrar productos ya vistos
@@ -603,7 +558,7 @@ class EnhancedHybridRecommenderWithExclusion(EnhancedHybridRecommender):
                     products=self.content_recommender.product_data,
                     n=additional_needed,
                     exclude_products=additional_exclude,
-                    user_query=user_query  # ✨ AGREGADO
+                    user_query=user_query  # ✨ AGREGADO PARA FASE 4
                 )
                 
                 filtered_recommendations.extend(additional_recs)

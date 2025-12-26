@@ -190,77 +190,21 @@ async def get_mcp_conversation_recommendations(
                     if use_diversification:
                         # ✅ NUEVO: Usar fallback inteligente con exclusión de productos ya vistos
                         try:
-                            # from src.recommenders.improved_fallback_exclude_seen import ImprovedFallbackStrategies
-                            from src.recommenders.improved_fallback_exclude_seen import (
-                                ImprovedFallbackStrategies, 
-                                extract_categories_from_query, 
-                                get_concrete_categories
-                            )
+                            from src.recommenders.improved_fallback_exclude_seen import ImprovedFallbackStrategies
+                            
                             # Obtener todos los productos disponibles
                             all_products = main_unified_redis.hybrid_recommender.content_recommender.product_data
                             
-                            # ═══════════════════════════════════════════════════════════════
-                            # ✨ FIX #1: POBLAR user_events DESDE MCP CONTEXT
-                            # ═══════════════════════════════════════════════════════════════
-                            user_events = []
-                            
-                            if mcp_context and mcp_context.total_turns > 0:
-                                logger.info(f"🔄 FIX #1: Building user_events from {mcp_context.total_turns} MCP turns")
-                                
-                                available_categories = get_concrete_categories()
-                        
-                                for turn_idx, turn in enumerate(mcp_context.turns):
-                                    try:
-                                        # Extraer query del usuario de este turn
-                                        if hasattr(turn, 'user_query') and turn.user_query:
-                                            # Detectar TODAS las categorías de este turn (puede devolver múltiples)
-                                            inferred_categories = extract_categories_from_query(
-                                                turn.user_query, 
-                                                available_categories
-                                            )
-                                            
-                                            # Si se detectaron categorías, crear un evento por cada una
-                                            if inferred_categories:
-                                                for inferred_category in inferred_categories:
-                                                    # Crear pseudo-evento para esta categoría
-                                                    user_events.append({
-                                                        "productId": None,  # No hay producto específico
-                                                        "product_info": {
-                                                            "product_type": inferred_category,
-                                                            "source_query": turn.user_query[:50]  # Snippet para debugging
-                                                        },
-                                                        "eventType": "view",  # Tipo genérico
-                                                        "source": "mcp_context_turn",
-                                                        "turn_number": turn_idx + 1
-                                                    })
-                                                    
-                                                    logger.debug(f"   Turn {turn_idx + 1}: '{turn.user_query[:30]}...' → Category: {inferred_category}")
-                                            else:
-                                                logger.debug(f"   Turn {turn_idx + 1}: No category detected in '{turn.user_query[:30]}...'")
-                                    
-                                    except Exception as turn_e:
-                                        logger.warning(f"⚠️ Error processing turn {turn_idx + 1} for user_events: {turn_e}")
-                                        continue
-                                
-                                logger.info(f"✅ FIX #1: Generated {len(user_events)} user_events from MCP history")
-                                if user_events:
-                                    categories_found = [evt["product_info"]["product_type"] for evt in user_events]
-                                    logger.info(f"   Historical categories: {categories_found}")
-                            else:
-                                logger.debug("   No MCP context available, user_events remains empty")
-                            
-                            # ✨ MEJORADO: Pasar query del usuario Y user_events poblado
+                            # Usar smart fallback con exclusión
                             recommendations = await ImprovedFallbackStrategies.smart_fallback(
                                 user_id=validated_user_id,
                                 products=all_products,
-                                user_events=user_events,  # ✅ FIX #1: Ahora poblado
+                                user_events=[],  # TODO: Obtener eventos reales si están disponibles
                                 n=n_recommendations,
-                                exclude_products=shown_products,
-                                user_query=conversation_query  # ✨ Query awareness (mayor prioridad)
+                                exclude_products=shown_products
                             )
                             
-                            logger.info(f"✅ Diversified recommendations obtained: {len(recommendations)} items")
-                            logger.info(f"   Context used: {len(user_events)} historical events, excluded {len(shown_products)} seen products")
+                            logger.info(f"✅ Diversified recommendations obtained: {len(recommendations)} items (excluded {len(shown_products)} seen)")
                             return recommendations
                             
                         except Exception as div_e:
@@ -271,8 +215,7 @@ async def get_mcp_conversation_recommendations(
                     recommendations = await main_unified_redis.hybrid_recommender.get_recommendations(
                         user_id=validated_user_id,
                         product_id=validated_product_id,
-                        n_recommendations=n_recommendations,
-                        user_query=conversation_query  # ✨ NUEVO: Permite detección de categoría desde query
+                        n_recommendations=n_recommendations
                     )
                     logger.info(f"✅ Base recommendations obtained: {len(recommendations)} items")
                     return recommendations
