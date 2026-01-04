@@ -110,6 +110,23 @@ class RecommenderSettings(BaseSettings):
     # MCP Caching
     mcp_local_cache_enabled: bool = True
     mcp_cache_ttl: int = 300
+    
+    # ═══════════════════════════════════════════════════════════════
+    # INTENT DETECTION CONFIGURATION
+    # ═══════════════════════════════════════════════════════════════
+    
+    # Enable/disable intent detection system
+    enable_intent_detection: bool = Field(default=False, env="ENABLE_INTENT_DETECTION")
+    
+    # Minimum confidence threshold for intent classification
+    # Queries below this threshold fall back to transactional (products)
+    intent_confidence_threshold: float = Field(default=0.7, env="INTENT_CONFIDENCE_THRESHOLD")
+    
+    # Enable logging of intent detection for debugging/monitoring
+    intent_detection_logging: bool = Field(default=True, env="INTENT_DETECTION_LOGGING")
+    
+    # Enable metrics collection for intent detection
+    intent_detection_metrics: bool = Field(default=True, env="INTENT_DETECTION_METRICS")
 
     # Configuración para diferentes versiones de Pydantic
     if PYDANTIC_SETTINGS_AVAILABLE:

@@ -122,6 +122,95 @@ async def get_mcp_conversation_recommendations(
         except Exception as e:
             logger.error(f"❌ Error creating MCP context: {e}")
 
+        # ═══════════════════════════════════════════════════════════════
+        # ✨ NUEVO: FASE 1.5 - INTENT DETECTION
+        # ═══════════════════════════════════════════════════════════════
+        
+        intent_result = None
+        intent_enabled = False
+        
+        try:
+            from src.api.core.config import get_settings
+            settings = get_settings()
+            intent_enabled = settings.enable_intent_detection
+            
+            if intent_enabled:
+                from src.api.core.intent_detection import detect_intent
+                from src.api.core.intent_types import IntentType
+                from src.api.core.knowledge_base import get_answer
+                
+                logger.info(f"🎯 Intent Detection ENABLED - analyzing query: '{conversation_query[:50]}...'")
+                
+                # Detect intent
+                intent_result = detect_intent(conversation_query)
+                
+                logger.info(f"   Detected Intent: {intent_result.primary_intent} "
+                           f"(confidence: {intent_result.confidence:.2f})")
+                logger.info(f"   Reasoning: {intent_result.reasoning}")
+                
+                # Check if confidence meets threshold
+                if intent_result.confidence >= settings.intent_confidence_threshold:
+                    
+                    # INFORMATIONAL QUERY → Return knowledge base answer
+                    if intent_result.primary_intent == IntentType.INFORMATIONAL:
+                        logger.info("📚 INFORMATIONAL intent detected - using Knowledge Base")
+                        
+                        from src.api.core.intent_types import InformationalSubIntent
+                        
+                        # Get answer from knowledge base
+                        kb_answer = get_answer(
+                            sub_intent=InformationalSubIntent(intent_result.sub_intent),
+                            product_context=intent_result.product_context,
+                            query=conversation_query
+                        )
+                        
+                        if kb_answer:
+                            logger.info("✅ Knowledge Base answer found - returning informational response")
+                            
+                            return {
+                                "type": "informational",
+                                "answer": kb_answer.answer,
+                                "ai_response": kb_answer.answer, 
+                                "recommendations": [],  # NO products for informational queries
+                                "metadata": {
+                                    "intent_detection": {
+                                        "primary_intent": intent_result.primary_intent,
+                                        "sub_intent": intent_result.sub_intent,
+                                        "confidence": intent_result.confidence,
+                                        "reasoning": intent_result.reasoning,
+                                        "matched_patterns": intent_result.matched_patterns
+                                    },
+                                    "knowledge_base_used": True,
+                                    "sources": kb_answer.sources,
+                                    "related_links": kb_answer.related_links,
+                                    "processing_time_ms": (time.time() - start_time) * 1000,
+                                    "market_id": market_id,
+                                    "session_id": actual_session_id
+                                }
+                            }
+                        else:
+                            logger.warning("⚠️ No knowledge base answer found - falling back to products")
+                            # Continue to product recommendations (fallback)
+                    
+                    # TRANSACTIONAL QUERY → Continue normal flow
+                    else:
+                        logger.info("🛍️ TRANSACTIONAL intent detected - continuing with product recommendations")
+                        # Continue normal flow (no early return)
+                
+                else:
+                    logger.info(f"⚠️ Intent confidence {intent_result.confidence:.2f} below threshold "
+                               f"{settings.intent_confidence_threshold} - defaulting to products")
+                    # Continue normal flow (low confidence)
+            
+            else:
+                logger.debug("Intent Detection is DISABLED in settings")
+        
+        except ImportError as e:
+            logger.warning(f"⚠️ Intent Detection modules not available: {e}")
+        except Exception as e:
+            logger.error(f"❌ Intent Detection error: {e} - falling back to products")
+
+
         # ===== FASE 2: CREAR FUNCIONES WRAPPER PARA PARALLEL PROCESSING =====
         
         # ✅ CRITICAL FIX: Refresh context BEFORE parallel processing to ensure latest state

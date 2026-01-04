@@ -1,0 +1,21 @@
+{
+  "total_queries": 5272,
+  "by_intent": {
+    "INFORMATIONAL": 2525,
+    "TRANSACTIONAL": 2747
+  },
+  "by_market": {
+    "CL": 1918,
+    "MX": 1301,
+    "ES": 1406,
+    "US": 647
+  },
+  "by_language": {
+    "es": 5179,
+    "en": 93
+  },
+  "with_typos": 0,
+  "without_accents": 3017,
+  "mentions_products": 1700,
+  "generation_time": "2025-12-28 01:59:08"
+}

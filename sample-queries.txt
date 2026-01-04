@@ -1,0 +1,403 @@
+SAMPLE QUERIES (100 primeras)
+================================================================================
+
+1. ¿Puedo devolver un vestido si no me queda bien?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+2. cuanto tiempo tengo para devolver
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+3. ¿Se puede cambiar lencería?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+4. la politica de devolucion es de 30 dias
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+5. quiero saber si aceptan devoluciones
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+6. ¿Cuántos días tengo para hacer un cambio?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+7. puedo devolver el vestido Emma si me queda chico
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+8. ¿La lencería se puede devolver si no me queda?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+9. que pasa si quiero devolver algo después de probarlo
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+10. ¿Aceptan devoluciones de productos adhesivos?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+11. cuanto sale devolver un pedido
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+12. ¿Puedo cambiar un bralette Florencia por otra talla?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+13. devolucion de vestidos de fiesta
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+14. ¿Qué condiciones tienen para las devoluciones?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+15. puedo devolver si no me gusta el color
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+16. ¿Los días para devolver son hábiles?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+17. quiero cambiar mi vestido Leire por talla M
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+18. ¿Se puede devolver lencería sin costuras?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+19. politica de cambios y devoluciones
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+20. ¿Cuánto demoran en procesar una devolución?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+21. puedo devolver el sostén adhesivo si no pega bien
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+22. ¿Tienen política de satisfacción garantizada?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+23. como hago para devolver un producto
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+24. ¿Puedo devolver aretes si no me quedan bien?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+25. devolucion de vestidos de novia
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+26. ¿Qué pasa si pierdo las etiquetas del vestido?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+27. puedo cambiar el vestido Alexa por otro modelo
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+28. ¿Los productos adhesivos se pueden devolver?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+29. cuales son los requisitos para devolver
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+30. ¿Puedo devolver si me equivoqué de talla?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+31. devolucion de clutch Leonor
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+32. ¿Tienen garantía en sus productos?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+33. puedo devolver después de usar el producto
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+34. ¿Qué documentos necesito para una devolución?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+35. devolucion de bralette Camila
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+36. ¿Puedo cambiar por otro producto de igual valor?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+37. como funciona la politica de devolucion
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+38. ¿Se puede devolver si el producto viene defectuoso?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+39. puedo devolver tocados de novia
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+40. ¿Cuánto tiempo tengo exactamente para devolver?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+41. devolucion de vestidos cortos
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+42. ¿Puedo devolver si el despacho se demora mucho?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+43. que pasa si quiero devolver algo comprado en oferta
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+44. ¿Los 30 días empiezan desde que compro o recibo?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+45. puedo cambiar la lencería Mia por otra
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+46. ¿Qué pasa si devuelvo después de los 30 días?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+47. devolucion de productos de satin
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+48. ¿Puedo devolver si no es lo que esperaba?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+49. como hago el cambio de un vestido largo
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+50. ¿Aceptan devoluciones sin el empaque original?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+51. puedo devolver calzón adhesivo
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+52. ¿Hay algún costo por hacer devoluciones?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+53. devolucion de vestido Victoria
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+54. ¿Puedo cambiar por una talla más grande?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+55. que necesito para hacer una devolucion
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+56. ¿Se puede devolver ropa interior?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+57. puedo devolver parches levanta busto
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+58. ¿Cuándo me devuelven el dinero?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+59. devolucion de aros acrilicos
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+60. ¿Puedo devolver si compré la talla equivocada?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+61. como cambio un producto por otro
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+62. ¿Los cambios tienen el mismo plazo que devoluciones?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+63. puedo devolver vestido Lia si no me gusta
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+64. ¿Qué pasa si el producto llega dañado?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+65. devolucion de cinta doble contacto
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+66. ¿Puedo devolver después de probarlo una vez?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+67. que condiciones piden para devolver
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+68. ¿Se puede cambiar lencería invisible?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+69. puedo devolver el vestido Cayetana
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+70. ¿Hay productos que no se pueden devolver?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+71. devolucion de pezoneras
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+72. ¿Cuánto demora el reembolso del dinero?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+73. puedo cambiar por otro color
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+74. ¿Qué pasa si no tengo la boleta?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+75. devolucion de bras invisibles
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+76. ¿Puedo devolver si me arrepiento de la compra?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+77. como hago para cambiar de talla
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+78. ¿Los accesorios para el cabello se pueden devolver?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+79. puedo devolver vestido Elena
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+80. ¿Qué pasa si el producto no es de mi talla?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+81. devolucion de brami Julieta
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+82. ¿Puedo cambiar un vestido por lencería?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+83. que politica tienen de satisfaccion
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+84. ¿Se puede devolver si no me queda como esperaba?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+85. puedo devolver peinetas
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+86. ¿Cuándo empieza a correr el plazo de devolución?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+87. devolucion de vestidos de eventos
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+88. ¿Puedo devolver si el material no me gusta?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+89. como funciona el proceso de cambio
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+90. ¿Los sostenes de silicona se pueden devolver?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+91. puedo devolver bolso Lorenza
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+92. ¿Qué pasa si devuelvo algo usado?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+93. devolucion de lenceria Lucia
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+94. ¿Puedo cambiar por un modelo diferente?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+95. que tiempo tengo para hacer el cambio
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+96. ¿Se puede devolver si no es mi estilo?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+97. puedo devolver aros con piedras
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+98. ¿Hay alguna penalización por devolver?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+99. devolucion de vestido de fiesta
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
+100. ¿Puedo devolver si el producto no funciona?
+   Intent: INFORMATIONAL > policy_return
+   Market: CL | Lang: es
+
