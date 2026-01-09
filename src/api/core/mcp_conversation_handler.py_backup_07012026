@@ -31,9 +31,6 @@ from src.api.core.parallel_processor import (
     execute_mcp_operations_parallel
 )
 
-# ✅ NUEVO: Import hybrid intent detector for ML support
-from src.api.ml.hybrid_detector import get_hybrid_intent_detector
-
 logger = logging.getLogger(__name__)
 
 
@@ -135,43 +132,17 @@ async def get_mcp_conversation_recommendations(
         try:
             from src.api.core.config import get_settings
             settings = get_settings()
-
             intent_enabled = settings.enable_intent_detection
             
             if intent_enabled:
-                # ✅ NUEVO: Verificar si ML está habilitado
-                ml_enabled = getattr(settings, 'ml_intent_enabled', False)
+                from src.api.core.intent_detection import detect_intent
+                from src.api.core.intent_types import IntentType
+                from src.api.core.knowledge_base import get_answer
                 
-                if ml_enabled:
-                    # ✅ HÍBRIDO: Usar detector ML + rule-based
-                    logger.info(f"🎯 ML Intent Detection ENABLED - analyzing query: '{conversation_query[:50]}...'")
-                    
-                    try:
-                        hybrid_detector = get_hybrid_intent_detector()
-                        
-                        # Detectar intent con híbrido (async)
-                        hybrid_result = await hybrid_detector.detect(conversation_query, user_id=validated_user_id)
-                        
-                        # Convertir a formato estándar
-                        from src.api.core.intent_detection import IntentDetectionResult
-                        intent_result = hybrid_result.to_intent_detection_result()
-                        
-                        logger.info(f"   Detected Intent: {intent_result.primary_intent} "
-                                   f"(method: {hybrid_result.method_used}, "
-                                   f"confidence: {hybrid_result.confidence:.2f}, "
-                                   f"time: {hybrid_result.total_time_ms:.1f}ms)")
-                        
-                    except Exception as ml_e:
-                        logger.warning(f"⚠️ ML intent detection failed, falling back to rule-based: {ml_e}")
-                        # Fallback a rule-based
-                        from src.api.core.intent_detection import detect_intent
-                        intent_result = detect_intent(conversation_query)
-                        
-                else:
-                    # ✅ RULE-BASED SOLO (comportamiento original)
-                    from src.api.core.intent_detection import detect_intent
-                    logger.info(f"🎯 Intent Detection ENABLED (rule-based only) - analyzing query: '{conversation_query[:50]}...'")
-                    intent_result = detect_intent(conversation_query)
+                logger.info(f"🎯 Intent Detection ENABLED - analyzing query: '{conversation_query[:50]}...'")
+                
+                # Detect intent
+                intent_result = detect_intent(conversation_query)
                 
                 logger.info(f"   Detected Intent: {intent_result.primary_intent} "
                            f"(confidence: {intent_result.confidence:.2f})")
@@ -181,12 +152,10 @@ async def get_mcp_conversation_recommendations(
                 if intent_result.confidence >= settings.intent_confidence_threshold:
                     
                     # INFORMATIONAL QUERY → Return knowledge base answer
-                    from src.api.core.intent_types import IntentType
                     if intent_result.primary_intent == IntentType.INFORMATIONAL:
                         logger.info("📚 INFORMATIONAL intent detected - using Knowledge Base")
                         
                         from src.api.core.intent_types import InformationalSubIntent
-                        from src.api.core.knowledge_base import get_answer
                         
                         # Get answer from knowledge base
                         kb_answer = get_answer(
@@ -209,8 +178,7 @@ async def get_mcp_conversation_recommendations(
                                         "sub_intent": intent_result.sub_intent,
                                         "confidence": intent_result.confidence,
                                         "reasoning": intent_result.reasoning,
-                                        "matched_patterns": intent_result.matched_patterns,
-                                        "method_used": getattr(hybrid_result, 'method_used', 'rule_based') if ml_enabled else 'rule_based'
+                                        "matched_patterns": intent_result.matched_patterns
                                     },
                                     "knowledge_base_used": True,
                                     "sources": kb_answer.sources,
@@ -231,8 +199,8 @@ async def get_mcp_conversation_recommendations(
                 
                 else:
                     logger.info(f"⚠️ Intent confidence {intent_result.confidence:.2f} below threshold "
-                        f"{settings.intent_confidence_threshold} - defaulting to products")
-                        # Continue normal flow (low confidence)
+                               f"{settings.intent_confidence_threshold} - defaulting to products")
+                    # Continue normal flow (low confidence)
             
             else:
                 logger.debug("Intent Detection is DISABLED in settings")

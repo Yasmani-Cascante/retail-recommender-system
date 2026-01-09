@@ -47,6 +47,8 @@ class IntentPatterns:
                 r"\b(reembolso|refund|reintegro)\b",
                 r"\b(cambio|cambiar|exchange)\b",
                 r"\b(garantía|warranty|garantia)\b",
+                r"\b(regresar|devuelta|volver)\b",  # ✅ NUEVO: LATAM variants
+                r"\b(días|plazo|tiempo)\b",         # ✅ NUEVO: Time references
             ],
             "question_words": [
                 r"\b(cómo|como|how)\b",
@@ -69,7 +71,7 @@ class IntentPatterns:
             ],
             "question_words": [
                 r"\b(cómo|como|how)\b",
-                r"\b(cuándo|cuando|cuanto.*tarda|when)\b",
+                r"\b(cuándo|cuando|cuanto|cuánto|cuanto.*tarda|when)\b",
                 r"\b(dónde|donde|where)\b",
             ]
         },
@@ -186,7 +188,7 @@ class IntentPatterns:
     QUESTION_INDICATORS = [
         r"^\s*¿",  # Spanish question start
         r"\?\s*$",  # Question mark at end
-        r"\b(cómo|como|cuál|cual|cuáles|cuales|qué|que|cuándo|cuando|cuánto|cuanto|dónde|donde|por qué|porque)\b",
+        r"\b(cómo|como|cuál|cual|cuáles|cuales|qué|que|cuándo|cuando|cuánto|cuántos|cuanto|dónde|donde|por qué|porque)\b",
         r"\b(how|what|which|when|where|why|who)\b",
         r"\b(puedo|puede|pueden|can|may|could)\b",
         r"\b(acepta|aceptan|accept|accepts)\b",

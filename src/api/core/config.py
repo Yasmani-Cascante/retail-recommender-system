@@ -128,6 +128,37 @@ class RecommenderSettings(BaseSettings):
     # Enable metrics collection for intent detection
     intent_detection_metrics: bool = Field(default=True, env="INTENT_DETECTION_METRICS")
 
+
+    # ============================================================================
+    # ML INTENT DETECTION CONFIGURATION
+    # ============================================================================
+    
+    # Enable/disable ML-based intent detection (hybrid with rule-based)
+    ml_intent_enabled: bool = Field(
+        default=False, 
+        env="ML_INTENT_ENABLED",
+        description="Enable ML-based intent detection (sklearn integrated)"
+    )
+    
+    # Confidence threshold for rule-based to trigger ML fallback
+    # If rule-based confidence < threshold → use ML
+    # Higher = more queries go to ML (slower but more accurate)
+    # Lower = more queries stay in rule-based (faster but less accurate for edge cases)
+    ml_confidence_threshold: float = Field(
+        default=0.8,
+        env="ML_CONFIDENCE_THRESHOLD",
+        ge=0.0,
+        le=1.0,
+        description="Threshold for ML fallback (0.0-1.0)"
+    )
+    
+    # Path to ML model directory (relative to project root)
+    ml_model_path: str = Field(
+        default="models/intent_classifier",
+        env="ML_MODEL_PATH",
+        description="Path to ML model directory"
+    )
+
     # Configuración para diferentes versiones de Pydantic
     if PYDANTIC_SETTINGS_AVAILABLE:
         # Pydantic v2 con pydantic-settings

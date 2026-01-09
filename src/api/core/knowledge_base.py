@@ -727,6 +727,46 @@ class SimpleKnowledgeBase:
         
         logger.info(f"Knowledge base query: {sub_intent}, context: {product_context}")
         
+         # ═══════════════════════════════════════════════════════
+        # KEYWORD DETECTION FOR UNKNOWN SUB-INTENT
+        # ═══════════════════════════════════════════════════════
+        
+        # Si sub_intent es UNKNOWN y tenemos query, intentar detectar tema
+        if sub_intent == InformationalSubIntent.UNKNOWN and query:
+            query_lower = query.lower()
+            
+            # Detectar tema basado en keywords
+            if any(kw in query_lower for kw in ["devol", "regres", "cambi", "return", "volver", 
+                                                "devuelta", "reintegro", "reintegrar", "reintegracion", "reembolso"]):
+                logger.info(f"Detected POLICY_RETURN from query keywords: {query}")
+                sub_intent = InformationalSubIntent.POLICY_RETURN
+            
+            elif any(kw in query_lower for kw in ["envío", "envio", "entrega", "shipping", "paquete", "rastr", 
+                                                  "llegada", "recibir", "cuándo llega", "cuando llega"]):
+                logger.info(f"Detected POLICY_SHIPPING from query keywords: {query}")
+                sub_intent = InformationalSubIntent.POLICY_SHIPPING
+            
+            elif any(kw in query_lower for kw in ["pago", "tarjeta", "payment", "paypal", "cuotas", "meses"]):
+                logger.info(f"Detected POLICY_PAYMENT from query keywords: {query}")
+                sub_intent = InformationalSubIntent.POLICY_PAYMENT
+            
+            elif any(kw in query_lower for kw in ["material", "tela", "fabric", "algodón", "cuero"]):
+                logger.info(f"Detected PRODUCT_MATERIAL from query keywords: {query}")
+                sub_intent = InformationalSubIntent.PRODUCT_MATERIAL
+            
+            elif any(kw in query_lower for kw in ["talla", "size", "medida", "número", "queda", "chico", "grande"]):
+                logger.info(f"Detected PRODUCT_SIZE from query keywords: {query}")
+                sub_intent = InformationalSubIntent.PRODUCT_SIZE
+            
+            elif any(kw in query_lower for kw in ["lavar", "cuidado", "limpi", "planchar", "secar"]):
+                logger.info(f"Detected PRODUCT_CARE from query keywords: {query}")
+                sub_intent = InformationalSubIntent.PRODUCT_CARE
+            
+            else:
+                # Si no detectamos keywords específicas, usar GENERAL_FAQ
+                logger.info(f"No specific keywords detected, using GENERAL_FAQ")
+                sub_intent = InformationalSubIntent.GENERAL_FAQ
+
         # ═══════════════════════════════════════════════════════
         # ROUTE TO APPROPRIATE CONTENT
         # ═══════════════════════════════════════════════════════
@@ -845,29 +885,41 @@ class SimpleKnowledgeBase:
     def _get_general_help_message(self) -> str:
         """Default help message when no specific answer found."""
         return """
-**🤔 No encontramos información específica para tu pregunta**
+        
+        **🤔 Puedo ayudarte con algo más específico**
 
-Pero podemos ayudarte:
+        Intenta preguntarme sobre:
 
-📞 **Contacta a Nuestro Equipo**
-- **WhatsApp**: +52 55 1234 5678 (L-V 9am-7pm)
-- **Email**: ayuda@tutienda.com
-- **Chat en Vivo**: [Iniciar Chat →](/help/chat)
-- **Tiempo de respuesta**: < 2 horas en días hábiles
+        **📦 Devoluciones y Cambios**
+        - "¿Cuál es la política de devolución?"
+        - "¿Puedo cambiar mi producto?"
+        - "¿Cuántos días tengo para devolver?"
 
-📚 **Recursos Útiles**
-- [Centro de Ayuda Completo →](/help)
-- [Preguntas Frecuentes →](/help/faq)
-- [Políticas de la Tienda →](/policies)
-- [Guías de Tallas →](/help/sizing)
+        **🚚 Envíos y Entregas**
+        - "¿Cuánto cuesta el envío?"
+        - "¿Cuándo llega mi pedido?"
+        - "¿Tienen envío gratis?"
 
-💡 **También puedes preguntarme sobre:**
-- Política de devoluciones
-- Información de envío
-- Métodos de pago
-- Cuidado de productos
-- Guías de tallas
-"""
+        **💳 Pagos y Facturación**
+        - "¿Qué métodos de pago aceptan?"
+        - "¿Tienen meses sin intereses?"
+        - "¿Puedo pagar con PayPal?"
+
+        **👗 Productos**
+        - "¿Qué tallas tienen?"
+        - "¿Cómo cuido este vestido?"
+        - "¿De qué material es?"
+
+        ---
+
+        **O contáctanos directamente:**
+
+        📞 WhatsApp: +52 55 1234 5678 (L-V 9am-7pm)
+        ✉️ Email: ayuda@tutienda.com
+        💬 [Chat en Vivo →](/help/chat)
+
+        *Tiempo de respuesta: < 2 horas*
+        """
     
     def _get_related_links(self, sub_intent: InformationalSubIntent) -> List[Dict[str, str]]:
         """Get related helpful links based on sub-intent."""
