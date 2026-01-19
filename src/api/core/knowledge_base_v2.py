@@ -18,7 +18,11 @@ from typing import Optional
 from datetime import datetime, timedelta
 
 import asyncpg
-from redis import Redis
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.api.core.redis_service import RedisService
+
 import json
 
 from src.api.core.intent_types import InformationalSubIntent, KnowledgeBaseAnswer
@@ -66,7 +70,7 @@ class ShopifyKnowledgeBase:
     ```python
     kb = ShopifyKnowledgeBase(
         db_pool=db_pool,
-        redis_client=redis_client,
+        redis_service=redis_service,
         shopify_client=shopify_client,
         cache_ttl_hours=24,
         buffer_max_age_hours=48
@@ -86,7 +90,7 @@ class ShopifyKnowledgeBase:
     def __init__(
         self,
         db_pool: asyncpg.Pool,
-        redis_client: Redis,
+        redis_service: 'RedisService',
         shopify_client: Optional[ShopifyKBClient] = None,
         cache_ttl_hours: int = 24,
         buffer_max_age_hours: int = 48,
@@ -97,14 +101,14 @@ class ShopifyKnowledgeBase:
         
         Args:
             db_pool: AsyncPG connection pool
-            redis_client: Redis client
+            redis_service: RedisService client
             shopify_client: Shopify KB client (optional, for Layer 3)
             cache_ttl_hours: Redis cache TTL (hours)
             buffer_max_age_hours: PostgreSQL buffer staleness threshold (hours)
             enable_fallback: Enable fallback to hardcoded KB
         """
         self.db = db_pool
-        self.redis = redis_client
+        self.redis = redis_service
         self.shopify = shopify_client
         self.cache_ttl_seconds = cache_ttl_hours * 3600
         self.buffer_max_age = timedelta(hours=buffer_max_age_hours)
@@ -177,7 +181,11 @@ class ShopifyKnowledgeBase:
             cached = await self._get_from_cache(sub_intent_str, language, category)
             if cached:
                 logger.info(f"✅ Cache HIT (Redis): {sub_intent_str}/{language}/{category or 'general'}")
-                return self._kb_answer_to_knowledge_base_answer(cached, cache_hit=True)
+                return self._kb_answer_to_knowledge_base_answer(
+                    cached, 
+                    sub_intent=sub_intent_str,  # ✅ PASAR sub_intent
+                    cache_hit=True
+                )
         except Exception as e:
             logger.warning(f"Redis cache error: {e}")
         
@@ -201,7 +209,12 @@ class ShopifyKnowledgeBase:
                     kb_answer = kb_content_to_answer(buffered, cache_hit=False)
                     await self._store_in_cache(sub_intent_str, language, category, kb_answer)
                     
-                    return self._kb_answer_to_knowledge_base_answer(kb_answer, cache_hit=False)
+                    # return self._kb_answer_to_knowledge_base_answer(kb_answer, cache_hit=False)
+                    return self._kb_answer_to_knowledge_base_answer(
+                        kb_answer,
+                        sub_intent=sub_intent_str,  # ✅ PASAR sub_intent
+                        cache_hit=False
+                    )
                 else:
                     logger.warning(
                         f"⚠️ Buffer STALE (PostgreSQL): {sub_intent_str}/{language}/{category or 'general'} "
@@ -227,7 +240,12 @@ class ShopifyKnowledgeBase:
                 if buffered:
                     logger.info("Using STALE buffer (better than nothing)")
                     kb_answer = kb_content_to_answer(buffered, cache_hit=False)
-                    return self._kb_answer_to_knowledge_base_answer(kb_answer, cache_hit=False)
+                    # return self._kb_answer_to_knowledge_base_answer(kb_answer, cache_hit=False)
+                    return self._kb_answer_to_knowledge_base_answer(
+                            kb_answer,
+                            sub_intent=sub_intent_str,  # ✅ PASAR sub_intent
+                            cache_hit=False
+                        )
                     
             except Exception as e:
                 logger.error(f"Shopify API error: {e}", exc_info=True)
@@ -281,13 +299,13 @@ class ShopifyKnowledgeBase:
         cache_key = self._build_cache_key(sub_intent, language, category)
         
         try:
-            cached_data = self.redis.get(cache_key)
+            cached_data = await self.redis.get(cache_key)
             
             if cached_data:
                 # Deserialize JSON
                 data = json.loads(cached_data)
                 return KBAnswer(**data)
-            
+             
             return None
             
         except Exception as e:
@@ -309,11 +327,12 @@ class ShopifyKnowledgeBase:
             data = answer.model_dump_json()
             
             # Store with TTL
-            self.redis.setex(
-                cache_key,
-                self.cache_ttl_seconds,
-                data
-            )
+            # await self.redis.set(
+            #     key=cache_key,
+            #     value=data,
+            #     ttl=self.cache_ttl_seconds
+            # )
+            await self.redis.set(cache_key, data, self.cache_ttl_seconds)
             
             logger.debug(f"Stored in cache: {cache_key} (TTL={self.cache_ttl_seconds}s)")
             
@@ -391,19 +410,53 @@ class ShopifyKnowledgeBase:
     # ──────────────────────────────────────────────────────────────────────
     
     def _kb_answer_to_knowledge_base_answer(
-        self,
-        kb_answer: KBAnswer,
-        cache_hit: bool = False
+    self,
+    kb_answer: KBAnswer,
+    sub_intent: str,  # ✅ NUEVO PARÁMETRO REQUERIDO
+    cache_hit: bool = False
     ) -> KnowledgeBaseAnswer:
         """
         Convert KBAnswer (Shopify model) to KnowledgeBaseAnswer (system model).
         
         This maintains backward compatibility with the existing system.
+        
+        Args:
+            kb_answer: KB answer from Shopify CMS
+            sub_intent: The sub-intent value (policy_return, product_care, etc)
+            cache_hit: Whether this was served from cache
+            
+        Returns:
+            KnowledgeBaseAnswer compatible with system
         """
+        from src.api.core.intent_types import InformationalSubIntent
+        
+        # ✅ Convert string to enum (with validation)
+        try:
+            sub_intent_enum = InformationalSubIntent(sub_intent)
+        except ValueError:
+            # Fallback to UNKNOWN if sub_intent is not in enum
+            logger.warning(f"Unknown sub_intent '{sub_intent}', using UNKNOWN")
+            sub_intent_enum = InformationalSubIntent.UNKNOWN
+        
+        # ✅ Convert related_links format if needed
+        related_links_list = []
+        if kb_answer.related_links:
+            for link in kb_answer.related_links:
+                if isinstance(link, dict):
+                    # Already in correct format
+                    related_links_list.append(link)
+                elif hasattr(link, 'title') and hasattr(link, 'url'):
+                    # Convert from KBAnswerLink model
+                    related_links_list.append({
+                        "title": link.title,
+                        "url": link.url
+                    })
+        
         return KnowledgeBaseAnswer(
             answer=kb_answer.answer,
-            format="markdown",
-            related_links=kb_answer.related_links or []
+            sub_intent=sub_intent_enum,  # ✅ AGREGADO: Campo requerido
+            sources=[],  # Default empty, can be populated later
+            related_links=related_links_list if related_links_list else None
         )
 
 
@@ -413,7 +466,7 @@ class ShopifyKnowledgeBase:
 
 def create_shopify_knowledge_base(
     db_pool: asyncpg.Pool,
-    redis_client: Redis,
+    redis_service: 'RedisService',
     shopify_client: Optional[ShopifyKBClient] = None,
     cache_ttl_hours: int = 24,
     buffer_max_age_hours: int = 48,
@@ -424,7 +477,7 @@ def create_shopify_knowledge_base(
     
     Args:
         db_pool: AsyncPG connection pool
-        redis_client: Redis client
+        redis_service: RedisService client
         shopify_client: Shopify KB client (optional)
         cache_ttl_hours: Redis cache TTL
         buffer_max_age_hours: PostgreSQL buffer staleness threshold
@@ -436,13 +489,13 @@ def create_shopify_knowledge_base(
     Example:
         >>> kb = create_shopify_knowledge_base(
         >>>     db_pool=db_pool,
-        >>>     redis_client=redis_client,
+        >>>     redis_service=redis_service,
         >>>     shopify_client=shopify_client
         >>> )
     """
     return ShopifyKnowledgeBase(
         db_pool=db_pool,
-        redis_client=redis_client,
+        redis_service=redis_service,
         shopify_client=shopify_client,
         cache_ttl_hours=cache_ttl_hours,
         buffer_max_age_hours=buffer_max_age_hours,

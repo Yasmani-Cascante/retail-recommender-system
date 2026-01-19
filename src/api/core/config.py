@@ -45,9 +45,13 @@ class RecommenderSettings(BaseSettings):
     use_gcs_import: bool = Field(default=True, env="USE_GCS_IMPORT")
     gcs_bucket_name: Optional[str] = Field(default=None, env="GCS_BUCKET_NAME")
     
-    # Configuración de Shopify
+    # Configuración de Shopify (Legacy - lowercase)
     shopify_shop_url: Optional[str] = Field(default=None, env="SHOPIFY_SHOP_URL")
     shopify_access_token: Optional[str] = Field(default=None, env="SHOPIFY_ACCESS_TOKEN")
+
+    # Configuración de Shopify (New - uppercase for KB integration)
+    SHOPIFY_SHOP_URL: Optional[str] = Field(default=None, env="SHOPIFY_SHOP_URL")
+    SHOPIFY_ACCESS_TOKEN: Optional[str] = Field(default=None, env="SHOPIFY_ACCESS_TOKEN")
 
     # Configuración de seguridad
     api_key: Optional[str] = Field(default=None, env="API_KEY")
@@ -158,6 +162,61 @@ class RecommenderSettings(BaseSettings):
         env="ML_MODEL_PATH",
         description="Path to ML model directory"
     )
+
+
+    # ═══════════════════════════════════════════════════════════
+    # POSTGRESQL CONFIGURATIONe
+    # ═══════════════════════════════════════════════════════════
+
+    DB_HOST: str = Field(default="localhost", env="DB_HOST")
+    DB_PORT: int = Field(default=5432, env="DB_PORT")
+    DB_USER: str = Field(default="postgres", env="DB_USER")
+    DB_PASSWORD: Optional[str] = Field(default=None, env="DB_PASSWORD")
+    DB_NAME: str = Field(default="retail_recommender_db", env="DB_NAME")
+
+    DB_MIN_POOL_SIZE: int = Field(default=2, env="DB_MIN_POOL_SIZE")
+    DB_MAX_POOL_SIZE: int = Field(default=10, env="DB_MAX_POOL_SIZE")
+    DB_POOL_TIMEOUT: int = Field(default=30, env="DB_POOL_TIMEOUT")
+
+    # ═══════════════════════════════════════════════════════════
+    # SHOPIFY KB CONFIGURATION (NUEVO)
+    # ═══════════════════════════════════════════════════════════
+    
+    SHOPIFY_WEBHOOK_SECRET: Optional[str] = Field(
+        default=None,
+        env="SHOPIFY_WEBHOOK_SECRET"
+    )
+    
+    KB_SYNC_INTERVAL_MINUTES: int = Field(
+        default=5,
+        env="KB_SYNC_INTERVAL_MINUTES"
+    )
+    
+    KB_ENABLE_BACKGROUND_SYNC: bool = Field(
+        default=True,
+        env="KB_ENABLE_BACKGROUND_SYNC"
+    )
+    
+    KB_CACHE_TTL_HOURS: int = Field(
+        default=24,
+        env="KB_CACHE_TTL_HOURS"
+    )
+    
+    KB_BUFFER_MAX_AGE_HOURS: int = Field(
+        default=48,
+        env="KB_BUFFER_MAX_AGE_HOURS"
+    )
+    
+    KB_USE_SHOPIFY_CMS: bool = Field(
+        default=True,
+        env="KB_USE_SHOPIFY_CMS"
+    )
+    
+    KB_ENABLE_FALLBACK: bool = Field(
+        default=True,
+        env="KB_ENABLE_FALLBACK"
+    )
+
 
     # Configuración para diferentes versiones de Pydantic
     if PYDANTIC_SETTINGS_AVAILABLE:

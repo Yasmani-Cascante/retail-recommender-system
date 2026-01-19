@@ -28,6 +28,9 @@ redis==4.6.0  # Incluye soporte asincrono en redis.asyncio
 # aioredis>=2.0.1  # Cliente asincrono para Redis
 cachetools>=5.0.0  # Para MCPClientEnhanced local caching
 
+# === DATABASE (PostgreSQL) ===
+asyncpg>=0.29.0  # PostgreSQL async driver para Shopify KB
+
 # === UTILIDADES ===
 tqdm==4.67.0
 requests==2.32.0
@@ -56,3 +59,4 @@ langdetect>=1.0.9  # Para deteccion de idioma
 
 # === DEPENDENDIAS PARA PRUEBAS ===
 aiohttp>=3.9.0
+

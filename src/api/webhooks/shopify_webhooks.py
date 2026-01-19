@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/webhooks/shopify",
-    tags=["webhooks", "shopify", "kb"]
+    # tags=["webhooks", "shopify", "kb"]
 )
 
 

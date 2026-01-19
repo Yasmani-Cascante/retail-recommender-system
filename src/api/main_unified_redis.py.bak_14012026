@@ -95,7 +95,6 @@ from src.api.security_auth import get_api_key, get_current_user
 from src.api.routers import mcp_router
 from src.api.routers import products_router
 from src.api.routers import recommendations as recommendations_module
-from src.api.routers import kb_router  # ✅ Knowledge Base Router
 
 # ✅ ENTERPRISE ENHANCEMENTS
 from src.api.core.mcp_router_conservative_enhancement import apply_performance_enhancement_to_router
@@ -103,19 +102,6 @@ mcp_router.router = apply_performance_enhancement_to_router(mcp_router.router)
 logger.info("✅ Enterprise performance enhancements applied to MCP router")
 
 from src.api.integrations.ai.optimized_conversation_manager import OptimizedConversationAIManager
-
-# ✅ SHOPIFY KB INTEGRATION
-try:
-    from src.api.integrations.shopify_kb_client import create_shopify_kb_client
-    from src.api.services.shopify_kb_sync import ShopifyKBSyncService, KBBackgroundSyncJob
-    from src.api.core.knowledge_base_v2 import create_shopify_knowledge_base
-    from src.api.webhooks import shopify_webhooks
-    import asyncpg  # For PostgreSQL connection pool
-    SHOPIFY_KB_AVAILABLE = True
-    logger.info("✅ Shopify KB modules loaded successfully")
-except ImportError as e:
-    SHOPIFY_KB_AVAILABLE = False
-    logger.warning(f"⚠️ Shopify KB modules not available: {e}")
 
 # ✅ ENTERPRISE MCP PERSONALIZATION
 try:
@@ -268,7 +254,7 @@ async def lifespan(app: FastAPI):
                 logger.warning("⚠️ Shopify client initialization returned None")
         except Exception as e:
             logger.warning(f"⚠️ Shopify initialization error: {e}")
-                
+        
         # ============================================================================
         # 🎯 PASO 3: CREAR RECOMENDADORES (ANTES DE PRODUCT CACHE) (revisar_11.12.2025 logica de Fallback)
         # ============================================================================
@@ -495,131 +481,6 @@ async def lifespan(app: FastAPI):
             except Exception as cache_test_error:
                 logger.warning(f"⚠️ ProductCache validation test failed: {cache_test_error}")
         
-        
-        # ════════════════════════════════════════════════════════════════════════
-        # 🆕 PASO 10.5: SHOPIFY KB INITIALIZATION
-        # ════════════════════════════════════════════════════════════════════════
-        
-        if SHOPIFY_KB_AVAILABLE and settings.KB_USE_SHOPIFY_CMS:
-            logger.info("🔧 Initializing Shopify KB integration...")
-            
-            try:
-                # 1. Create PostgreSQL Pool
-                logger.info("🔄 Creating PostgreSQL connection pool...")
-                try:
-                    db_pool = await asyncpg.create_pool(
-                        host=settings.DB_HOST,
-                        port=settings.DB_PORT,
-                        user=settings.DB_USER,
-                        password=settings.DB_PASSWORD,
-                        database=settings.DB_NAME,
-                        min_size=5,  # Mínimo 5 conexiones
-                        max_size=20, # Máximo 20 conexiones (suficiente para 20 páginas)
-                        command_timeout=60
-                    )
-                    
-                    # Test connection
-                    async with db_pool.acquire() as conn:
-                        result = await conn.fetchval("SELECT 1")
-                        if result == 1:
-                            logger.info("✅ PostgreSQL pool created and tested successfully")
-                            app.state.db_pool = db_pool
-                        else:
-                            raise Exception("PostgreSQL connection test failed")
-                            
-                except Exception as db_error:
-                    logger.error(f"❌ PostgreSQL connection failed: {db_error}")
-                    logger.warning("⚠️ Shopify KB will use fallback mode (hardcoded KB only)")
-                    raise  # Re-raise to skip KB initialization
-                
-                # 2. Create Shopify KB Client
-                logger.info("🔄 Creating Shopify KB Client...")
-                shopify_kb_client = create_shopify_kb_client(
-                    shop_url=settings.SHOPIFY_SHOP_URL,
-                    access_token=settings.SHOPIFY_ACCESS_TOKEN,
-                    webhook_secret=settings.SHOPIFY_WEBHOOK_SECRET
-                )
-                app.state.shopify_kb_client = shopify_kb_client
-                logger.info("✅ Shopify KB Client initialized")
-                
-                # 3. Create KB Sync Service
-                logger.info("🔄 Creating KB Sync Service...")
-                kb_sync_service = ShopifyKBSyncService(
-                    shopify_client=shopify_kb_client,
-                    db_pool=app.state.db_pool,
-                    redis_service=redis_service
-                )
-                app.state.kb_sync_service = kb_sync_service
-                logger.info("✅ KB Sync Service initialized")
-                
-                # 4. Create Knowledge Base v2
-                logger.info("🔄 Creating Knowledge Base v2...")
-                kb_v2 = create_shopify_knowledge_base(
-                    db_pool=app.state.db_pool,
-                    redis_service=redis_service,
-                    shopify_client=shopify_kb_client,
-                    cache_ttl_hours=settings.KB_CACHE_TTL_HOURS,
-                    buffer_max_age_hours=settings.KB_BUFFER_MAX_AGE_HOURS,
-                    enable_fallback=settings.KB_ENABLE_FALLBACK
-                )
-                app.state.knowledge_base_v2 = kb_v2
-                # ✅ ALIAS: También asignar como knowledge_base para compatibilidad con routers
-                app.state.knowledge_base = kb_v2
-                logger.info("✅ Knowledge Base v2 initialized with triple-layer cache")
-                
-                # 5. Start Background Sync Job (optional)
-                if settings.KB_ENABLE_BACKGROUND_SYNC:
-                    logger.info("🔄 Starting KB background sync job...")
-                    kb_background_sync = KBBackgroundSyncJob(
-                        sync_service=kb_sync_service,
-                        interval_minutes=settings.KB_SYNC_INTERVAL_MINUTES
-                    )
-                    await kb_background_sync.start()
-                    app.state.kb_background_sync = kb_background_sync
-                    logger.info(f"✅ Background sync started (interval={settings.KB_SYNC_INTERVAL_MINUTES}min)")
-                else:
-                    logger.info("ℹ️ Background sync disabled by configuration")
-                    app.state.kb_background_sync = None
-                
-                # 6. Initial Sync (optional - comment out if not needed)
-                if hasattr(settings, 'KB_SYNC_ON_STARTUP') and settings.KB_SYNC_ON_STARTUP:
-                    logger.info("🔄 Running initial KB sync from Shopify...")
-                    try:
-                        sync_report = await asyncio.wait_for(
-                            kb_sync_service.sync_all_pages(),
-                            timeout=30.0
-                        )
-                        logger.info(f"✅ Initial sync completed: {sync_report.successful} pages synced")
-                    except asyncio.TimeoutError:
-                        logger.warning("⚠️ Initial sync timeout - will continue in background")
-                    except Exception as sync_error:
-                        logger.warning(f"⚠️ Initial sync failed: {sync_error} - will retry in background")
-                
-                logger.info("🎉 Shopify KB integration complete!")
-                
-            except Exception as kb_error:
-                logger.error(f"❌ Shopify KB initialization failed: {kb_error}", exc_info=True)
-                logger.warning("⚠️ System will use fallback KB (hardcoded) only")
-                # Set fallback flags
-                app.state.shopify_kb_client = None
-                app.state.kb_sync_service = None
-                app.state.knowledge_base_v2 = None
-                app.state.knowledge_base = None
-                app.state.kb_background_sync = None
-                
-        else:
-            if not SHOPIFY_KB_AVAILABLE:
-                logger.warning("⚠️ Shopify KB modules not available - using fallback KB only")
-            elif not settings.KB_USE_SHOPIFY_CMS:
-                logger.info("ℹ️ Shopify KB disabled by configuration (KB_USE_SHOPIFY_CMS=False)")
-            
-            # Set None values for consistency
-            app.state.shopify_kb_client = None
-            app.state.kb_sync_service = None
-            app.state.knowledge_base_v2 = None
-            app.state.knowledge_base = None
-            app.state.kb_background_sync = None
-            
         # ============================================================================
         # 🎯 PASO 11: REPORTE FINAL DE ESTADO
         # ============================================================================
@@ -632,10 +493,6 @@ async def lifespan(app: FastAPI):
         logger.info(f"   ✅ Hybrid Recommender: {'Ready' if hybrid_recommender else 'Error'}")
         logger.info(f"   ✅ Redis: {'Connected' if redis_initialized else 'Fallback'}")
         logger.info(f"   ✅ ProductCache: {'Optimized' if product_cache else 'Fallback'}")
-        logger.info(f"   ✅ Shopify KB: {'Active' if SHOPIFY_KB_AVAILABLE and settings.KB_USE_SHOPIFY_CMS else 'Disabled'}")
-        if SHOPIFY_KB_AVAILABLE and settings.KB_USE_SHOPIFY_CMS:
-            logger.info(f"   ✅ PostgreSQL: {'Connected' if hasattr(app.state, 'db_pool') and app.state.db_pool else 'Error'}")
-            logger.info(f"   ✅ KB Background Sync: {'Running' if hasattr(app.state, 'kb_background_sync') and app.state.kb_background_sync else 'Disabled'}")
         
         # ✅ Información adicional de diagnóstico
         if tfidf_recommender and hasattr(tfidf_recommender, 'product_data'):
@@ -710,31 +567,6 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"⚠️ StartupManager shutdown warning: {e}")
         
-        # ✅ Shutdown Shopify KB integration
-        
-        logger.info("🔄 Shutting down Shopify KB integration...")
-        
-        try:
-            # Stop background sync
-            if hasattr(app.state, 'kb_background_sync') and app.state.kb_background_sync:
-                try:
-                    await app.state.kb_background_sync.stop()
-                    logger.info("✅ KB background sync stopped")
-                except Exception as e:
-                    logger.warning(f"⚠️ KB background sync shutdown warning: {e}")
-            
-            # Close PostgreSQL pool
-            if hasattr(app.state, 'db_pool') and app.state.db_pool:
-                try:
-                    await app.state.db_pool.close()
-                    logger.info("✅ PostgreSQL pool closed")
-                except Exception as e:
-                    logger.warning(f"⚠️ PostgreSQL pool shutdown warning: {e}")
-                    
-        except Exception as kb_shutdown_error:
-            logger.error(f"❌ Shopify KB shutdown error: {kb_shutdown_error}")
-
-
         # ✅ Shutdown ServiceFactory (Redis, InventoryService, etc.)
         try:
             await ServiceFactory.shutdown_all_services()
@@ -1307,28 +1139,6 @@ app.include_router(mcp_router.router, tags=["MCP Enterprise DI"])
 app.include_router(recommendations_module.router, prefix="/v1", tags=["Recommendations"])
 
 logger.info("✅ Enterprise routers registered successfully")
-
-# ✅ Include Shopify KB webhooks router
-app.include_router(shopify_webhooks.router, tags=["Shopify KB Webhooks"])
-logger.info("✅ Shopify KB webhooks router registered")
-
-# Configure dependency injection for webhooks
-async def get_shopify_kb_client_dependency():
-    return app.state.shopify_kb_client
-
-async def get_kb_sync_service_dependency():
-    return app.state.kb_sync_service
-
-# ✅ NUEVO: Configure dependency overrides for webhooks
-app.dependency_overrides[shopify_webhooks.get_shopify_client] = get_shopify_kb_client_dependency
-app.dependency_overrides[shopify_webhooks.get_sync_service] = get_kb_sync_service_dependency
-# Override dependencies (if needed by webhooks router)
-# shopify_webhooks.get_shopify_client = get_shopify_kb_client_dependency
-# shopify_webhooks.get_sync_service = get_kb_sync_service_dependency
-
-# app.dependency_overrides[get_shopify_client] = lambda: app.state.shopify_kb_client
-# app.dependency_overrides[get_sync_service] = lambda: app.state.kb_sync_service
-app.include_router(kb_router.router, prefix="/api/v1") 
 
 # ============================================================================
 # 🔍 HELPER FUNCTIONS ADICIONALES - CÓDIGO ORIGINAL PRESERVADO

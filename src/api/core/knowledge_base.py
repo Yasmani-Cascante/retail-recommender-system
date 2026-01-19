@@ -886,7 +886,7 @@ class SimpleKnowledgeBase:
         """Default help message when no specific answer found."""
         return """
         
-        **🤔 Puedo ayudarte con algo más específico**
+        **🤔 No pudimos clasificar tu pregunta específicamente. Puedo ayudarte con algo más específico**
 
         Intenta preguntarme sobre:
 

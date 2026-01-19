@@ -18,12 +18,13 @@ Date: 2026-01-11
 
 import logging
 import asyncio
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 from uuid import uuid4
-
 import asyncpg
-from redis import Redis
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from src.api.core.redis_service import RedisService
 
 from src.api.integrations.shopify_kb_client import ShopifyKBClient, KBMetadataParser
 from src.api.core.models.kb_models import (
@@ -52,7 +53,7 @@ class ShopifyKBSyncService:
     sync_service = ShopifyKBSyncService(
         shopify_client=shopify_client,
         db_pool=db_pool,
-        redis_client=redis_client
+        redis_service=redis_service
     )
     
     # Full sync
@@ -68,7 +69,7 @@ class ShopifyKBSyncService:
         self,
         shopify_client: ShopifyKBClient,
         db_pool: asyncpg.Pool,
-        redis_client: Redis
+        redis_service: 'RedisService'
     ):
         """
         Initialize sync service.
@@ -76,11 +77,11 @@ class ShopifyKBSyncService:
         Args:
             shopify_client: Configured Shopify KB client
             db_pool: AsyncPG database connection pool
-            redis_client: Redis client (for cache invalidation)
+            redis_service: Redis ASYNC service (for cache invalidation)
         """
         self.shopify = shopify_client
         self.db = db_pool
-        self.redis = redis_client
+        self.redis = redis_service
         self.metadata_parser = KBMetadataParser()
         
         logger.info("ShopifyKBSyncService initialized")
@@ -131,7 +132,7 @@ class ShopifyKBSyncService:
         try:
             # Step 1: Fetch all KB pages from Shopify
             logger.info("Step 1: Fetching KB pages from Shopify...")
-            kb_pages = self.shopify.get_kb_pages(validate_metadata=validate_metadata)
+            kb_pages = await self.shopify.get_kb_pages(validate_metadata=validate_metadata)
             
             report.total_pages = len(kb_pages)
             logger.info(f"Found {report.total_pages} KB pages")
@@ -144,38 +145,52 @@ class ShopifyKBSyncService:
                 ).total_seconds()
                 return report
             
-            # Step 2: Sync each page
-            logger.info("Step 2: Syncing pages to local buffer...")
+            # Step 2: Sync each page IN PARALLEL
+            logger.info("Step 2: Syncing pages to local buffer (PARALLEL)...")
             
-            for i, page in enumerate(kb_pages, 1):
-                logger.info(f"[{i}/{report.total_pages}] Processing page {page.id}: {page.title}")
-                
+            # ✨ OPTIMIZATION: Process all pages in parallel
+            sync_tasks = []
+            for i, (page, metafields) in enumerate(kb_pages, 1):
+                logger.info(f"[{i}/{report.total_pages}] Queuing page {page.id}: {page.title}")
+                sync_tasks.append(self.sync_page(page, metafields))
+            
+            # Execute all syncs in parallel
+            logger.info(f"Executing {len(sync_tasks)} sync tasks in parallel...")
+            sync_results = await asyncio.gather(*sync_tasks, return_exceptions=True)
+            
+            # Process results
+            for i, (page, result) in enumerate(zip([p for p, _ in kb_pages], sync_results), 1):
                 try:
-                    metadata = await self.sync_page(page.id)
-                    
-                    if metadata.status == SyncStatus.SUCCESS:
-                        report.successful += 1
-                    elif metadata.status == SyncStatus.FAILED:
+                    if isinstance(result, Exception):
+                        logger.error(f"Failed to sync page {page.id}: {result}")
                         report.failed += 1
-                        report.errors.append(metadata.last_error or "Unknown error")
+                        report.errors.append(f"Page {page.id}: {str(result)}")
+                        
+                        # Add failed metadata
+                        report.details.append(KBSyncMetadata(
+                            sub_intent="unknown",
+                            language="unknown",
+                            status=SyncStatus.FAILED,
+                            last_error=str(result),
+                            shopify_page_id=page.id
+                        ))
                     else:
-                        report.skipped += 1
-                    
-                    report.details.append(metadata)
-                    
+                        metadata = result
+                        
+                        if metadata.status == SyncStatus.SUCCESS:
+                            report.successful += 1
+                        elif metadata.status == SyncStatus.FAILED:
+                            report.failed += 1
+                            report.errors.append(metadata.last_error or "Unknown error")
+                        else:
+                            report.skipped += 1
+                        
+                        report.details.append(metadata)
+                
                 except Exception as e:
-                    logger.error(f"Failed to sync page {page.id}: {e}")
+                    logger.error(f"Error processing result for page {page.id}: {e}")
                     report.failed += 1
                     report.errors.append(f"Page {page.id}: {str(e)}")
-                    
-                    # Add failed metadata
-                    report.details.append(KBSyncMetadata(
-                        sub_intent="unknown",
-                        language="unknown",
-                        status=SyncStatus.FAILED,
-                        last_error=str(e),
-                        shopify_page_id=page.id
-                    ))
             
             # Step 3: Final report
             report.sync_completed_at = datetime.utcnow()
@@ -209,113 +224,93 @@ class ShopifyKBSyncService:
     # SINGLE PAGE SYNC
     # ──────────────────────────────────────────────────────────────────────
     
-    async def sync_page(self, page_id: int) -> KBSyncMetadata:
+    async def sync_page(
+    self, 
+    page: ShopifyPage, 
+    metafields: Dict[str, Any]
+    ) -> KBSyncMetadata:  # ← NOTA: debe retornar KBSyncMetadata, no bool
         """
-        Sync a single page from Shopify to local buffer.
-        
-        Process:
-        1. Fetch page from Shopify
-        2. Parse metadata from tags
-        3. Fetch translations (if any)
-        4. Upsert to PostgreSQL (for each language)
-        5. Invalidate Redis cache
+        Sync a single page to PostgreSQL.
         
         Args:
-            page_id: Shopify Page ID
+            page: ShopifyPage object
+            metafields: Metafields dict from get_page_metafields()
             
         Returns:
-            KBSyncMetadata with sync result
-            
-        Example:
-            >>> metadata = await sync_service.sync_page(123456789)
-            >>> print(metadata.status)  # SUCCESS
+            KBSyncMetadata with sync status
         """
-        logger.info(f"Syncing page {page_id}...")
-        
-        metadata = KBSyncMetadata(
-            sub_intent="unknown",
-            language="unknown",
-            status=SyncStatus.PENDING,
-            shopify_page_id=page_id
-        )
-        
         try:
-            # Step 1: Fetch page from Shopify
-            page = self.shopify.get_page_by_id(page_id)
-            if not page:
-                metadata.status = SyncStatus.FAILED
-                metadata.last_error = "Page not found in Shopify"
-                logger.error(f"Page {page_id} not found")
-                return metadata
+            # Extract KB metadata from metafields
+            kb_metadata = metafields.get("custom.kb_metadata", {})
             
-            # Step 2: Parse metadata from tags
-            page_metadata = self.shopify.parse_kb_metadata(page)
+            if not kb_metadata:
+                logger.error(f"Page {page.id} has no kb_metadata metafield!")
+                return KBSyncMetadata(
+                    sub_intent="unknown",
+                    language="unknown",
+                    status=SyncStatus.FAILED,
+                    last_error="Missing kb_metadata metafield",
+                    shopify_page_id=page.id
+                )
             
-            # Validate
-            is_valid, error = self.metadata_parser.validate_metadata(page_metadata)
-            if not is_valid:
-                metadata.status = SyncStatus.FAILED
-                metadata.last_error = f"Invalid metadata: {error}"
-                logger.error(f"Invalid metadata for page {page_id}: {error}")
-                return metadata
+            # Extract fields
+            sub_intent = kb_metadata.get("sub_intent")
+            category = kb_metadata.get("category")
+            language = kb_metadata.get("language", "es")
             
-            sub_intent = page_metadata["sub_intent"]
-            category = page_metadata.get("category")
+            if not sub_intent:
+                logger.error(f"Page {page.id}: sub_intent is required in kb_metadata")
+                return KBSyncMetadata(
+                    sub_intent="unknown",
+                    language=language,
+                    status=SyncStatus.FAILED,
+                    last_error="Missing sub_intent",
+                    shopify_page_id=page.id
+                )
             
-            metadata.sub_intent = sub_intent
-            metadata.category = category
+            # Convert HTML to Markdown
+            markdown_content = self._html_to_markdown(page.body_html or "")
             
-            # Step 3: Fetch translations
-            translations = self.shopify.get_page_translations(page_id)
+            # Upsert to database
+            await self._upsert_kb_content(
+                sub_intent=sub_intent,
+                language=language,
+                category=category,
+                content=markdown_content,
+                content_html=page.body_html,
+                title=page.title,
+                shopify_page_id=page.id,
+                shopify_url=f"https://{self.shopify.shop_url}/pages/{page.handle}",
+                shopify_handle=page.handle
+            )
             
-            # Primary language (from page body_html)
-            primary_language = "es"  # TODO: Detect from page or config
-            translations[primary_language] = page.body_html
+            # Invalidate cache
+            await self._invalidate_cache(sub_intent, language, category)
             
-            # Step 4: Store each language version
-            for language, content_html in translations.items():
-                try:
-                    # Convert HTML to Markdown (basic version)
-                    # TODO: Use proper HTML→Markdown converter (markdownify, html2text)
-                    content_markdown = self._html_to_markdown(content_html)
-                    
-                    await self._upsert_kb_content(
-                        sub_intent=sub_intent,
-                        language=language,
-                        category=category,
-                        content=content_markdown,
-                        content_html=content_html,
-                        title=page.title,
-                        shopify_page_id=page.id,
-                        shopify_url=f"https://{self.shopify.shop_url}/pages/{page.handle}",
-                        shopify_handle=page.handle
-                    )
-                    
-                    # Step 5: Invalidate Redis cache
-                    await self._invalidate_cache(sub_intent, language, category)
-                    
-                    logger.info(
-                        f"✅ Synced page {page_id} ({language}): "
-                        f"{sub_intent}/{category or 'general'}"
-                    )
-                    
-                except Exception as e:
-                    logger.error(
-                        f"Failed to store KB content (page {page_id}, lang {language}): {e}"
-                    )
-                    raise
+            logger.info(
+                f"✅ Successfully synced page {page.id} ({page.title}) - "
+                f"sub_intent={sub_intent}, language={language}"
+            )
             
-            metadata.status = SyncStatus.SUCCESS
-            metadata.language = primary_language
-            metadata.last_synced = datetime.utcnow()
-            
-            return metadata
+            return KBSyncMetadata(
+                sub_intent=sub_intent,
+                language=language,
+                category=category,
+                status=SyncStatus.SUCCESS,
+                last_synced=datetime.utcnow(),
+                shopify_page_id=page.id
+            )
             
         except Exception as e:
-            metadata.status = SyncStatus.FAILED
-            metadata.last_error = str(e)
-            logger.error(f"Failed to sync page {page_id}: {e}", exc_info=True)
-            return metadata
+            logger.error(f"❌ Error syncing page {page.id}: {e}", exc_info=True)
+            
+            return KBSyncMetadata(
+                sub_intent=kb_metadata.get("sub_intent", "unknown"),
+                language=kb_metadata.get("language", "unknown"),
+                status=SyncStatus.FAILED,
+                last_error=str(e),
+                shopify_page_id=page.id
+            )
     
     # ──────────────────────────────────────────────────────────────────────
     # DATABASE OPERATIONS
@@ -386,10 +381,10 @@ class ShopifyKBSyncService:
     # ──────────────────────────────────────────────────────────────────────
     
     async def _invalidate_cache(
-        self,
-        sub_intent: str,
-        language: str,
-        category: Optional[str]
+    self,
+    sub_intent: str,
+    language: str,
+    category: Optional[str]
     ) -> None:
         """
         Invalidate Redis cache for specific KB content.
@@ -398,12 +393,9 @@ class ShopifyKBSyncService:
         """
         cache_key = f"kb:{sub_intent}:{language}:{category or 'general'}"
         
-        try:
-            self.redis.delete(cache_key)
-            logger.debug(f"Invalidated cache: {cache_key}")
-        except Exception as e:
-            logger.warning(f"Failed to invalidate cache {cache_key}: {e}")
-            # Don't fail the sync if cache invalidation fails
+        success = await self.redis.delete(cache_key)
+        if success:
+            logger.debug(f"Invalidated: {cache_key}")
     
     # ──────────────────────────────────────────────────────────────────────
     # WEBHOOK HANDLERS

@@ -28,17 +28,27 @@ class InformationalSubIntent(str, Enum):
     """
     Sub-types for informational intents.
     Used to route to correct knowledge base section.
+    
+    ✅ ACTUALIZADO: Incluye TODOS los sub_intents existentes en kb_contents
+    ✅ SINCRONIZADO: Con páginas de Shopify KB (Sprint 1 + Sprint 2)
     """
     # Policies
     POLICY_RETURN = "policy_return"
     POLICY_SHIPPING = "policy_shipping"
     POLICY_PAYMENT = "policy_payment"
+    POLICY_WARRANTY = "policy_warranty"              # ✅ NUEVO
+    POLICY_PRIVACY = "policy_privacy"                # ✅ NUEVO
     
     # Product Information
     PRODUCT_MATERIAL = "product_material"
-    PRODUCT_SIZE = "product_size"
+    PRODUCT_SIZE = "product_size"                    # Alias legacy
+    PRODUCT_SIZING = "product_sizing"                # ✅ NUEVO (nombre actual en DB)
     PRODUCT_CARE = "product_care"
     PRODUCT_AVAILABILITY = "product_availability"
+    
+    # Account
+    ACCOUNT_ORDERS = "account_orders"                # ✅ NUEVO
+    ACCOUNT_MODIFICATIONS = "account_modifications"  # ✅ NUEVO
     
     # General
     GENERAL_FAQ = "general_faq"

@@ -102,7 +102,7 @@ class ShopifyPage(BaseModel):
     id: int = Field(..., description="Shopify Page ID")
     title: str = Field(..., description="Page title")
     handle: str = Field(..., description="URL-friendly handle")
-    body_html: str = Field(..., description="Page content (HTML)")
+    body_html: Optional[str] = Field(None, description="Page content (HTML, may be null)")
     
     # Optional fields
     author: Optional[str] = None
@@ -406,7 +406,7 @@ class ShopifyWebhookPage(BaseModel):
     id: int
     title: str
     handle: str
-    body_html: str
+    body_html: Optional[str] = None
     updated_at: datetime
     tags: Optional[str] = None
 
