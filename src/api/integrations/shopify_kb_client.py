@@ -227,7 +227,8 @@ class ShopifyKBClient(ShopifyIntegration):
         logger.info(f"Fetching KB pages (limit={limit})")
         
         # Step 1: Fetch all pages from Shopify
-        all_pages = self.get_pages(limit=limit)
+        all_pages = await self.get_pages(limit=limit)
+        # all_pages = await asyncio.to_thread(self.get_pages, limit)
         logger.info(f"Retrieved {len(all_pages)} total pages from Shopify")
         
         # Step 2: Parse pages to Pydantic models
@@ -326,7 +327,7 @@ class ShopifyKBClient(ShopifyIntegration):
             logger.error(f"Error fetching page {page_id}: {e}")
             return None
     
-    def get_pages(self, limit: Optional[int] = None, offset: int = 0) -> List[Dict]:
+    async def get_pages(self, limit: Optional[int] = None, offset: int = 0) -> List[Dict]:
         """
         Wrapper for parent class get_products() but for pages.
         
@@ -334,6 +335,15 @@ class ShopifyKBClient(ShopifyIntegration):
         like /products. We use the parent's pagination logic and adapt it.
         
         For now, we'll implement a simple version that fetches all pages.
+
+        Async version with pagination.
+        Args:
+            limit: Max number of pages to fetch (None = all)
+            offset: Offset for pagination (not used here)
+            
+        Returns:
+            List of page dicts
+        
         """
         try:
             all_pages = []
@@ -342,7 +352,12 @@ class ShopifyKBClient(ShopifyIntegration):
             while url:
                 logger.info(f"Fetching pages from: {url}")
                 
-                response = self._make_request_with_retry(url)
+                # response = self._make_request_with_retry(url)
+                # ✅ Execute in thread pool
+                response = await asyncio.to_thread(
+                    self._make_request_with_retry, 
+                    url
+                )
                 data = response.json()
                 pages = data.get("pages", [])
                 
@@ -371,8 +386,8 @@ class ShopifyKBClient(ShopifyIntegration):
         """
         Fetch metafields for a specific page.
         
-        This method retrieves all metafields associated with a Shopify page
-        and returns them as a dictionary indexed by namespace.key format.
+        OPTIMIZED: Uses asyncio.to_thread() to execute sync HTTP call
+        in thread pool, enabling true parallelization with asyncio.gather().
         
         Args:
             page_id: Shopify Page ID
@@ -380,26 +395,25 @@ class ShopifyKBClient(ShopifyIntegration):
         Returns:
             Dict with metafields indexed by namespace.key
             Example: {"custom.kb_metadata": {"sub_intent": "policy_return", ...}}
-            
-        Example:
-            >>> metafields = await client.get_page_metafields(158838489397)
-            >>> kb_metadata = metafields.get("custom.kb_metadata")
-            >>> print(kb_metadata["sub_intent"])
-            "policy_return"
         """
         try:
             # Build API URL
             url = f"{self.api_url}/pages/{page_id}/metafields.json"
             logger.debug(f"Fetching metafields for page {page_id}")
             
-            # Make API request
-            response = self._make_request_with_retry(url)
+            # ✅ OPTIMIZATION: Execute sync call in thread pool
+            # This allows true parallelization with asyncio.gather()
+            response = await asyncio.to_thread(
+                self._make_request_with_retry, 
+                url
+            )
             data = response.json()
             
             # Parse metafields into dict
             metafields_dict = {}
             
             for mf in data.get("metafields", []):
+                # ... resto del código sin cambios (líneas 282-319)
                 namespace = mf.get("namespace")
                 key = mf.get("key")
                 value = mf.get("value")
@@ -423,7 +437,6 @@ class ShopifyKBClient(ShopifyIntegration):
                             f"Failed to parse JSON metafield {composite_key} "
                             f"for page {page_id}: {e}"
                         )
-                        # Keep original value if JSON parsing fails
                         pass
                 
                 metafields_dict[composite_key] = value
