@@ -230,7 +230,7 @@ class ShopifyKBSyncService:
     metafields: Dict[str, Any]
     ) -> KBSyncMetadata:  # ← NOTA: debe retornar KBSyncMetadata, no bool
         """
-        Sync a single page to PostgreSQL.
+        Sync a single page with ALL its translations to PostgreSQL.
         
         Args:
             page: ShopifyPage object
@@ -256,25 +256,27 @@ class ShopifyKBSyncService:
             # Extract fields
             sub_intent = kb_metadata.get("sub_intent")
             category = kb_metadata.get("category")
-            language = kb_metadata.get("language", "es")
+            default_language  = kb_metadata.get("language", "es")
             
             if not sub_intent:
                 logger.error(f"Page {page.id}: sub_intent is required in kb_metadata")
                 return KBSyncMetadata(
                     sub_intent="unknown",
-                    language=language,
+                    language=default_language ,
                     status=SyncStatus.FAILED,
                     last_error="Missing sub_intent",
                     shopify_page_id=page.id
                 )
             
+            # ══════════════════════════════════════════════════════════════
+            # STEP 1: Sync DEFAULT LANGUAGE (original content)
+            # ══════════════════════════════════════════════════════════════
             # Convert HTML to Markdown
             markdown_content = self._html_to_markdown(page.body_html or "")
-            
-            # Upsert to database
+        
             await self._upsert_kb_content(
                 sub_intent=sub_intent,
-                language=language,
+                language=default_language,
                 category=category,
                 content=markdown_content,
                 content_html=page.body_html,
@@ -284,17 +286,88 @@ class ShopifyKBSyncService:
                 shopify_handle=page.handle
             )
             
-            # Invalidate cache
-            await self._invalidate_cache(sub_intent, language, category)
+            await self._invalidate_cache(sub_intent, default_language, category)
             
             logger.info(
-                f"✅ Successfully synced page {page.id} ({page.title}) - "
-                f"sub_intent={sub_intent}, language={language}"
+                f"✅ Synced DEFAULT language ({default_language}) for page {page.id}"
             )
             
+            # ══════════════════════════════════════════════════════════════
+            # STEP 2: Fetch and sync TRANSLATIONS (NEW)
+            # ══════════════════════════════════════════════════════════════
+            
+            try:
+                # Fetch all translations
+                translations = await self.shopify.get_page_translations(page.id)
+                
+                if translations:
+                    logger.info(
+                        f"Found {len(translations)} translations for page {page.id}: "
+                        f"{list(translations.keys())}"
+                    )
+                    
+                    # Sync each translation
+                    synced_languages = [default_language]
+                    
+                    for locale, translated_html in translations.items():
+                        # Skip default language (already synced)
+                        if locale == default_language:
+                            continue
+                        
+                        try:
+                            # Convert translated HTML to Markdown
+                            translated_markdown = self._html_to_markdown(translated_html)
+                            
+                            # Upsert translation
+                            await self._upsert_kb_content(
+                                sub_intent=sub_intent,
+                                language=locale,  # ← DIFFERENT LANGUAGE
+                                category=category,
+                                content=translated_markdown,
+                                content_html=translated_html,
+                                title=page.title,  # Keep same title (or translate?)
+                                shopify_page_id=page.id,  # ← SAME PAGE ID
+                                shopify_url=f"https://{self.shopify.shop_url}/pages/{page.handle}",
+                                shopify_handle=page.handle
+                            )
+                            
+                            # Invalidate cache for this language
+                            await self._invalidate_cache(sub_intent, locale, category)
+                            
+                            synced_languages.append(locale)
+                            
+                            logger.info(
+                                f"✅ Synced translation ({locale}) for page {page.id}"
+                            )
+                            
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to sync translation {locale} for page {page.id}: {e}"
+                            )
+                            # Continue with other translations
+                            continue
+                    
+                    logger.info(
+                        f"✅ Successfully synced page {page.id} ({page.title}) - "
+                        f"sub_intent={sub_intent}, languages={synced_languages}"
+                    )
+                    
+                else:
+                    logger.info(
+                        f"No translations found for page {page.id} "
+                        f"(only default language: {default_language})"
+                    )
+                    
+            except Exception as e:
+                logger.warning(
+                    f"Failed to fetch translations for page {page.id}: {e}. "
+                    f"Continuing with default language only."
+                )
+            
+            # Return success metadata
             return KBSyncMetadata(
                 sub_intent=sub_intent,
-                language=language,
+                language=default_language,  # Report default language
                 category=category,
                 status=SyncStatus.SUCCESS,
                 last_synced=datetime.utcnow(),

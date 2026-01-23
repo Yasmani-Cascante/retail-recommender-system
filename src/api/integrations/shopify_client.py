@@ -1,3 +1,4 @@
+from asyncio.log import logger
 import requests
 from typing import List, Dict
 import logging
@@ -286,3 +287,258 @@ class ShopifyIntegration:
         except Exception as e:
             logging.error(f"Error fetching product count: {str(e)}")
             return 0
+        
+
+    # ══════════════════════════════════════════════════════════════════════
+    # GRAPHQL API SUPPORT
+    # ══════════════════════════════════════════════════════════════════════
+    
+    async def _graphql_query(self, query: str, variables: Dict = None) -> Dict:
+        """
+        Execute GraphQL query against Shopify Admin API (ASYNC).
+        
+        This method enables async GraphQL queries while maintaining compatibility
+        with the existing sync REST methods. Uses asyncio.to_thread() to run
+        the sync HTTP call in a thread pool, preventing event loop blocking.
+        
+        Architecture Note:
+        -----------------
+        - Parent class (ShopifyIntegration): Mix of sync REST + async GraphQL
+        - Child classes can use either sync REST or async GraphQL methods
+        - asyncio.to_thread() enables async compatibility without rewriting
+          existing sync code
+        
+        Args:
+            query: GraphQL query string (not mutation)
+            variables: Optional query variables as dict
+            
+        Returns:
+            Dict containing GraphQL response data
+            
+        Raises:
+            Exception: If HTTP request fails or GraphQL returns errors
+            
+        Example:
+            >>> query = '''
+            ... query getProduct($id: ID!) {
+            ...   product(id: $id) {
+            ...     id
+            ...     title
+            ...   }
+            ... }
+            ... '''
+            >>> variables = {"id": "gid://shopify/Product/123"}
+            >>> data = await client._graphql_query(query, variables)
+            >>> print(data["product"]["title"])
+        """
+        import asyncio
+        
+        # Build GraphQL endpoint URL
+        url = f"https://{self.shop_url}/admin/api/2024-01/graphql.json"
+        
+        # Build request payload
+        payload = {"query": query}
+        if variables:
+            payload["variables"] = variables
+        
+        # Build headers (reuse existing access token)
+        headers = {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": self.access_token
+        }
+        
+        try:
+            # Execute sync HTTP POST in thread pool (non-blocking async)
+            # This prevents blocking the event loop while maintaining
+            # compatibility with requests library
+            response = await asyncio.to_thread(
+                requests.post,
+                url,
+                json=payload,
+                headers=headers,
+                timeout=30  # 30s timeout for GraphQL queries
+            )
+            
+            # Check HTTP status
+            response.raise_for_status()
+            
+            # Parse JSON response
+            data = response.json()
+            
+            # Check for GraphQL-specific errors
+            # GraphQL can return 200 OK but still have errors in response
+            if "errors" in data:
+                error_msgs = [
+                    err.get("message", str(err)) 
+                    for err in data["errors"]
+                ]
+                raise Exception(f"GraphQL errors: {'; '.join(error_msgs)}")
+            
+            # Return data portion of response
+            # GraphQL wraps data in {"data": {...}}
+            return data.get("data", {})
+            
+        except requests.exceptions.Timeout:
+            logging.error(f"GraphQL query timeout after 30s")
+            raise Exception("GraphQL query timeout")
+            
+        except requests.exceptions.RequestException as e:
+            logging.error(f"GraphQL HTTP request failed: {e}")
+            raise
+            
+        except Exception as e:
+            logging.error(f"GraphQL query failed: {e}")
+            raise  
+
+# ══════════════════════════════════════════════════════════════════════════
+# CÓDIGO OPCIONAL - RETRY LOGIC
+# ══════════════════════════════════════════════════════════════════════════
+
+    async def _graphql_query_with_retry(
+        self, 
+        query: str, 
+        variables: Dict = None,
+        max_retries: int = 3,
+        retry_delay: float = 1.0
+    ) -> Dict:
+        """
+        Execute GraphQL query with retry logic for network errors.
+        
+        This is an ENHANCED version of _graphql_query() with retry capabilities
+        for transient network issues. Use this when you need extra robustness.
+        
+        Retries ONLY for:
+        - Network timeouts
+        - Connection errors  
+        - 5xx server errors (Shopify internal errors)
+        
+        Does NOT retry for:
+        - GraphQL logical errors (field doesn't exist, invalid query)
+        - 4xx client errors (authentication, malformed request)
+        
+        Args:
+            query: GraphQL query string
+            variables: Optional query variables
+            max_retries: Maximum retry attempts (default: 3)
+            retry_delay: Base delay between retries in seconds (default: 1.0)
+            
+        Returns:
+            Dict containing GraphQL response data
+            
+        Raises:
+            Exception: If all retries exhausted or non-retriable error
+            
+        Example:
+            >>> # Use for critical operations that need extra robustness
+            >>> data = await client._graphql_query_with_retry(query, variables)
+        """
+        import asyncio
+        from requests.exceptions import RequestException, Timeout, ConnectionError
+        
+        # Build GraphQL endpoint URL
+        url = f"https://{self.shop_url}/admin/api/2024-01/graphql.json"
+        
+        # Build request payload
+        payload = {"query": query}
+        if variables:
+            payload["variables"] = variables
+        
+        # Build headers
+        headers = {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": self.access_token
+        }
+        
+        retries = 0
+        
+        while retries <= max_retries:
+            try:
+                # Execute sync HTTP POST in thread pool
+                response = await asyncio.to_thread(
+                    requests.post,
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=30
+                )
+                
+                # Check for 5xx server errors (retriable)
+                if response.status_code >= 500:
+                    raise RequestException(
+                        f"Shopify server error: {response.status_code}"
+                    )
+                
+                # Check for 4xx client errors (NOT retriable)
+                response.raise_for_status()
+                
+                # Parse JSON response
+                data = response.json()
+                
+                # Check for GraphQL-specific errors (NOT retriable)
+                if "errors" in data:
+                    error_msgs = [
+                        err.get("message", str(err)) 
+                        for err in data["errors"]
+                    ]
+                    raise Exception(f"GraphQL errors: {'; '.join(error_msgs)}")
+                
+                # Success - return data
+                return data.get("data", {})
+                
+            except Timeout as e:
+                # Network timeout - retriable
+                retries += 1
+                if retries <= max_retries:
+                    wait_time = retry_delay * (2 ** (retries - 1))  # Exponential backoff
+                    logger.warning(
+                        f"GraphQL timeout for query. "
+                        f"Retry {retries}/{max_retries} in {wait_time}s. "
+                        f"Error: {e}"
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(
+                        f"Max retries ({max_retries}) reached for GraphQL query. "
+                        f"Giving up."
+                    )
+                    raise
+                    
+            except ConnectionError as e:
+                # Network/connection error - retriable
+                retries += 1
+                if retries <= max_retries:
+                    wait_time = retry_delay * (2 ** (retries - 1))
+                    logger.warning(
+                        f"GraphQL connection error. "
+                        f"Retry {retries}/{max_retries} in {wait_time}s. "
+                        f"Error: {e}"
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(
+                        f"Max retries ({max_retries}) reached for GraphQL query. "
+                        f"Giving up."
+                    )
+                    raise
+                    
+            except RequestException as e:
+                # Check if it's a 5xx error (retriable)
+                if "5" in str(e) and retries < max_retries:
+                    retries += 1
+                    wait_time = retry_delay * (2 ** (retries - 1))
+                    logger.warning(
+                        f"GraphQL request failed (retriable). "
+                        f"Retry {retries}/{max_retries} in {wait_time}s. "
+                        f"Error: {e}"
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    # 4xx error or max retries - don't retry
+                    logger.error(f"GraphQL request failed (non-retriable): {e}")
+                    raise
+                    
+            except Exception as e:
+                # GraphQL logical error or other non-network error - don't retry
+                logger.error(f"GraphQL query failed: {e}")
+                raise
+    

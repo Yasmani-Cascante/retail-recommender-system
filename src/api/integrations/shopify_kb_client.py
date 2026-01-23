@@ -19,7 +19,7 @@ import hmac
 import hashlib
 import asyncio 
 from typing import List, Dict, Optional, Tuple, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.api.integrations.shopify_client import ShopifyIntegration
 from src.api.core.models.kb_models import (
@@ -166,6 +166,11 @@ class ShopifyKBClient(ShopifyIntegration):
         super().__init__(shop_url, access_token)
         self.webhook_secret = webhook_secret
         self.metadata_parser = KBMetadataParser()
+
+        self._cached_locales: Optional[Tuple[str, List[str]]] = None
+        self._locales_cache_expires_at: Optional[datetime] = None
+        self._locales_cache_ttl = timedelta(hours=1)
+        self._locales_cache_lock = asyncio.Lock()
         
         logger.info("ShopifyKBClient initialized")
         logger.info(f"Webhook validation: {'enabled' if webhook_secret else 'disabled'}")
@@ -456,57 +461,157 @@ class ShopifyKBClient(ShopifyIntegration):
     # TRANSLATIONS API
     # ──────────────────────────────────────────────────────────────────────
     
-    def get_page_translations(
-        self,
-        page_id: int
-    ) -> Dict[str, str]:
+    async def get_page_translations(self, page_id: int) -> Dict[str, str]:
         """
-        Fetch all translations for a page.
+        Fetch all translations for a page using GraphQL.
         
-        Uses Shopify Translations API (part of Markets).
+        OPTIMIZED VERSION:
+        - Uses cached shopLocales (1 query vs 13 queries per sync)
+        - Parallel translation fetch (for future multi-language support)
+        
+        Strategy:
+        1. Get available shop locales (CACHED with 1h TTL)
+        2. For each locale (except primary), query translations IN PARALLEL
+        3. Return dict mapping locale to translated HTML
         
         Args:
             page_id: Shopify Page ID
             
         Returns:
-            Dict mapping language code to translated content:
-            {
-                "es": "<h2>Política de Devoluciones</h2>...",
-                "en": "<h2>Return Policy</h2>...",
-                "pt": "<h2>Política de Devoluções</h2>..."
-            }
+            Dict mapping language code to translated HTML:
+            {"en": "<h2>Return Policy</h2>...", "pt": "<h2>Política...</h2>"}
             
-        Example:
-            >>> translations = client.get_page_translations(123456789)
-            >>> print(translations.get("en"))
+        Note:
+            - Primary locale (e.g., "es") is NOT included (use page.body_html)
+            - Only returns locales with actual translations
+            - GraphQL requires 'locale' argument per query
+            
+        Performance:
+            - 1 idioma: ~300ms (igual que antes)
+            - 2 idiomas: ~300ms (vs 600ms sequential)
+            - 3 idiomas: ~300ms (vs 900ms sequential)
         """
         try:
-            url = f"{self.api_url}/pages/{page_id}/translations.json"
-            logger.info(f"Fetching translations for page {page_id}")
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # STEP 1: Get available shop locales (OPTIMIZED: Uses cache)
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            primary_locale, available_locales = await self._get_shop_locales()
             
-            response = self._make_request_with_retry(url)
-            data = response.json()
+            # If no translation locales available, return empty
+            if not available_locales:
+                logger.info(
+                    f"No translation locales available for page {page_id} "
+                    f"(only primary: {primary_locale})"
+                )
+                return {}
             
-            # Parse translations
-            translations = {}
-            translation_list = data.get("translations", [])
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # STEP 2: Query translations for each locale IN PARALLEL
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             
-            for trans_data in translation_list:
-                try:
-                    trans = ShopifyPageTranslation(**trans_data)
+            async def fetch_translation_for_locale(locale: str) -> tuple[str, Optional[str]]:
+                """
+                Fetch translation for a specific locale.
+                
+                Args:
+                    locale: Language code (e.g., "en", "pt")
                     
-                    # We only care about body_html translations
-                    if trans.key == "body_html":
-                        translations[trans.locale] = trans.value
-                        
+                Returns:
+                    Tuple of (locale, translated_html or None)
+                """
+                try:
+                    # Build GraphQL query for specific locale
+                    translation_query = """
+                    query getPageTranslation($resourceId: ID!, $locale: String!) {
+                    translatableResource(resourceId: $resourceId) {
+                        resourceId
+                        translations(locale: $locale) {
+                        key
+                        value
+                        locale
+                        }
+                    }
+                    }
+                    """
+                    
+                    variables = {
+                        "resourceId": f"gid://shopify/Page/{page_id}",
+                        "locale": locale
+                    }
+                    
+                    logger.debug(
+                        f"Fetching translation for page {page_id}, locale={locale}"
+                    )
+                    
+                    # Execute GraphQL query
+                    # data = await self._graphql_query(translation_query, variables)
+                    data = await self._graphql_query_with_retry(translation_query, variables)
+
+                    # Parse translations for this locale
+                    resource = data.get("translatableResource", {})
+                    translations_raw = resource.get("translations", [])
+                    
+                    # Filter only body_html translation
+                    for trans in translations_raw:
+                        if trans["key"] == "body_html" and trans["value"]:
+                            logger.debug(
+                                f"Found translation for locale {locale}: "
+                                f"{len(trans['value'])} chars"
+                            )
+                            return (locale, trans["value"])
+                    
+                    # No body_html translation found for this locale
+                    logger.debug(f"No body_html translation for locale {locale}")
+                    return (locale, None)
+                    
                 except Exception as e:
-                    logger.warning(f"Failed to parse translation: {e}")
-                    continue
+                    # Log error but don't fail entire sync
+                    # Return None so this translation is skipped
+                    logger.warning(
+                        f"Failed to fetch translation for page {page_id}, "
+                        f"locale {locale}: {e}"
+                    )
+                    return (locale, None)
             
-            logger.info(
-                f"Found {len(translations)} translations for page {page_id}: "
-                f"{list(translations.keys())}"
+            # ✨ OPTIMIZATION: Execute all translation fetches in PARALLEL
+            logger.debug(
+                f"Fetching {len(available_locales)} translations in parallel "
+                f"for page {page_id}"
             )
+            
+            # Create tasks for all locales
+            translation_tasks = [
+                fetch_translation_for_locale(locale) 
+                for locale in available_locales
+            ]
+            
+            # Execute all tasks in parallel
+            # NOTE: We don't use return_exceptions=True because the inner
+            # function already handles exceptions and returns (locale, None)
+            translation_results = await asyncio.gather(*translation_tasks)
+            
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # STEP 3: Build translations dict (filter out None values)
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            translations = {}
+            
+            for locale, translated_html in translation_results:
+                if translated_html is not None:
+                    translations[locale] = translated_html
+            
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # STEP 4: Log results and return
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            if translations:
+                logger.info(
+                    f"Found {len(translations)} translations for page {page_id}: "
+                    f"{list(translations.keys())}"
+                )
+            else:
+                logger.info(
+                    f"No translations found for page {page_id} "
+                    f"(only primary language: {primary_locale})"
+                )
             
             return translations
             
@@ -595,6 +700,84 @@ class ShopifyKBClient(ShopifyIntegration):
             )
         
         return is_valid    
+    
+
+    async def _get_shop_locales(self) -> Tuple[str, List[str]]:
+        """
+        Get shop locales with 1-hour in-memory cache.
+        
+        Thread-safe: Uses asyncio.Lock() to prevent race conditions
+        when multiple coroutines call this method simultaneously.
+        
+        Returns:
+            (primary_locale, available_translation_locales)
+        """
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # FAST PATH: Check cache WITHOUT lock (optimization)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        now = datetime.utcnow()
+        if (self._cached_locales and 
+            self._locales_cache_expires_at and 
+            now < self._locales_cache_expires_at):
+            
+            logger.info("✅ Using cached shopLocales (1-hour TTL)")  # ← INFO level
+            return self._cached_locales
+        
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # SLOW PATH: Cache miss/expired - acquire lock
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        async with self._locales_cache_lock:
+            # ⚡ CRITICAL: Re-check cache INSIDE lock
+            # Another coroutine may have populated cache while we waited
+            now = datetime.utcnow()
+            if (self._cached_locales and 
+                self._locales_cache_expires_at and 
+                now < self._locales_cache_expires_at):
+                
+                logger.info("✅ Using cached shopLocales (populated by another task)")
+                return self._cached_locales
+            
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # Only first coroutine reaches here - fetch fresh data
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            logger.info("🔄 Fetching shopLocales from Shopify (cache miss/expired)")
+            
+            locales_query = """
+            query getShopLocales {
+            shopLocales { locale primary published }
+            }
+            """
+            
+            data = await self._graphql_query(locales_query)
+            
+            # Parse locales
+            available_locales = []
+            primary_locale = None
+            
+            for shop_locale in data.get("shopLocales", []):
+                locale = shop_locale["locale"]
+                if shop_locale["primary"]:
+                    primary_locale = locale
+                elif shop_locale["published"]:
+                    available_locales.append(locale)
+            
+            # Cache result
+            result = (primary_locale, available_locales)
+            self._cached_locales = result
+            self._locales_cache_expires_at = now + self._locales_cache_ttl
+            
+            logger.info(
+                f"💾 Cached shopLocales (TTL={self._locales_cache_ttl}): "
+                f"primary={primary_locale}, translations={available_locales}"
+            )
+            
+            return result
+    
+    def invalidate_locales_cache(self) -> None:
+        """Force refresh of cached locales on next call."""
+        self._cached_locales = None
+        self._locales_cache_expires_at = None
+        logger.info("Invalidated shopLocales cache")
 
 # ══════════════════════════════════════════════════════════════════════════
 # FACTORY FUNCTION

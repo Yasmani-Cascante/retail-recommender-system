@@ -22,6 +22,12 @@ from src.api.core.intent_types import InformationalSubIntent
 from src.api.core.knowledge_base_v2 import ShopifyKnowledgeBase
 from src.api.services.shopify_kb_sync import ShopifyKBSyncService
 
+# ✅ NUEVO: Import language detection utilities
+from src.api.utils.language_detection import (
+    detect_language_from_request,
+    validate_language
+)
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/kb", tags=["knowledge-base"])
@@ -57,108 +63,135 @@ def get_sync_service(request) -> ShopifyKBSyncService:
 
 @router.get("/answer")
 async def get_kb_answer(
+    request: Request,  # ✅ MODIFICADO: Agregado para access headers
     sub_intent: str = Query(..., description="Sub-intent to query"),
-    language: str = Query("es", description="Language code (es, en, pt)"),
-    category: Optional[str] = Query(None, description="Optional category filter"),
-    request: Request = None
+    language: Optional[str] = Query(  # ✅ MODIFICADO: Ahora es Optional
+        None,
+        description="Language code (es, en). Auto-detected from Accept-Language header if not provided."
+    ),
+    category: Optional[str] = Query(None, description="Optional category filter")
 ):
-    """
-    Get answer from Knowledge Base.
-    
-    **Parameters:**
-    - sub_intent: The informational sub-intent (policy_return, product_care, etc.)
-    - language: Language code (default: es)
-    - category: Optional category for specific answers
-    
-    **Returns:**
-    ```json
-    {
-        "sub_intent": "policy_return",
-        "language": "es",
-        "category": null,
-        "answer": "Content here...",
-        "title": "¿Cómo devolver un producto?",
-        "source": "cache|buffer|none",
-        "metadata": {
-            "shopify_page_id": 158838489397,
-            "shopify_url": "https://...",
-            "last_synced": "2026-01-17T02:02:52"
+        """
+        Get answer from Knowledge Base.
+        
+        **Language Detection Priority:**
+        1. Explicit `language` query parameter (highest priority)
+        2. Accept-Language HTTP header (browser/client preference)
+        3. Default: 'es'
+        
+        **Parameters:**
+        - sub_intent: The informational sub-intent (policy_return, product_care, etc.)
+        - language: Language code (optional, auto-detected if not provided)
+        - category: Optional category for specific answers
+        
+        **Returns:**
+        ```json
+        {
+            "sub_intent": "policy_return",
+            "language": "es",
+            "category": null,
+            "answer": "Content here...",
+            "sub_intent_value": "policy_return",
+            "sources": [],
+            "related_links": []
         }
-    }
-    ```
-    
-    **Example:**
-    ```
-    GET /kb/answer?sub_intent=policy_return&language=es
-    GET /kb/answer?sub_intent=product_care&language=es&category=cotton
-    ```
-    """
-    try:
-        # Validate sub_intent
+        ```
+        
+        **Examples:**
+        ```
+        # Explicit language
+        GET /kb/answer?sub_intent=policy_return&language=en
+        
+        # Auto-detect from Accept-Language header
+        GET /kb/answer?sub_intent=policy_return
+        Headers: Accept-Language: en-US,en;q=0.9
+        
+        # Default to ES
+        GET /kb/answer?sub_intent=policy_return
+        (No Accept-Language header)
+        
+        # With category
+        GET /kb/answer?sub_intent=product_care&language=es&category=cotton
+        ```
+        """
         try:
-            sub_intent_enum = InformationalSubIntent(sub_intent.lower())
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid sub_intent: {sub_intent}. Must be one of: {[e.value for e in InformationalSubIntent]}"
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # ✅ NUEVO: Language Detection
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            if language:
+                # Explicit parameter → Validate
+                detected_language = validate_language(language)
+                detection_method = "explicit_parameter"
+            else:
+                # Auto-detect from Accept-Language header
+                detected_language = detect_language_from_request(request)
+                detection_method = "accept_language_header" if request.headers.get("Accept-Language") else "default"
+            
+            # Log language detection for debugging
+            logger.info(
+                f"KB query: sub_intent={sub_intent}, language={detected_language} "
+                f"(method: {detection_method}), category={category}"
             )
-        
-        # Get KB from dependency injection
-        kb = get_kb(request)
-        
-        # Query KB
-        logger.info(
-            f"KB query: sub_intent={sub_intent}, language={language}, "
-            f"category={category}"
-        )
-        
-        answer = await kb.get_answer(
-            sub_intent=sub_intent_enum,
-            language=language,
-            category=category
-        )
-        
-        if not answer:
-            # No answer found
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "No answer found",
-                    "sub_intent": sub_intent,
-                    "language": language,
-                    "category": category,
-                    "suggestion": "Check if content exists in Shopify and has been synced"
-                }
+            
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # Validate sub_intent
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            try:
+                sub_intent_enum = InformationalSubIntent(sub_intent.lower())
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid sub_intent: {sub_intent}. Must be one of: {[e.value for e in InformationalSubIntent]}"
+                )
+            
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # Get KB from dependency injection
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            kb = get_kb(request)
+            
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # Query KB with detected language
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            answer = await kb.get_answer(
+                sub_intent=sub_intent_enum,
+                language=detected_language,  # ✅ MODIFICADO: Use detected language
+                category=category
             )
-        
-        # Return answer
-        # return {
-        #     "sub_intent": sub_intent,
-        #     "language": language,
-        #     "category": category,
-        #     "answer": answer.answer,
-        #     "title": answer.title,
-        #     "source": answer.source,
-        #     "metadata": answer.metadata
-        # }
-        return {
-        "sub_intent": sub_intent,
-        "language": language,
-        "category": category,
-        "answer": answer.answer,
-        "sub_intent_value": answer.sub_intent.value,
-        "sources": answer.sources or [],
-        "related_links": answer.related_links or []
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting KB answer: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
-        )
+            
+            if not answer:
+                # No answer found
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "No answer found",
+                        "sub_intent": sub_intent,
+                        "language": detected_language,  # ✅ MODIFICADO: Use detected
+                        "category": category,
+                        "suggestion": "Check if content exists in Shopify and has been synced"
+                    }
+                )
+            
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # Return answer
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            return {
+                "sub_intent": sub_intent,
+                "language": detected_language,  # ✅ MODIFICADO: Use detected
+                "category": category,
+                "answer": answer.answer,
+                "sub_intent_value": answer.sub_intent.value,
+                "sources": answer.sources or [],
+                "related_links": answer.related_links or []
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting KB answer: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Internal server error: {str(e)}"
+            )
 
 
 @router.get("/health")
