@@ -289,51 +289,98 @@ class RedisService:
         """Reset statistics (útil para testing)"""
         self._stats = {key: 0 for key in self._stats.keys()}
     
-    async def health_check(self) -> Dict[str, Any]:
-            """
-            ✅ ENHANCED: Health check con validación real de conexión
-            """
-            health_data = {
-                "service": "redis",
-                "timestamp": datetime.now().isoformat(),
-                "connected": self._connected,
-                "client_available": self._client is not None,
-                "connection_attempts": self._connection_attempts,
-                "stats": self._stats.copy()
-            }
+    async def health_check(self, timeout: float = None) -> Dict[str, Any]:
+        """
+        ✅ ENHANCED: Health check con validación real de conexión y timeout configurable
+        
+        Args:
+            timeout: Custom timeout in seconds. 
+                     Default: 1.0s (tolerant for startup and high-load scenarios)
+                     Can override to 0.5s for strict runtime monitoring if needed
+        
+        Performance target: 
+            - Startup/high-load: <1000ms (default)
+            - Runtime strict: <500ms (with timeout=0.5 override)
+        
+        Returns:
+            dict: Health check results with status, metrics, and diagnostics
             
-            # ✅ CRITICAL FIX: REAL CONNECTION TEST - Force verification
-            if self._client:
-                try:
-                    logger.info("🧪 Health check: Testing real Redis connection...")
-                    # Test real con ping
-                    ping_start = time.time()
-                    await self._client.ping()
-                    ping_time = (time.time() - ping_start) * 1000
-                    
-                    # ✅ UPDATE STATE: Si ping exitoso, actualizar estado interno
-                    if not self._connected:
-                        logger.info("🔄 Health check: Updating internal state to connected")
-                        self._connected = True
-                        self._connection_attempts += 1
-                    
+        Status values:
+            - "healthy": All checks passed, response < timeout
+            - "degraded": Connected but slow (> timeout)
+            - "unhealthy": Cannot connect or critical error
+            - "disconnected": No client available
+        """
+        # ✅ Default timeout: 1.0s (more tolerant for startup/high-load)
+        if timeout is None:
+            timeout = 1.0
+        
+        timeout_ms = timeout * 1000
+        
+        health_data = {
+            "service": "redis",
+            "timestamp": datetime.now().isoformat(),
+            "connected": self._connected,
+            "client_available": self._client is not None,
+            "connection_attempts": self._connection_attempts,
+            "stats": self._stats.copy(),
+            "timeout_ms": timeout_ms  # ✅ Include timeout info for debugging
+        }
+        
+        # ✅ CRITICAL FIX: REAL CONNECTION TEST - Force verification
+        if self._client:
+            try:
+                logger.info(f"🧪 Health check: Testing real Redis connection (timeout: {timeout_ms}ms)...")
+                
+                # Test real con ping y timeout configurable
+                ping_start = time.time()
+                await asyncio.wait_for(
+                    self._client.ping(),
+                    timeout=timeout  # ✅ Usar timeout parámetro
+                )
+                ping_time = (time.time() - ping_start) * 1000
+                
+                # ✅ UPDATE STATE: Si ping exitoso, actualizar estado interno
+                if not self._connected:
+                    logger.info("🔄 Health check: Updating internal state to connected")
+                    self._connected = True
+                    self._connection_attempts += 1
+                
+                # ✅ Status based on timeout threshold (dynamic)
+                if ping_time < timeout_ms:
                     health_data["status"] = "healthy"
-                    health_data["connected"] = True  # ✅ Force update
-                    health_data["ping_time_ms"] = round(ping_time, 2)
-                    health_data["last_test"] = "successful"
                     logger.info(f"✅ Health check: Redis confirmed connected (ping: {ping_time:.1f}ms)")
-                    
-                except Exception as ping_error:
-                    logger.warning(f"⚠️ Health check: Redis ping failed: {ping_error}")
-                    health_data["status"] = "unhealthy"
-                    health_data["last_test"] = f"failed: {ping_error}"
-                    health_data["connected"] = False
-                    self._connected = False  # Update internal state
-            else:
-                health_data["status"] = "disconnected"
-                health_data["last_test"] = "no_client"
-            
-            return health_data
+                else:
+                    health_data["status"] = "degraded"
+                    logger.warning(
+                        f"⚠️ Health check: Redis slow response "
+                        f"(ping: {ping_time:.1f}ms, threshold: {timeout_ms}ms)"
+                    )
+                
+                health_data["connected"] = True  # ✅ Force update
+                health_data["ping_time_ms"] = round(ping_time, 2)
+                health_data["last_test"] = "successful"
+                
+            except asyncio.TimeoutError:
+                # ✅ TIMEOUT: Timeout específico con mensaje dinámico
+                logger.warning(f"⚠️ Redis health check: timeout (> {timeout_ms}ms)")
+                health_data["status"] = "degraded"  # No unhealthy, solo lento
+                health_data["last_test"] = f"timeout (> {timeout_ms}ms)"
+                health_data["connected"] = False
+                self._connected = False
+                
+            except Exception as ping_error:
+                # ✅ ERROR: Connection error real
+                logger.warning(f"⚠️ Redis health check: Redis ping failed: {ping_error}")
+                health_data["status"] = "unhealthy"
+                health_data["last_test"] = f"failed: {ping_error}"
+                health_data["connected"] = False
+                self._connected = False  # Update internal state
+        else:
+            health_data["status"] = "disconnected"
+            health_data["last_test"] = "no_client"
+        
+        return health_data
 
 
 # ============================================================================

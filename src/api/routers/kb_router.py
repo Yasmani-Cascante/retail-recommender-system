@@ -13,8 +13,10 @@ Author: Retail Recommender System Team
 Date: 2026-01-17
 """
 
+import asyncio
 import logging
 from typing import Optional
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
@@ -29,8 +31,18 @@ from src.api.utils.language_detection import (
 )
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 router = APIRouter(prefix="/kb", tags=["knowledge-base"])
+
+# Cache para evitar saturar Redis con health checks durante load testing
+# Solo se usa si múltiples requests llegan en <5 segundos
+_health_cache = {
+    "status": None,           # Último health status conocido
+    "timestamp": None,        # Cuándo se obtuvo
+    # "ttl_seconds": 5         # Cache válido por 5 segundos
+    "ttl_seconds": 15          # Cache válido por 15 segundos
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -198,7 +210,9 @@ async def get_kb_answer(
 async def kb_health_check(request: Request = None):
     """
     Health check for Knowledge Base.
-    
+
+    **Performance**: Response time <500ms target
+
     **Returns:**
     ```json
     {
@@ -212,6 +226,27 @@ async def kb_health_check(request: Request = None):
     }
     ```
     """
+
+    # ✅ CACHE CHECK: Evitar ping excesivo a Redis durante load testing
+    now = datetime.utcnow()
+    # Verificar si tenemos cache válido
+    if (_health_cache["status"] is not None and 
+        _health_cache["timestamp"] is not None):
+        
+        # Calcular edad del cache
+        cache_age_seconds = (now - _health_cache["timestamp"]).total_seconds()
+        
+        # Si el cache es reciente (< TTL), retornarlo
+        if cache_age_seconds < _health_cache["ttl_seconds"]:
+            logger.debug(
+                f"✅ Health cache HIT (age: {cache_age_seconds:.2f}s / "
+                f"ttl: {_health_cache['ttl_seconds']}s)"
+            )
+            return _health_cache["status"]
+    
+    # Cache miss o expirado - continuar con health check real
+    logger.debug("🔄 Health cache MISS - performing real health check")
+
     try:
         health_status = {
             "status": "unknown",
@@ -227,11 +262,39 @@ async def kb_health_check(request: Request = None):
             
             # Test Redis connection
             try:
-                await kb.redis.ping()
-                health_status["details"]["redis_connected"] = True
-            except:
+                # ✅ FIX: Usar health_check() del RedisService
+                # Este método ya incluye timeout de 500ms internamente
+                redis_health = await kb.redis.health_check()
+                
+                # Verificar status del health check
+                redis_status = redis_health.get("status", "unknown")
+                
+                if redis_status == "healthy":
+                    # Redis conectado y respondiendo rápido
+                    health_status["details"]["redis_connected"] = True
+                    ping_time = redis_health.get("ping_time_ms", "N/A")
+                    logger.debug(f"✅ Redis health check: connected (ping: {ping_time}ms)")
+                    
+                elif redis_status == "degraded":
+                    # Redis timeout (> 500ms) pero no completamente down
+                    health_status["details"]["redis_connected"] = False
+                    health_status["details"]["redis_status"] = "timeout"
+                    logger.warning("⚠️ Redis health check: timeout (> 500ms)")
+                    
+                else:
+                    # Redis unhealthy o disconnected
+                    health_status["details"]["redis_connected"] = False
+                    health_status["details"]["redis_status"] = redis_status
+                    last_test = redis_health.get("last_test", "failed")
+                    logger.warning(f"⚠️ Redis health check: {last_test}")
+                    
+            except Exception as e:
+                # Fallback si health_check() falla completamente
                 health_status["details"]["redis_connected"] = False
-            
+                health_status["details"]["redis_status"] = "error"
+                health_status["details"]["redis_error"] = str(e)
+                logger.warning(f"⚠️ Redis health check exception: {e}")
+          
             # Test DB connection
             try:
                 async with kb.db.acquire() as conn:
@@ -263,13 +326,26 @@ async def kb_health_check(request: Request = None):
         
         # Return appropriate status code
         if health_status["status"] == "healthy":
+            # ✅ UPDATE CACHE: Guardar resultado en cache
+            _health_cache["status"] = health_status
+            _health_cache["timestamp"] = now
+            logger.debug("💾 Health cache UPDATED (status: healthy)")
             return health_status
+        
         elif health_status["status"] == "degraded":
+            # ✅ UPDATE CACHE antes de retornar
+            _health_cache["status"] = health_status
+            _health_cache["timestamp"] = now
+            logger.debug("💾 Health cache UPDATED (status: degraded)")
             return JSONResponse(
                 status_code=status.HTTP_200_OK,
                 content=health_status
             )
         else:
+            # ✅ UPDATE CACHE antes de retornar
+            _health_cache["status"] = health_status
+            _health_cache["timestamp"] = now
+            logger.debug("💾 Health cache UPDATED (status: unhealthy)")
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content=health_status

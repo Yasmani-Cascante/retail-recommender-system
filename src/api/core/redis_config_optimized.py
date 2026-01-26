@@ -67,13 +67,15 @@ class OptimizedRedisConfig:
         # ✅ 4. PERFORMANCE OPTIMIZATIONS
         config.update({
             # ✅ Timeouts optimizados para startup rápido
-            'socket_timeout': 2.0,           # ← REDUCIDO de 3.0s
-            'socket_connect_timeout': 1.5,   # ← REDUCIDO de 2.0s  
+            # 'socket_timeout': 2.0,           # ← REDUCIDO de 3.0s
+            'socket_timeout': 1.0, 
+            # 'socket_connect_timeout': 1.5,   # ← REDUCIDO de 2.0s  
+            'socket_connect_timeout': 0.8,
             'socket_keepalive': True,
             'socket_keepalive_options': {},
             
             # ✅ Connection pooling enterprise
-            'max_connections': 20,           # Pool size
+            'max_connections': 28,           # Pool size
             'retry_on_timeout': True,
             'retry_on_error': [ConnectionError, TimeoutError],
             'health_check_interval': 30,     # Health check cada 30s

@@ -217,11 +217,13 @@ class ServiceFactory:
                         # ✅ FIX 5: Timeout optimizado con Solución 3
                         if REDIS_OPTIMIZATION_AVAILABLE:
                             optimized_config = get_optimized_config_for_service_factory()
-                            timeout = optimized_config.get('socket_connect_timeout', 1.5)
+                            # timeout = optimized_config.get('socket_connect_timeout', 1.5)
+                            # ✅ CAMBIO: Usar timeout más largo para full connection flow
+                            timeout = optimized_config.get('socket_timeout', 1.0)  # ← CAMBIAR de 'socket_connect_timeout' a 'socket_timeout'
                             logger.info(f"🔧 Using optimized Redis timeout: {timeout}s")
                         else:
-                            timeout = 3.0
-                            
+                            # timeout = 3.0
+                            timeout = 1.5  # ← CAMBIAR de 3.0 a 1.5s (suficiente para Redis Cloud)
                         redis_service = await asyncio.wait_for(
                             get_redis_service(),
                             timeout=timeout
@@ -249,7 +251,9 @@ class ServiceFactory:
                         
                         # ✅ CRITICAL FIX: Single fast retry con state synchronization
                         try:
-                            retry_timeout = timeout * 0.8 if REDIS_OPTIMIZATION_AVAILABLE else 2.0
+                            # retry_timeout = timeout * 0.8 if REDIS_OPTIMIZATION_AVAILABLE else 2.0
+                            # ✅ CAMBIO: Aumentar multiplier para dar más tiempo en retry
+                            retry_timeout = timeout * 1.5 if REDIS_OPTIMIZATION_AVAILABLE else 1.5  # ← CAMBIAR de 0.8 a 1.5
                             logger.info(f"🔄 Fast retry with timeout: {retry_timeout}s")
                             
                             # ✅ FIX: Get existing instance and force reconnection
