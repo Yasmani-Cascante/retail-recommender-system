@@ -22,7 +22,6 @@ import os
 import time
 import logging
 import asyncio
-import inspect
 from typing import Dict, List, Optional, Any, Callable
 
 # ✅ NUEVO: Import parallel processor
@@ -190,55 +189,18 @@ async def get_mcp_conversation_recommendations(
                     # INFORMATIONAL QUERY → Return knowledge base answer
                     from src.api.core.intent_types import IntentType
                     if intent_result.primary_intent == IntentType.INFORMATIONAL:
-                        logger.info("📚 INFORMATIONAL intent detected - using Knowledge Base v2")
+                        logger.info("📚 INFORMATIONAL intent detected - using Knowledge Base")
                         
                         from src.api.core.intent_types import InformationalSubIntent
+                        from src.api.core.knowledge_base import get_answer
                         
-                        # ✅ FIX: Resolve Knowledge Base instance robustly (app.state, module aliases, fallback)
-                        from src.api import main_unified_redis
-
-                        kb_answer = None
-                        kb_obj = None
-
-                        try:
-                            # Prefer app.state (lifespan-initialized) values
-                            if hasattr(main_unified_redis, 'app') and getattr(main_unified_redis, 'app').state:
-                                kb_obj = getattr(main_unified_redis.app.state, 'knowledge_base_v2', None) or getattr(main_unified_redis.app.state, 'knowledge_base', None)
-
-                            # Fall back to module-level aliases if not set on app.state
-                            if not kb_obj:
-                                kb_obj = getattr(main_unified_redis, 'knowledge_base_v2', None) or getattr(main_unified_redis, 'knowledge_base', None)
-
-                        except Exception as resolve_e:
-                            logger.warning(f"⚠️ Error resolving KB from main_unified_redis: {resolve_e}")
-
-                        # Final fallback: try hardcoded KB singleton
-                        if not kb_obj:
-                            try:
-                                from src.api.core.knowledge_base import get_knowledge_base
-                                kb_obj = get_knowledge_base()
-                                logger.info("ℹ️ Using hardcoded fallback KB via get_knowledge_base()")
-                            except Exception as fallback_e:
-                                logger.debug(f"Fallback hardcoded KB not available: {fallback_e}")
-
-                        if kb_obj:
-                            try:
-                                maybe_result = kb_obj.get_answer(
-                                    sub_intent=InformationalSubIntent(intent_result.sub_intent),
-                                    language=language,
-                                    category=None
-                                )
-                                # Support both async and sync implementations
-                                if asyncio.iscoroutine(maybe_result) or inspect.isawaitable(maybe_result):
-                                    kb_answer = await maybe_result
-                                else:
-                                    kb_answer = maybe_result
-
-                                logger.info(f"✅ KB query completed for language={language}")
-                            except Exception as kb_e:
-                                logger.error(f"❌ KB error: {kb_e}", exc_info=True)
-                        else:
-                            logger.warning("⚠️ No Knowledge Base instance available to query")
+                        # Get answer from knowledge base
+                        kb_answer = get_answer(
+                            sub_intent=InformationalSubIntent(intent_result.sub_intent),
+                            product_context=intent_result.product_context,
+                            query=conversation_query,
+                            # language=language  # ✅ NUEVO: Pasar idioma detectado al KB
+                        )
                         
                         if kb_answer:
                             logger.info("✅ Knowledge Base answer found - returning informational response")

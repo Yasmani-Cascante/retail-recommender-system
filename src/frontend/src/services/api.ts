@@ -5,6 +5,7 @@ interface ConversationRequest {
   user_id?: string;
   session_id?: string;
   market_id?: string;
+  language: string;
   widget_context?: {
     page_url: string;
     page_type: string;
@@ -45,6 +46,7 @@ export class ConversationAPI {
         user_id: this.userId,
         session_id: this.sessionId,
         market_id: this.config.marketId || 'US',
+        language: navigator.language.split('-')[0],  // ✅ AGREGAR soporte de idioma
         widget_context: {
           page_url: window.location.href,
           page_type: this.detectPageType(),
@@ -58,6 +60,7 @@ export class ConversationAPI {
         headers: {
           'Content-Type': 'application/json',
           'X-API-Key': this.config.apiKey,
+          'Accept-Language': navigator.language || 'en-US',  // ✅ AGREGAR soporte de idioma
           'X-Widget-Version': '1.0.0',
         },
         body: JSON.stringify(request),

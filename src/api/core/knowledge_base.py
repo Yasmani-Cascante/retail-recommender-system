@@ -994,7 +994,7 @@ def get_knowledge_base() -> SimpleKnowledgeBase:
 def get_answer(
     sub_intent: InformationalSubIntent,
     product_context: Optional[List[str]] = None,
-    query: Optional[str] = None
+    query: Optional[str] = None,
 ) -> Optional[KnowledgeBaseAnswer]:
     """
     Public API for knowledge base queries.

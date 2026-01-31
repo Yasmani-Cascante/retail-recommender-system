@@ -14,7 +14,7 @@ adapt_product_for_market_async,
 )
 from src.core.market.adapter import get_market_adapter
 from typing import Dict, List, Optional, Any
-from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
 from pydantic import BaseModel
 
 
@@ -22,6 +22,12 @@ from pydantic import BaseModel
 from src.api.core.performance_optimizer import (
     execute_mcp_call, execute_personalization_call, execute_retail_api_call,
     get_performance_report, ComponentType
+)
+
+# ✅ NUEVO: Import language detection utilities
+from src.api.utils.language_detection import (
+    detect_language_from_request,
+    validate_language
 )
 
 # ⚡ CRITICAL PERFORMANCE OPTIMIZATION: Import enhanced optimizer
@@ -151,7 +157,8 @@ class ConversationRequest(BaseModel):
     user_id: Optional[str] = None
     session_id: Optional[str] = None
     market_id: str = "default"
-    language: str = "en"
+    # language: str = "en"
+    language: Optional[str] = None # ISO language code, e.g., 'en', 'es'
     product_id: Optional[str] = None
     n_recommendations: int = 5
 
@@ -385,6 +392,7 @@ router = APIRouter(
 @router.post("/conversation", response_model=ConversationResponse)
 async def process_conversation(
     conversation: ConversationRequest,
+    request: Request,  # ✅ AGREGAR Request para access headers si es necesario
     mcp_client: MCPClientDep,
     market_manager: MarketManagerDep,
     market_cache: MarketCacheDep,
@@ -399,8 +407,23 @@ async def process_conversation(
     ✅ ENTERPRISE: Capacidades ML + compatibilidad tests Fase 2
     """
     start_time = time.time()
-    
+
     try:
+        # ✅ NUEVO: Detección automática de idioma
+        if conversation.language and conversation.language != "en":
+            # Usuario especificó idioma explícitamente
+            detected_language = validate_language(conversation.language)
+            detection_method = "explicit_request_body"
+        else:
+            # Auto-detectar desde Accept-Language header
+            detected_language = detect_language_from_request(request)
+            detection_method = "accept_language_header" if request.headers.get("Accept-Language") else "default"
+        
+        logger.info(
+            f"MCP Conversation - Language: {detected_language} "
+            f"(method: {detection_method}), Market: {conversation.market_id}"
+        )
+
         # 🔧 FIX CRÍTICO #1: Obtener ConversationStateManager INMEDIATAMENTE
         state_manager = await get_conversation_state_manager()
         if not state_manager:
@@ -625,9 +648,13 @@ async def process_conversation(
                 conversation_query=conversation.query,
                 market_id=conversation.market_id,
                 n_recommendations=conversation.n_recommendations,
-                session_id=real_session_id
+                session_id=real_session_id,
+                language=detected_language  # ✅ CRÍTICO: Pasar idioma detectado
             )
-            
+
+            # ✅ NUEVO: Log para confirmar que se pasó correctamente
+            logger.info(f"✅ Passed language '{detected_language}' to handler")
+
             # ✅ EXTRAER datos del handler
             ai_response = response_dict.get("ai_response", f"Based on your query '{conversation.query}', here are some recommendations.")
             recommendations = response_dict.get("recommendations", [])
@@ -1040,7 +1067,7 @@ async def process_conversation(
                                     conversation.market_id: UserMarketPreferences(
                                         market_id=conversation.market_id,
                                         currency_preference='USD' if conversation.market_id == 'US' else 'EUR',
-                                        language_preference=conversation.language,
+                                        language_preference=detected_language,
                                         price_sensitivity=0.5,
                                         brand_affinities=[],
                                         category_interests={},
@@ -1054,7 +1081,7 @@ async def process_conversation(
                                     conversation.market_id: {
                                         'market_id': conversation.market_id,
                                         'currency_preference': 'USD' if conversation.market_id == 'US' else 'EUR',
-                                        'language_preference': conversation.language,
+                                        'language_preference': detected_language,
                                         'price_sensitivity': 0.5,
                                         'updated_at': current_time
                                     }
@@ -1078,7 +1105,7 @@ async def process_conversation(
                             # === CONTEXTO DE MERCADO ===
                             self.market_config = {
                                 'currency': 'USD' if conversation.market_id == 'US' else 'EUR',
-                                'language': conversation.language,
+                                'language': detected_language,
                                 'cultural_preferences': {'communication_style': 'standard'},
                                 'local_holidays': [],
                                 'price_sensitivity': 'medium',
@@ -1091,14 +1118,14 @@ async def process_conversation(
                                 'query': conversation.query,
                                 'session_id': self.session_id,
                                 'market_id': self.market_id,
-                                'language': conversation.language
+                                'language': detected_language
                             }
                             
                             # === DATOS DE PERSONALIZACIÓN ===
                             self.personalization_data = {
                                 'strategy_history': ['hybrid'],
                                 'adaptation_scores': {'cultural': 0.7, 'behavioral': 0.6},
-                                'cultural_adaptations': {'language': conversation.language},
+                                'cultural_adaptations': {'language': detected_language},
                                 'ml_predictions': {'intent_confidence': 0.8}
                             }
                             
@@ -1489,6 +1516,7 @@ async def get_supported_markets(
 @router.get("/recommendations/{product_id}", response_model=Dict)
 async def get_market_recommendations(
     product_id: str,
+    request: Request,  # ✅ AGREGAR Request para headers
     mcp_recommender: MCPRecommenderDep,  # ✅ AÑADIDO DI
     market_id: str = Query(MarketID.DEFAULT, description="ID del mercado"),
     user_id: Optional[str] = Header(None),
@@ -1499,6 +1527,7 @@ async def get_market_recommendations(
         description="ID de sesión para mantener contexto conversacional. "
                     "Si no se provee, se generará uno nuevo por mercado con una duración de 24 horas."
     ),
+    language: Optional[str] = Query(None, description="Idioma (es, en)"),  # ✅ NUEVO
     current_user: str = Depends(get_current_user)
 ):
     """
@@ -1513,6 +1542,7 @@ async def get_market_recommendations(
         user_id: ID del usuario (opcional)
         n: Número de recomendaciones (1-20)
         session_id: ID de sesión (NUEVO - opcional)
+        language: Idioma explícito (opcional, se auto-detecta si no se provee)
         current_user: Usuario autenticado
         
     ✅ MEJORADO: Session management automático con opción manual
@@ -1526,6 +1556,20 @@ async def get_market_recommendations(
     start_time = time.time()
     
     try:
+        # ✅ Detección automática de idioma
+        if language and language != "en":
+            detected_language = validate_language(language)
+            detection_method = "explicit_query_parameter"
+        else:
+            detected_language = detect_language_from_request(request)
+            detection_method = "accept_language_header" if request.headers.get("Accept-Language") else "default"
+        
+        logger.info(
+            f"Market Recommendations - Language: {detected_language} "
+            f"(method: {detection_method}), Market: {market_id}"
+        )
+
+        # ✅ VALIDACIÓN: mcp_recommender
         if not mcp_recommender:
             raise HTTPException(status_code=503, detail="MCP recommender not initialized")
         
@@ -1577,7 +1621,8 @@ async def get_market_recommendations(
                 market_id=market_id,
                 user_id=validated_user_id,
                 n_recommendations=n,
-                session_id=effective_session_id
+                session_id=effective_session_id,
+                language=detected_language
             )
             
             recommendations = response_dict.get("recommendations", [])

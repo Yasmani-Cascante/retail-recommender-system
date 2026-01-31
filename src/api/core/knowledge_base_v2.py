@@ -116,13 +116,19 @@ class ShopifyKnowledgeBase:
         
         # Fallback to hardcoded KB (backward compatibility)
         if enable_fallback:
+            self.fallback_kb = None
             try:
-                from src.api.core.knowledge_base import KnowledgeBase
-                self.fallback_kb = KnowledgeBase()
-                logger.info("Fallback KB (hardcoded) enabled")
-            except ImportError:
-                logger.warning("Could not import fallback KB (knowledge_base.py)")
-                self.fallback_kb = None
+                from src.api.core.knowledge_base import get_knowledge_base
+                self.fallback_kb = get_knowledge_base()
+                logger.info("Fallback KB (hardcoded) enabled via get_knowledge_base()")
+            except Exception:
+                try:
+                    from src.api.core.knowledge_base import SimpleKnowledgeBase
+                    self.fallback_kb = SimpleKnowledgeBase()
+                    logger.info("Fallback KB (hardcoded) enabled via SimpleKnowledgeBase")
+                except Exception as e:
+                    logger.warning(f"Could not import fallback KB (knowledge_base.py): {e}")
+                    self.fallback_kb = None
         else:
             self.fallback_kb = None
         

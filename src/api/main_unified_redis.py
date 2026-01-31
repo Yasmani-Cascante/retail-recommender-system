@@ -85,6 +85,9 @@ hybrid_recommender = None
 start_time = time.time()  # Para uptime tracking
 redis_client = None  # Para backward compatibility
 product_cache = None  # Para backward compatibility
+# Knowledge base module-level aliases for backwards compatibility
+knowledge_base = None
+knowledge_base_v2 = None
 
 from src.api.core.config import get_settings
 from src.api.startup_helper import StartupManager
@@ -565,6 +568,9 @@ async def lifespan(app: FastAPI):
                 app.state.knowledge_base_v2 = kb_v2
                 # ✅ ALIAS: También asignar como knowledge_base para compatibilidad con routers
                 app.state.knowledge_base = kb_v2
+                # Module-level aliases for legacy imports (e.g., modules referencing src.api.main_unified_redis.knowledge_base)
+                knowledge_base_v2 = kb_v2
+                knowledge_base = kb_v2
                 logger.info("✅ Knowledge Base v2 initialized with triple-layer cache")
                 
                 # 5. Start Background Sync Job (optional)
@@ -605,6 +611,9 @@ async def lifespan(app: FastAPI):
                 app.state.kb_sync_service = None
                 app.state.knowledge_base_v2 = None
                 app.state.knowledge_base = None
+                # Keep module-level aliases in sync
+                knowledge_base_v2 = None
+                knowledge_base = None
                 app.state.kb_background_sync = None
                 
         else:
@@ -618,6 +627,9 @@ async def lifespan(app: FastAPI):
             app.state.kb_sync_service = None
             app.state.knowledge_base_v2 = None
             app.state.knowledge_base = None
+            # Keep module-level aliases in sync
+            knowledge_base_v2 = None
+            knowledge_base = None
             app.state.kb_background_sync = None
             
         # ============================================================================
