@@ -108,6 +108,9 @@ class ShopifyPage(BaseModel):
     author: Optional[str] = None
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    updated_at: datetime = Field(..., description="Last update timestamp")
+
     published_at: Optional[datetime] = None
     template_suffix: Optional[str] = Field(None, description="Template identifier")
     
@@ -209,7 +212,7 @@ class KBContentUpdate(BaseModel):
 class KBContent(KBContentBase):
     """
     Full KB Content model (from database).
-    Includes all fields from kb_contents table.
+    Includes all fields from kb_content table.
     """
     id: UUID = Field(..., description="Primary key")
     

@@ -13,6 +13,17 @@ import os
 import sys
 import asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
+from pathlib import Path
+from dotenv import load_dotenv  # ✅ AGREGAR
+
+# ✅ CARGAR .env.test ANTES de cualquier import de config
+env_path = Path(__file__).parent.parent / ".env.test"
+if env_path.exists():
+    load_dotenv(env_path, override=True)
+    print(f"✅ Loaded test environment from: {env_path}")
+else:
+    print(f"⚠️ .env.test not found at: {env_path}")
+
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from typing import Optional, List, Dict
@@ -520,6 +531,102 @@ def test_user_events():
         {"user_id": "test_user_1", "event_type": "add-to-cart", "product_id": "test_prod_2"},
         {"user_id": "test_user_1", "event_type": "purchase-complete", "product_id": "test_prod_1", "purchase_amount": 19.99}
     ]
+
+# ============================================================================
+# KNOWLEDGE BASE FIXTURES
+# ============================================================================
+
+@pytest.fixture
+def mock_db_pool():
+    """Mock asyncpg pool for KB tests."""
+    pool = AsyncMock()
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=1)
+    conn.fetchrow = AsyncMock(return_value=None)
+    conn.fetch = AsyncMock(return_value=[])
+    conn.execute = AsyncMock()
+    
+    async def mock_acquire():
+        return conn
+    
+    pool.acquire = MagicMock(return_value=mock_acquire())
+    pool.get_size = MagicMock(return_value=10)
+    pool.get_idle_size = MagicMock(return_value=8)
+    
+    return pool
+
+
+@pytest.fixture
+def mock_shopify_kb_client(mock_shopify_client):
+    """Extend existing mock_shopify_client with KB methods."""
+    kb_pages = [{
+        "id": 158838489397,
+        "title": "Política de Devoluciones",
+        "handle": "politica-de-devoluciones",
+        "body_html": "<h2>Política de Devoluciones</h2>",
+        "metafields": [
+            {"key": "kb_sub_intent", "value": "policy_return"},
+            {"key": "kb_category", "value": "general"}
+        ]
+    }]
+    
+    translations = {
+        158838489397: {
+            "es": {"title": "Política de Devoluciones", "body_html": "<h2>ES</h2>"},
+            "en": {"title": "Return Policy", "body_html": "<h2>EN</h2>"}
+        }
+    }
+    
+    async def mock_get_kb_pages():
+        return kb_pages
+    
+    async def mock_get_page_translations(page_id):
+        return translations.get(page_id, {})
+    
+    def mock_parse_metadata(page):
+        metafields = page.get("metafields", [])
+        metadata = {}
+        for field in metafields:
+            if field["key"] == "kb_sub_intent":
+                metadata["sub_intent"] = field["value"]
+            elif field["key"] == "kb_category":
+                metadata["category"] = field["value"]
+        return metadata
+    
+    mock_shopify_client.get_kb_pages = AsyncMock(side_effect=mock_get_kb_pages)
+    mock_shopify_client.get_page_translations = AsyncMock(side_effect=mock_get_page_translations)
+    mock_shopify_client.parse_kb_metadata = MagicMock(side_effect=mock_parse_metadata)
+    
+    return mock_shopify_client
+
+
+@pytest.fixture
+def mock_kb_redis_service():
+    """Mock RedisService with cache invalidation tracking."""
+    redis = AsyncMock()
+    redis.delete_calls = []
+    redis._cache = {}
+    
+    async def mock_get(key):
+        return redis._cache.get(key)
+    
+    async def mock_set(key, value, ttl=None):
+        redis._cache[key] = value
+    
+    async def mock_delete(key):
+        redis.delete_calls.append(key)
+        if key in redis._cache:
+            del redis._cache[key]
+    
+    async def mock_ping():
+        return True
+    
+    redis.get = AsyncMock(side_effect=mock_get)
+    redis.set = AsyncMock(side_effect=mock_set)
+    redis.delete = AsyncMock(side_effect=mock_delete)
+    redis.ping = AsyncMock(side_effect=mock_ping)
+    
+    return redis
 
 # Utilidades para pruebas asíncronas
 def async_test(f):

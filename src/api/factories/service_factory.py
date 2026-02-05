@@ -17,6 +17,8 @@ import logging
 from typing import Optional, TYPE_CHECKING
 import asyncio
 
+import asyncpg
+
 # Core services
 from src.api.core.redis_service import get_redis_service, RedisService
 from src.api.core.store import get_shopify_client
@@ -50,6 +52,9 @@ except ImportError:
 # Business services  
 from src.api.inventory.inventory_service import InventoryService
 from src.api.inventory.availability_checker import create_availability_checker
+
+from src.api.core.knowledge_base_v2 import ShopifyKnowledgeBase
+from src.api.services.shopify_kb_sync import ShopifyKBSyncService
 
 
 
@@ -106,11 +111,19 @@ class ServiceFactory:
     _market_manager_lock: Optional[asyncio.Lock] = None
     _market_cache_lock: Optional[asyncio.Lock] = None
     _state_manager_lock: Optional[asyncio.Lock] = None
+    # Locks for Knowledge Base and DB pool
+    _knowledge_base_lock: Optional[asyncio.Lock] = None
+    _kb_sync_lock: Optional[asyncio.Lock] = None
+    _db_pool_lock: Optional[asyncio.Lock] = None
     _redis_circuit_breaker = {
         "failures": 0,
         "last_failure": 0,
         "circuit_open": False
     }
+    # Singletons KB
+    _knowledge_base: Optional['ShopifyKnowledgeBase'] = None
+    _kb_sync_service: Optional['ShopifyKBSyncService'] = None
+    _db_pool: Optional['asyncpg.Pool'] = None
     
     @classmethod
     def _get_redis_lock(cls):
@@ -189,6 +202,122 @@ class ServiceFactory:
             cls._state_manager_lock = asyncio.Lock()
         return cls._state_manager_lock
     
+    @classmethod
+    def _get_knowledge_base_lock(cls):
+        if cls._knowledge_base_lock is None:
+            cls._knowledge_base_lock = asyncio.Lock()
+        return cls._knowledge_base_lock
+
+
+    @classmethod
+    def _get_kb_sync_lock(cls):
+        if cls._kb_sync_lock is None:
+            cls._kb_sync_lock = asyncio.Lock()
+        return cls._kb_sync_lock
+
+
+    @classmethod
+    def _get_db_pool_lock(cls):
+        if cls._db_pool_lock is None:
+            cls._db_pool_lock = asyncio.Lock()
+        return cls._db_pool_lock
+
+    @classmethod
+    async def get_db_pool(cls) -> 'asyncpg.Pool':
+        """Get PostgreSQL connection pool singleton."""
+        lock = cls._get_db_pool_lock()
+        
+        async with lock:
+            if cls._db_pool is None:
+                logger.info("Initializing PostgreSQL connection pool...")
+                
+                try:
+                    import asyncpg
+                    from src.api.core.config import get_settings
+                        
+                    settings = get_settings()
+                    cls._db_pool = await asyncpg.create_pool(
+                        host=settings.db_host,
+                        port=settings.db_port,
+                        user=settings.db_user,
+                        password=settings.db_password,
+                        database=settings.db_name,
+                        min_size=5,
+                        max_size=20,
+                        command_timeout=30
+                    )
+                    
+                    logger.info("✅ PostgreSQL pool initialized")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to create DB pool: {e}")
+                    raise
+            
+            return cls._db_pool
+
+
+    @classmethod
+    async def get_knowledge_base(cls) -> 'ShopifyKnowledgeBase':
+        """Get ShopifyKnowledgeBase singleton."""
+        lock = cls._get_knowledge_base_lock()
+        
+        async with lock:
+            if cls._knowledge_base is None:
+                logger.info("Initializing ShopifyKnowledgeBase...")
+                
+                try:
+                    from src.api.core.knowledge_base_v2 import ShopifyKnowledgeBase
+                    
+                    db_pool = await cls.get_db_pool()
+                    redis = await cls.get_redis_service()
+                    shopify = get_shopify_client()
+                    
+                    cls._knowledge_base = ShopifyKnowledgeBase(
+                        db=db_pool,
+                        redis=redis,
+                        shopify=shopify,
+                        enable_fallback=True
+                    )
+                    
+                    logger.info("✅ ShopifyKnowledgeBase initialized")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to create ShopifyKnowledgeBase: {e}")
+                    raise
+            
+            return cls._knowledge_base
+
+
+    @classmethod
+    async def get_kb_sync_service(cls) -> 'ShopifyKBSyncService':
+        """Get ShopifyKBSyncService singleton."""
+        lock = cls._get_kb_sync_lock()
+        
+        async with lock:
+            if cls._kb_sync_service is None:
+                logger.info("Initializing ShopifyKBSyncService...")
+                
+                try:
+                    from src.api.services.shopify_kb_sync import ShopifyKBSyncService
+                    
+                    db_pool = await cls.get_db_pool()
+                    redis = await cls.get_redis_service()
+                    shopify = get_shopify_client()
+                    
+                    cls._kb_sync_service = ShopifyKBSyncService(
+                        shopify_client=shopify,
+                        db_pool=db_pool,
+                        redis_client=redis
+                    )
+                    
+                    logger.info("✅ ShopifyKBSyncService initialized")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to create ShopifyKBSyncService: {e}")
+                    raise
+            
+            return cls._kb_sync_service
+        
     @classmethod
     async def get_redis_service(cls) -> RedisService:
         """

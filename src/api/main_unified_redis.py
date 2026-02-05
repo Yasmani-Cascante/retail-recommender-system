@@ -134,6 +134,7 @@ except ImportError as e:
     MCP_PERSONALIZATION_AVAILABLE = False
     logger.warning(f"⚠️ MCP Personalization Engine not available: {e}")
 
+from src.api.routers.health_kb import router as health_kb_router
 # ============================================================================
 # 🚀 FASTAPI LIFESPAN CONTEXT MANAGER (MODERN PATTERN) - CÓDIGO COMPLETO PRESERVADO
 # ============================================================================
@@ -511,11 +512,11 @@ async def lifespan(app: FastAPI):
                 logger.info("🔄 Creating PostgreSQL connection pool...")
                 try:
                     db_pool = await asyncpg.create_pool(
-                        host=settings.DB_HOST,
-                        port=settings.DB_PORT,
-                        user=settings.DB_USER,
-                        password=settings.DB_PASSWORD,
-                        database=settings.DB_NAME,
+                        host=settings.db_host,
+                        port=settings.db_port,
+                        user=settings.db_user,
+                        password=settings.db_password,
+                        database=settings.db_name,
                         min_size=5,  # Mínimo 5 conexiones
                         max_size=20, # Máximo 20 conexiones (suficiente para 20 páginas)
                         command_timeout=60
@@ -1342,6 +1343,11 @@ app.dependency_overrides[shopify_webhooks.get_sync_service] = get_kb_sync_servic
 # app.dependency_overrides[get_sync_service] = lambda: app.state.kb_sync_service
 app.include_router(kb_router.router, prefix="/api/v1") 
 
+app.include_router(
+    health_kb_router,
+    prefix="/api",
+    tags=["health-db"]
+)
 # ============================================================================
 # 🔍 HELPER FUNCTIONS ADICIONALES - CÓDIGO ORIGINAL PRESERVADO
 # ============================================================================

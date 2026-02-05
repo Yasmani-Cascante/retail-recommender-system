@@ -84,11 +84,7 @@ class ShopifyKBSyncService:
         self.redis = redis_service
         self.metadata_parser = KBMetadataParser()
         
-        # ✅ FIX: Semaphore to prevent race conditions
-        # Limit concurrent DB operations to avoid lock conflicts
-        self._db_semaphore = asyncio.Semaphore(1)  # Max 3 concurrent DB writes
-        
-        logger.info("ShopifyKBSyncService initialized (max_concurrent_syncs=3)")
+        logger.info("ShopifyKBSyncService initialized")
     
     # ──────────────────────────────────────────────────────────────────────
     # FULL SYNC
@@ -262,12 +258,6 @@ class ShopifyKBSyncService:
             category = kb_metadata.get("category")
             default_language  = kb_metadata.get("language", "es")
             
-                # ✅ AGREGAR LOGGING TEMPORAL
-            # logger.warning(
-            #     f"[DEBUG] Page {page.id}: category={category!r}, "
-            #     f"type={type(category)}, kb_metadata={kb_metadata}"
-            # )
-            
             if not sub_intent:
                 logger.error(f"Page {page.id}: sub_intent is required in kb_metadata")
                 return KBSyncMetadata(
@@ -400,27 +390,36 @@ class ShopifyKBSyncService:
     # ──────────────────────────────────────────────────────────────────────
     
     async def _upsert_kb_content(
-    self,
-    sub_intent: str,
-    language: str,
-    category: Optional[str],
-    content: str,
-    content_html: str,
-    title: Optional[str],
-    shopify_page_id: int,
-    shopify_url: Optional[str],
-    shopify_handle: Optional[str]
+        self,
+        sub_intent: str,
+        language: str,
+        category: Optional[str],
+        content: str,
+        content_html: str,
+        title: Optional[str],
+        shopify_page_id: int,
+        shopify_url: Optional[str],
+        shopify_handle: Optional[str]
     ) -> None:
-        """Upsert KB content with retry logic."""
-        normalized_category = category if category is not None else 'general'
+        """
+        Upsert KB content to PostgreSQL.
         
+        Uses INSERT ... ON CONFLICT to handle both insert and update.
+        """
         query = """
-        INSERT INTO kb_contents (
-            sub_intent, language, category, content, content_html,
-            title, shopify_page_id, shopify_url, shopify_handle,
-            last_synced, created_at, updated_at
+        INSERT INTO kb_content (
+            sub_intent,
+            language,
+            category,
+            content,
+            content_html,
+            title,
+            shopify_page_id,
+            shopify_url,
+            shopify_handle,
+            last_synced
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), NOW()
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()
         )
         ON CONFLICT (sub_intent, language, COALESCE(category, 'general'))
         DO UPDATE SET
@@ -429,41 +428,26 @@ class ShopifyKBSyncService:
             title = EXCLUDED.title,
             shopify_url = EXCLUDED.shopify_url,
             shopify_handle = EXCLUDED.shopify_handle,
-            last_synced = NOW(),
-            updated_at = NOW()
+            last_synced = NOW()
         """
         
-        # Retry logic
-        max_retries = 3
-        retry_delay = 0.1
+        async with self.db.acquire() as conn:
+            await conn.execute(
+                query,
+                sub_intent,
+                language,
+                category,
+                content,
+                content_html,
+                title,
+                shopify_page_id,
+                shopify_url,
+                shopify_handle
+            )
         
-        for attempt in range(max_retries):
-            try:
-                async with self._db_semaphore:
-                    async with self.db.acquire() as conn:
-                        await conn.execute(
-                            query, sub_intent, language, normalized_category,
-                            content, content_html, title,
-                            shopify_page_id, shopify_url, shopify_handle
-                        )
-                        logger.debug(f"✅ Upserted: {sub_intent}/{language}/{normalized_category}")
-                        return
-                        
-            except Exception as e:
-                error_msg = str(e).lower()
-                
-                if any(x in error_msg for x in [
-                    "another operation is in progress",
-                    "deadlock detected",
-                    "too many connections"
-                ]):
-                    if attempt < max_retries - 1:
-                        logger.warning(f"⚠️ Retry {attempt + 1}/{max_retries}: {e}")
-                        await asyncio.sleep(retry_delay * (attempt + 1))
-                        continue
-                
-                logger.error(f"❌ UPSERT FAILED: {e}")
-                raise
+        logger.debug(
+            f"Upserted KB content: {sub_intent}/{language}/{category or 'general'}"
+        )
     
     # ──────────────────────────────────────────────────────────────────────
     # CACHE INVALIDATION
@@ -536,7 +520,7 @@ class ShopifyKBSyncService:
         
         try:
             query = """
-            DELETE FROM kb_contents
+            DELETE FROM kb_content
             WHERE shopify_page_id = $1
             RETURNING sub_intent, language, category
             """

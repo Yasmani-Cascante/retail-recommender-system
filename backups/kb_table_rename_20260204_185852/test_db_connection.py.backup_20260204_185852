@@ -1,0 +1,205 @@
+"""
+Test de Conexión PostgreSQL para Shopify KB Integration
+=========================================================
+
+Verifica que:
+1. asyncpg está instalado
+2. PostgreSQL está accesible
+3. Base de datos retail_recommender_db existe
+4. Tabla kb_content existe y es accesible
+5. Configuración de .env es correcta
+"""
+
+import asyncio
+import sys
+from pathlib import Path
+
+# Agregar src al path
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+async def test_postgresql_connection():
+    """Test completo de conexión PostgreSQL"""
+    
+    print("\n" + "=" * 70)
+    print("TEST DE CONEXIÓN POSTGRESQL - SHOPIFY KB")
+    print("=" * 70 + "\n")
+    
+    # =========================================================================
+    # PASO 1: Verificar que asyncpg está instalado
+    # =========================================================================
+    print("[1/5] Verificando instalación de asyncpg...")
+    try:
+        import asyncpg
+        print(f"    ✅ asyncpg {asyncpg.__version__} instalado correctamente\n")
+    except ImportError as e:
+        print(f"    ❌ ERROR: asyncpg no está instalado")
+        print(f"    Ejecuta: pip install asyncpg>=0.29.0")
+        return False
+    
+    # =========================================================================
+    # PASO 2: Cargar configuración
+    # =========================================================================
+    print("[2/5] Cargando configuración desde .env...")
+    try:
+        from src.api.core.config import get_settings
+        settings = get_settings()
+        
+        print(f"    DB_HOST: {settings.DB_HOST}")
+        print(f"    DB_PORT: {settings.DB_PORT}")
+        print(f"    DB_USER: {settings.DB_USER}")
+        print(f"    DB_NAME: {settings.DB_NAME}")
+        print(f"    DB_PASSWORD: {'***' if settings.DB_PASSWORD else 'NOT SET'}")
+        print("    ✅ Configuración cargada correctamente\n")
+    except Exception as e:
+        print(f"    ❌ ERROR al cargar configuración: {e}\n")
+        return False
+    
+    # =========================================================================
+    # PASO 3: Test de conexión básica
+    # =========================================================================
+    print("[3/5] Probando conexión a PostgreSQL...")
+    try:
+        conn = await asyncpg.connect(
+            host=settings.DB_HOST,
+            port=settings.DB_PORT,
+            user=settings.DB_USER,
+            password=settings.DB_PASSWORD,
+            database=settings.DB_NAME,
+            timeout=10
+        )
+        print("    ✅ Conexión exitosa a PostgreSQL\n")
+    except asyncpg.InvalidCatalogNameError:
+        print(f"    ❌ ERROR: Base de datos '{settings.DB_NAME}' no existe")
+        print(f"    Crea la base de datos con: createdb -U {settings.DB_USER} {settings.DB_NAME}")
+        return False
+    except asyncpg.InvalidPasswordError:
+        print(f"    ❌ ERROR: Password incorrecta para usuario '{settings.DB_USER}'")
+        print(f"    Verifica DB_PASSWORD en .env")
+        return False
+    except Exception as e:
+        print(f"    ❌ ERROR de conexión: {e}")
+        print(f"    Verifica que PostgreSQL esté corriendo y accesible")
+        return False
+    
+    # =========================================================================
+    # PASO 4: Verificar tabla kb_content
+    # =========================================================================
+    print("[4/5] Verificando tabla kb_content...")
+    try:
+        # Check if table exists
+        table_exists = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'kb_content'
+            )
+            """
+        )
+        
+        if not table_exists:
+            print("    ❌ ERROR: Tabla kb_content no existe")
+            print("    Ejecuta: psql -U postgres -d retail_recommender_db -f migrations/001_shopify_kb_buffer.sql")
+            await conn.close()
+            return False
+        
+        # Get table stats
+        stats = await conn.fetchrow(
+            """
+            SELECT 
+                COUNT(*) as row_count,
+                pg_size_pretty(pg_total_relation_size('kb_content')) as table_size
+            FROM kb_content
+            """
+        )
+        
+        print(f"    ✅ Tabla kb_content existe")
+        print(f"    Registros: {stats['row_count']}")
+        print(f"    Tamaño: {stats['table_size']}\n")
+        
+    except Exception as e:
+        print(f"    ❌ ERROR al verificar tabla: {e}\n")
+        await conn.close()
+        return False
+    
+    # =========================================================================
+    # PASO 5: Test de operaciones básicas
+    # =========================================================================
+    print("[5/5] Probando operaciones básicas...")
+    try:
+        # Test INSERT
+        test_id = await conn.fetchval(
+            """
+            INSERT INTO kb_content (
+                sub_intent, language, category, content, 
+                shopify_page_id, title
+            ) VALUES (
+                'test_intent', 'es', 'test', 'Test content', 
+                999999, 'Test KB Entry'
+            )
+            ON CONFLICT (sub_intent, language, COALESCE(category, 'general'))
+            DO UPDATE SET updated_at = NOW()
+            RETURNING id
+            """
+        )
+        print(f"    ✅ INSERT: Test record created/updated (ID: {test_id})")
+        
+        # Test SELECT
+        record = await conn.fetchrow(
+            """
+            SELECT sub_intent, language, title, last_synced
+            FROM kb_content
+            WHERE id = $1
+            """,
+            test_id
+        )
+        print(f"    ✅ SELECT: Retrieved record successfully")
+        
+        # Test UPDATE
+        await conn.execute(
+            """
+            UPDATE kb_content
+            SET content = 'Updated test content'
+            WHERE id = $1
+            """,
+            test_id
+        )
+        print(f"    ✅ UPDATE: Record updated successfully")
+        
+        # Test DELETE
+        await conn.execute(
+            """
+            DELETE FROM kb_content
+            WHERE id = $1
+            """,
+            test_id
+        )
+        print(f"    ✅ DELETE: Test record deleted successfully\n")
+        
+    except Exception as e:
+        print(f"    ❌ ERROR en operaciones: {e}\n")
+        await conn.close()
+        return False
+    
+    # =========================================================================
+    # CIERRE
+    # =========================================================================
+    await conn.close()
+    
+    print("=" * 70)
+    print("✅ TODOS LOS TESTS PASARON EXITOSAMENTE")
+    print("=" * 70)
+    print("\n🎉 PostgreSQL está listo para Shopify KB Integration\n")
+    print("Próximo paso: Verificar archivos de integración KB\n")
+    
+    return True
+
+if __name__ == "__main__":
+    try:
+        result = asyncio.run(test_postgresql_connection())
+        sys.exit(0 if result else 1)
+    except KeyboardInterrupt:
+        print("\n\n⚠️ Test interrumpido por el usuario\n")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n\n❌ ERROR INESPERADO: {e}\n")
+        sys.exit(1)

@@ -168,15 +168,24 @@ class RecommenderSettings(BaseSettings):
     # POSTGRESQL CONFIGURATIONe
     # ═══════════════════════════════════════════════════════════
 
-    DB_HOST: str = Field(default="localhost", env="DB_HOST")
-    DB_PORT: int = Field(default=5432, env="DB_PORT")
-    DB_USER: str = Field(default="postgres", env="DB_USER")
-    DB_PASSWORD: Optional[str] = Field(default=None, env="DB_PASSWORD")
-    DB_NAME: str = Field(default="retail_recommender_db", env="DB_NAME")
-
+    db_host: str = Field(default="localhost", env="DB_HOST")
+    db_port: int = Field(default=5432, env="DB_PORT")
+    db_user: str = Field(default="postgres", env="DB_USER")
+    db_password: Optional[str] = Field(default=None, env="DB_PASSWORD")
+    db_name: str = Field(default="retail_recommender_db", env="DB_NAME")
     DB_MIN_POOL_SIZE: int = Field(default=2, env="DB_MIN_POOL_SIZE")
     DB_MAX_POOL_SIZE: int = Field(default=10, env="DB_MAX_POOL_SIZE")
     DB_POOL_TIMEOUT: int = Field(default=30, env="DB_POOL_TIMEOUT")
+
+    # DB_HOST: str = Field(default="localhost", env="DB_HOST")
+    # DB_PORT: int = Field(default=5432, env="DB_PORT")
+    # DB_USER: str = Field(default="postgres", env="DB_USER")
+    # DB_PASSWORD: Optional[str] = Field(default=None, env="DB_PASSWORD")
+    # DB_NAME: str = Field(default="retail_recommender_db", env="DB_NAME")
+
+    # DB_MIN_POOL_SIZE: int = Field(default=2, env="DB_MIN_POOL_SIZE")
+    # DB_MAX_POOL_SIZE: int = Field(default=10, env="DB_MAX_POOL_SIZE")
+    # DB_POOL_TIMEOUT: int = Field(default=30, env="DB_POOL_TIMEOUT")
 
     # ═══════════════════════════════════════════════════════════
     # SHOPIFY KB CONFIGURATION (NUEVO)

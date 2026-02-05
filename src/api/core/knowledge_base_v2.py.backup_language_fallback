@@ -148,18 +148,17 @@ class ShopifyKnowledgeBase:
         category: Optional[str] = None
     ) -> Optional[KnowledgeBaseAnswer]:
         """
-        Get Knowledge Base answer with triple-layer cache and language fallback.
+        Get Knowledge Base answer with triple-layer cache.
         
         Fallback chain:
         1. Redis cache (fast, <1ms)
         2. PostgreSQL buffer (medium, <10ms)
         3. Shopify API (slow, 100-300ms)
-        4. Language fallback (try es → en if requested language not found)
-        5. Hardcoded KB (last resort, if enabled)
+        4. Hardcoded KB (last resort, if enabled)
         
         Args:
             sub_intent: Informational intent
-            language: Language code (es, en, pt, fr, etc.)
+            language: Language code (es, en, pt)
             category: Product category (ZAPATOS, VESTIDOS, etc)
             
         Returns:
@@ -168,121 +167,12 @@ class ShopifyKnowledgeBase:
         Example:
             >>> answer = await kb.get_answer(
             >>>     sub_intent=InformationalSubIntent.POLICY_RETURN,
-            >>>     language="fr",  # Falls back to 'es' if 'fr' not found
+            >>>     language="es",
             >>>     category="ZAPATOS"
             >>> )
             >>> print(answer.answer)
         """
         sub_intent_str = sub_intent.value if hasattr(sub_intent, 'value') else str(sub_intent)
-        
-        # Try with requested language first
-        result = await self._get_answer_single_language(
-            sub_intent_str, 
-            language, 
-            category
-        )
-        
-        if result:
-            return result
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # LANGUAGE FALLBACK: Try alternative languages
-        # ═══════════════════════════════════════════════════════════════════
-        
-        # Define fallback language chain
-        fallback_languages = []
-        if language not in ['es', 'en']:
-            # If requested language is not es/en, try es first, then en
-            fallback_languages = ['es', 'en']
-            logger.info(
-                f"Language '{language}' not found. "
-                f"Attempting fallback chain: {fallback_languages}"
-            )
-        elif language == 'en':
-            # If requested en, try es as fallback
-            fallback_languages = ['es']
-            logger.info(f"English content not found. Attempting Spanish fallback.")
-        # Note: If language == 'es', no fallback (es is the default)
-        
-        # Try each fallback language
-        for fallback_lang in fallback_languages:
-            logger.info(
-                f"Trying fallback language: {fallback_lang} "
-                f"(original: {language})"
-            )
-            
-            result = await self._get_answer_single_language(
-                sub_intent_str,
-                fallback_lang,
-                category
-            )
-            
-            if result:
-                logger.info(
-                    f"✅ Language fallback successful: "
-                    f"{language} → {fallback_lang}"
-                )
-                return result
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # LAYER 4: FALLBACK TO HARDCODED KB (Last resort)
-        # ═══════════════════════════════════════════════════════════════════
-        
-        if self.enable_fallback and self.fallback_kb:
-            logger.warning(
-                f"⚠️ All layers and language fallbacks failed. "
-                f"Falling back to hardcoded KB: "
-                f"{sub_intent_str}/{language}/{category or 'general'}"
-            )
-            
-            try:
-                # Try to get from hardcoded KB
-                # Note: Only pass sub_intent (other params may not be supported)
-                fallback_answer = self.fallback_kb.get_answer(
-                    sub_intent=sub_intent
-                )
-                
-                if fallback_answer:
-                    logger.info("✅ Fallback KB (hardcoded) returned answer")
-                    return fallback_answer
-                    
-            except Exception as e:
-                logger.error(f"Fallback KB error: {e}", exc_info=True)
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # NO ANSWER FOUND
-        # ═══════════════════════════════════════════════════════════════════
-        
-        logger.warning(
-            f"❌ No answer found for: {sub_intent_str}/{language}/{category or 'general'} "
-            f"(tried all fallbacks)"
-        )
-        return None
-    
-    # ──────────────────────────────────────────────────────────────────────
-    # INTERNAL HELPER - Single Language Query
-    # ──────────────────────────────────────────────────────────────────────
-    
-    async def _get_answer_single_language(
-        self,
-        sub_intent_str: str,
-        language: str,
-        category: Optional[str]
-    ) -> Optional[KnowledgeBaseAnswer]:
-        """
-        Get answer for a specific language without fallback.
-        
-        This is an internal helper method used by get_answer() to try
-        each language in the fallback chain.
-        
-        Args:
-            sub_intent_str: Sub-intent as string
-            language: Language code to try
-            category: Product category
-            
-        Returns:
-            KnowledgeBaseAnswer or None
-        """
         
         logger.info(
             f"KB query: sub_intent={sub_intent_str}, "
@@ -299,7 +189,7 @@ class ShopifyKnowledgeBase:
                 logger.info(f"✅ Cache HIT (Redis): {sub_intent_str}/{language}/{category or 'general'}")
                 return self._kb_answer_to_knowledge_base_answer(
                     cached, 
-                    sub_intent=sub_intent_str,
+                    sub_intent=sub_intent_str,  # ✅ PASAR sub_intent
                     cache_hit=True
                 )
         except Exception as e:
@@ -325,9 +215,10 @@ class ShopifyKnowledgeBase:
                     kb_answer = kb_content_to_answer(buffered, cache_hit=False)
                     await self._store_in_cache(sub_intent_str, language, category, kb_answer)
                     
+                    # return self._kb_answer_to_knowledge_base_answer(kb_answer, cache_hit=False)
                     return self._kb_answer_to_knowledge_base_answer(
                         kb_answer,
-                        sub_intent=sub_intent_str,
+                        sub_intent=sub_intent_str,  # ✅ PASAR sub_intent
                         cache_hit=False
                     )
                 else:
@@ -355,19 +246,55 @@ class ShopifyKnowledgeBase:
                 if buffered:
                     logger.info("Using STALE buffer (better than nothing)")
                     kb_answer = kb_content_to_answer(buffered, cache_hit=False)
+                    # return self._kb_answer_to_knowledge_base_answer(kb_answer, cache_hit=False)
                     return self._kb_answer_to_knowledge_base_answer(
-                        kb_answer,
-                        sub_intent=sub_intent_str,
-                        cache_hit=False
-                    )
+                            kb_answer,
+                            sub_intent=sub_intent_str,  # ✅ PASAR sub_intent
+                            cache_hit=False
+                        )
                     
             except Exception as e:
                 logger.error(f"Shopify API error: {e}", exc_info=True)
         
-        # No answer found for this specific language
+        # ═══════════════════════════════════════════════════════════════════
+        # LAYER 4: FALLBACK TO HARDCODED KB (Last resort)
+        # ═══════════════════════════════════════════════════════════════════
+        
+        if self.enable_fallback and self.fallback_kb:
+            logger.warning(
+                f"⚠️ All layers failed. Falling back to hardcoded KB: "
+                f"{sub_intent_str}/{language}/{category or 'general'}"
+            )
+            
+            try:
+                # Try to get from hardcoded KB
+                # Note: This assumes knowledge_base.py has a compatible method
+                fallback_answer = self.fallback_kb.get_answer(
+                    sub_intent=sub_intent,
+                    language=language,
+                    category=category
+                )
+                
+                if fallback_answer:
+                    logger.info("✅ Fallback KB (hardcoded) returned answer")
+                    return fallback_answer
+                    
+            except Exception as e:
+                logger.error(f"Fallback KB error: {e}", exc_info=True)
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # NO ANSWER FOUND
+        # ═══════════════════════════════════════════════════════════════════
+        
+        logger.warning(
+            f"❌ No answer found for: {sub_intent_str}/{language}/{category or 'general'}"
+        )
         return None
-
-
+    
+    # ──────────────────────────────────────────────────────────────────────
+    # CACHE OPERATIONS (Layer 1: Redis)
+    # ──────────────────────────────────────────────────────────────────────
+    
     async def _get_from_cache(
         self,
         sub_intent: str,
@@ -445,7 +372,7 @@ class ShopifyKnowledgeBase:
             shopify_page_id, shopify_url, shopify_handle,
             last_synced, created_at, updated_at, cache_version,
             related_links, metadata
-        FROM kb_contents
+        FROM kb_content
         WHERE 
             sub_intent = $1
             AND language = $2

@@ -445,7 +445,7 @@ class ShopifyKnowledgeBase:
             shopify_page_id, shopify_url, shopify_handle,
             last_synced, created_at, updated_at, cache_version,
             related_links, metadata
-        FROM kb_contents
+        FROM kb_content
         WHERE 
             sub_intent = $1
             AND language = $2

@@ -87,6 +87,7 @@ Status: Production Ready
 
 import logging
 from typing import Dict, Any, TYPE_CHECKING
+import asyncpg
 
 # FastAPI dependency injection
 from fastapi import Depends
@@ -125,6 +126,11 @@ if TYPE_CHECKING:
     from src.cache.market_aware.market_cache import MarketAwareProductCache
     # from src.api.mcp.personalization_engine import MCPPersonalizationEngine
     from src.api.mcp.engines.mcp_personalization_engine import MCPPersonalizationEngine
+
+    # Knowledge Base Components
+    from src.api.core.knowledge_base_v2 import ShopifyKnowledgeBase
+    from src.api.services.shopify_kb_sync import ShopifyKBSyncService
+
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -314,6 +320,42 @@ async def get_mcp_recommender() -> 'MCPPersonalizationEngine':
         raise
 
 # ============================================================================
+# KNOWLEDGE BASE COMPONENTS - Multi-Language Support
+# ============================================================================
+
+async def get_knowledge_base() -> 'ShopifyKnowledgeBase':
+    """Get ShopifyKnowledgeBase singleton via ServiceFactory."""
+    try:
+        kb = await ServiceFactory.get_knowledge_base()
+        logger.debug("ShopifyKnowledgeBase dependency injected")
+        return kb
+    except Exception as e:
+        logger.error(f"Failed to get ShopifyKnowledgeBase: {e}")
+        raise
+
+
+async def get_kb_sync_service() -> 'ShopifyKBSyncService':
+    """Get ShopifyKBSyncService singleton via ServiceFactory."""
+    try:
+        service = await ServiceFactory.get_kb_sync_service()
+        logger.debug("ShopifyKBSyncService dependency injected")
+        return service
+    except Exception as e:
+        logger.error(f"Failed to get ShopifyKBSyncService: {e}")
+        raise
+
+
+async def get_db_pool() -> 'asyncpg.Pool':
+    """Get PostgreSQL connection pool singleton via ServiceFactory."""
+    try:
+        pool = await ServiceFactory.get_db_pool()
+        logger.debug("PostgreSQL pool dependency injected")
+        return pool
+    except Exception as e:
+        logger.error(f"Failed to get DB pool: {e}")
+        raise
+
+# ============================================================================
 # TYPE ALIASES - Modern FastAPI Pattern (Python 3.9+)
 # ============================================================================
 
@@ -397,6 +439,9 @@ AvailabilityCheckerDep = Annotated[
 ]
 """Type alias for AvailabilityChecker dependency injection."""
 
+KnowledgeBaseDep = Annotated['ShopifyKnowledgeBase', Depends(get_knowledge_base)]
+KBSyncServiceDep = Annotated['ShopifyKBSyncService', Depends(get_kb_sync_service)]
+DBPoolDep = Annotated['asyncpg.Pool', Depends(get_db_pool)]
 # ============================================================================
 # EXPLICIT DEPENDENCY PROVIDER FUNCTIONS
 # ============================================================================
@@ -913,6 +958,8 @@ async def get_availability_checker():
         raise
 
 
+
+
 # ============================================================================
 # COMPOSITE DEPENDENCIES - Bundle Multiple Components
 # ============================================================================
@@ -1060,6 +1107,13 @@ __all__ = [
     "MCPRecommenderDep",
     "InventoryServiceDep",
     "AvailabilityCheckerDep",  # ✅ NEW: Phase 2 Day 3
+
+    "get_knowledge_base",
+    "get_kb_sync_service", 
+    "get_db_pool",
+    "KnowledgeBaseDep",
+    "KBSyncServiceDep",
+    "DBPoolDep",
     
     # Explicit Provider Functions
     "get_tfidf_recommender",

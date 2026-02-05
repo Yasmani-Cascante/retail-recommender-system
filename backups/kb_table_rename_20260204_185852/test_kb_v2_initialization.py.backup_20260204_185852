@@ -47,7 +47,7 @@ def test_kb_v2_initialization_with_testclient():
                 f"app.state attributes: {state_vars}\n"
                 f"Possible causes:\n"
                 f"1. KB_USE_SHOPIFY_CMS=False in .env\n"
-                f"2. PostgreSQL table kb_contents missing\n"
+                f"2. PostgreSQL table kb_content missing\n"
                 f"3. KB initialization error (check startup logs)\n"
                 f"4. Redis connection failed\n"
             )
