@@ -60,3 +60,7 @@ langdetect>=1.0.9  # Para deteccion de idioma
 # === DEPENDENDIAS PARA PRUEBAS ===
 aiohttp>=3.9.0
 
+# === LOGGING ===
+structlog>=24.1.0
+python-json-logger>=2.0.0
+

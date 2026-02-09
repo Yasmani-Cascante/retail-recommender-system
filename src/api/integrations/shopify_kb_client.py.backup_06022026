@@ -12,10 +12,9 @@ This client handles:
 
 Author: Retail Recommender System Team
 Date: 2026-01-11
-Version: H1 - Structured Logging Migration
 """
 
-import structlog  # ✅ H1: Structured Logging Migration
+import logging
 import hmac
 import hashlib
 import asyncio 
@@ -30,7 +29,7 @@ from src.api.core.models.kb_models import (
     ShopifyPageTranslation
 )
 
-logger = structlog.get_logger(__name__)  # ✅ H1: Structured Logging Migration
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -173,12 +172,8 @@ class ShopifyKBClient(ShopifyIntegration):
         self._locales_cache_ttl = timedelta(hours=1)
         self._locales_cache_lock = asyncio.Lock()
         
-        # ✅ H1: Structured logging
-        logger.info(
-            "shopify_kb_client_initialized",
-            shop_url=shop_url,
-            webhook_validation_enabled=webhook_secret is not None
-        )
+        logger.info("ShopifyKBClient initialized")
+        logger.info(f"Webhook validation: {'enabled' if webhook_secret else 'disabled'}")
     
     # ──────────────────────────────────────────────────────────────────────
     # KB PAGES API
@@ -202,40 +197,25 @@ class ShopifyKBClient(ShopifyIntegration):
         
         # Validate required fields
         if not isinstance(kb_metadata, dict):
-            # ✅ H1: Structured warning
-            logger.warning(
-                "shopify_kb_metadata_invalid_type",
-                page_id=page.id,
-                actual_type=type(kb_metadata).__name__
-            )
+            logger.warning(f"Page {page.id}: kb_metadata is not a dict")
             return False
         
         if "sub_intent" not in kb_metadata:
-            # ✅ H1: Structured warning
-            logger.warning(
-                "shopify_kb_metadata_missing_sub_intent",
-                page_id=page.id,
-                page_title=page.title
-            )
+            logger.warning(f"Page {page.id}: kb_metadata missing sub_intent")
             return False
         
         # Check body_html is not empty
         if not page.body_html or page.body_html.strip() == "":
-            # ✅ H1: Structured info
-            logger.info(
-                "shopify_kb_page_skipped_empty_body",
-                page_id=page.id,
-                page_title=page.title
-            )
+            logger.info(f"Skipping page {page.id} ({page.title}): empty body_html")
             return False
         
         return True
     
 
     async def get_kb_pages(
-        self,
-        limit: Optional[int] = None,
-        validate_metadata: bool = True
+    self,
+    limit: Optional[int] = None,
+    validate_metadata: bool = True
     ) -> List[Tuple[ShopifyPage, Dict[str, Any]]]:
         """
         Fetch all Knowledge Base pages from Shopify with their metafields.
@@ -249,54 +229,25 @@ class ShopifyKBClient(ShopifyIntegration):
         Returns:
             List of tuples: (ShopifyPage, metafields_dict)
         """
-        # ✅ H1: Structured logging
-        logger.info(
-            "shopify_kb_pages_fetch_started",
-            limit=limit,
-            validate_metadata=validate_metadata
-        )
+        logger.info(f"Fetching KB pages (limit={limit})")
         
         # Step 1: Fetch all pages from Shopify
         all_pages = await self.get_pages(limit=limit)
-        
-        # ✅ H1: Structured logging
-        logger.info(
-            "shopify_pages_retrieved",
-            total_pages=len(all_pages)
-        )
+        # all_pages = await asyncio.to_thread(self.get_pages, limit)
+        logger.info(f"Retrieved {len(all_pages)} total pages from Shopify")
         
         # Step 2: Parse pages to Pydantic models
         parsed_pages = []
-        parse_errors = 0
-        
         for page_data in all_pages:
             try:
                 page = ShopifyPage(**page_data)
                 parsed_pages.append(page)
             except Exception as e:
-                # ✅ H1: Structured error
-                logger.error(
-                    "shopify_page_parse_error",
-                    page_id=page_data.get('id'),
-                    error=str(e),
-                    error_type=type(e).__name__
-                )
-                parse_errors += 1
+                logger.error(f"Failed to parse page {page_data.get('id')}: {e}")
                 continue
         
-        if parse_errors > 0:
-            # ✅ H1: Structured warning
-            logger.warning(
-                "shopify_pages_parse_errors",
-                total_errors=parse_errors
-            )
-        
         # ✨ OPTIMIZATION: Step 3: Fetch ALL metafields in PARALLEL
-        # ✅ H1: Structured logging
-        logger.info(
-            "shopify_metafields_fetch_parallel",
-            total_pages=len(parsed_pages)
-        )
+        logger.info(f"Fetching metafields for {len(parsed_pages)} pages (PARALLEL)...")
         
         # Create tasks for all metafields fetches
         metafields_tasks = [
@@ -305,25 +256,18 @@ class ShopifyKBClient(ShopifyIntegration):
         ]
         
         # Execute all tasks in parallel
+        # return_exceptions=True ensures one error doesn't break everything
         all_metafields = await asyncio.gather(*metafields_tasks, return_exceptions=True)
         
         # Step 4: Filter KB pages and handle results
         kb_pages = []
         skipped = 0
         invalid = 0
-        metafield_errors = 0
         
         for page, metafields in zip(parsed_pages, all_metafields):
             # Handle exceptions from gather
             if isinstance(metafields, Exception):
-                # ✅ H1: Structured error
-                logger.error(
-                    "shopify_metafields_fetch_error",
-                    page_id=page.id,
-                    error=str(metafields),
-                    error_type=type(metafields).__name__
-                )
-                metafield_errors += 1
+                logger.error(f"Failed to fetch metafields for page {page.id}: {metafields}")
                 invalid += 1
                 continue
             
@@ -337,24 +281,17 @@ class ShopifyKBClient(ShopifyIntegration):
                 kb_metadata = metafields.get("custom.kb_metadata", {})
                 
                 if not kb_metadata.get("sub_intent"):
-                    # ✅ H1: Structured warning
                     logger.warning(
-                        "shopify_kb_invalid_missing_sub_intent",
-                        page_id=page.id
+                        f"Invalid KB page (Page ID {page.id}): Missing sub_intent"
                     )
                     invalid += 1
                     continue
             
             kb_pages.append((page, metafields))
         
-        # ✅ H1: Structured logging con métricas completas
         logger.info(
-            "shopify_kb_pages_filtered",
-            kb_pages_count=len(kb_pages),
-            skipped_non_kb=skipped,
-            invalid_metadata=invalid,
-            metafield_errors=metafield_errors,
-            success_rate=round((len(kb_pages) / len(parsed_pages) * 100) if parsed_pages else 0, 1)
+            f"Filtered KB pages: {len(kb_pages)} KB pages, "
+            f"{skipped} skipped (non-KB), {invalid} invalid"
         )
         
         return kb_pages
@@ -375,12 +312,7 @@ class ShopifyKBClient(ShopifyIntegration):
         """
         try:
             url = f"{self.api_url}/pages/{page_id}.json"
-            
-            # ✅ H1: Structured logging
-            logger.info(
-                "shopify_page_fetch_by_id",
-                page_id=page_id
-            )
+            logger.info(f"Fetching page {page_id}")
             
             response = self._make_request_with_retry(url)
             data = response.json()
@@ -388,37 +320,27 @@ class ShopifyKBClient(ShopifyIntegration):
             # Shopify returns: {"page": {...}}
             page_data = data.get("page")
             if not page_data:
-                # ✅ H1: Structured error
-                logger.error(
-                    "shopify_page_no_data",
-                    page_id=page_id
-                )
+                logger.error(f"No page data in response for page {page_id}")
                 return None
             
             page = ShopifyPage(**page_data)
-            
-            # ✅ H1: Structured logging
-            logger.info(
-                "shopify_page_fetched",
-                page_id=page_id,
-                page_title=page.title
-            )
+            logger.info(f"Successfully fetched page {page_id}: {page.title}")
             
             return page
             
         except Exception as e:
-            # ✅ H1: Structured error
-            logger.error(
-                "shopify_page_fetch_error",
-                page_id=page_id,
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True
-            )
+            logger.error(f"Error fetching page {page_id}: {e}")
             return None
     
     async def get_pages(self, limit: Optional[int] = None, offset: int = 0) -> List[Dict]:
         """
+        Wrapper for parent class get_products() but for pages.
+        
+        Note: Shopify Admin API doesn't have a /pages endpoint with pagination
+        like /products. We use the parent's pagination logic and adapt it.
+        
+        For now, we'll implement a simple version that fetches all pages.
+
         Async version with pagination.
         Args:
             limit: Max number of pages to fetch (None = all)
@@ -426,19 +348,17 @@ class ShopifyKBClient(ShopifyIntegration):
             
         Returns:
             List of page dicts
+        
         """
         try:
             all_pages = []
             url = f"{self.api_url}/pages.json?limit=250"
             
             while url:
-                # ✅ H1: Structured debug
-                logger.debug(
-                    "shopify_pages_fetching",
-                    url=url
-                )
+                logger.info(f"Fetching pages from: {url}")
                 
-                # Execute in thread pool
+                # response = self._make_request_with_retry(url)
+                # ✅ Execute in thread pool
                 response = await asyncio.to_thread(
                     self._make_request_with_retry, 
                     url
@@ -448,13 +368,7 @@ class ShopifyKBClient(ShopifyIntegration):
                 
                 if pages:
                     all_pages.extend(pages)
-                    
-                    # ✅ H1: Structured info
-                    logger.info(
-                        "shopify_pages_batch_fetched",
-                        batch_size=len(pages),
-                        total_accumulated=len(all_pages)
-                    )
+                    logger.info(f"Fetched {len(pages)} pages, total: {len(all_pages)}")
                     
                     # Check limit
                     if limit and len(all_pages) >= limit:
@@ -466,21 +380,11 @@ class ShopifyKBClient(ShopifyIntegration):
                 # Next page
                 url = self._get_next_page_url(response)
             
-            # ✅ H1: Structured logging final
-            logger.info(
-                "shopify_pages_fetch_completed",
-                total_pages=len(all_pages)
-            )
+            logger.info(f"Total pages fetched: {len(all_pages)}")
             return all_pages
             
         except Exception as e:
-            # ✅ H1: Structured error
-            logger.error(
-                "shopify_pages_fetch_error",
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True
-            )
+            logger.error(f"Error fetching pages: {e}")
             return []
     
     async def get_page_metafields(self, page_id: int) -> Dict[str, Any]:
@@ -500,14 +404,10 @@ class ShopifyKBClient(ShopifyIntegration):
         try:
             # Build API URL
             url = f"{self.api_url}/pages/{page_id}/metafields.json"
+            logger.debug(f"Fetching metafields for page {page_id}")
             
-            # ✅ H1: Structured debug
-            logger.debug(
-                "shopify_metafields_fetching",
-                page_id=page_id
-            )
-            
-            # Execute sync call in thread pool
+            # ✅ OPTIMIZATION: Execute sync call in thread pool
+            # This allows true parallelization with asyncio.gather()
             response = await asyncio.to_thread(
                 self._make_request_with_retry, 
                 url
@@ -518,6 +418,7 @@ class ShopifyKBClient(ShopifyIntegration):
             metafields_dict = {}
             
             for mf in data.get("metafields", []):
+                # ... resto del código sin cambios (líneas 282-319)
                 namespace = mf.get("namespace")
                 key = mf.get("key")
                 value = mf.get("value")
@@ -525,12 +426,7 @@ class ShopifyKBClient(ShopifyIntegration):
                 
                 # Skip if missing required fields
                 if not namespace or not key:
-                    # ✅ H1: Structured warning
-                    logger.warning(
-                        "shopify_metafield_missing_fields",
-                        page_id=page_id,
-                        metafield=mf
-                    )
+                    logger.warning(f"Metafield missing namespace or key: {mf}")
                     continue
                 
                 # Create composite key (namespace.key)
@@ -542,36 +438,23 @@ class ShopifyKBClient(ShopifyIntegration):
                         import json
                         value = json.loads(value) if isinstance(value, str) else value
                     except json.JSONDecodeError as e:
-                        # ✅ H1: Structured warning
                         logger.warning(
-                            "shopify_metafield_json_parse_error",
-                            page_id=page_id,
-                            composite_key=composite_key,
-                            error=str(e)
+                            f"Failed to parse JSON metafield {composite_key} "
+                            f"for page {page_id}: {e}"
                         )
                         pass
                 
                 metafields_dict[composite_key] = value
             
-            # ✅ H1: Structured debug
             logger.debug(
-                "shopify_metafields_fetched",
-                page_id=page_id,
-                metafields_count=len(metafields_dict),
-                metafield_keys=list(metafields_dict.keys())
+                f"Found {len(metafields_dict)} metafields for page {page_id}: "
+                f"{list(metafields_dict.keys())}"
             )
             
             return metafields_dict
             
         except Exception as e:
-            # ✅ H1: Structured error
-            logger.error(
-                "shopify_metafields_fetch_error",
-                page_id=page_id,
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True
-            )
+            logger.error(f"Error fetching metafields for page {page_id}: {e}")
             return {}
     
     # ──────────────────────────────────────────────────────────────────────
@@ -586,28 +469,56 @@ class ShopifyKBClient(ShopifyIntegration):
         - Uses cached shopLocales (1 query vs 13 queries per sync)
         - Parallel translation fetch (for future multi-language support)
         
+        Strategy:
+        1. Get available shop locales (CACHED with 1h TTL)
+        2. For each locale (except primary), query translations IN PARALLEL
+        3. Return dict mapping locale to translated HTML
+        
+        Args:
+            page_id: Shopify Page ID
+            
         Returns:
             Dict mapping language code to translated HTML:
             {"en": "<h2>Return Policy</h2>...", "pt": "<h2>Política...</h2>"}
+            
+        Note:
+            - Primary locale (e.g., "es") is NOT included (use page.body_html)
+            - Only returns locales with actual translations
+            - GraphQL requires 'locale' argument per query
+            
+        Performance:
+            - 1 idioma: ~300ms (igual que antes)
+            - 2 idiomas: ~300ms (vs 600ms sequential)
+            - 3 idiomas: ~300ms (vs 900ms sequential)
         """
         try:
-            # STEP 1: Get available shop locales (Uses cache)
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # STEP 1: Get available shop locales (OPTIMIZED: Uses cache)
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             primary_locale, available_locales = await self._get_shop_locales()
             
             # If no translation locales available, return empty
             if not available_locales:
-                # ✅ H1: Structured info
                 logger.info(
-                    "shopify_no_translation_locales",
-                    page_id=page_id,
-                    primary_locale=primary_locale
+                    f"No translation locales available for page {page_id} "
+                    f"(only primary: {primary_locale})"
                 )
                 return {}
             
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # STEP 2: Query translations for each locale IN PARALLEL
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             
             async def fetch_translation_for_locale(locale: str) -> tuple[str, Optional[str]]:
-                """Fetch translation for a specific locale."""
+                """
+                Fetch translation for a specific locale.
+                
+                Args:
+                    locale: Language code (e.g., "en", "pt")
+                    
+                Returns:
+                    Tuple of (locale, translated_html or None)
+                """
                 try:
                     # Build GraphQL query for specific locale
                     translation_query = """
@@ -628,14 +539,12 @@ class ShopifyKBClient(ShopifyIntegration):
                         "locale": locale
                     }
                     
-                    # ✅ H1: Structured debug
                     logger.debug(
-                        "shopify_translation_fetching",
-                        page_id=page_id,
-                        locale=locale
+                        f"Fetching translation for page {page_id}, locale={locale}"
                     )
                     
                     # Execute GraphQL query
+                    # data = await self._graphql_query(translation_query, variables)
                     data = await self._graphql_query_with_retry(translation_query, variables)
 
                     # Parse translations for this locale
@@ -645,42 +554,29 @@ class ShopifyKBClient(ShopifyIntegration):
                     # Filter only body_html translation
                     for trans in translations_raw:
                         if trans["key"] == "body_html" and trans["value"]:
-                            # ✅ H1: Structured debug
                             logger.debug(
-                                "shopify_translation_found",
-                                page_id=page_id,
-                                locale=locale,
-                                content_length=len(trans['value'])
+                                f"Found translation for locale {locale}: "
+                                f"{len(trans['value'])} chars"
                             )
                             return (locale, trans["value"])
                     
                     # No body_html translation found for this locale
-                    # ✅ H1: Structured debug
-                    logger.debug(
-                        "shopify_translation_not_found",
-                        page_id=page_id,
-                        locale=locale
-                    )
+                    logger.debug(f"No body_html translation for locale {locale}")
                     return (locale, None)
                     
                 except Exception as e:
-                    # ✅ H1: Structured warning
+                    # Log error but don't fail entire sync
+                    # Return None so this translation is skipped
                     logger.warning(
-                        "shopify_translation_fetch_error",
-                        page_id=page_id,
-                        locale=locale,
-                        error=str(e),
-                        error_type=type(e).__name__
+                        f"Failed to fetch translation for page {page_id}, "
+                        f"locale {locale}: {e}"
                     )
                     return (locale, None)
             
             # ✨ OPTIMIZATION: Execute all translation fetches in PARALLEL
-            # ✅ H1: Structured debug
             logger.debug(
-                "shopify_translations_fetch_parallel",
-                page_id=page_id,
-                locales_count=len(available_locales),
-                locales=available_locales
+                f"Fetching {len(available_locales)} translations in parallel "
+                f"for page {page_id}"
             )
             
             # Create tasks for all locales
@@ -690,43 +586,37 @@ class ShopifyKBClient(ShopifyIntegration):
             ]
             
             # Execute all tasks in parallel
+            # NOTE: We don't use return_exceptions=True because the inner
+            # function already handles exceptions and returns (locale, None)
             translation_results = await asyncio.gather(*translation_tasks)
             
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # STEP 3: Build translations dict (filter out None values)
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             translations = {}
             
             for locale, translated_html in translation_results:
                 if translated_html is not None:
                     translations[locale] = translated_html
             
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # STEP 4: Log results and return
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             if translations:
-                # ✅ H1: Structured info
                 logger.info(
-                    "shopify_translations_fetched",
-                    page_id=page_id,
-                    translations_count=len(translations),
-                    locales=list(translations.keys())
+                    f"Found {len(translations)} translations for page {page_id}: "
+                    f"{list(translations.keys())}"
                 )
             else:
-                # ✅ H1: Structured info
                 logger.info(
-                    "shopify_no_translations_found",
-                    page_id=page_id,
-                    primary_locale=primary_locale
+                    f"No translations found for page {page_id} "
+                    f"(only primary language: {primary_locale})"
                 )
             
             return translations
             
         except Exception as e:
-            # ✅ H1: Structured error
-            logger.error(
-                "shopify_translations_fetch_error",
-                page_id=page_id,
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True
-            )
+            logger.error(f"Error fetching translations for page {page_id}: {e}")
             return {}
     
     # ──────────────────────────────────────────────────────────────────────
@@ -772,12 +662,23 @@ class ShopifyKBClient(ShopifyIntegration):
             
         Returns:
             True if signature is valid, False otherwise
+            
+        Example:
+            >>> # In FastAPI webhook handler:
+            >>> @app.post("/webhooks/shopify/pages/update")
+            >>> async def handle_page_update(request: Request):
+            >>>     body = await request.body()
+            >>>     hmac_header = request.headers.get("X-Shopify-Hmac-SHA256")
+            >>>     
+            >>>     if not client.validate_webhook(body, hmac_header):
+            >>>         raise HTTPException(401, "Invalid webhook signature")
+            >>>     
+            >>>     # Process webhook...
         """
         if not self.webhook_secret:
-            # ✅ H1: Structured warning
             logger.warning(
-                "shopify_webhook_validation_disabled",
-                reason="webhook_secret_not_configured"
+                "Webhook secret not configured! "
+                "Skipping HMAC validation (NOT RECOMMENDED for production)"
             )
             return True
         
@@ -792,11 +693,10 @@ class ShopifyKBClient(ShopifyIntegration):
         is_valid = hmac.compare_digest(computed_hmac, hmac_header)
         
         if not is_valid:
-            # ✅ H1: Structured error
             logger.error(
-                "shopify_webhook_invalid_hmac",
-                expected_hmac_prefix=computed_hmac[:10],
-                received_hmac_prefix=hmac_header[:10]
+                f"Invalid webhook HMAC! "
+                f"Expected: {computed_hmac[:10]}..., "
+                f"Got: {hmac_header[:10]}..."
             )
         
         return is_valid    
@@ -812,40 +712,35 @@ class ShopifyKBClient(ShopifyIntegration):
         Returns:
             (primary_locale, available_translation_locales)
         """
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # FAST PATH: Check cache WITHOUT lock (optimization)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         now = datetime.utcnow()
         if (self._cached_locales and 
             self._locales_cache_expires_at and 
             now < self._locales_cache_expires_at):
             
-            # ✅ H1: Structured info
-            logger.info(
-                "shopify_locales_cache_hit",
-                ttl_hours=self._locales_cache_ttl.total_seconds() / 3600
-            )
+            logger.info("✅ Using cached shopLocales (1-hour TTL)")  # ← INFO level
             return self._cached_locales
         
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # SLOW PATH: Cache miss/expired - acquire lock
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         async with self._locales_cache_lock:
-            # Re-check cache INSIDE lock
+            # ⚡ CRITICAL: Re-check cache INSIDE lock
+            # Another coroutine may have populated cache while we waited
             now = datetime.utcnow()
             if (self._cached_locales and 
                 self._locales_cache_expires_at and 
                 now < self._locales_cache_expires_at):
                 
-                # ✅ H1: Structured info
-                logger.info(
-                    "shopify_locales_cache_hit_after_lock",
-                    populated_by="another_task"
-                )
+                logger.info("✅ Using cached shopLocales (populated by another task)")
                 return self._cached_locales
             
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             # Only first coroutine reaches here - fetch fresh data
-            # ✅ H1: Structured info
-            logger.info(
-                "shopify_locales_fetching",
-                reason="cache_miss_or_expired"
-            )
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            logger.info("🔄 Fetching shopLocales from Shopify (cache miss/expired)")
             
             locales_query = """
             query getShopLocales {
@@ -871,13 +766,9 @@ class ShopifyKBClient(ShopifyIntegration):
             self._cached_locales = result
             self._locales_cache_expires_at = now + self._locales_cache_ttl
             
-            # ✅ H1: Structured info
             logger.info(
-                "shopify_locales_cached",
-                ttl_hours=self._locales_cache_ttl.total_seconds() / 3600,
-                primary_locale=primary_locale,
-                translation_locales=available_locales,
-                translation_count=len(available_locales)
+                f"💾 Cached shopLocales (TTL={self._locales_cache_ttl}): "
+                f"primary={primary_locale}, translations={available_locales}"
             )
             
             return result
@@ -886,9 +777,7 @@ class ShopifyKBClient(ShopifyIntegration):
         """Force refresh of cached locales on next call."""
         self._cached_locales = None
         self._locales_cache_expires_at = None
-        
-        # ✅ H1: Structured info
-        logger.info("shopify_locales_cache_invalidated")
+        logger.info("Invalidated shopLocales cache")
 
 # ══════════════════════════════════════════════════════════════════════════
 # FACTORY FUNCTION

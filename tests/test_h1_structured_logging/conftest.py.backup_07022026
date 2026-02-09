@@ -1,0 +1,254 @@
+"""
+Pytest Configuration and Fixtures - VERSIÓN FINAL SIN DUPLICADOS
+==================================================================
+
+Author: Retail Recommender System Team
+Date: 2026-02-06
+Version: FINAL - No duplicates
+"""
+
+import pytest
+import structlog
+from unittest.mock import Mock, AsyncMock, MagicMock
+from typing import List, Dict, Any
+import sys
+import copy
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ULTIMATE LOG CAPTURE
+# ══════════════════════════════════════════════════════════════════════════
+
+class LogCapture:
+    def __init__(self):
+        self.events: List[Dict[str, Any]] = []
+    
+    def has_event(self, event_name: str) -> bool:
+        for e in self.events:
+            if e.get("event") == event_name:
+                return True
+        return False
+    
+    def get_event(self, event_name: str) -> Dict[str, Any]:
+        for event in self.events:
+            if event.get("event") == event_name:
+                return event
+        return {}
+    
+    def get_events(self, event_name: str) -> List[Dict[str, Any]]:
+        return [e for e in self.events if e.get("event") == event_name]
+    
+    def clear(self):
+        self.events.clear()
+
+
+@pytest.fixture(scope='function')
+def log_capture(monkeypatch):
+    """
+    ULTIMATE fixture that patches structlog AT THE SOURCE.
+    """
+    # STEP 1: Create capture BEFORE anything else
+    capture = LogCapture()
+    
+    # STEP 2: Monkeypatch structlog.stdlib.BoundLogger methods
+    # This is the class that actually gets instantiated
+    import structlog.stdlib
+    
+    # Store original BoundLogger
+    OriginalBoundLogger = structlog.stdlib.BoundLogger
+    
+    class CapturingBoundLogger(OriginalBoundLogger):
+        def _proxy_to_logger(self, method_name, event=None, **event_kw):
+            # Capture the event
+            event_dict = {
+                "event": event,
+                "level": method_name,
+                **event_kw
+            }
+            capture.events.append(event_dict)
+            
+            # Call parent
+            return super()._proxy_to_logger(method_name, event, **event_kw)
+    
+    # Replace BoundLogger globally
+    monkeypatch.setattr(structlog.stdlib, 'BoundLogger', CapturingBoundLogger)
+    
+    # STEP 3: Also patch structlog._config to use our class
+    import structlog._config
+    
+    # Get current config
+    config = structlog.get_config()
+    
+    # Reconfigure structlog with our BoundLogger
+    structlog.configure(
+        processors=config.get('processors', []),
+        wrapper_class=CapturingBoundLogger,  # KEY: Use our class
+        context_class=config.get('context_class', dict),
+        logger_factory=config.get('logger_factory'),
+        cache_logger_on_first_use=False,
+    )
+    
+    # STEP 4: Force re-import of shopify_kb_client to use new config
+    modules_to_clear = [
+        'src.api.integrations.shopify_kb_client',
+        'src.api.integrations.shopify_kb_client.logger',
+    ]
+    
+    for module_name in modules_to_clear:
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+    
+    # STEP 5: Import shopify_kb_client NOW (after our patches)
+    import src.api.integrations.shopify_kb_client as kb_module
+    
+    # Verify
+    print(f"\n🔧 Logger class after patch: {kb_module.logger.__class__.__name__}")
+    
+    yield capture
+    
+    # Cleanup
+    capture.clear()
+
+# ══════════════════════════════════════════════════════════════════════════
+# MOCK FIXTURES
+# ══════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def mock_redis_service():
+    """Mock RedisService for testing."""
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.set = AsyncMock(return_value=True)
+    redis.delete = AsyncMock(return_value=True)
+    redis.health_check = AsyncMock(return_value={
+        "status": "healthy",
+        "ping_time_ms": 10.5
+    })
+    return redis
+
+
+@pytest.fixture
+def mock_db_pool():
+    """Mock PostgreSQL connection pool for testing."""
+    pool = AsyncMock()
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=None)
+    conn.fetch = AsyncMock(return_value=[])
+    conn.execute = AsyncMock()
+    pool.acquire = AsyncMock(return_value=conn)
+    pool.__aenter__ = AsyncMock(return_value=conn)
+    pool.__aexit__ = AsyncMock()
+    return pool
+
+
+@pytest.fixture
+def mock_shopify_client():
+    """Mock ShopifyKBClient for testing."""
+    client = Mock()
+    client.get_kb_pages = AsyncMock(return_value=[])
+    client.get_page_by_id = Mock(return_value=None)
+    client.get_page_translations = AsyncMock(return_value={})
+    client._get_shop_locales = AsyncMock(return_value=("es", ["en"]))
+    return client
+
+
+@pytest.fixture
+def sample_shopify_page():
+    """Sample ShopifyPage for testing."""
+    from src.api.core.models.kb_models import ShopifyPage
+    
+    return ShopifyPage(
+        id=123456789,
+        title="Test Page",
+        body_html="<p>Test content</p>",
+        handle="test-page",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        published_at="2024-01-01T00:00:00Z",
+        tags="kb, policy_return, general"
+    )
+
+
+@pytest.fixture
+def sample_metafields():
+    """Sample metafields for testing."""
+    return {
+        "custom.kb_metadata": {
+            "sub_intent": "policy_return",
+            "category": "general",
+            "language": "es"
+        }
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════
+
+def assert_event_logged(
+    log_capture,
+    event_name: str,
+    expected_fields: Dict[str, Any] = None
+):
+    """
+    Assert that an event was logged with expected fields.
+    
+    Args:
+        log_capture: LogCapture fixture
+        event_name: Expected event name
+        expected_fields: Dict of field_name: expected_value
+    """
+    assert log_capture.has_event(event_name), \
+        f"Event '{event_name}' not found in captured events: {[e.get('event') for e in log_capture.events]}"
+    
+    if expected_fields:
+        event = log_capture.get_event(event_name)
+        for field_name, expected_value in expected_fields.items():
+            assert field_name in event, \
+                f"Field '{field_name}' not found in event '{event_name}'. Available fields: {list(event.keys())}"
+            assert event[field_name] == expected_value, \
+                f"Field '{field_name}' has value '{event[field_name]}', expected '{expected_value}'"
+
+
+def assert_event_count(
+    log_capture,
+    event_name: str,
+    expected_count: int
+):
+    """
+    Assert that an event was logged exactly N times.
+    
+    Args:
+        log_capture: LogCapture fixture
+        event_name: Event name to count
+        expected_count: Expected number of occurrences
+    """
+    events = log_capture.get_events(event_name)
+    actual_count = len(events)
+    assert actual_count == expected_count, \
+        f"Event '{event_name}' logged {actual_count} times, expected {expected_count}"
+
+
+def assert_error_logged(
+    log_capture,
+    event_name: str,
+    with_exc_info: bool = True
+):
+    """
+    Assert that an error event was logged.
+    
+    Args:
+        log_capture: LogCapture fixture
+        event_name: Error event name
+        with_exc_info: Whether exc_info should be present
+    """
+    assert log_capture.has_event(event_name), \
+        f"Error event '{event_name}' not found. Available events: {[e.get('event') for e in log_capture.events]}"
+    
+    event = log_capture.get_event(event_name)
+    assert "error" in event or "error_type" in event, \
+        f"Error event '{event_name}' missing error information. Available fields: {list(event.keys())}"
+    
+    if with_exc_info:
+        assert event.get("exc_info") is True, \
+            f"Error event '{event_name}' missing exc_info=True"

@@ -66,7 +66,6 @@ markers =
     regression: Regression tests for bugs
     performance: Performance and load tests
     kb: Knowledge Base tests (multi-language support)
-    debug: Debug tests for development (excluded from CI)
 
 # ----------------------------------------------------------------------------
 # COVERAGE CONFIGURATION
@@ -211,7 +210,6 @@ cache_dir = .pytest_cache
 # Specific marker:
 #   pytest -m unit
 #   pytest -m "unit and not slow"
-#   pytest -m "not debug"  # Exclude debug tests (for CI)
 # 
 # Specific file:
 #   pytest tests/unit/test_service_factory.py
@@ -236,9 +234,6 @@ cache_dir = .pytest_cache
 # 
 # Show local variables in tracebacks:
 #   pytest -l
-# 
-# Debug tests only:
-#   pytest -m debug
 # 
 # ============================================================================
 # END OF CONFIGURATION

@@ -29,7 +29,7 @@ class InformationalSubIntent(str, Enum):
     Sub-types for informational intents.
     Used to route to correct knowledge base section.
     
-    ✅ ACTUALIZADO: Incluye TODOS los sub_intents existentes en kb_contents
+    ✅ ACTUALIZADO: Incluye TODOS los sub_intents existentes en kb_content
     ✅ SINCRONIZADO: Con páginas de Shopify KB (Sprint 1 + Sprint 2)
     """
     # Policies

@@ -297,7 +297,7 @@ async def main():
     
     print("\n✅ VALIDATION: Checking PostgreSQL...")
     
-    query = "SELECT COUNT(*) FROM kb_contents"
+    query = "SELECT COUNT(*) FROM kb_content"
     async with db_pool.acquire() as conn:
         count = await conn.fetchval(query)
     

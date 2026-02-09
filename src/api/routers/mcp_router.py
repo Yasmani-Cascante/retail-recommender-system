@@ -4,6 +4,7 @@ import logging
 import asyncio
 import json  # Added for response transformation
 from datetime import datetime, timezone  # Fix: Use datetime to avoid all time shadowing issues
+import structlog  # ✅ H1: Structured Logging Migration
 
 # ASYNC-FIRST IMPORTS - CORRECCIÓN CRÍTICA
 from src.api.utils.market_utils import (
@@ -85,8 +86,8 @@ from src.api.utils.market_integration import fix_recommendations
 # from src.api.routers.mcp_conversation_state_fix import get_conversation_state_manager
 from src.api.mcp.conversation_state_manager import get_conversation_state_manager
 
-logger = logging.getLogger(__name__)
-
+# logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)  # ✅ H1: Structured Logging Migration
 # ============================================================================
 # CRITICAL FIX: Response Validation Error Solution
 # ============================================================================

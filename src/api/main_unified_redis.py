@@ -26,11 +26,11 @@ from datetime import datetime
 load_dotenv()
 
 # ✅ CONFIGURAR LOGGING ENTERPRISE
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# )
+# logger = logging.getLogger(__name__)
 
 # ✅ ENTERPRISE IMPORTS
 from fastapi import FastAPI, Header, Query, HTTPException, BackgroundTasks, Response, Depends
@@ -53,6 +53,28 @@ from src.api.factories import (
 
 # from src.api.factories.factories import RecommenderFactory
 from src.api.core.product_cache import ProductCache
+# logging configuration
+import structlog
+from src.api.core.logging_config import configure_structlog
+
+# Configure structured logging at the start
+# log_level = os.getenv("LOG_LEVEL", "INFO")
+# json_format = os.getenv("LOG_JSON_FORMAT", "false").lower() == "true"
+
+# configure_structlog(
+#     log_level=log_level,
+#     json_format=json_format
+# )
+
+# # ✅ Usar structlog desde el inicio
+# import structlog
+logger = structlog.get_logger(__name__)
+
+# logger.info(
+#     "application_module_loaded",
+#     log_level=log_level,
+#     json_format=json_format
+# )  
 
 # ✅ OBSERVABILITY MANAGER ENTERPRISE
 try:
@@ -154,13 +176,31 @@ async def lifespan(app: FastAPI):
     """
     global settings, startup_manager, tfidf_recommender, retail_recommender
     global hybrid_recommender, redis_client, product_cache
-    
+      
     # ============================================================================
     # 🚀 STARTUP PHASE - CÓDIGO ORIGINAL COMPLETO PRESERVADO
     # ============================================================================
+
+    # Configure structured logging at the start
+    # log_level = os.getenv("LOG_LEVEL", "INFO")
+    # json_format = os.getenv("LOG_JSON_FORMAT", "false").lower() == "true"
+
+    # configure_structlog(
+    #     log_level=log_level,
+    #     json_format=json_format
+    # )
+
+    # # ✅ Usar structlog desde el inicio
+    # import structlog
+    # logger = structlog.get_logger(__name__)
+
+    # logger.info(
+    #     "application_module_loaded",
+    #     log_level=log_level,
+    #     json_format=json_format
+    # )  
     
     logger.info("🚀 Starting Enterprise Retail Recommender System v2.1.0 - DEPENDENCY INJECTION CORRECTED")
-    
     try:
         # ============================================================================
         # 🎯 PASO 1: INICIALIZAR CONFIGURACIÓN Y MANAGERS

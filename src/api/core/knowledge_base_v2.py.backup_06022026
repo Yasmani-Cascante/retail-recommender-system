@@ -11,10 +11,9 @@ Backward compatible with knowledge_base.py (hardcoded fallback).
 
 Author: Retail Recommender System Team
 Date: 2026-01-11
-Version: H1 - Structured Logging Migration
 """
 
-import structlog  # ✅ H1: Structured Logging Migration
+import logging
 from typing import Optional, List
 from datetime import datetime, timedelta
 
@@ -35,7 +34,7 @@ from src.api.core.models.kb_models import (
 )
 from src.api.integrations.shopify_kb_client import ShopifyKBClient
 
-logger = structlog.get_logger(__name__)  # ✅ H1: Structured Logging Migration
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -121,41 +120,21 @@ class ShopifyKnowledgeBase:
             try:
                 from src.api.core.knowledge_base import get_knowledge_base
                 self.fallback_kb = get_knowledge_base()
-                # ✅ H1: Structured logging
-                logger.info(
-                    "fallback_kb_enabled",
-                    method="get_knowledge_base",
-                    kb_type="hardcoded"
-                )
+                logger.info("Fallback KB (hardcoded) enabled via get_knowledge_base()")
             except Exception:
                 try:
                     from src.api.core.knowledge_base import SimpleKnowledgeBase
                     self.fallback_kb = SimpleKnowledgeBase()
-                    # ✅ H1: Structured logging
-                    logger.info(
-                        "fallback_kb_enabled",
-                        method="SimpleKnowledgeBase",
-                        kb_type="hardcoded"
-                    )
+                    logger.info("Fallback KB (hardcoded) enabled via SimpleKnowledgeBase")
                 except Exception as e:
-                    # ✅ H1: Structured warning
-                    logger.warning(
-                        "fallback_kb_import_failed",
-                        error=str(e),
-                        module="knowledge_base.py"
-                    )
+                    logger.warning(f"Could not import fallback KB (knowledge_base.py): {e}")
                     self.fallback_kb = None
         else:
             self.fallback_kb = None
         
-        # ✅ H1: Structured logging para inicialización
         logger.info(
-            "shopify_knowledge_base_initialized",
-            service="ShopifyKnowledgeBase",
-            cache_ttl_hours=cache_ttl_hours,
-            buffer_max_age_hours=buffer_max_age_hours,
-            fallback_enabled=enable_fallback,
-            shopify_client_configured=self.shopify is not None
+            f"ShopifyKnowledgeBase initialized: "
+            f"cache_ttl={cache_ttl_hours}h, buffer_max_age={buffer_max_age_hours}h"
         )
     
     # ──────────────────────────────────────────────────────────────────────
@@ -215,36 +194,21 @@ class ShopifyKnowledgeBase:
         if language not in ['es', 'en']:
             # If requested language is not es/en, try es first, then en
             fallback_languages = ['es', 'en']
-            # ✅ H1: Structured logging
             logger.info(
-                "kb_language_fallback_triggered",
-                requested_language=language,
-                fallback_chain=fallback_languages,
-                sub_intent=sub_intent_str,
-                category=category
+                f"Language '{language}' not found. "
+                f"Attempting fallback chain: {fallback_languages}"
             )
         elif language == 'en':
             # If requested en, try es as fallback
             fallback_languages = ['es']
-            # ✅ H1: Structured logging
-            logger.info(
-                "kb_language_fallback_triggered",
-                requested_language=language,
-                fallback_chain=fallback_languages,
-                sub_intent=sub_intent_str,
-                category=category
-            )
+            logger.info(f"English content not found. Attempting Spanish fallback.")
         # Note: If language == 'es', no fallback (es is the default)
         
         # Try each fallback language
         for fallback_lang in fallback_languages:
-            # ✅ H1: Structured logging
             logger.info(
-                "kb_trying_fallback_language",
-                requested_language=language,
-                fallback_language=fallback_lang,
-                sub_intent=sub_intent_str,
-                category=category
+                f"Trying fallback language: {fallback_lang} "
+                f"(original: {language})"
             )
             
             result = await self._get_answer_single_language(
@@ -254,13 +218,9 @@ class ShopifyKnowledgeBase:
             )
             
             if result:
-                # ✅ H1: Structured logging
                 logger.info(
-                    "kb_language_fallback_success",
-                    requested_language=language,
-                    fallback_language=fallback_lang,
-                    sub_intent=sub_intent_str,
-                    category=category
+                    f"✅ Language fallback successful: "
+                    f"{language} → {fallback_lang}"
                 )
                 return result
         
@@ -269,13 +229,10 @@ class ShopifyKnowledgeBase:
         # ═══════════════════════════════════════════════════════════════════
         
         if self.enable_fallback and self.fallback_kb:
-            # ✅ H1: Structured warning
             logger.warning(
-                "kb_fallback_to_hardcoded",
-                sub_intent=sub_intent_str,
-                language=language,
-                category=category or 'general',
-                reason="all_layers_failed"
+                f"⚠️ All layers and language fallbacks failed. "
+                f"Falling back to hardcoded KB: "
+                f"{sub_intent_str}/{language}/{category or 'general'}"
             )
             
             try:
@@ -286,34 +243,19 @@ class ShopifyKnowledgeBase:
                 )
                 
                 if fallback_answer:
-                    # ✅ H1: Structured logging
-                    logger.info(
-                        "kb_hardcoded_success",
-                        sub_intent=sub_intent_str,
-                        kb_type="hardcoded"
-                    )
+                    logger.info("✅ Fallback KB (hardcoded) returned answer")
                     return fallback_answer
                     
             except Exception as e:
-                # ✅ H1: Structured error
-                logger.error(
-                    "kb_hardcoded_error",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    exc_info=True
-                )
+                logger.error(f"Fallback KB error: {e}", exc_info=True)
         
         # ═══════════════════════════════════════════════════════════════════
         # NO ANSWER FOUND
         # ═══════════════════════════════════════════════════════════════════
         
-        # ✅ H1: Structured warning
         logger.warning(
-            "kb_no_answer_found",
-            sub_intent=sub_intent_str,
-            language=language,
-            category=category or 'general',
-            fallbacks_tried=["redis", "postgresql", "shopify_api", "language_fallback", "hardcoded"] if self.enable_fallback else ["redis", "postgresql", "shopify_api", "language_fallback"]
+            f"❌ No answer found for: {sub_intent_str}/{language}/{category or 'general'} "
+            f"(tried all fallbacks)"
         )
         return None
     
@@ -342,12 +284,9 @@ class ShopifyKnowledgeBase:
             KnowledgeBaseAnswer or None
         """
         
-        # ✅ H1: Structured logging
         logger.info(
-            "kb_query",
-            sub_intent=sub_intent_str,
-            language=language,
-            category=category
+            f"KB query: sub_intent={sub_intent_str}, "
+            f"language={language}, category={category}"
         )
         
         # ═══════════════════════════════════════════════════════════════════
@@ -357,28 +296,14 @@ class ShopifyKnowledgeBase:
         try:
             cached = await self._get_from_cache(sub_intent_str, language, category)
             if cached:
-                # ✅ H1: Structured logging
-                logger.info(
-                    "kb_cache_hit",
-                    layer="redis",
-                    sub_intent=sub_intent_str,
-                    language=language,
-                    category=category or 'general',
-                    response_time_ms="<1"
-                )
+                logger.info(f"✅ Cache HIT (Redis): {sub_intent_str}/{language}/{category or 'general'}")
                 return self._kb_answer_to_knowledge_base_answer(
                     cached, 
                     sub_intent=sub_intent_str,
                     cache_hit=True
                 )
         except Exception as e:
-            # ✅ H1: Structured warning
-            logger.warning(
-                "kb_cache_error",
-                layer="redis",
-                error=str(e),
-                error_type=type(e).__name__
-            )
+            logger.warning(f"Redis cache error: {e}")
         
         # ═══════════════════════════════════════════════════════════════════
         # LAYER 2: POSTGRESQL BUFFER (Warm, <10ms)
@@ -392,15 +317,8 @@ class ShopifyKnowledgeBase:
                 is_fresh = buffered.is_fresh(max_age_hours=self.buffer_max_age.total_seconds() / 3600)
                 
                 if is_fresh:
-                    # ✅ H1: Structured logging
                     logger.info(
-                        "kb_buffer_hit",
-                        layer="postgresql",
-                        sub_intent=sub_intent_str,
-                        language=language,
-                        category=category or 'general',
-                        is_fresh=True,
-                        response_time_ms="<10"
+                        f"✅ Buffer HIT (PostgreSQL): {sub_intent_str}/{language}/{category or 'general'}"
                     )
                     
                     # Store in Redis for next time
@@ -413,27 +331,13 @@ class ShopifyKnowledgeBase:
                         cache_hit=False
                     )
                 else:
-                    # ✅ H1: Structured warning con cálculo de age
-                    age_seconds = (datetime.utcnow() - buffered.last_synced).total_seconds()
                     logger.warning(
-                        "kb_buffer_stale",
-                        layer="postgresql",
-                        sub_intent=sub_intent_str,
-                        language=language,
-                        category=category or 'general',
-                        age_seconds=round(age_seconds, 2),
-                        age_hours=round(age_seconds / 3600, 1)
+                        f"⚠️ Buffer STALE (PostgreSQL): {sub_intent_str}/{language}/{category or 'general'} "
+                        f"(age: {datetime.utcnow() - buffered.last_synced})"
                     )
                     # Continue to Layer 3 to refresh
         except Exception as e:
-            # ✅ H1: Structured error
-            logger.error(
-                "kb_buffer_error",
-                layer="postgresql",
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True
-            )
+            logger.error(f"PostgreSQL buffer error: {e}", exc_info=True)
         
         # ═══════════════════════════════════════════════════════════════════
         # LAYER 3: SHOPIFY API (Cold, 100-300ms) - Only if configured
@@ -441,32 +345,15 @@ class ShopifyKnowledgeBase:
         
         if self.shopify:
             try:
-                # ✅ H1: Structured logging
-                logger.info(
-                    "kb_shopify_fetch",
-                    layer="shopify_api",
-                    sub_intent=sub_intent_str,
-                    language=language,
-                    category=category or 'general'
-                )
+                logger.info(f"Fetching from Shopify API: {sub_intent_str}/{language}/{category or 'general'}")
                 
                 # TODO: Implement direct Shopify fetch
                 # For now, trigger background sync and use stale buffer
-                # ✅ H1: Structured warning
-                logger.warning(
-                    "kb_shopify_fetch_not_implemented",
-                    layer="shopify_api",
-                    fallback="stale_buffer"
-                )
+                logger.warning("Direct Shopify fetch not implemented yet. Using stale buffer if available.")
                 
                 # Use stale buffer as last resort
                 if buffered:
-                    # ✅ H1: Structured logging
-                    logger.info(
-                        "kb_using_stale_buffer",
-                        layer="postgresql",
-                        reason="shopify_fetch_not_implemented"
-                    )
+                    logger.info("Using STALE buffer (better than nothing)")
                     kb_answer = kb_content_to_answer(buffered, cache_hit=False)
                     return self._kb_answer_to_knowledge_base_answer(
                         kb_answer,
@@ -475,14 +362,7 @@ class ShopifyKnowledgeBase:
                     )
                     
             except Exception as e:
-                # ✅ H1: Structured error
-                logger.error(
-                    "kb_shopify_error",
-                    layer="shopify_api",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                    exc_info=True
-                )
+                logger.error(f"Shopify API error: {e}", exc_info=True)
         
         # No answer found for this specific language
         return None
@@ -508,13 +388,7 @@ class ShopifyKnowledgeBase:
             return None
             
         except Exception as e:
-            # ✅ H1: Structured error
-            logger.error(
-                "kb_cache_get_error",
-                cache_key=cache_key,
-                error=str(e),
-                error_type=type(e).__name__
-            )
+            logger.error(f"Error getting from cache: {e}")
             return None
     
     async def _store_in_cache(
@@ -532,24 +406,17 @@ class ShopifyKnowledgeBase:
             data = answer.model_dump_json()
             
             # Store with TTL
+            # await self.redis.set(
+            #     key=cache_key,
+            #     value=data,
+            #     ttl=self.cache_ttl_seconds
+            # )
             await self.redis.set(cache_key, data, self.cache_ttl_seconds)
             
-            # ✅ H1: Structured debug logging
-            logger.debug(
-                "kb_cache_stored",
-                cache_key=cache_key,
-                ttl_seconds=self.cache_ttl_seconds,
-                layer="redis"
-            )
+            logger.debug(f"Stored in cache: {cache_key} (TTL={self.cache_ttl_seconds}s)")
             
         except Exception as e:
-            # ✅ H1: Structured error
-            logger.error(
-                "kb_cache_store_error",
-                cache_key=cache_key,
-                error=str(e),
-                error_type=type(e).__name__
-            )
+            logger.error(f"Error storing in cache: {e}")
     
     def _build_cache_key(
         self,
@@ -614,16 +481,7 @@ class ShopifyKnowledgeBase:
             return None
             
         except Exception as e:
-            # ✅ H1: Structured error
-            logger.error(
-                "kb_buffer_get_error",
-                sub_intent=sub_intent,
-                language=language,
-                category=category or 'general',
-                error=str(e),
-                error_type=type(e).__name__,
-                exc_info=True
-            )
+            logger.error(f"Error getting from buffer: {e}", exc_info=True)
             return None
     
     # ──────────────────────────────────────────────────────────────────────
@@ -631,10 +489,10 @@ class ShopifyKnowledgeBase:
     # ──────────────────────────────────────────────────────────────────────
     
     def _kb_answer_to_knowledge_base_answer(
-        self,
-        kb_answer: KBAnswer,
-        sub_intent: str,
-        cache_hit: bool = False
+    self,
+    kb_answer: KBAnswer,
+    sub_intent: str,  # ✅ NUEVO PARÁMETRO REQUERIDO
+    cache_hit: bool = False
     ) -> KnowledgeBaseAnswer:
         """
         Convert KBAnswer (Shopify model) to KnowledgeBaseAnswer (system model).
@@ -656,12 +514,7 @@ class ShopifyKnowledgeBase:
             sub_intent_enum = InformationalSubIntent(sub_intent)
         except ValueError:
             # Fallback to UNKNOWN if sub_intent is not in enum
-            # ✅ H1: Structured warning
-            logger.warning(
-                "kb_unknown_sub_intent",
-                sub_intent=sub_intent,
-                fallback="UNKNOWN"
-            )
+            logger.warning(f"Unknown sub_intent '{sub_intent}', using UNKNOWN")
             sub_intent_enum = InformationalSubIntent.UNKNOWN
         
         # ✅ Convert related_links format if needed
@@ -680,7 +533,7 @@ class ShopifyKnowledgeBase:
         
         return KnowledgeBaseAnswer(
             answer=kb_answer.answer,
-            sub_intent=sub_intent_enum,
+            sub_intent=sub_intent_enum,  # ✅ AGREGADO: Campo requerido
             sources=[],  # Default empty, can be populated later
             related_links=related_links_list if related_links_list else None
         )
@@ -878,5 +731,5 @@ __all__ = [
     "ShopifyKnowledgeBase",
     "parse_accept_language",
     "normalize_language_code",
-    "get_best_supported_language"
+    "get_best_supported_language"  # ✅ NEW
 ]
