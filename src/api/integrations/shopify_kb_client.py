@@ -708,6 +708,97 @@ class ShopifyKBClient(ShopifyIntegration):
             )
             return {}
     
+    async def get_page_title_translation(
+        self, 
+        page_id: int,
+        locale: str
+    ) -> Optional[str]:
+        """
+        Fetch translated title for a specific locale via Shopify Translation API.
+        
+        Args:
+            page_id: Shopify Page ID
+            locale: Language code (en, es, pt, etc.)
+            
+        Returns:
+            Translated title string or None if not found
+            
+        Example:
+            >>> title_es = await client.get_page_title_translation(123, "es")
+            >>> print(title_es)  # "Política de Devoluciones"
+            
+            >>> title_en = await client.get_page_title_translation(123, "en")
+            >>> print(title_en)  # "Return Policy"
+        """
+        try:
+            # GraphQL query for title translation
+            translation_query = """
+            query getPageTitleTranslation($resourceId: ID!, $locale: String!) {
+                translatableResource(resourceId: $resourceId) {
+                    resourceId
+                    translations(locale: $locale) {
+                        key
+                        value
+                        locale
+                    }
+                }
+            }
+            """
+            
+            variables = {
+                "resourceId": f"gid://shopify/Page/{page_id}",
+                "locale": locale
+            }
+            
+            # ✅ H1: Structured debug logging
+            logger.debug(
+                "shopify_title_translation_fetching",
+                page_id=page_id,
+                locale=locale
+            )
+            
+            # Execute GraphQL query
+            data = await self._graphql_query_with_retry(translation_query, variables)
+            
+            # Parse translations
+            resource = data.get("translatableResource", {})
+            translations = resource.get("translations", [])
+            
+            # Find title translation
+            for trans in translations:
+                if trans["key"] == "title" and trans["value"]:
+                    # ✅ H1: Structured info logging
+                    logger.info(
+                        "shopify_title_translation_found",
+                        page_id=page_id,
+                        locale=locale,
+                        title=trans["value"]
+                    )
+                    return trans["value"]
+            
+            # No title translation found
+            # ✅ H1: Structured debug
+            logger.debug(
+                "shopify_title_translation_not_found",
+                page_id=page_id,
+                locale=locale,
+                fallback="using_original_title"
+            )
+            return None
+            
+        except Exception as e:
+            # ✅ H1: Structured warning
+            logger.warning(
+                "shopify_title_translation_fetch_failed",
+                page_id=page_id,
+                locale=locale,
+                error=str(e),
+                error_type=type(e).__name__,
+                fallback="using_original_title"
+            )
+            return None
+
+
     # ──────────────────────────────────────────────────────────────────────
     # METADATA PARSING
     # ──────────────────────────────────────────────────────────────────────

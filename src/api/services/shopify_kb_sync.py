@@ -423,14 +423,33 @@ class ShopifyKBSyncService:
                             # Convert translated HTML to Markdown
                             translated_markdown = self._html_to_markdown(translated_html)
                             
-                            # Upsert translation
+                            # ✅ NUEVO: Fetch translated title
+                            translated_title = await self.shopify.get_page_title_translation(
+                                page.id, locale
+                            )
+                            
+                            # Fallback to original title if translation not found
+                            final_title = translated_title if translated_title else page.title
+                            
+                            # ✅ H1: Structured logging para debugging
+                            logger.debug(
+                                "page_translation_title_resolved",
+                                page_id=page.id,
+                                locale=locale,
+                                original_title=page.title,
+                                translated_title=translated_title,
+                                final_title=final_title,
+                                used_fallback=(translated_title is None)
+                            )
+                            
+                            # ✅ CORRECTO: Usa título traducido o fallback
                             await self._upsert_kb_content(
                                 sub_intent=sub_intent,
                                 language=locale,
                                 category=category,
                                 content=translated_markdown,
                                 content_html=translated_html,
-                                title=page.title,
+                                title=final_title,  # ✅ Título traducido o fallback
                                 shopify_page_id=page.id,
                                 shopify_url=f"https://{self.shopify.shop_url}/pages/{page.handle}",
                                 shopify_handle=page.handle
