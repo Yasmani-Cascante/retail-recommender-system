@@ -433,7 +433,7 @@ class ShopifyKBClient(ShopifyIntegration):
             
             while url:
                 # ✅ H1: Structured debug
-                logger.info(
+                logger.debug(
                     "shopify_pages_fetching",
                     url=url
                 )
@@ -450,7 +450,7 @@ class ShopifyKBClient(ShopifyIntegration):
                     all_pages.extend(pages)
                     
                     # ✅ H1: Structured info
-                    logger.debug(
+                    logger.info(
                         "shopify_pages_batch_fetched",
                         batch_size=len(pages),
                         total_accumulated=len(all_pages)
@@ -502,10 +502,10 @@ class ShopifyKBClient(ShopifyIntegration):
             url = f"{self.api_url}/pages/{page_id}/metafields.json"
             
             # ✅ H1: Structured debug
-            # logger.debug(
-            #     "shopify_metafields_fetching",
-            #     page_id=page_id
-            # )
+            logger.debug(
+                "shopify_metafields_fetching",
+                page_id=page_id
+            )
             
             # Execute sync call in thread pool
             response = await asyncio.to_thread(
@@ -554,8 +554,12 @@ class ShopifyKBClient(ShopifyIntegration):
                 metafields_dict[composite_key] = value
             
             # ✅ H1: Structured debug
-            # Log eliminado: información redundante
-            # La información se agrega en shopify_kb_pages_filtered
+            logger.debug(
+                "shopify_metafields_fetched",
+                page_id=page_id,
+                metafields_count=len(metafields_dict),
+                metafield_keys=list(metafields_dict.keys())
+            )
             
             return metafields_dict
             
@@ -625,8 +629,11 @@ class ShopifyKBClient(ShopifyIntegration):
                     }
                     
                     # ✅ H1: Structured debug
-                    # Log eliminado: ruido excesivo (~26 veces por sync)
-                    # La información se agrega en shopify_translations_fetched
+                    logger.debug(
+                        "shopify_translation_fetching",
+                        page_id=page_id,
+                        locale=locale
+                    )
                     
                     # Execute GraphQL query
                     data = await self._graphql_query_with_retry(translation_query, variables)
@@ -639,12 +646,21 @@ class ShopifyKBClient(ShopifyIntegration):
                     for trans in translations_raw:
                         if trans["key"] == "body_html" and trans["value"]:
                             # ✅ H1: Structured debug
-                            # Log eliminado: información agregada en log final
+                            logger.debug(
+                                "shopify_translation_found",
+                                page_id=page_id,
+                                locale=locale,
+                                content_length=len(trans['value'])
+                            )
                             return (locale, trans["value"])
                     
                     # No body_html translation found for this locale
                     # ✅ H1: Structured debug
-                    # Log eliminado: ausencia de traducción no es relevante
+                    logger.debug(
+                        "shopify_translation_not_found",
+                        page_id=page_id,
+                        locale=locale
+                    )
                     return (locale, None)
                     
                 except Exception as e:
@@ -660,7 +676,12 @@ class ShopifyKBClient(ShopifyIntegration):
             
             # ✨ OPTIMIZATION: Execute all translation fetches in PARALLEL
             # ✅ H1: Structured debug
-            # Log eliminado: información redundante (~13 veces por sync)
+            logger.debug(
+                "shopify_translations_fetch_parallel",
+                page_id=page_id,
+                locales_count=len(available_locales),
+                locales=available_locales
+            )
             
             # Create tasks for all locales
             translation_tasks = [
@@ -798,7 +819,7 @@ class ShopifyKBClient(ShopifyIntegration):
             now < self._locales_cache_expires_at):
             
             # ✅ H1: Structured info
-            logger.debug(
+            logger.info(
                 "shopify_locales_cache_hit",
                 ttl_hours=self._locales_cache_ttl.total_seconds() / 3600
             )

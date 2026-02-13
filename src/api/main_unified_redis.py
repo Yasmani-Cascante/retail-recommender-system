@@ -16,7 +16,6 @@ Version: 2.1.0 - Enterprise Migration FIXED
 
 import os
 import time
-import logging
 import asyncio
 from contextlib import asynccontextmanager  # ✅ AÑADIDO PARA LIFESPAN PATTERN
 from dotenv import load_dotenv
@@ -24,13 +23,6 @@ from datetime import datetime
 
 # ✅ CARGAR VARIABLES DE ENTORNO INMEDIATAMENTE
 load_dotenv()
-
-# ✅ CONFIGURAR LOGGING ENTERPRISE
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-# )
-# logger = logging.getLogger(__name__)
 
 # ✅ ENTERPRISE IMPORTS
 from fastapi import FastAPI, Header, Query, HTTPException, BackgroundTasks, Response, Depends
@@ -53,28 +45,33 @@ from src.api.factories import (
 
 # from src.api.factories.factories import RecommenderFactory
 from src.api.core.product_cache import ProductCache
-# logging configuration
+
+# ============================================================================
+# H1: STRUCTURED LOGGING CONFIGURATION (ENTERPRISE)
+# ============================================================================
+import logging
 import structlog
 from src.api.core.logging_config import configure_structlog
 
-# Configure structured logging at the start
-# log_level = os.getenv("LOG_LEVEL", "INFO")
-# json_format = os.getenv("LOG_JSON_FORMAT", "false").lower() == "true"
+# ✅ PASO 1: Configure structured logging BEFORE creating any loggers
+log_level = os.getenv("LOG_LEVEL", "INFO")
+json_format = os.getenv("LOG_JSON_FORMAT", "false").lower() == "true"
 
-# configure_structlog(
-#     log_level=log_level,
-#     json_format=json_format
-# )
+configure_structlog(
+    log_level=log_level,
+    json_format=json_format
+)
 
-# # ✅ Usar structlog desde el inicio
-# import structlog
+# ✅ PASO 2: NOW create logger (after configuration)
 logger = structlog.get_logger(__name__)
 
-# logger.info(
-#     "application_module_loaded",
-#     log_level=log_level,
-#     json_format=json_format
-# )  
+# ✅ PASO 3: Log configuration confirmation
+logger.info(
+    "structured_logging_initialized",
+    log_level=log_level,
+    json_format=json_format,
+    module=__name__
+)
 
 # ✅ OBSERVABILITY MANAGER ENTERPRISE
 try:
@@ -180,25 +177,6 @@ async def lifespan(app: FastAPI):
     # ============================================================================
     # 🚀 STARTUP PHASE - CÓDIGO ORIGINAL COMPLETO PRESERVADO
     # ============================================================================
-
-    # Configure structured logging at the start
-    # log_level = os.getenv("LOG_LEVEL", "INFO")
-    # json_format = os.getenv("LOG_JSON_FORMAT", "false").lower() == "true"
-
-    # configure_structlog(
-    #     log_level=log_level,
-    #     json_format=json_format
-    # )
-
-    # # ✅ Usar structlog desde el inicio
-    # import structlog
-    # logger = structlog.get_logger(__name__)
-
-    # logger.info(
-    #     "application_module_loaded",
-    #     log_level=log_level,
-    #     json_format=json_format
-    # )  
     
     logger.info("🚀 Starting Enterprise Retail Recommender System v2.1.0 - DEPENDENCY INJECTION CORRECTED")
     try:

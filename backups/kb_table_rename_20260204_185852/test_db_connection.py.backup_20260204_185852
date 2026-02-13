@@ -91,7 +91,7 @@ async def test_postgresql_connection():
             """
             SELECT EXISTS (
                 SELECT FROM information_schema.tables 
-                WHERE table_name = 'kb_content'
+                WHERE table_name = 'kb_contents'
             )
             """
         )

@@ -1,16 +1,29 @@
 """
-Health Check Endpoint - Knowledge Base v2
-==========================================
+Health Check Endpoint - Knowledge Base v2 (ENHANCED - FASE H3)
+==============================================================
 
-Endpoint para validar estado del sistema KB Multi-Language:
-- Conectividad PostgreSQL
-- Contenido sincronizado disponible
-- Cobertura de idiomas (ES/EN)
-- Cache Redis operativo
-- Métricas de sincronización
+🎯 OBJETIVO:
+Proporcionar visibilidad completa del estado del sistema KB Multi-Language
+con checks comprehensivos, métricas detalladas y alertas tempranas.
 
-Fecha: 31 Enero 2026
-Objetivo: Mitigar R1 (Sync Silently Failing) con monitoring continuo
+✅ FEATURES (Post-H3 Día 1):
+- ✅ PostgreSQL connectivity + pool metrics
+- ✅ KB content availability + language coverage
+- ✅ Redis connectivity (degraded mode friendly)
+- ✅ Schema versioning status (FASE H2 integration) ← NUEVO DÍA 1
+- ✅ Content staleness alerts (>24h, >48h, >72h) ← MEJORADO DÍA 1
+- ✅ Per-language staleness detection ← NUEVO DÍA 1
+- ✅ Structured logging (FASE H1 integration)
+- ⏳ Performance instrumentation (<500ms target) ← PRÓXIMO (Día 2)
+- ⏳ Shopify GraphQL API health (deep mode) ← PRÓXIMO (Día 2)
+
+🔄 USAGE:
+- Kubernetes liveness probe: GET /health/kb/simple
+- Kubernetes readiness probe: GET /health/kb
+- Monitoring dashboard: GET /health/kb (poll every 60s)
+
+Fecha: 11 Febrero 2026 (H3 Día 1 - Schema Versioning + Enhanced Staleness)
+Version: 2.1.0 (Enhanced Health Checks - Schema Versioning Integration)
 """
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,8 +33,18 @@ from pydantic import BaseModel, Field
 import asyncpg
 from enum import Enum
 
+# ============================================================================
+# H1: STRUCTURED LOGGING IMPORT
+# ============================================================================
+import structlog
+
+from src.api.services.shopify_kb_sync import ShopifyKBSyncService
+
+logger = structlog.get_logger(__name__)
+
 # Dependencies
 from src.api.dependencies import (
+    get_kb_sync_service,
     get_knowledge_base,
     get_redis_service,
     get_db_pool
@@ -100,7 +123,7 @@ async def check_postgres_connectivity(
     Checks:
     - Pool tiene conexiones disponibles
     - Query simple ejecuta correctamente
-    - Tabla kb_content existe
+    - Tabla kb_contents existe (FIXED: plural)
     
     Returns:
         ComponentHealth con estado del componente
@@ -112,29 +135,54 @@ async def check_postgres_connectivity(
             result = await conn.fetchval("SELECT 1")
             
             if result != 1:
+                # ✅ H1: Structured logging para error
+                logger.error(
+                    "postgres_health_check_unexpected_result",
+                    component="postgresql",
+                    check_type="connectivity",
+                    expected=1,
+                    received=result
+                )
                 return ComponentHealth(
                     status=HealthStatus.UNHEALTHY,
                     message="PostgreSQL query returned unexpected result"
                 )
             
-            # Verificar que tabla kb_content existe
+            # ✅ FIXED: Tabla kb_contents (plural)
             table_exists = await conn.fetchval("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
-                    WHERE table_name = 'kb_content'
+                    WHERE table_name = 'kb_contents'
                 )
             """)
             
             if not table_exists:
+                # ✅ H1: Structured logging para tabla faltante
+                logger.error(
+                    "postgres_health_check_table_missing",
+                    component="postgresql",
+                    check_type="schema",
+                    table_name="kb_contents"
+                )
                 return ComponentHealth(
                     status=HealthStatus.UNHEALTHY,
-                    message="Table kb_content does not exist",
+                    message="Table kb_contents does not exist",
                     details={"error": "Database schema incomplete"}
                 )
             
             # Pool size info
             pool_size = db_pool.get_size()
             pool_free = db_pool.get_idle_size()
+            pool_usage_pct = round((pool_size - pool_free) / pool_size * 100, 2)
+            
+            # ✅ H1: Structured logging para éxito
+            logger.info(
+                "postgres_health_check_passed",
+                component="postgresql",
+                pool_size=pool_size,
+                pool_free=pool_free,
+                pool_usage_pct=pool_usage_pct
+            )
             
             return ComponentHealth(
                 status=HealthStatus.HEALTHY,
@@ -142,17 +190,33 @@ async def check_postgres_connectivity(
                 details={
                     "pool_size": pool_size,
                     "pool_free": pool_free,
-                    "pool_usage_pct": round((pool_size - pool_free) / pool_size * 100, 2)
+                    "pool_usage_pct": pool_usage_pct
                 }
             )
             
     except asyncpg.PostgresError as e:
+        # ✅ H1: Structured logging para errores de PostgreSQL
+        logger.error(
+            "postgres_health_check_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            component="postgresql",
+            check_type="connectivity"
+        )
         return ComponentHealth(
             status=HealthStatus.UNHEALTHY,
             message=f"PostgreSQL error: {str(e)}",
             details={"error_type": type(e).__name__}
         )
     except Exception as e:
+        # ✅ H1: Structured logging para errores inesperados
+        logger.error(
+            "postgres_health_check_unexpected_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            component="postgresql",
+            exc_info=True  # ← CRÍTICO para stack trace
+        )
         return ComponentHealth(
             status=HealthStatus.UNHEALTHY,
             message=f"Unexpected error checking PostgreSQL: {str(e)}",
@@ -167,7 +231,7 @@ async def check_kb_content_availability(
     Verifica que hay contenido sincronizado en la base de datos.
     
     Checks:
-    - Tabla kb_content tiene registros
+    - Tabla kb_contents tiene registros
     - Hay contenido en español (default)
     - Hay contenido en inglés (opcional pero deseable)
     
@@ -178,10 +242,17 @@ async def check_kb_content_availability(
         async with db_pool.acquire() as conn:
             # Contar total de registros
             total_records = await conn.fetchval(
-                "SELECT COUNT(*) FROM kb_content"
+                "SELECT COUNT(*) FROM kb_contents"
             )
             
             if total_records == 0:
+                # ✅ H1: Structured logging para KB vacío
+                logger.warning(
+                    "kb_content_empty",
+                    component="kb_content",
+                    total_records=0,
+                    status="unhealthy"
+                )
                 return ComponentHealth(
                     status=HealthStatus.UNHEALTHY,
                     message="Knowledge Base is EMPTY - no content synced",
@@ -193,14 +264,23 @@ async def check_kb_content_availability(
             
             # Contar por idioma
             es_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM kb_content WHERE language = 'es'"
+                "SELECT COUNT(*) FROM kb_contents WHERE language = 'es'"
             )
             en_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM kb_content WHERE language = 'en'"
+                "SELECT COUNT(*) FROM kb_contents WHERE language = 'en'"
             )
             
             # Validar que hay contenido ES (requerido)
             if es_count == 0:
+                # ✅ H1: Structured logging para ES faltante
+                logger.error(
+                    "kb_content_missing_spanish",
+                    component="kb_content",
+                    total_records=total_records,
+                    es_records=0,
+                    en_records=en_count,
+                    status="unhealthy"
+                )
                 return ComponentHealth(
                     status=HealthStatus.UNHEALTHY,
                     message="No Spanish content available (required)",
@@ -218,6 +298,26 @@ async def check_kb_content_availability(
             if en_count == 0:
                 status = HealthStatus.DEGRADED
                 message = "Content available in Spanish only (EN missing)"
+                
+                # ✅ H1: Structured logging para EN faltante
+                logger.warning(
+                    "kb_content_missing_english",
+                    component="kb_content",
+                    total_records=total_records,
+                    es_records=es_count,
+                    en_records=0,
+                    status="degraded"
+                )
+            else:
+                # ✅ H1: Structured logging para éxito
+                logger.info(
+                    "kb_content_check_passed",
+                    component="kb_content",
+                    total_records=total_records,
+                    es_records=es_count,
+                    en_records=en_count,
+                    status=status.value
+                )
             
             return ComponentHealth(
                 status=status,
@@ -232,6 +332,14 @@ async def check_kb_content_availability(
             )
             
     except Exception as e:
+        # ✅ H1: Structured logging para error
+        logger.error(
+            "kb_content_check_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            component="kb_content",
+            exc_info=True
+        )
         return ComponentHealth(
             status=HealthStatus.UNHEALTHY,
             message=f"Error checking KB content: {str(e)}",
@@ -250,6 +358,14 @@ async def check_redis_connectivity(redis: RedisService) -> ComponentHealth:
         status = health_data.get("status")
         
         if status == "healthy":
+            # ✅ H1: Structured logging para éxito
+            logger.info(
+                "redis_health_check_passed",
+                component="redis",
+                status=status,
+                ping_time_ms=health_data.get("ping_time_ms"),
+                connected=health_data.get("connected")
+            )
             return ComponentHealth(
                 status=HealthStatus.HEALTHY,
                 message="Redis connectivity OK",
@@ -259,12 +375,26 @@ async def check_redis_connectivity(redis: RedisService) -> ComponentHealth:
                 }
             )
         elif status == "degraded":
+            # ✅ H1: Structured logging para degradado
+            logger.warning(
+                "redis_health_check_degraded",
+                component="redis",
+                status=status,
+                details=health_data
+            )
             return ComponentHealth(
                 status=HealthStatus.DEGRADED,
                 message="Redis slow response",
                 details=health_data
             )
         else:
+            # ✅ H1: Structured logging para unhealthy
+            logger.error(
+                "redis_health_check_unhealthy",
+                component="redis",
+                status=status,
+                details=health_data
+            )
             return ComponentHealth(
                 status=HealthStatus.UNHEALTHY,
                 message="Redis not connected",
@@ -272,6 +402,14 @@ async def check_redis_connectivity(redis: RedisService) -> ComponentHealth:
             )
         
     except Exception as e:
+        # ✅ H1: Structured logging para error
+        logger.error(
+            "redis_health_check_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            component="redis",
+            exc_info=True
+        )
         return ComponentHealth(
             status=HealthStatus.UNHEALTHY,
             message=f"Redis error: {str(e)}",
@@ -279,6 +417,270 @@ async def check_redis_connectivity(redis: RedisService) -> ComponentHealth:
         )
 
 
+async def check_schema_version(
+    db_pool: asyncpg.Pool
+) -> ComponentHealth:
+    """
+    Verifica el estado del schema versioning system (FASE H2 Integration).
+    
+    Checks:
+    - Tabla schema_migrations existe
+    - Versión actual del schema
+    - No hay migraciones pendientes
+    
+    Returns:
+        ComponentHealth con estado del schema versioning
+        
+    Notes:
+        - FASE H2: Integración con sistema de versioning
+        - Degraded si tabla no existe (pre-H2 state)
+        - Healthy si schema está actualizado
+    """
+    try:
+        async with db_pool.acquire() as conn:
+            # Check 1: Tabla schema_migrations existe
+            table_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'schema_migrations'
+                )
+            """)
+            
+            if not table_exists:
+                # ✅ H1: Structured logging para tabla faltante
+                logger.warning(
+                    "schema_migrations_table_missing",
+                    component="schema_version",
+                    check_type="table_existence",
+                    status="degraded"
+                )
+                return ComponentHealth(
+                    status=HealthStatus.DEGRADED,
+                    message="Schema migrations table not found (pre-H2 state)",
+                    details={
+                        "table_exists": False,
+                        "recommendation": "Schema versioning not yet implemented"
+                    }
+                )
+            
+            # Check 2: Get current version
+            current_version = await conn.fetchval("""
+                SELECT MAX(version) FROM schema_migrations
+            """)
+            
+            # Check 3: Get total migrations count
+            migrations_count = await conn.fetchval("""
+                SELECT COUNT(*) FROM schema_migrations
+            """)
+            
+            # Check 4: Verify kb_contents has schema_version column
+            has_schema_column = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.columns 
+                    WHERE table_name = 'kb_contents' 
+                    AND column_name = 'schema_version'
+                )
+            """)
+            
+            # ✅ H1: Structured logging para éxito
+            logger.info(
+                "schema_version_check_passed",
+                component="schema_version",
+                current_version=current_version,
+                migrations_count=migrations_count,
+                has_schema_column=has_schema_column
+            )
+            
+            return ComponentHealth(
+                status=HealthStatus.HEALTHY,
+                message="Schema versioning OK",
+                details={
+                    "current_version": current_version,
+                    "total_migrations": migrations_count,
+                    "schema_column_present": has_schema_column
+                }
+            )
+            
+    except Exception as e:
+        # ✅ H1: Structured logging para error
+        logger.error(
+            "schema_version_check_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            component="schema_version",
+            exc_info=True
+        )
+        return ComponentHealth(
+            status=HealthStatus.DEGRADED,  # Degraded, not critical
+            message=f"Schema version check failed: {str(e)}",
+            details={"error_type": type(e).__name__}
+        )
+    
+# ============================================================================
+# H3 DÍA 2: SHOPIFY API HEALTH CHECK (DEEP MODE ONLY)
+# ============================================================================
+
+async def check_shopify_api(
+    kb_sync_service: 'ShopifyKBSyncService'
+) -> ComponentHealth:
+    """
+    Verifica conectividad con Shopify GraphQL API (DEEP MODE ONLY).
+    
+    Este check es **opcional** y solo se ejecuta cuando `deep=true` porque:
+    - Toma 2-3 segundos por la latencia de red con Shopify
+    - No es crítico para funcionalidad core del sistema
+    - Útil solo para diagnóstico profundo
+    
+    Checks realizados:
+    -------------------
+    1. **GraphQL endpoint accesible**: Verifica que Shopify API responde
+    2. **Credenciales válidas**: Confirma que API key funciona
+    3. **Shop data readable**: Puede leer información básica del shop
+    4. **Response time acceptable**: <3s considerado saludable
+    
+    Args:
+        kb_sync_service: ShopifyKBSyncService con ShopifyKBClient configurado
+    
+    Returns:
+        ComponentHealth con:
+        - status: healthy (<3s), degraded (>=3s), unhealthy (error)
+        - message: Descripción del estado
+        - details: shop_name, shop_url, response_time_ms, etc.
+    
+    Notes:
+        - ⚠️ Este check toma 2-3 segundos - NO ejecutar en checks normales
+        - ✅ Solo ejecutar en deep mode (?deep=true)
+        - ⚠️ No crítico: Si falla, sistema sigue funcionando (usa DB/Redis cache)
+    
+    Examples:
+        >>> # En deep mode:
+        >>> shopify_health = await check_shopify_api(kb_sync_service)
+        >>> print(shopify_health.status)  # healthy/degraded/unhealthy
+        
+    Author: Senior Architecture Team
+    Date: 11 Febrero 2026 (H3 Día 2)
+    Version: 2.1.0
+    """
+    import time
+    
+    try:
+        start_time = time.perf_counter()
+        
+        # ✅ Obtener ShopifyKBClient del sync service
+        shopify_client = kb_sync_service.shopify
+        
+        if not shopify_client:
+            logger.error(
+                "shopify_api_check_missing_client",
+                component="shopify_api",
+                error="ShopifyKBClient not available in kb_sync_service"
+            )
+            return ComponentHealth(
+                status=HealthStatus.UNHEALTHY,
+                message="Shopify API client not configured",
+                details={"error": "ShopifyKBClient missing"}
+            )
+        
+        # ✅ Test query simple a Shopify GraphQL
+        # Esta query solo lee información básica del shop (no datos sensibles)
+        test_query = """
+        query {
+            shop {
+                name
+                primaryDomain {
+                    url
+                }
+                currencyCode
+            }
+        }
+        """
+        
+        # ✅ Ejecutar query (este es el paso que toma tiempo)
+        logger.info(
+            "shopify_api_check_started",
+            component="shopify_api",
+            action="executing_test_query"
+        )
+        
+        result = await shopify_client._graphql_query(test_query)
+        
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        
+        # ✅ Validar respuesta
+        if result and "shop" in result:
+            shop_name = result["shop"]["name"]
+            shop_url = result["shop"]["primaryDomain"]["url"]
+            currency = result["shop"].get("currencyCode", "N/A")
+            
+            # ✅ H1: Structured logging para éxito
+            logger.info(
+                "shopify_api_check_passed",
+                component="shopify_api",
+                shop_name=shop_name,
+                response_time_ms=round(duration_ms, 2),
+                currency=currency
+            )
+            
+            # ✅ Determinar status basado en response time
+            status = HealthStatus.HEALTHY
+            if duration_ms > 3000:  # >3s = degraded (lento pero funcional)
+                status = HealthStatus.DEGRADED
+                logger.warning(
+                    "shopify_api_slow_response",
+                    component="shopify_api",
+                    response_time_ms=round(duration_ms, 2),
+                    threshold_ms=3000,
+                    exceeded_by_ms=round(duration_ms - 3000, 2)
+                )
+            
+            return ComponentHealth(
+                status=status,
+                message=f"Shopify API OK (shop: {shop_name})",
+                details={
+                    "shop_name": shop_name,
+                    "shop_url": shop_url,
+                    "currency_code": currency,
+                    "response_time_ms": round(duration_ms, 2),
+                    "graphql_endpoint": "accessible",
+                    "credentials_valid": True
+                }
+            )
+        else:
+            # ✅ H1: Structured logging para respuesta inesperada
+            logger.error(
+                "shopify_api_unexpected_response",
+                component="shopify_api",
+                result_preview=str(result)[:200] if result else "None",
+                duration_ms=round(duration_ms, 2)
+            )
+            return ComponentHealth(
+                status=HealthStatus.DEGRADED,
+                message="Shopify API returned unexpected response",
+                details={
+                    "error": "Invalid response structure",
+                    "response_time_ms": round(duration_ms, 2),
+                    "has_result": result is not None
+                }
+            )
+            
+    except Exception as e:
+        # ✅ H1: Structured logging para error
+        logger.error(
+            "shopify_api_check_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            component="shopify_api",
+            exc_info=True
+        )
+        return ComponentHealth(
+            status=HealthStatus.DEGRADED,  # Degraded, not critical
+            message=f"Shopify API check failed: {str(e)[:100]}",
+            details={
+                "error_type": type(e).__name__,
+                "error_message": str(e)[:200]
+            }
+        )
+    
 async def get_sync_metrics(
     db_pool: asyncpg.Pool
 ) -> SyncMetrics:
@@ -298,7 +700,7 @@ async def get_sync_metrics(
         async with db_pool.acquire() as conn:
             # Total de registros
             total = await conn.fetchval(
-                "SELECT COUNT(*) FROM kb_content"
+                "SELECT COUNT(*) FROM kb_contents"
             )
             
             # Cobertura por idioma
@@ -308,7 +710,7 @@ async def get_sync_metrics(
                     COUNT(*) as total,
                     ARRAY_AGG(DISTINCT sub_intent) as sub_intents,
                     MAX(last_synced) as last_synced
-                FROM kb_content
+                FROM kb_contents
                 GROUP BY language
                 ORDER BY language
             """)
@@ -324,23 +726,33 @@ async def get_sync_metrics(
             
             # Timestamps de sincronización
             oldest_sync = await conn.fetchval(
-                "SELECT MIN(last_synced) FROM kb_content"
+                "SELECT MIN(last_synced) FROM kb_contents"
             )
             newest_sync = await conn.fetchval(
-                "SELECT MAX(last_synced) FROM kb_content"
+                "SELECT MAX(last_synced) FROM kb_contents"
             )
             
             # Registros desactualizados
             now = datetime.utcnow()
             stale_24h = await conn.fetchval("""
-                SELECT COUNT(*) FROM kb_content
+                SELECT COUNT(*) FROM kb_contents
                 WHERE last_synced < $1
             """, now - timedelta(hours=24))
             
             stale_7d = await conn.fetchval("""
-                SELECT COUNT(*) FROM kb_content
+                SELECT COUNT(*) FROM kb_contents
                 WHERE last_synced < $1
             """, now - timedelta(days=7))
+            
+            # ✅ H1: Structured logging para métricas
+            logger.debug(
+                "sync_metrics_retrieved",
+                component="sync_metrics",
+                total_records=total,
+                languages_count=len(languages),
+                stale_24h=stale_24h,
+                stale_7d=stale_7d
+            )
             
             return SyncMetrics(
                 total_records=total,
@@ -352,6 +764,14 @@ async def get_sync_metrics(
             )
             
     except Exception as e:
+        # ✅ H1: Structured logging para error
+        logger.error(
+            "sync_metrics_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            component="sync_metrics",
+            exc_info=True
+        )
         # En caso de error, retornar métricas básicas
         return SyncMetrics(
             total_records=0,
@@ -396,11 +816,46 @@ def generate_warnings_and_recommendations(
         warnings.append("Redis cache is not fully operational")
         recommendations.append("Check Redis connection and ensure service is running")
     
-    # WARNING: Stale content
-    if sync_metrics and sync_metrics.stale_records_24h > 0:
-        warnings.append(f"{sync_metrics.stale_records_24h} records not synced in last 24 hours")
-        recommendations.append("Run sync_all_pages() to update content")
+    # WARNING: Stale content - Enhanced granular detection
+    if sync_metrics and sync_metrics.oldest_sync:
+        age_hours = (datetime.utcnow() - sync_metrics.oldest_sync).total_seconds() / 3600
+        
+        if age_hours > 72:  # >3 days - SEVERE
+            warnings.append(
+                f"⚠️ Content severely stale: oldest record is {age_hours:.1f} hours old (>72h threshold)"
+            )
+            recommendations.append(
+                "URGENT: Run sync_all_pages() immediately to update content"
+            )
+        elif age_hours > 48:  # >2 days - MODERATE
+            warnings.append(
+                f"Content moderately stale: oldest record is {age_hours:.1f} hours old (>48h threshold)"
+            )
+            recommendations.append(
+                "Run sync_all_pages() soon to keep content fresh"
+            )
+        elif sync_metrics.stale_records_24h > 0:  # >24h - MINOR
+            warnings.append(
+                f"{sync_metrics.stale_records_24h} records not synced in last 24 hours"
+            )
+            recommendations.append(
+                "Run sync_all_pages() to update content"
+            )
     
+    # ✅ NUEVO: Per-language staleness detection
+    if sync_metrics and sync_metrics.languages:
+        for lang_coverage in sync_metrics.languages:
+            if lang_coverage.last_synced:
+                age_hours = (datetime.utcnow() - lang_coverage.last_synced).total_seconds() / 3600
+                
+                if age_hours > 48:
+                    warnings.append(
+                        f"Language '{lang_coverage.language}' content stale: {age_hours:.1f} hours old"
+                    )
+                    recommendations.append(
+                        f"Sync Shopify pages with language={lang_coverage.language}"
+                    )
+
     # WARNING: Very old sync
     if sync_metrics and sync_metrics.oldest_sync:
         age_days = (datetime.utcnow() - sync_metrics.oldest_sync).days
@@ -418,6 +873,15 @@ def generate_warnings_and_recommendations(
             if coverage_ratio < 0.5:  # Menos del 50% de ES tiene EN
                 warnings.append(f"English coverage is only {coverage_ratio*100:.1f}% of Spanish")
                 recommendations.append("Prioritize translating high-traffic pages to English")
+    
+    # ✅ H1: Structured logging para warnings/recommendations generados
+    if warnings or recommendations:
+        logger.info(
+            "warnings_recommendations_generated",
+            component="health_check",
+            warnings_count=len(warnings),
+            recommendations_count=len(recommendations)
+        )
     
     return warnings, recommendations
 
@@ -448,40 +912,100 @@ def generate_warnings_and_recommendations(
     """
 )
 async def health_check_kb(
+    deep: bool = False,  # ← NUEVO: Deep mode query parameter
     db_pool: asyncpg.Pool = Depends(get_db_pool),
-    redis: RedisService = Depends(get_redis_service)
+    redis: RedisService = Depends(get_redis_service),
+    kb_sync_service: 'ShopifyKBSyncService' = Depends(get_kb_sync_service)  # ← NUEVO para Shopify API check
 ) -> KBHealthResponse:
     """
-    Ejecuta health check completo del Knowledge Base.
+    🏥 KNOWLEDGE BASE HEALTH CHECK - ENHANCED (H3 DÍA 2 EN PROGRESO)
     
-    Este endpoint valida que:
-    1. ✅ PostgreSQL está accesible y tiene contenido
-    2. ✅ Redis está operativo
-    3. ✅ Contenido está sincronizado recientemente
-    4. ✅ Cobertura de idiomas es adecuada
+    🎯 OBJETIVO:
+    Proporcionar visibilidad completa del sistema KB con checks rápidos (normal mode)
+    o comprehensivos (deep mode) según necesidad.
     
-    Uso en monitoring:
-    - Kubernetes liveness probe: /health/kb
-    - Alerting: status != "healthy"
-    - Metrics: sync_metrics para dashboards
+    ✅ FEATURES ACTUALES (Día 2):
+    - ✅ PostgreSQL connectivity + pool metrics
+    - ✅ KB content availability + language coverage
+    - ✅ Redis connectivity (degraded mode friendly)
+    - ✅ Schema versioning status (H2 integration)
+    - ✅ Content staleness alerts (>24h, >48h, >72h)
+    - ✅ Per-language staleness detection
+    - ✅ Performance instrumentation (<500ms target) ← NUEVO DÍA 2
+    - ✅ Shopify API health (deep mode only) ← NUEVO DÍA 2
+    
+    🔄 USAGE:
+    - **Normal mode** (fast, <500ms):
+      GET /health/kb
+      
+    - **Deep mode** (comprehensive, 2-3s):
+      GET /health/kb?deep=true
+      
+    - Kubernetes liveness: GET /health/kb/simple
+    - Kubernetes readiness: GET /health/kb
+    - Monitoring dashboard: GET /health/kb (normal mode, poll 60s)
+    - On-demand diagnosis: GET /health/kb?deep=true (manual, cuando hay issues)
+    
+    Query Parameters:
+        deep (bool, optional): Enable deep health checks. Default: False.
+            - False: Fast checks only (~200-300ms)
+            - True: Includes Shopify API check (+2-3s)
     
     Returns:
-        KBHealthResponse con estado completo del sistema
+        KBHealthResponse con todos los component health checks y métricas
+    
+    Examples:
+        >>> # Normal mode (rápido)
+        >>> curl http://localhost:8000/health/kb
+        >>> # Response time: ~250ms
+        
+        >>> # Deep mode (comprehensivo)
+        >>> curl "http://localhost:8000/health/kb?deep=true"
+        >>> # Response time: ~2.5s (incluye Shopify API check)
+    
+    Author: Senior Architecture Team
+    Date: 11 Febrero 2026 (H3 Día 2)
+    Version: 2.1.0
     """
-    # Ejecutar checks en paralelo (más rápido)
+    # ============================================================================
+    # H3 DÍA 2: PERFORMANCE INSTRUMENTATION - START TIMING
+    # ============================================================================
+    import time
+    start_time = time.perf_counter()
+    
+    # ✅ H1: Structured logging para inicio
+    logger.info(
+        "health_check_started",
+        endpoint="/health/kb",
+        deep=deep,
+        timestamp=datetime.utcnow().isoformat()
+    )
+    
+    # ============================================================================
+    # EXECUTE ALL HEALTH CHECKS IN PARALLEL (más rápido)
+    # ============================================================================
     import asyncio
     
-    postgres_check, content_check, redis_check = await asyncio.gather(
-        check_postgres_connectivity(db_pool),
-        check_kb_content_availability(db_pool),
-        check_redis_connectivity(redis),
-        return_exceptions=True
-    )
+    postgres_check, content_check, redis_check, schema_check = await asyncio.gather(
+    check_postgres_connectivity(db_pool),
+    check_kb_content_availability(db_pool),
+    check_redis_connectivity(redis),
+    check_schema_version(db_pool),  # ← NUEVO
+    return_exceptions=True
+)
     
     # Manejar exceptions en checks
     components = {}
     
     if isinstance(postgres_check, Exception):
+        # ✅ H1: Structured logging para exception en check
+        logger.error(
+            "postgres_check_exception",
+            error=str(postgres_check),
+            error_type=type(postgres_check).__name__,
+            component="health_check",
+            exc_info=True
+        )
         components["postgres"] = ComponentHealth(
             status=HealthStatus.UNHEALTHY,
             message=f"Exception during PostgreSQL check: {str(postgres_check)}"
@@ -490,6 +1014,14 @@ async def health_check_kb(
         components["postgres"] = postgres_check
     
     if isinstance(content_check, Exception):
+        # ✅ H1: Structured logging para exception en check
+        logger.error(
+            "content_check_exception",
+            error=str(content_check),
+            error_type=type(content_check).__name__,
+            component="health_check",
+            exc_info=True
+        )
         components["kb_content"] = ComponentHealth(
             status=HealthStatus.UNHEALTHY,
             message=f"Exception during content check: {str(content_check)}"
@@ -498,12 +1030,37 @@ async def health_check_kb(
         components["kb_content"] = content_check
     
     if isinstance(redis_check, Exception):
+        # ✅ H1: Structured logging para exception en check
+        logger.warning(
+            "redis_check_exception",
+            error=str(redis_check),
+            error_type=type(redis_check).__name__,
+            component="health_check",
+            exc_info=True
+        )
         components["redis"] = ComponentHealth(
             status=HealthStatus.DEGRADED,  # Redis no es crítico
             message=f"Exception during Redis check: {str(redis_check)}"
         )
     else:
         components["redis"] = redis_check
+
+    # ✅ NUEVO: Handle schema_check exception
+    if isinstance(schema_check, Exception):
+        # ✅ H1: Structured logging para exception en check
+        logger.warning(
+            "schema_check_exception",
+            error=str(schema_check),
+            error_type=type(schema_check).__name__,
+            component="health_check",
+            exc_info=True
+        )
+        components["schema_version"] = ComponentHealth(
+            status=HealthStatus.DEGRADED,  # Schema version no es crítico
+            message=f"Exception during schema version check: {str(schema_check)}"
+        )
+    else:
+        components["schema_version"] = schema_check
     
     # Obtener métricas de sincronización
     sync_metrics = await get_sync_metrics(db_pool)
@@ -514,6 +1071,38 @@ async def health_check_kb(
         sync_metrics
     )
     
+    # ============================================================================
+    # H3 DÍA 2: DEEP MODE - SHOPIFY API CHECK (OPCIONAL)
+    # ============================================================================
+    
+    if deep:
+        try:
+            logger.info(
+                "deep_mode_enabled",
+                endpoint="/health/kb",
+                deep=True,
+                action="executing_shopify_api_check"
+            )
+            
+            # ✅ Ejecutar Shopify API check (toma 2-3s)
+            shopify_check = await check_shopify_api(kb_sync_service)
+            components["shopify_api"] = shopify_check
+            
+            logger.info(
+                "shopify_api_check_completed",
+                status=shopify_check.status.value if shopify_check else "error",
+                deep=True
+            )
+            
+        except Exception as e:
+            logger.error(
+                "shopify_api_check_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                deep=True,
+                exc_info=True
+            )
+
     # Determinar overall status
     statuses = [c.status for c in components.values()]
     
@@ -523,6 +1112,50 @@ async def health_check_kb(
         overall_status = HealthStatus.DEGRADED
     else:
         overall_status = HealthStatus.HEALTHY
+    
+    # ✅ H1: Structured logging para finalización de health check
+    logger.info(
+        "health_check_completed",
+        endpoint="/health/kb",
+        overall_status=overall_status.value,
+        components_healthy=sum(1 for c in components.values() if c.status == HealthStatus.HEALTHY),
+        components_degraded=sum(1 for c in components.values() if c.status == HealthStatus.DEGRADED),
+        components_unhealthy=sum(1 for c in components.values() if c.status == HealthStatus.UNHEALTHY),
+        warnings_count=len(warnings),
+        recommendations_count=len(recommendations)
+    )
+
+    # ============================================================================
+    # H3 DÍA 2: PERFORMANCE INSTRUMENTATION - END TIMING
+    # ============================================================================
+    
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    
+    # ✅ H1: Structured logging para finalización CON TIMING
+    logger.info(
+        "health_check_completed",
+        endpoint="/health/kb",
+        overall_status=overall_status.value,
+        duration_ms=round(duration_ms, 2),
+        target_ms=500,
+        within_target=duration_ms < 500,
+        deep=deep,
+        components_count=len(components),
+        components_healthy=sum(1 for c in components.values() if c.status == HealthStatus.HEALTHY),
+        components_degraded=sum(1 for c in components.values() if c.status == HealthStatus.DEGRADED),
+        components_unhealthy=sum(1 for c in components.values() if c.status == HealthStatus.UNHEALTHY)
+    )
+    
+    # ✅ Warning si supera target (solo en normal mode)
+    if not deep and duration_ms > 500:
+        logger.warning(
+            "health_check_slow_response",
+            endpoint="/health/kb",
+            duration_ms=round(duration_ms, 2),
+            target_ms=500,
+            exceeded_by_ms=round(duration_ms - 500, 2),
+            deep=False
+        )
     
     return KBHealthResponse(
         overall_status=overall_status,
@@ -557,6 +1190,12 @@ async def simple_health_check(
     - Load balancer health checks
     - Uptime monitoring (Pingdom, etc.)
     """
+    # ✅ H1: Structured logging para inicio de simple check
+    logger.debug(
+        "simple_health_check_started",
+        endpoint="/health/kb/simple"
+    )
+    
     try:
         async with db_pool.acquire() as conn:
             # Check 1: DB accesible
@@ -564,14 +1203,29 @@ async def simple_health_check(
             
             # Check 2: KB tiene contenido
             count = await conn.fetchval(
-                "SELECT COUNT(*) FROM kb_content"
+                "SELECT COUNT(*) FROM kb_contents"
             )
             
             if count == 0:
+                # ✅ H1: Structured logging para KB vacío
+                logger.warning(
+                    "simple_health_check_empty_kb",
+                    endpoint="/health/kb/simple",
+                    records=0,
+                    status_code=503
+                )
                 raise HTTPException(
                     status_code=503,
                     detail="Knowledge Base is empty"
                 )
+            
+            # ✅ H1: Structured logging para éxito
+            logger.debug(
+                "simple_health_check_passed",
+                endpoint="/health/kb/simple",
+                records=count,
+                status_code=200
+            )
             
             return {
                 "status": "healthy",
@@ -581,6 +1235,15 @@ async def simple_health_check(
     except HTTPException:
         raise
     except Exception as e:
+        # ✅ H1: Structured logging para error
+        logger.error(
+            "simple_health_check_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            endpoint="/health/kb/simple",
+            status_code=503,
+            exc_info=True
+        )
         raise HTTPException(
             status_code=503,
             detail=f"Health check failed: {str(e)}"

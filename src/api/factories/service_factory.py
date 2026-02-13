@@ -307,7 +307,7 @@ class ServiceFactory:
                     cls._kb_sync_service = ShopifyKBSyncService(
                         shopify_client=shopify,
                         db_pool=db_pool,
-                        redis_client=redis
+                        redis_service=redis
                     )
                     
                     logger.info("✅ ShopifyKBSyncService initialized")
