@@ -17,6 +17,7 @@ Date: 2026-01-11
 Version: H1 - Structured Logging Migration
 """
 
+import os
 import structlog  # ✅ H1: Structured Logging Migration
 import asyncio
 from typing import List, Optional, Dict, Any
@@ -85,16 +86,42 @@ class ShopifyKBSyncService:
         self.redis = redis_service
         self.metadata_parser = KBMetadataParser()
         
-        # ✅ FIX: Semaphore to prevent race conditions
-        # Limit concurrent DB operations to avoid lock conflicts
-        self._db_semaphore = asyncio.Semaphore(1)  # Max 1 concurrent DB write
+        # ✅ M1 OPTIMIZATION: Configurable concurrency via environment variable
+        # Default: 1 (safe, proven behavior from production)
+        # Recommended: 5-10 depending on DB pool size (see M1 analysis)
+        # Max safe: pool_size - 2 (reserve connections for other operations)
+        import os
+        semaphore_size = int(os.getenv("KB_SYNC_SEMAPHORE_SIZE", "1"))
         
-        # ✅ H1: Structured logging for initialization
+        # Validation: Ensure positive value
+        if semaphore_size < 1:
+            logger.warning(
+                "invalid_semaphore_size_configured",
+                requested_size=semaphore_size,
+                fallback_size=1,
+                reason="must_be_positive_integer"
+            )
+            semaphore_size = 1
+        
+        # Validation: Warn if value seems too high (potential connection pool exhaustion)
+        if semaphore_size > 15:
+            logger.warning(
+                "high_semaphore_size_configured",
+                configured_size=semaphore_size,
+                recommendation="verify_db_pool_size",
+                max_safe_value="pool_size_minus_2"
+            )
+        
+        self._db_semaphore = asyncio.Semaphore(semaphore_size)
+        
+        # ✅ H1: Structured logging for initialization with M1 metrics
         logger.info(
             "service_initialized",
             service="ShopifyKBSyncService",
-            max_concurrent_syncs=1,
-            semaphore_size=1
+            max_concurrent_syncs=semaphore_size,
+            semaphore_size=semaphore_size,
+            configured_via="env_var" if os.getenv("KB_SYNC_SEMAPHORE_SIZE") else "default",
+            optimization_phase="M1"
         )
     
     # ──────────────────────────────────────────────────────────────────────

@@ -299,10 +299,14 @@ class ServiceFactory:
                 
                 try:
                     from src.api.services.shopify_kb_sync import ShopifyKBSyncService
+                    from src.api.core.store import get_shopify_kb_client  # ✅ CAMBIO: Import correcto
                     
                     db_pool = await cls.get_db_pool()
                     redis = await cls.get_redis_service()
-                    shopify = get_shopify_client()
+                    shopify = get_shopify_kb_client()  # ✅ CAMBIO: Usar KB client
+                    
+                    if shopify is None:
+                        raise RuntimeError("ShopifyKBClient initialization failed - check .env credentials")
                     
                     cls._kb_sync_service = ShopifyKBSyncService(
                         shopify_client=shopify,
