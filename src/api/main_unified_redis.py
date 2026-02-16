@@ -57,10 +57,10 @@ from src.api.core.logging_config import configure_structlog
 log_level = os.getenv("LOG_LEVEL", "INFO")
 json_format = os.getenv("LOG_JSON_FORMAT", "false").lower() == "true"
 
-configure_structlog(
-    log_level=log_level,
-    json_format=json_format
-)
+# configure_structlog(
+#     log_level=log_level,
+#     json_format=json_format
+# )
 
 # ✅ PASO 2: NOW create logger (after configuration)
 logger = structlog.get_logger(__name__)
@@ -94,6 +94,16 @@ try:
     logger.info("✅ Environment variables loaded")
 except Exception as e:
     logger.warning(f"⚠️ .env not found, using system environment: {e}")
+
+# ════════════════════════════════════════════════════════════════════════
+# M2: PROMETHEUS METRICS INTEGRATION
+# ════════════════════════════════════════════════════════════════════════
+from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import REGISTRY, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
+from src.api.core.prometheus_metrics import kb_sync_semaphore_size
+
+logger.info("🔧 M2: Prometheus metrics integration enabled")
 
 # ✅ Variables globales para compatibilidad con endpoints legacy
 settings = None
@@ -792,6 +802,43 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan  # ✅ MODERN LIFESPAN PATTERN APPLIED
 )
+
+# ════════════════════════════════════════════════════════════════════════
+# M2: INSTRUMENTAR FASTAPI CON PROMETHEUS
+# ════════════════════════════════════════════════════════════════════════
+
+# Auto-instrument HTTP metrics (requests, duration, in_progress)
+instrumentator = Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    should_instrument_requests_inprogress=True,
+    excluded_handlers=["/metrics", "/health"],  # No medir estos endpoints
+)
+instrumentator.instrument(app)
+
+logger.info("✅ M2: Prometheus auto-instrumentation applied (HTTP metrics)")
+
+# Prometheus metrics endpoint (NUEVO - complementa /v1/metrics existente)
+@app.get("/metrics", include_in_schema=False, tags=["M2-Observability"])
+async def prometheus_metrics():
+    """
+    Prometheus metrics endpoint (infrastructure observability).
+    
+    Formato: Prometheus text format
+    Auth: No required (internal scraping)
+    
+    IMPORTANTE: Este endpoint NO reemplaza /v1/metrics (business metrics).
+    Ambos son complementarios:
+    - /metrics → Prometheus (infrastructure: HTTP, latency, errors)
+    - /v1/metrics → JSON (business: diversity, fallback, conversions)
+    """
+    return Response(
+        content=generate_latest(REGISTRY),
+        media_type=CONTENT_TYPE_LATEST
+    )
+
+logger.info("✅ M2: /metrics endpoint exposed (Prometheus format, no auth)")
+logger.info("ℹ️  M2: /v1/metrics endpoint remains unchanged (JSON format, auth required)")
 
 # ✅ ENTERPRISE CORS MIDDLEWARE
 app.add_middleware(

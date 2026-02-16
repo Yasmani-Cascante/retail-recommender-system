@@ -38,6 +38,12 @@ from src.api.core.models.kb_models import (
     SyncStatus
 )
 
+from src.api.core.prometheus_metrics import (
+    kb_sync_operations_total,
+    kb_sync_duration_seconds,
+    kb_sync_semaphore_size
+)
+
 logger = structlog.get_logger(__name__)  # ✅ H1: Structured Logging Migration
 
 
@@ -114,14 +120,26 @@ class ShopifyKBSyncService:
         
         self._db_semaphore = asyncio.Semaphore(semaphore_size)
         
-        # ✅ H1: Structured logging for initialization with M1 metrics
+        # ✅ M1+M2: Track semaphore size in Prometheus
+        try:
+            from src.api.core.prometheus_metrics import kb_sync_semaphore_size
+            kb_sync_semaphore_size.set(semaphore_size)
+            logger.debug(
+                "prometheus_metric_set",
+                metric="kb_sync_semaphore_size",
+                value=semaphore_size
+            )
+        except ImportError:
+            logger.debug("prometheus_metrics_not_available", metric="kb_sync_semaphore_size")
+        
+        # ✅ H1: Structured logging for initialization with M1+M2 metrics
         logger.info(
             "service_initialized",
             service="ShopifyKBSyncService",
             max_concurrent_syncs=semaphore_size,
             semaphore_size=semaphore_size,
             configured_via="env_var" if os.getenv("KB_SYNC_SEMAPHORE_SIZE") else "default",
-            optimization_phase="M1"
+            optimization_phase="M1+M2"
         )
     
     # ──────────────────────────────────────────────────────────────────────
@@ -288,6 +306,23 @@ class ShopifyKBSyncService:
                 report.sync_completed_at - sync_started_at
             ).total_seconds()
             
+            # ✅ M2: Track en Prometheus
+            try:
+                from src.api.core.prometheus_metrics import (
+                    kb_sync_operations_total,
+                    kb_sync_duration_seconds
+                )
+                kb_sync_operations_total.labels(status="success").inc()
+                kb_sync_duration_seconds.observe(report.duration_seconds)
+                logger.debug(
+                    "prometheus_metrics_recorded",
+                    operation="kb_sync",
+                    status="success",
+                    duration_seconds=round(report.duration_seconds, 2)
+                )
+            except ImportError:
+                logger.debug("prometheus_metrics_not_available", operation="kb_sync")
+
             # ✅ H1: Pretty logs para humans
             logger.info("=" * 70)
             logger.info("SYNC COMPLETED")
@@ -330,6 +365,18 @@ class ShopifyKBSyncService:
                 report.sync_completed_at - sync_started_at
             ).total_seconds()
             report.errors.append(f"Full sync failed: {str(e)}")
+            
+            # ✅ M2: Track failure en Prometheus
+            try:
+                from src.api.core.prometheus_metrics import kb_sync_operations_total
+                kb_sync_operations_total.labels(status="failed").inc()
+                logger.debug(
+                    "prometheus_metric_recorded",
+                    operation="kb_sync",
+                    status="failed"
+                )
+            except ImportError:
+                logger.debug("prometheus_metrics_not_available", operation="kb_sync_failure")
             
             return report
     
