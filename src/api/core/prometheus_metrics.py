@@ -85,12 +85,33 @@ google_retail_duration_seconds = Histogram(
 )
 
 # ══════════════════════════════════════════════════════════════════════════
-# LOGGING
+# KB DISTRIBUTED LOCK METRICS (M3 Integration)
 # ══════════════════════════════════════════════════════════════════════════
+
+kb_distributed_lock_acquisitions_total = Counter(
+    'kb_distributed_lock_acquisitions_total',
+    'Total distributed lock acquisition attempts',
+    ['result']  # result: acquired / timeout / degraded (redis unavailable)
+)
+
+kb_distributed_lock_wait_seconds = Histogram(
+    'kb_distributed_lock_wait_seconds',
+    'Time spent waiting to acquire a distributed lock (seconds)',
+    buckets=[.01, .05, .1, .25, .5, 1.0, 2.5, 5.0]
+)
+
+kb_distributed_lock_timeouts_total = Counter(
+    'kb_distributed_lock_timeouts_total',
+    'Total distributed lock acquisition timeouts (blocking_timeout exceeded)',
+)
+
+# ════════════════════════════════════════════════════════════════════════
+# LOGGING
+# ════════════════════════════════════════════════════════════════════════
 
 logger.info(
     "prometheus_metrics_module_loaded",
     module="prometheus_metrics",
-    metrics_count=7,
-    integration_phase="M2"
+    metrics_count=10,
+    integration_phase="M3"
 )

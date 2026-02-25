@@ -14,7 +14,13 @@ Responsibilities:
 
 Author: Retail Recommender System Team
 Date: 2026-01-11
-Version: H1 - Structured Logging Migration
+Version: M3 - Distributed Locking
+
+Changelog:
+- H1: Structured Logging Migration
+- M1: Configurable concurrency (asyncio.Semaphore)
+- M2: Prometheus Metrics
+- M3: Distributed Locking via Redis (cross-instance race condition prevention)
 """
 
 import os
@@ -27,6 +33,20 @@ import asyncpg
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.api.core.redis_service import RedisService
+
+# ✅ M3: Import DistributedLockError para manejo tipado del timeout de lock
+# Se importa aqui para que sea visible en el tipo hint y el manejo de errores.
+# Si redis_service no esta disponible en runtime, el import falla silenciosamente
+# porque RedisService se importa bajo TYPE_CHECKING (solo para type hints).
+try:
+    from src.api.core.redis_service import DistributedLockError
+except ImportError:
+    # Fallback: Definir localmente si el modulo no esta disponible
+    # Esto permite que los tests unitarios que mockean redis_service
+    # sigan funcionando sin necesitar el modulo real.
+    class DistributedLockError(Exception):  # type: ignore[no-redef]
+        """Fallback local de DistributedLockError para entornos sin Redis."""
+        pass
 
 from src.api.integrations.shopify_kb_client import ShopifyKBClient, KBMetadataParser
 from src.api.core.models.kb_models import (
@@ -132,14 +152,29 @@ class ShopifyKBSyncService:
         except ImportError:
             logger.debug("prometheus_metrics_not_available", metric="kb_sync_semaphore_size")
         
-        # ✅ H1: Structured logging for initialization with M1+M2 metrics
+        # ✅ M3: Feature flag para Distributed Locking
+        # Permite activar/desactivar el distributed lock via variable de entorno.
+        # Esto facilita el rollback instantaneo sin redeploy si hay problemas.
+        #
+        # Para activar:    KB_DISTRIBUTED_LOCKS=true
+        # Para desactivar: KB_DISTRIBUTED_LOCKS=false  (comportamiento pre-M3)
+        #
+        # CUANDO USAR:
+        # - Staging/Prod con multiples instancias Cloud Run: true
+        # - Instancia unica o tests: false (semáforo local es suficiente)
+        self._use_distributed_locks = os.getenv("KB_DISTRIBUTED_LOCKS", "false").lower() in (
+            "true", "1", "yes", "on"
+        )
+
+        # ✅ H1: Structured logging for initialization with M1+M2+M3 metrics
         logger.info(
             "service_initialized",
             service="ShopifyKBSyncService",
             max_concurrent_syncs=semaphore_size,
             semaphore_size=semaphore_size,
             configured_via="env_var" if os.getenv("KB_SYNC_SEMAPHORE_SIZE") else "default",
-            optimization_phase="M1+M2"
+            distributed_locks_enabled=self._use_distributed_locks,
+            optimization_phase="M1+M2+M3"
         )
     
     # ──────────────────────────────────────────────────────────────────────
@@ -626,9 +661,40 @@ class ShopifyKBSyncService:
         shopify_url: Optional[str],
         shopify_handle: Optional[str]
     ) -> None:
-        """Upsert KB content with retry logic."""
+        """
+        ✅ M3 - Upsert KB content con Distributed Locking + retry logic.
+
+        ESTRATEGIA DE CONCURRENCIA (dos capas complementarias):
+
+        Capa 1 - asyncio.Semaphore (intra-instancia):
+            Limita cuantas coroutines dentro de la MISMA instancia pueden
+            hacer operaciones de DB simultaneamente.
+            Evita: pool exhaustion en una sola instancia.
+
+        Capa 2 - Redis Distributed Lock (cross-instance, M3):
+            Solo UNA instancia puede modificar el mismo registro (sub_intent +
+            language + category) a la vez, sin importar cuantas instancias
+            Cloud Run esten corriendo.
+            Evita: race conditions que causen duplicados o datos corruptos.
+
+        MODO DEGRADADO:
+            Si KB_DISTRIBUTED_LOCKS=false o Redis no esta disponible,
+            solo aplica el semaforo local (comportamiento pre-M3).
+
+        LOCK KEY FORMAT:
+            "kb_sync:lock:{sub_intent}:{language}:{normalized_category}"
+            Ejemplo: "kb_sync:lock:policy_return:es:general"
+            La granularidad por registro garantiza que syncs de diferentes
+            sub_intents corren en paralelo (no bloquean entre si).
+        """
         normalized_category = category if category is not None else 'general'
-        
+
+        # ✅ M3: Construir lock key unico por registro de KB
+        # Formato: kb_sync:lock:{sub_intent}:{language}:{category}
+        # Esto garantiza que solo se bloquea el acceso al mismo registro exacto,
+        # no a todos los registros de un sub_intent o idioma.
+        lock_key = f"kb_sync:lock:{sub_intent}:{language}:{normalized_category}"
+
         query = """
         INSERT INTO kb_contents (
             sub_intent, language, category, content, content_html,
@@ -647,33 +713,97 @@ class ShopifyKBSyncService:
             last_synced = NOW(),
             updated_at = NOW()
         """
-        
-        # Retry logic
+
         max_retries = 3
         retry_delay = 0.1
-        
+
         for attempt in range(max_retries):
             try:
+                # ── CAPA 1: Semaforo local (intra-instancia) ──────────────────
+                # Controla cuantas goroutines en ESTA instancia entran al bloque
+                # de DB al mismo tiempo. Se adquiere primero para no agotar
+                # las conexiones del pool mientras se espera el lock de Redis.
                 async with self._db_semaphore:
-                    async with self.db.acquire() as conn:
-                        await conn.execute(
-                            query, sub_intent, language, normalized_category,
-                            content, content_html, title,
-                            shopify_page_id, shopify_url, shopify_handle
-                        )
-                        # ✅ H1: Structured debug logging
-                        logger.debug(
-                            "kb_content_upserted",
-                            sub_intent=sub_intent,
-                            language=language,
-                            category=normalized_category,
-                            shopify_page_id=shopify_page_id
-                        )
-                        return
-                        
+
+                    if self._use_distributed_locks:
+                        # ── CAPA 2 (M3): Distributed lock cross-instance ──────
+                        # Solo una instancia de Cloud Run puede ejecutar el upsert
+                        # para este (sub_intent, language, category) a la vez.
+                        # Si el lock no se obtiene en blocking_timeout segundos,
+                        # DistributedLockError es capturada en el except abajo
+                        # y se hace retry con backoff exponencial.
+                        async with self.redis.distributed_lock(
+                            lock_name=lock_key,
+                            timeout=30.0,        # TTL del lock en Redis (safety net)
+                            blocking_timeout=5.0  # Espera maxima para obtener el lock
+                        ):
+                            async with self.db.acquire() as conn:
+                                await conn.execute(
+                                    query, sub_intent, language, normalized_category,
+                                    content, content_html, title,
+                                    shopify_page_id, shopify_url, shopify_handle
+                                )
+                                logger.debug(
+                                    "kb_content_upserted",
+                                    sub_intent=sub_intent,
+                                    language=language,
+                                    category=normalized_category,
+                                    shopify_page_id=shopify_page_id,
+                                    distributed_lock_used=True  # ✅ M3: Trazabilidad
+                                )
+                                return
+                    else:
+                        # ── MODO LEGACY (pre-M3): Solo semaforo local ───────
+                        # Comportamiento identico a M1+M2.
+                        # Usado cuando KB_DISTRIBUTED_LOCKS=false (default)
+                        # o cuando Redis no esta disponible.
+                        async with self.db.acquire() as conn:
+                            await conn.execute(
+                                query, sub_intent, language, normalized_category,
+                                content, content_html, title,
+                                shopify_page_id, shopify_url, shopify_handle
+                            )
+                            logger.debug(
+                                "kb_content_upserted",
+                                sub_intent=sub_intent,
+                                language=language,
+                                category=normalized_category,
+                                shopify_page_id=shopify_page_id,
+                                distributed_lock_used=False  # ✅ M3: Trazabilidad
+                            )
+                            return
+
+            except DistributedLockError as e:
+                # ✅ M3: El lock no se pudo obtener en el tiempo limite.
+                # Esto indica que otra instancia esta procesando el mismo registro.
+                # Politica: retry con backoff exponencial (igual que deadlock).
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)
+                    logger.warning(
+                        "kb_upsert_lock_timeout_retry",
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        lock_key=lock_key,
+                        retry_delay_seconds=wait_time,
+                        note="another_instance_may_be_processing_same_record"
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                # Si ya agotamos retries, loguear y re-raise
+                logger.error(
+                    "kb_upsert_lock_timeout_exhausted",
+                    sub_intent=sub_intent,
+                    language=language,
+                    category=normalized_category,
+                    lock_key=lock_key,
+                    max_retries=max_retries,
+                    error=str(e)
+                )
+                raise
+
             except Exception as e:
                 error_msg = str(e).lower()
-                
+
                 if any(x in error_msg for x in [
                     "another operation is in progress",
                     "deadlock detected",
@@ -690,7 +820,7 @@ class ShopifyKBSyncService:
                         )
                         await asyncio.sleep(retry_delay * (attempt + 1))
                         continue
-                
+
                 # ✅ H1: Structured error
                 logger.error(
                     "kb_upsert_failed",

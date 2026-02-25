@@ -24,6 +24,75 @@ if env_path.exists():
 else:
     print(f"⚠️ .env.test not found at: {env_path}")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ✅ STRUCTLOG CONFIGURATION FOR TESTS
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# PROBLEMA (M3): redis_service.py usa structlog con kwargs estructurados:
+#
+#   logger.warning(
+#       "distributed_lock_redis_unavailable",
+#       lock_name=lock_name,       ← kwargs arbitrarios
+#       action="yielding_without_lock",
+#   )
+#
+# Sin configuración, structlog delega al logging.Logger estándar de Python,
+# que NO acepta kwargs arbitrarios → TypeError: Logger._log() got unexpected
+# keyword argument 'lock_name'.
+#
+# SOLUCIÓN: Configurar structlog en modo minimal para tests.
+#
+# DISEÑO DEL MODO TEST:
+#   - PrintLoggerFactory: escribe directo a stdout sin pasar por stdlib logger
+#   - KeyValueRenderer: formato legible "event=X lock_name=Y" en vez de JSON
+#   - cache_logger_on_first_use=False: evita que un logger no-configurado
+#     quede cacheado antes de que se ejecute este bloque
+#   - NO JSONRenderer: no se necesita JSON en tests, y añade overhead innecesario
+#
+# NOTA: Esta configuración es idempotente — llamar structlog.configure()
+# múltiples veces no causa problemas. Si la app llama configure_structlog()
+# después (ej. en test_app_with_mocks), sobreescribe esta configuración,
+# lo cual es el comportamiento esperado.
+#
+# APRENDIZAJE CLAVE:
+#   structlog.configure() debe llamarse antes de usar cualquier logger
+#   que use kwargs estructurados. En tests, este es el lugar correcto
+#   (top-level del conftest.py, antes de cualquier fixture).
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    import structlog
+
+    structlog.configure(
+        # PrintLoggerFactory: logger que acepta kwargs sin delegarlos a stdlib.
+        # Escribe directamente a stdout con print(), evitando el pipeline de
+        # logging.Logger que rechaza los kwargs arbitrarios.
+        logger_factory=structlog.PrintLoggerFactory(),
+
+        # Procesadores mínimos para tests:
+        #   1. add_log_level: agrega el nivel (info, warning, error) al evento
+        #   2. KeyValueRenderer: formatea como "event=X key1=val1 key2=val2"
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.dev.ConsoleRenderer(colors=False),  # Legible, sin colores ANSI
+        ],
+
+        # Evitar que un logger con configuración anterior quede cacheado.
+        # Crítico cuando los tests se ejecutan en orden arbitrario.
+        cache_logger_on_first_use=False,
+
+        # Diccionario estándar como contexto (thread-safe, sin overhead)
+        context_class=dict,
+
+        # Wrapper class: BoundLogger proporciona .info(), .warning(), etc.
+        # con soporte completo para kwargs estructurados.
+        wrapper_class=structlog.BoundLogger,
+    )
+except ImportError:
+    # structlog no instalado: logging estándar se usará.
+    # Los módulos que usen kwargs estructurados en logger.warning()
+    # pueden fallar — se acepta como trade-off en entornos muy mínimos.
+    pass
+
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from typing import Optional, List, Dict
