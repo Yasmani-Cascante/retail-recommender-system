@@ -1,0 +1,67 @@
+# ============================================================================
+# DOCKERFILE PARA CLOUD RUN - RETAIL RECOMMENDER v2.1.0
+# ============================================================================
+FROM python:3.9-slim
+
+# Metadata
+LABEL maintainer="Retail Recommender Team"
+LABEL version="2.1.0"
+LABEL description="Enterprise Retail Recommendation System"
+
+# Establecer directorio de trabajo
+WORKDIR /app
+
+# ============================================================================
+# FASE 1: DEPENDENCIAS DEL SISTEMA
+# ============================================================================
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================================================
+# FASE 2: DEPENDENCIAS DE PYTHON
+# ============================================================================
+# Copiar requirements
+COPY requirements.cloudrun.txt requirements.txt
+# COPY requirements.cloudrun.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# ============================================================================
+# FASE 3: CÓDIGO DE LA APLICACIÓN
+# ============================================================================
+COPY src/ /app/src/
+COPY data/ /app/data/
+
+# ============================================================================
+# FASE 4: CONFIGURACIÓN DE RUNTIME
+# ============================================================================
+# Crear directorios necesarios
+RUN mkdir -p /app/logs /app/data
+
+# Variables de entorno para producción
+ENV PYTHONUNBUFFERED=1
+ENV ENVIRONMENT=production
+ENV PORT=8080
+
+# ============================================================================
+# FASE 5: HEALTH CHECK
+# ============================================================================
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# ============================================================================
+# FASE 6: USUARIO NO-ROOT (SEGURIDAD)
+# ============================================================================
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+# ============================================================================
+# FASE 7: COMANDO DE INICIO
+# ============================================================================
+# ✅ CRITICAL: Usar PORT env var, no hardcodear
+CMD ["sh", "-c", "exec uvicorn src.api.main_unified_redis:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --timeout-keep-alive 300 --log-level info"]

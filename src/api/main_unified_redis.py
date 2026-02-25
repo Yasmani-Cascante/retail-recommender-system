@@ -1698,23 +1698,45 @@ async def verify_manual_fix():
 # 🏁 ENTERPRISE APPLICATION READY - CÓDIGO ORIGINAL PRESERVADO
 # ============================================================================
 
+# if __name__ == "__main__":
+#     import uvicorn
+    
+#     logger.info("🚀 Starting Enterprise Retail Recommender System")
+#     logger.info("🏢 Architecture: Enterprise with centralized Redis")
+#     logger.info("🔌 Patterns: Dependency Injection, Singleton, Factory, Modern Lifespan")  # ✅ UPDATED
+#     logger.info("📊 Monitoring: Comprehensive health checks enabled")
+#     logger.info("🔄 Legacy Support: Backward compatibility maintained")
+    
+#     uvicorn.run(
+#         "main_unified_redis:app",
+#         host="0.0.0.0",
+#         port=8000,
+#         reload=True,
+#         log_level="info"
+#     )
 if __name__ == "__main__":
     import uvicorn
+    import os
+    
+    # ✅ Detectar entorno
+    is_production = os.getenv("ENVIRONMENT", "development") == "production"
+    port = int(os.getenv("PORT", "8000"))  # ✅ USAR PORT ENV VAR
     
     logger.info("🚀 Starting Enterprise Retail Recommender System")
     logger.info("🏢 Architecture: Enterprise with centralized Redis")
-    logger.info("🔌 Patterns: Dependency Injection, Singleton, Factory, Modern Lifespan")  # ✅ UPDATED
+    logger.info(f"🌍 Environment: {'PRODUCTION' if is_production else 'DEVELOPMENT'}")
+    logger.info(f"🔌 Port: {port}")
+    logger.info("🔌 Patterns: Dependency Injection, Singleton, Factory, Modern Lifespan")
     logger.info("📊 Monitoring: Comprehensive health checks enabled")
     logger.info("🔄 Legacy Support: Backward compatibility maintained")
     
     uvicorn.run(
         "main_unified_redis:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
+        host="0.0.0.0",                    # ✅ CORRECTO
+        port=port,                         # ✅ DINÁMICO
+        reload=not is_production,          # ✅ SOLO EN DEV
         log_level="info"
     )
-
 # ============================================================================
 # 🌐 GLOBAL EXPORTS - Para dependency injection cross-module
 # ============================================================================
