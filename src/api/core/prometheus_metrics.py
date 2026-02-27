@@ -105,6 +105,30 @@ kb_distributed_lock_timeouts_total = Counter(
     'Total distributed lock acquisition timeouts (blocking_timeout exceeded)',
 )
 
+# ── Webhooks ──────────────────────────────────────────────────────────────
+kb_webhook_received_total = Counter(
+    "kb_webhook_received_total",
+    "Total webhooks recibidos de Shopify",
+    ["topic"],
+)
+
+kb_webhook_processed_total = Counter(
+    "kb_webhook_processed_total",
+    "Total webhooks procesados (con resultado)",
+    ["topic", "result"],  # result: success | error | duplicate | skipped
+)
+
+kb_webhook_processing_seconds = Histogram(
+    "kb_webhook_processing_seconds",
+    "Tiempo de procesamiento de webhook de page sync",
+    buckets=[0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0],
+)
+
+kb_webhook_hmac_failures_total = Counter(
+    "kb_webhook_hmac_failures_total",
+    "Webhooks rechazados por HMAC inválido (potencial ataque)",
+)
+
 # ════════════════════════════════════════════════════════════════════════
 # LOGGING
 # ════════════════════════════════════════════════════════════════════════

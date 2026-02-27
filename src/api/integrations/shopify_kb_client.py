@@ -960,6 +960,172 @@ class ShopifyKBClient(ShopifyIntegration):
         # ✅ H1: Structured info
         logger.info("shopify_locales_cache_invalidated")
 
+    # ──────────────────────────────────────────────────────────────────────
+    # WEBHOOK MANAGEMENT API  (M4 — Incremental Sync)
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def get_webhooks(self) -> List[Dict]:
+        """
+        ✅ M4 — Obtiene los webhooks registrados en la tienda Shopify.
+
+        Usa la REST Admin API de Shopify para listar webhooks existentes.
+        Paginación: Shopify admite max 250 por request; iteramos hasta el final.
+
+        Endpoint: GET /admin/api/{version}/webhooks.json
+
+        Returns:
+            Lista de dicts con los campos del webhook:
+            [
+                {
+                    "id": int,
+                    "topic": str,          # ej. "pages/update"
+                    "address": str,        # URL de destino
+                    "format": str,         # "json"
+                    "created_at": str,
+                    "updated_at": str,
+                    ...
+                },
+                ...
+            ]
+        """
+        try:
+            url = f"{self.api_url}/webhooks.json?limit=250"
+
+            logger.info("shopify_webhooks_fetch_started", url=url)
+
+            # Ejecutar la llamada REST síncrona en un thread pool
+            response = await asyncio.to_thread(
+                self._make_request_with_retry, url
+            )
+            data = response.json()
+
+            webhooks = data.get("webhooks", [])
+
+            logger.info(
+                "shopify_webhooks_fetched",
+                total_webhooks=len(webhooks),
+            )
+
+            return webhooks
+
+        except Exception as e:
+            logger.error(
+                "shopify_webhooks_fetch_error",
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+            # Retornar lista vacía en lugar de propagar excepción:
+            # ensure_webhooks_registered() manejará el caso de lista vacía
+            # intentando registrar todos los webhooks requeridos.
+            return []
+
+    async def create_webhook(
+        self,
+        topic: str,
+        address: str,
+        format: str = "json",
+    ) -> Optional[Dict]:
+        """
+        ✅ M4 — Registra un nuevo webhook en la tienda Shopify.
+
+        Endpoint: POST /admin/api/{version}/webhooks.json
+
+        Args:
+            topic: Topic del webhook, ej. "pages/update", "pages/create"
+            address: URL HTTPS que Shopify llamará cuando ocurra el evento.
+                     Debe ser públicamente accesible (URL de Cloud Run).
+            format: Formato del payload. Siempre "json".
+
+        Returns:
+            Dict con el webhook creado (incluye id, topic, address, etc.),
+            o None si la creación falló.
+
+        NOTA DE SEGURIDAD:
+            Shopify genera automáticamente la firma HMAC para el webhook
+            usando el shared secret de la app. No es necesario configurar
+            el secret en este request — se configura al instalar la app.
+        """
+        try:
+            url = f"{self.api_url}/webhooks.json"
+            payload = {
+                "webhook": {
+                    "topic": topic,
+                    "address": address,
+                    "format": format,
+                }
+            }
+
+            logger.info(
+                "shopify_webhook_creating",
+                topic=topic,
+                address=address,
+            )
+
+            # Realizar POST síncrono en thread pool para no bloquear el event loop
+            import json
+
+            def _post_webhook():
+                """Wrapper síncrono para ejecutar en asyncio.to_thread."""
+                import requests as req_lib
+
+                headers = {
+                    "X-Shopify-Access-Token": self.access_token,
+                    "Content-Type": "application/json",
+                }
+
+                resp = req_lib.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=30,
+                )
+
+                # DIAGNÓSTICO: Loguear el body de error ANTES de raise_for_status().
+                # resp.raise_for_status() lanza HTTPError pero descarta el body,
+                # que es donde Shopify explica exactamente qué rechazó (ej:
+                # {"errors": {"address": ["is invalid"]}} o
+                # {"errors": "Address for this topic has already been taken"}).
+                if not resp.ok:
+                    try:
+                        error_body = resp.json()
+                    except Exception:
+                        error_body = resp.text
+                    logger.error(
+                        "shopify_webhook_create_422_detail",
+                        topic=topic,
+                        address=address,
+                        status_code=resp.status_code,
+                        shopify_error=error_body,  # ← aquí está la causa real
+                    )
+                    resp.raise_for_status()  # ahora sí lanzamos la excepción
+
+                return resp.json()
+
+            response_data = await asyncio.to_thread(_post_webhook)
+
+            created_webhook = response_data.get("webhook", {})
+
+            logger.info(
+                "shopify_webhook_created",
+                topic=topic,
+                address=address,
+                webhook_id=created_webhook.get("id"),
+            )
+
+            return created_webhook
+
+        except Exception as e:
+            logger.error(
+                "shopify_webhook_create_error",
+                topic=topic,
+                address=address,
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True,
+            )
+            return None
+
 # ══════════════════════════════════════════════════════════════════════════
 # FACTORY FUNCTION
 # ══════════════════════════════════════════════════════════════════════════

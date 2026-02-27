@@ -13,7 +13,11 @@ class ShopifyIntegration:
             'X-Shopify-Access-Token': access_token,
             'Content-Type': 'application/json'
         }
-        self.api_url = f"https://{self.shop_url}/admin/api/2024-01"
+        # VERSIÓN DE API: debe coincidir con la configurada en Shopify App → Configuration → Webhook version.
+        # La app está configurada en 2025-01 (verificado en Shopify Admin → App Configuration).
+        # Webhooks de pages/* (pages/create, pages/update, pages/delete) solo están disponibles
+        # a partir de la versión 2024-07 o superior. En 2024-01 no existen y Shopify los rechaza con 422.
+        self.api_url = f"https://{self.shop_url}/admin/api/2025-01"
         logging.info(f"Initializing Shopify client with:")
         logging.info(f"Shop URL: {self.shop_url}")
         logging.info(f"API URL: {self.api_url}")

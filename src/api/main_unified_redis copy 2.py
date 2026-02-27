@@ -137,11 +137,11 @@ logger.info("✅ Enterprise performance enhancements applied to MCP router")
 from src.api.integrations.ai.optimized_conversation_manager import OptimizedConversationAIManager
 
 # ✅ SHOPIFY KB INTEGRATION
-# NOTA: shopify_webhooks import REMOVIDO — router legacy deprecado, consolidado en M4.
 try:
     from src.api.integrations.shopify_kb_client import create_shopify_kb_client
     from src.api.services.shopify_kb_sync import ShopifyKBSyncService, KBBackgroundSyncJob
     from src.api.core.knowledge_base_v2 import create_shopify_knowledge_base
+    from src.api.webhooks import shopify_webhooks
     import asyncpg  # For PostgreSQL connection pool
     SHOPIFY_KB_AVAILABLE = True
     logger.info("✅ Shopify KB modules loaded successfully")
@@ -643,59 +643,6 @@ async def lifespan(app: FastAPI):
                     except Exception as sync_error:
                         logger.warning(f"⚠️ Initial sync failed: {sync_error} - will retry in background")
                 
-                # ── PASO 7: REGISTRO DE WEBHOOKS (M4 — Incremental Sync) ─────────────
-                # Solo se ejecuta si:
-                #   - KB_WEBHOOKS_ENABLED=true  (feature flag explícito)
-                #   - APP_PUBLIC_URL es conocida (URL de Cloud Run)
-                #
-                # Si el registro falla (ej. Shopify no accesible en startup)
-                # se loguea warning pero NO se cancela el arranque del sistema.
-                # Los webhooks pueden registrarse manualmente o en el próximo reinicio.
-                #
-                # FLUJO DE IDEMPOTENCIA:
-                #   1. get_webhooks() → lista webhooks existentes
-                #   2. ensure_webhooks_registered() compara topics con REQUIRED_WEBHOOKS
-                #   3. Solo crea los que faltan (no duplica)
-                if getattr(settings, "KB_WEBHOOKS_ENABLED", False) and getattr(settings, "APP_PUBLIC_URL", None):
-                    logger.info(
-                        "🔄 Registering Shopify webhooks for incremental sync (M4)..."
-                    )
-                    try:
-                        from src.api.core.shopify_webhook_registry import ensure_webhooks_registered
-                        
-                        await ensure_webhooks_registered(
-                            shopify_client=shopify_kb_client,
-                            app_url=settings.APP_PUBLIC_URL,
-                        )
-                        
-                        logger.info(
-                            "✅ Shopify webhooks registered successfully (M4 Incremental Sync active)"
-                        )
-                    except ImportError as imp_err:
-                        # El módulo registry no está disponible (posible entorno legacy)
-                        logger.warning(
-                            f"⚠️ shopify_webhook_registry not importable — webhooks skipped: {imp_err}"
-                        )
-                    except Exception as webhook_err:
-                        # Fallo no crítico: el sistema arranca de todas formas.
-                        # El KB seguirá funcionando vía full sync periódico (background job).
-                        logger.warning(
-                            f"⚠️ Webhook registration failed (non-critical, system continues): {webhook_err}"
-                        )
-                else:
-                    # Feature flag desactivado o URL pública no configurada
-                    if not getattr(settings, "KB_WEBHOOKS_ENABLED", False):
-                        logger.info(
-                            "ℹ️ Shopify webhook registration skipped "
-                            "(KB_WEBHOOKS_ENABLED=false — usando full sync periódico)"
-                        )
-                    else:
-                        logger.warning(
-                            "⚠️ Shopify webhook registration skipped "
-                            "— APP_PUBLIC_URL not configured. "
-                            "Set APP_PUBLIC_URL to your Cloud Run URL to enable incremental sync."
-                        )
-
                 logger.info("🎉 Shopify KB integration complete!")
                 
             except Exception as kb_error:

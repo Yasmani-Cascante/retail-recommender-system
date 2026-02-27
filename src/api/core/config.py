@@ -226,6 +226,57 @@ class RecommenderSettings(BaseSettings):
         env="KB_ENABLE_FALLBACK"
     )
 
+    # ═══════════════════════════════════════════════════════════
+    # SHOPIFY KB WEBHOOKS — M4 Incremental Sync
+    # ═══════════════════════════════════════════════════════════
+    #
+    # Estas variables gobiernan el sistema de webhooks en tiempo real
+    # introducido en M4. El full sync periódico (KBBackgroundSyncJob)
+    # sigue activo como safety net; los webhooks lo complementan.
+    #
+    # ┌─────────────────────────────────────────────────────────┐
+    # │ Para activar M4 en producción:                          │
+    # │   KB_WEBHOOKS_ENABLED=true                              │
+    # │   SHOPIFY_WEBHOOK_SECRET=whsec_<valor_real>             │
+    # │   APP_PUBLIC_URL=https://<cloud-run-url>                │
+    # └─────────────────────────────────────────────────────────┘
+
+    APP_PUBLIC_URL: Optional[str] = Field(
+        default=None,
+        env="APP_PUBLIC_URL",
+        description=(
+            "URL pública del servicio (ej. https://mi-app.run.app). "
+            "Usada por shopify_webhook_registry.py para construir la dirección "
+            "del webhook al registrarlo programáticamente en Shopify. "
+            "Si es None, el registro automático al startup queda deshabilitado."
+        ),
+    )
+
+    KB_WEBHOOKS_ENABLED: bool = Field(
+        default=False,
+        env="KB_WEBHOOKS_ENABLED",
+        description=(
+            "Feature flag para activar el procesamiento de webhooks M4. "
+            "Cuando es False, el endpoint /api/webhooks/shopify/pages acepta "
+            "requests y responde 200 (no hace retry Shopify), pero no despacha "
+            "background tasks. Permite rollback instantáneo sin redeploy. "
+            "Valor por defecto False → el full sync sigue siendo el mecanismo "
+            "principal hasta que M4 sea validado en staging."
+        ),
+    )
+
+    KB_WEBHOOK_IDEMPOTENCY_TTL: int = Field(
+        default=300,
+        env="KB_WEBHOOK_IDEMPOTENCY_TTL",
+        description=(
+            "TTL en segundos para las idempotency keys de webhooks en Redis. "
+            "Shopify no reintenta el mismo webhook con menos de ~5 minutos de "
+            "diferencia en condiciones normales, por lo que 300 s es seguro. "
+            "Aumentar si se observan duplicados; reducir solo en entornos de test. "
+            "Rango razonable: 60–900 s."
+        ),
+    )
+
 
     # Configuración para diferentes versiones de Pydantic
     if PYDANTIC_SETTINGS_AVAILABLE:
