@@ -67,3 +67,13 @@ python-json-logger>=2.0.0
 
 prometheus-client==0.19.0
 prometheus-fastapi-instrumentator==6.1.0
+
+# === ALEMBIC MIGRATIONS (M5) ===
+# Alembic: Framework de versionado y ejecución de migraciones de schema DB.
+# SQLAlchemy: Requerido por Alembic como abstracción de conexión.
+#   NOTA: No usamos SQLAlchemy ORM en la aplicación (seguimos con asyncpg directo).
+#   SQLAlchemy se usa ÚNICAMENTE para que Alembic pueda gestionar conexiones
+#   y el tracking de versiones (tabla alembic_version).
+#   Compatible con migración futura a Cloud SQL (solo cambia DB_HOST).
+alembic>=1.13.0
+sqlalchemy>=2.0.35
