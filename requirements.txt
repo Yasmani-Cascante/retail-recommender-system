@@ -77,3 +77,13 @@ prometheus-fastapi-instrumentator==6.1.0
 #   Compatible con migración futura a Cloud SQL (solo cambia DB_HOST).
 alembic>=1.13.0
 sqlalchemy>=2.0.35
+
+# === HTML → MARKDOWN (L1) ===
+# markdownify: Convierte HTML de Shopify a Markdown limpio para la Knowledge Base.
+#   Reemplaza el parser regex manual (_html_to_markdown) con una librería robusta
+#   que preserva estructura semántica: tablas, listas, links, headings.
+#   BeautifulSoup4 es una dependencia transitiva de markdownify (ya puede estar
+#   instalada vía otros paquetes; se lista explícitamente para claridad).
+# Referencia: src/api/services/shopify_kb_sync.py → _html_to_markdown()
+markdownify>=0.12.1
+beautifulsoup4>=4.12.0

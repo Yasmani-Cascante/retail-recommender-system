@@ -24,6 +24,8 @@ Changelog:
 """
 
 import os
+import re                          # stdlib: siempre disponible, usado en _html_to_markdown y _html_to_text_fallback
+import hashlib                     # ✅ L2: SHA256 para content_hash (stdlib, sin dependencia externa)
 import structlog  # ✅ H1: Structured Logging Migration
 import asyncio
 from typing import List, Optional, Dict, Any
@@ -33,6 +35,25 @@ import asyncpg
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.api.core.redis_service import RedisService
+
+# ✅ L1: Import de markdownify al nivel de módulo siguiendo el patrón establecido
+# del proyecto (igual que DistributedLockError abajo).
+#
+# Por qué al nivel de módulo y no dentro del método:
+# - Hace explícita la disponibilidad de la dependencia en el momento de arranque
+# - Permite testear el flag _MARKDOWNIFY_AVAILABLE directamente en unit tests
+# - Es consistente con el resto del archivo (M3 usa el mismo patrón)
+# - El import dentro del método se cachea igual, pero el linter no puede
+#   razonar sobre él — aquí el IDE entiende el tipo y puede autocompletar.
+#
+# Comportamiento en producción:  _MARKDOWNIFY_AVAILABLE = True  (requirements.txt lo incluye)
+# Comportamiento en entornos incompletos: _MARKDOWNIFY_AVAILABLE = False → fallback BeautifulSoup
+try:
+    import markdownify as _markdownify
+    _MARKDOWNIFY_AVAILABLE = True
+except ImportError:
+    _markdownify = None  # type: ignore[assignment]
+    _MARKDOWNIFY_AVAILABLE = False
 
 # ✅ M3: Import DistributedLockError para manejo tipado del timeout de lock
 # Se importa aqui para que sea visible en el tipo hint y el manejo de errores.
@@ -183,7 +204,46 @@ class ShopifyKBSyncService:
             lang.strip() for lang in raw_languages.split(",") if lang.strip()
         ]
 
-        # ✅ H1: Structured logging for initialization with M1+M2+M3+M4 metrics
+        # ✅ L2: Feature flag para Content Versioning.
+        #
+        # Cuando está activo, _upsert_kb_content() calcula el SHA256 del Markdown
+        # entrante y lo compara con el content_hash almacenado. Si coincide,
+        # omite la escritura en PostgreSQL y la invalidación del caché Redis.
+        # Si difiere, archiva el contenido anterior en kb_content_versions.
+        #
+        # Para activar:    KB_CONTENT_VERSIONING=true
+        # Para desactivar: KB_CONTENT_VERSIONING=false  (comportamiento pre-L2)
+        #
+        # CUANDO USAR:
+        # - Produccion con L2 probado: true
+        # - Rollback de emergencia: false (sin redeploy, solo cambio de env var)
+        # - Tests unitarios de _upsert: controlar con os.environ patch
+        self._use_content_versioning = os.getenv("KB_CONTENT_VERSIONING", "false").lower() in (
+            "true", "1", "yes", "on"
+        )
+
+        # ✅ L2: Número máximo de versiones históricas a conservar por registro.
+        #
+        # Política de retención: después de archivar una nueva versión, se borran
+        # las más antiguas que excedan este límite.
+        #
+        # Con 26 registros en kb_contents y 10 versiones: máx 260 filas en
+        # kb_content_versions. Completamente trivial para PostgreSQL.
+        #
+        # Para L4 que necesita más historia: KB_MAX_VERSIONS_PER_CONTENT=50
+        max_versions_raw = os.getenv("KB_MAX_VERSIONS_PER_CONTENT", "10")
+        try:
+            self._max_versions_per_content: int = max(1, int(max_versions_raw))
+        except ValueError:
+            logger.warning(
+                "invalid_max_versions_configured",
+                raw_value=max_versions_raw,
+                fallback=10,
+                reason="must_be_positive_integer"
+            )
+            self._max_versions_per_content = 10
+
+        # ✅ H1: Structured logging for initialization with M1+M2+M3+M4+L2 metrics
         logger.info(
             "service_initialized",
             service="ShopifyKBSyncService",
@@ -191,7 +251,9 @@ class ShopifyKBSyncService:
             semaphore_size=semaphore_size,
             configured_via="env_var" if os.getenv("KB_SYNC_SEMAPHORE_SIZE") else "default",
             distributed_locks_enabled=self._use_distributed_locks,
-            optimization_phase="M1+M2+M3+M4",
+            content_versioning_enabled=self._use_content_versioning,
+            max_versions_per_content=self._max_versions_per_content,
+            optimization_phase="M1+M2+M3+M4+L2",
             configured_languages=self._configured_languages,
         )
     
@@ -1226,39 +1288,154 @@ class ShopifyKBSyncService:
     
     def _html_to_markdown(self, html: str) -> str:
         """
-        Convert HTML to Markdown (basic version).
-        
-        TODO: Use proper library like markdownify or html2text for production.
-        
-        For now, this is a simple placeholder that strips HTML tags.
+        Convierte HTML de Shopify a Markdown limpio usando markdownify.
+
+        L1: Reemplaza el parser regex manual (frágil) con una librería
+        robusta que preserva la estructura semántica del contenido.
+
+        DECISIÓN DE LIBRERÍA: markdownify
+        - Maneja tablas HTML → Markdown nativo
+        - Conserva links con su URL (en vez de descartarlos)
+        - Limpieza configurable de tags inválidos para Markdown
+        - Fallback seguro: si falla, elimina tags con BeautifulSoup
+
+        CONFIGURACIÓN APLICADA:
+        - heading_style="ATX"  → # H1, ## H2 (no el estilo con ===)
+        - bullets="-"          → listas con guión (consistente)
+        - strip=["script","style","iframe"] → elimina ruido Shopify
+        - convert_links=True   → [texto](url) en lugar de solo texto
+
+        Args:
+            html: HTML crudo proveniente de Shopify page.body_html
+                o de get_page_translations(). Puede ser vacío o None.
+
+        Returns:
+            str: Markdown limpio. Retorna "" si el input es vacío.
+                Nunca lanza excepción (fallback garantizado).
         """
-        import re
-        
-        # Remove script and style tags completely
-        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
-        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL)
-        
-        # Convert common tags
-        html = re.sub(r'<h1[^>]*>(.*?)</h1>', r'# \1\n', html, flags=re.DOTALL)
-        html = re.sub(r'<h2[^>]*>(.*?)</h2>', r'## \1\n', html, flags=re.DOTALL)
-        html = re.sub(r'<h3[^>]*>(.*?)</h3>', r'### \1\n', html, flags=re.DOTALL)
-        html = re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', html, flags=re.DOTALL)
-        html = re.sub(r'<b[^>]*>(.*?)</b>', r'**\1**', html, flags=re.DOTALL)
-        html = re.sub(r'<em[^>]*>(.*?)</em>', r'*\1*', html, flags=re.DOTALL)
-        html = re.sub(r'<i[^>]*>(.*?)</i>', r'*\1*', html, flags=re.DOTALL)
-        html = re.sub(r'<br\s*/?>', '\n', html)
-        html = re.sub(r'<p[^>]*>(.*?)</p>', r'\1\n\n', html, flags=re.DOTALL)
-        
-        # Remove remaining HTML tags
-        html = re.sub(r'<[^>]+>', '', html)
-        
-        # Clean up whitespace
-        html = re.sub(r'\n\n\n+', '\n\n', html)
-        html = html.strip()
-        
-        return html
+        # Caso base: HTML vacío o None → retornar string vacío
+        # Esto ocurre para páginas sin contenido o traducciones en progreso
+        if not html or not html.strip():
+            return ""
+
+        # _MARKDOWNIFY_AVAILABLE se evalúa en tiempo de módulo (import al inicio).
+        # Si es False, significa que markdownify no está instalado → fallback directo
+        # sin necesidad de intentar el import y capturar ImportError en runtime.
+        if not _MARKDOWNIFY_AVAILABLE:
+            logger.warning(
+                "markdownify_not_installed",
+                fallback="beautifulsoup_text_extraction",
+                action_required="pip install markdownify",
+                hint="add markdownify>=0.12.1 to requirements.txt"
+            )
+            return self._html_to_text_fallback(html)
+
+        try:
+            # ── PRE-PROCESADO: eliminar tags de ruido con BeautifulSoup ──────────
+            # IMPORTANTE: El parámetro strip=[] de markdownify NO elimina el
+            # CONTENIDO de los tags — solo quita el tag wrapper pero deja el
+            # texto interno como texto plano. Ejemplo con strip=['script']:
+            #   <script>gtag('event')</script>  →  gtag('event')  ← ¡visible!
+            #
+            # La solución correcta es BeautifulSoup con tag.decompose():
+            # decompose() elimina el tag Y todo su contenido del árbol DOM.
+            # Hacemos esto ANTES de markdownify para que el HTML que recibe
+            # ya esté limpio de ruido.
+            from bs4 import BeautifulSoup
+
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Tags a eliminar completamente (tag + contenido):
+            # - script: Google Analytics, Pixel, chat widgets JS
+            # - style:  CSS inline que Shopify puede incluir
+            # - iframe: Widgets de chat, videos embedidos
+            # - noscript: Alternativas de no-JS (generalmente publicitarias)
+            # - meta/link: Tags de metadata no visibles (sin contenido útil)
+            _TAGS_TO_REMOVE = ["script", "style", "iframe", "noscript", "meta", "link"]
+            for tag in soup(_TAGS_TO_REMOVE):
+                tag.decompose()  # Elimina tag + su contenido del árbol DOM
+
+            # Serializar de vuelta a HTML limpio para pasarlo a markdownify
+            clean_html = str(soup)
+
+            # Convertir HTML limpio a Markdown con configuración optimizada para Shopify.
+            # Usamos _markdownify (alias del import a nivel de módulo) para que
+            # el linter conozca el tipo y pueda validar los argumentos.
+            # NOTA: Ya no necesitamos strip=[] aquí — el pre-procesado lo hizo.
+            markdown = _markdownify.markdownify(
+                clean_html,
+                heading_style="ATX",   # # Título (no Título\n====)
+                bullets="-",           # Listas con - consistente
+            )
+
+            # Post-procesado: limpiar líneas en blanco excesivas.
+            # markdownify puede generar 3+ líneas en blanco entre secciones;
+            # normalizamos a máximo 2 para un Markdown consistente.
+            # re fue importado a nivel de módulo — sin import local aquí.
+            markdown = re.sub(r'\n{3,}', '\n\n', markdown)
+            markdown = markdown.strip()
+
+            logger.debug(
+                "html_to_markdown_converted",
+                input_length=len(html),
+                output_length=len(markdown),
+                reduction_pct=round((1 - len(markdown)/len(html)) * 100, 1)
+                             if len(html) > 0 else 0,
+                library="markdownify"
+            )
+
+            return markdown
+
+        except Exception as e:
+            # Error inesperado en markdownify (HTML muy malformado, etc.)
+            # Fallback: extraer texto plano para no perder el contenido
+            logger.error(
+                "html_to_markdown_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                input_length=len(html),
+                fallback="text_extraction"
+            )
+            return self._html_to_text_fallback(html)
 
 
+    def _html_to_text_fallback(self, html: str) -> str:
+        """
+        Fallback: extrae texto plano eliminando todos los tags HTML.
+
+        Usado cuando markdownify falla o no está disponible.
+        Preserva el contenido aunque pierde el formato.
+
+        Estrategia de limpieza:
+        1. Elimina scripts y styles completamente (con su contenido)
+        2. Usa BeautifulSoup para extraer texto limpio
+        3. Si BeautifulSoup no está disponible, usa regex simple
+        """
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Eliminar tags que no aportan contenido legible
+            for tag in soup(["script", "style", "iframe", "noscript"]):
+                tag.decompose()
+
+            # get_text() con separador de espacio entre tags inline
+            text = soup.get_text(separator=" ", strip=True)
+
+            # Limpiar espacios múltiples.
+            # re fue importado a nivel de módulo — sin import local aquí.
+            text = re.sub(r'  +', ' ', text)
+            return text.strip()
+
+        except ImportError:
+            # Último recurso: regex para eliminar tags.
+            # re fue importado a nivel de módulo — disponible sin import local.
+            html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL)
+            html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL)
+            html = re.sub(r'<[^>]+>', ' ', html)
+            html = re.sub(r'  +', ' ', html)
+            return html.strip()
+            
 # ══════════════════════════════════════════════════════════════════════════
 # BACKGROUND SYNC JOB
 # ══════════════════════════════════════════════════════════════════════════

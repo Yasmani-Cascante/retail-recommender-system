@@ -56,3 +56,10 @@ anthropic>=0.18.0  # Claude API client
 
 # === ASYNC UTILITIES ===
 aiofiles>=23.0.0  # Async file operations
+
+# === HTML → MARKDOWN (L1) ===
+# markdownify: Convierte HTML de Shopify a Markdown limpio para la Knowledge Base.
+#   Preserva tablas, listas, links y headings que el parser regex anterior perdia.
+# Referencia: src/api/services/shopify_kb_sync.py → _html_to_markdown()
+markdownify>=0.12.1
+beautifulsoup4>=4.12.0
