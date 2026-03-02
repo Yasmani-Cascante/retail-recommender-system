@@ -922,6 +922,170 @@ class ShopifyKBSyncService:
     # DATABASE OPERATIONS
     # ──────────────────────────────────────────────────────────────────────
     
+    # ──────────────────────────────────────────────────────────────────────
+    # L2: CONTENT VERSIONING HELPERS
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _compute_content_hash(self, content: str) -> str:
+        """
+        ✅ L2: Calcula el SHA256 del contenido Markdown.
+
+        Usamos SHA256 sobre MD5 porque:
+        - L4 puede usar el hash como identificador en sistemas externos
+          (BigQuery, MLflow, etc.) donde MD5 tiene colisiones documentadas.
+        - La diferencia de velocidad (microsegundos) es irrelevante aquí.
+        - hashlib es stdlib — sin dependencia externa adicional.
+
+        La codificación UTF-8 es crítica: el contenido puede contener
+        tildes, eñes y caracteres Unicode de mercados es/en/mx/cl.
+
+        NOTA — OPCIÓN A (performance alternativa):
+        Si en el futuro el volumen de registros crece significativamente
+        y el SELECT previo del Paso 2 en _upsert_kb_content() se convierte
+        en un cuello de botella, considerar la siguiente alternativa que
+        elimina el round-trip extra usando una sola operación DB con RETURNING:
+
+            INSERT INTO kb_contents (..., content_hash, ...)
+            VALUES (..., $hash, ...)
+            ON CONFLICT (sub_intent, language, COALESCE(category, 'general'))
+            DO UPDATE SET
+                content_hash = EXCLUDED.content_hash,
+                content_version = kb_contents.content_version + 1,
+                updated_at = NOW()
+            WHERE kb_contents.content_hash != EXCLUDED.content_hash
+            RETURNING id, content_version, content_hash
+
+        El WHERE en el DO UPDATE hace que PostgreSQL no ejecute la
+        actualización si el hash es idéntico, y el RETURNING permite
+        detectar si hubo cambio real sin un SELECT previo.
+        Con 26 registros y ciclos cada 5 min, la Opción B (actual) es
+        más legible y su diferencia de performance es despreciable.
+
+        Args:
+            content: String Markdown (post-L1, ya limpio y normalizado)
+
+        Returns:
+            str: 64 caracteres hexadecimales del SHA256
+        """
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    async def _archive_content_version(
+        self,
+        conn: asyncpg.Connection,
+        kb_content_id: str,
+        version: int,
+        content: str,
+        content_html: Optional[str],
+        content_hash: str,
+        title: Optional[str],
+        sync_source: str = "background_sync",
+    ) -> None:
+        """
+        ✅ L2: Archiva el contenido ACTUAL en kb_content_versions ANTES de sobreescribirlo.
+
+        Se llama dentro de la transacción de _upsert_kb_content(), después de detectar
+        que el hash entrante difiere del almacenado (cambio real de contenido).
+
+        Por qué archivar el contenido ACTUAL y no el nuevo:
+            El historial debe representar "lo que había antes". La fila en
+            kb_content_versions dice: "en este registro, la versión N tenía
+            este contenido y fue reemplazada en replaced_at".
+            L4 puede reconstruir la secuencia: versión 1 → 2 → 3 → actual.
+
+        El INSERT usa ON CONFLICT DO NOTHING como safety net contra el caso
+        donde un retry del sync intente archivar la misma versión dos veces
+        (poco probable con el distributed lock, pero defensivo).
+
+        Args:
+            conn:           Conexión asyncpg activa (dentro de transacción)
+            kb_content_id:  UUID del registro en kb_contents (str para asyncpg)
+            version:        Número de versión ACTUAL que se está archivando
+            content:        Markdown ACTUAL (antes del reemplazo)
+            content_html:   HTML ACTUAL (antes del reemplazo), puede ser None
+            content_hash:   SHA256 del content ACTUAL
+            title:          Título ACTUAL
+            sync_source:    Origen del sync que detectó el cambio
+        """
+        await conn.execute(
+            """
+            INSERT INTO kb_content_versions (
+                kb_content_id, version, content, content_html,
+                content_hash, title, replaced_at, sync_source
+            ) VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
+            ON CONFLICT (kb_content_id, version) DO NOTHING
+            """,
+            kb_content_id,
+            version,
+            content,
+            content_html,
+            content_hash,
+            title,
+            sync_source,
+        )
+
+        logger.debug(
+            "content_version_archived",
+            kb_content_id=str(kb_content_id),
+            version=version,
+            content_hash=content_hash[:16] + "...",  # Solo los primeros 16 chars en logs
+            sync_source=sync_source,
+        )
+
+    async def _prune_old_versions(
+        self,
+        conn: asyncpg.Connection,
+        kb_content_id: str,
+        max_versions: int,
+    ) -> None:
+        """
+        ✅ L2: Elimina versiones antiguas que excedan el límite de retención.
+
+        Política de retención: conservar solo las `max_versions` más recientes
+        para cada registro de kb_contents. Las más antiguas se eliminan.
+
+        Por qué hacerlo después del INSERT (no en un job separado):
+            Mantiene la tabla pequeña sin necesitar un cron job adicional.
+            Con max=10 y 26 registros, el máximo absoluto es 260 filas —
+            el costo de esta operación es completamente negligible.
+
+        Algoritmo:
+            DELETE ... WHERE id NOT IN (SELECT id ORDER BY version DESC LIMIT max)
+            Esto conserva las N versiones más recientes y borra el resto.
+
+        Args:
+            conn:           Conexión asyncpg activa (dentro de transacción)
+            kb_content_id:  UUID del registro padre
+            max_versions:   Número máximo de versiones a conservar
+        """
+        deleted = await conn.fetchval(
+            """
+            WITH versions_to_keep AS (
+                SELECT id
+                FROM kb_content_versions
+                WHERE kb_content_id = $1
+                ORDER BY version DESC
+                LIMIT $2
+            ),
+            deleted AS (
+                DELETE FROM kb_content_versions
+                WHERE kb_content_id = $1
+                  AND id NOT IN (SELECT id FROM versions_to_keep)
+                RETURNING id
+            )
+            SELECT COUNT(*) FROM deleted
+            """,
+            kb_content_id,
+            max_versions,
+        )
+
+        if deleted and deleted > 0:
+            logger.debug(
+                "content_versions_pruned",
+                kb_content_id=str(kb_content_id),
+                versions_deleted=deleted,
+                max_versions_kept=max_versions,
+            )
+
     async def _upsert_kb_content(
         self,
         sub_intent: str,
@@ -935,7 +1099,7 @@ class ShopifyKBSyncService:
         shopify_handle: Optional[str]
     ) -> None:
         """
-        ✅ M3 - Upsert KB content con Distributed Locking + retry logic.
+        ✅ M3+L2 — Upsert KB content con Distributed Locking, retry y Content Versioning.
 
         ESTRATEGIA DE CONCURRENCIA (dos capas complementarias):
 
@@ -962,13 +1126,60 @@ class ShopifyKBSyncService:
         """
         normalized_category = category if category is not None else 'general'
 
-        # ✅ M3: Construir lock key unico por registro de KB
-        # Formato: kb_sync:lock:{sub_intent}:{language}:{category}
-        # Esto garantiza que solo se bloquea el acceso al mismo registro exacto,
-        # no a todos los registros de un sub_intent o idioma.
+        # ✅ M3: Lock key único por registro de KB
         lock_key = f"kb_sync:lock:{sub_intent}:{language}:{normalized_category}"
 
-        query = """
+        # ── Queries separadas pre/post L2 ─────────────────────────────────────
+        #
+        # QUERY A — INSERT inicial para registros nuevos (no existe en DB todavía).
+        # Solo se usa cuando el SELECT del Paso 2 no devuelve fila.
+        query_insert = """
+        INSERT INTO kb_contents (
+            sub_intent, language, category, content, content_html,
+            title, shopify_page_id, shopify_url, shopify_handle,
+            content_hash, content_version,
+            last_synced, created_at, updated_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, NOW(), NOW(), NOW()
+        )
+        RETURNING id, content_version
+        """
+
+        # QUERY B — UPDATE para registros existentes con cambio real de contenido.
+        # Actualiza hash, incrementa versión, y actualiza timestamps.
+        # Se usa cuando el hash entrante DIFIERE del almacenado.
+        query_update = """
+        UPDATE kb_contents SET
+            content          = $1,
+            content_html     = $2,
+            title            = $3,
+            shopify_url      = $4,
+            shopify_handle   = $5,
+            content_hash     = $6,
+            content_version  = content_version + 1,
+            last_synced      = NOW(),
+            updated_at       = NOW()
+        WHERE sub_intent = $7
+          AND language   = $8
+          AND COALESCE(category, 'general') = $9
+        RETURNING id, content_version
+        """
+
+        # QUERY C — UPDATE de last_synced SOLAMENTE (sin cambiar contenido).
+        # Se usa cuando el hash entrante COINCIDE con el almacenado.
+        # Actualiza last_synced para que el sistema sepa que se revisó,
+        # pero NO toca updated_at ni content_version.
+        query_touch_last_synced = """
+        UPDATE kb_contents
+        SET last_synced = NOW()
+        WHERE sub_intent = $1
+          AND language   = $2
+          AND COALESCE(category, 'general') = $3
+        """
+
+        # QUERY PRE-L2 — Comportamiento original sin versioning (flag desactivado).
+        # Se mantiene para compatibilidad hacia atrás y rollback de emergencia.
+        query_pre_l2 = """
         INSERT INTO kb_contents (
             sub_intent, language, category, content, content_html,
             title, shopify_page_id, shopify_url, shopify_handle,
@@ -978,78 +1189,56 @@ class ShopifyKBSyncService:
         )
         ON CONFLICT (sub_intent, language, COALESCE(category, 'general'))
         DO UPDATE SET
-            content = EXCLUDED.content,
-            content_html = EXCLUDED.content_html,
-            title = EXCLUDED.title,
-            shopify_url = EXCLUDED.shopify_url,
+            content        = EXCLUDED.content,
+            content_html   = EXCLUDED.content_html,
+            title          = EXCLUDED.title,
+            shopify_url    = EXCLUDED.shopify_url,
             shopify_handle = EXCLUDED.shopify_handle,
-            last_synced = NOW(),
-            updated_at = NOW()
+            last_synced    = NOW(),
+            updated_at     = NOW()
         """
 
         max_retries = 3
         retry_delay = 0.1
 
+        # ✅ L2: Calcular hash del contenido ENTRANTE una sola vez fuera del loop de retries.
+        # Es una operación CPU pura y determinista — no necesita estar dentro del try/except
+        # ni repetirse en cada intento.
+        incoming_hash = self._compute_content_hash(content) if self._use_content_versioning else None
+
         for attempt in range(max_retries):
             try:
-                # ── CAPA 1: Semaforo local (intra-instancia) ──────────────────
-                # Controla cuantas goroutines en ESTA instancia entran al bloque
-                # de DB al mismo tiempo. Se adquiere primero para no agotar
-                # las conexiones del pool mientras se espera el lock de Redis.
                 async with self._db_semaphore:
 
                     if self._use_distributed_locks:
-                        # ── CAPA 2 (M3): Distributed lock cross-instance ──────
-                        # Solo una instancia de Cloud Run puede ejecutar el upsert
-                        # para este (sub_intent, language, category) a la vez.
-                        # Si el lock no se obtiene en blocking_timeout segundos,
-                        # DistributedLockError es capturada en el except abajo
-                        # y se hace retry con backoff exponencial.
                         async with self.redis.distributed_lock(
                             lock_name=lock_key,
-                            timeout=30.0,        # TTL del lock en Redis (safety net)
-                            blocking_timeout=5.0  # Espera maxima para obtener el lock
+                            timeout=30.0,
+                            blocking_timeout=5.0
                         ):
-                            async with self.db.acquire() as conn:
-                                await conn.execute(
-                                    query, sub_intent, language, normalized_category,
-                                    content, content_html, title,
-                                    shopify_page_id, shopify_url, shopify_handle
-                                )
-                                logger.debug(
-                                    "kb_content_upserted",
-                                    sub_intent=sub_intent,
-                                    language=language,
-                                    category=normalized_category,
-                                    shopify_page_id=shopify_page_id,
-                                    distributed_lock_used=True  # ✅ M3: Trazabilidad
-                                )
-                                return
-                    else:
-                        # ── MODO LEGACY (pre-M3): Solo semaforo local ───────
-                        # Comportamiento identico a M1+M2.
-                        # Usado cuando KB_DISTRIBUTED_LOCKS=false (default)
-                        # o cuando Redis no esta disponible.
-                        async with self.db.acquire() as conn:
-                            await conn.execute(
-                                query, sub_intent, language, normalized_category,
+                            await self._execute_upsert(
+                                sub_intent, language, normalized_category,
                                 content, content_html, title,
-                                shopify_page_id, shopify_url, shopify_handle
-                            )
-                            logger.debug(
-                                "kb_content_upserted",
-                                sub_intent=sub_intent,
-                                language=language,
-                                category=normalized_category,
-                                shopify_page_id=shopify_page_id,
-                                distributed_lock_used=False  # ✅ M3: Trazabilidad
+                                shopify_page_id, shopify_url, shopify_handle,
+                                incoming_hash,
+                                query_insert, query_update,
+                                query_touch_last_synced, query_pre_l2,
+                                distributed_lock_used=True,
                             )
                             return
+                    else:
+                        await self._execute_upsert(
+                            sub_intent, language, normalized_category,
+                            content, content_html, title,
+                            shopify_page_id, shopify_url, shopify_handle,
+                            incoming_hash,
+                            query_insert, query_update,
+                            query_touch_last_synced, query_pre_l2,
+                            distributed_lock_used=False,
+                        )
+                        return
 
             except DistributedLockError as e:
-                # ✅ M3: El lock no se pudo obtener en el tiempo limite.
-                # Esto indica que otra instancia esta procesando el mismo registro.
-                # Politica: retry con backoff exponencial (igual que deadlock).
                 if attempt < max_retries - 1:
                     wait_time = retry_delay * (attempt + 1)
                     logger.warning(
@@ -1062,7 +1251,6 @@ class ShopifyKBSyncService:
                     )
                     await asyncio.sleep(wait_time)
                     continue
-                # Si ya agotamos retries, loguear y re-raise
                 logger.error(
                     "kb_upsert_lock_timeout_exhausted",
                     sub_intent=sub_intent,
@@ -1076,14 +1264,12 @@ class ShopifyKBSyncService:
 
             except Exception as e:
                 error_msg = str(e).lower()
-
                 if any(x in error_msg for x in [
                     "another operation is in progress",
                     "deadlock detected",
                     "too many connections"
                 ]):
                     if attempt < max_retries - 1:
-                        # ✅ H1: Structured retry warning
                         logger.warning(
                             "kb_upsert_retry",
                             attempt=attempt + 1,
@@ -1094,7 +1280,6 @@ class ShopifyKBSyncService:
                         await asyncio.sleep(retry_delay * (attempt + 1))
                         continue
 
-                # ✅ H1: Structured error
                 logger.error(
                     "kb_upsert_failed",
                     sub_intent=sub_intent,
@@ -1104,6 +1289,196 @@ class ShopifyKBSyncService:
                     error_type=type(e).__name__
                 )
                 raise
+
+    async def _execute_upsert(
+        self,
+        sub_intent: str,
+        language: str,
+        normalized_category: str,
+        content: str,
+        content_html: str,
+        title: Optional[str],
+        shopify_page_id: int,
+        shopify_url: Optional[str],
+        shopify_handle: Optional[str],
+        incoming_hash: Optional[str],
+        query_insert: str,
+        query_update: str,
+        query_touch_last_synced: str,
+        query_pre_l2: str,
+        distributed_lock_used: bool,
+    ) -> None:
+        """
+        ✅ L2 — Lógica real del upsert, extraída para evitar duplicación en los
+        dos ramas del distributed lock.
+
+        FLUJO DE 7 PASOS (cuando KB_CONTENT_VERSIONING=true):
+
+        Paso 1 — Calcular hash del contenido entrante (ya calculado por el caller).
+
+        Paso 2 — SELECT del registro actual en DB.
+            Lee (id, content_hash, content_version, content, content_html, title)
+            Si el registro no existe → saltar al Paso 5 directamente (INSERT).
+
+        Paso 3 — Comparar hashes.
+            stored_hash == incoming_hash:
+                → No hay cambio real. SKIP completo (Paso 6).
+            stored_hash != incoming_hash (o es NULL porque es pre-backfill):
+                → Continuar al Paso 4.
+
+        Paso 4 — Archivar la versión actual en kb_content_versions.
+            INSERT INTO kb_content_versions (contenido ACTUAL, ANTES de reemplazarlo).
+
+        Paso 5 — Escribir el nuevo contenido en kb_contents.
+            Si el registro no existía: INSERT con content_version=1.
+            Si existía con hash diferente: UPDATE incrementando content_version.
+
+        Paso 6 — Early return si no hubo cambio.
+            Loguear a nivel DEBUG. No invalidar caché Redis.
+
+        Paso 7 — Poda de versiones antiguas.
+            DELETE versiones que excedan self._max_versions_per_content.
+        """
+        async with self.db.acquire() as conn:
+
+            # ── RAMA PRE-L2: comportamiento original (flag desactivado) ────────
+            # Preservado íntegro para rollback de emergencia sin redeploy.
+            # Simplemente cambiar KB_CONTENT_VERSIONING=false restaura este flujo.
+            if not self._use_content_versioning:
+                await conn.execute(
+                    query_pre_l2,
+                    sub_intent, language, normalized_category,
+                    content, content_html, title,
+                    shopify_page_id, shopify_url, shopify_handle
+                )
+                logger.debug(
+                    "kb_content_upserted",
+                    sub_intent=sub_intent,
+                    language=language,
+                    category=normalized_category,
+                    shopify_page_id=shopify_page_id,
+                    content_versioning_enabled=False,
+                    distributed_lock_used=distributed_lock_used,
+                )
+                return
+
+            # ── RAMA L2: detección de cambios por hash ────────────────────────
+
+            # ── PASO 2: Leer estado actual del registro en DB ─────────────────
+            # Leemos id, hash, versión, y el contenido anterior completo.
+            # El contenido anterior lo necesitamos para archivarlo en el Paso 4.
+            # SELECT en la misma conexión que el UPDATE posterior garantiza
+            # consistencia — aunque sin transacción explícita, asyncpg en modo
+            # autocommit asegura que nadie modifica entre SELECT y UPDATE porque
+            # el distributed_lock (Capa 2) o el semáforo (Capa 1) nos protegen.
+            existing = await conn.fetchrow(
+                """
+                SELECT id, content_hash, content_version, content, content_html, title
+                FROM kb_contents
+                WHERE sub_intent = $1
+                  AND language   = $2
+                  AND COALESCE(category, 'general') = $3
+                """,
+                sub_intent, language, normalized_category
+            )
+
+            # ── PASO 3: Comparar hashes ───────────────────────────────────────
+            # Un content_hash NULL en DB significa que el registro existe pero
+            # no tiene hash todavía (pre-backfill). Lo tratamos como "diferente"
+            # para forzar la escritura y poblar el hash en el primer ciclo post-L2.
+            #
+            # INVARIANTE: incoming_hash nunca es None aquí porque el flag
+            # self._use_content_versioning es True (se calculó en _upsert_kb_content).
+            if existing is not None:
+                stored_hash = existing["content_hash"]
+                if stored_hash is not None and stored_hash == incoming_hash:
+                    # ── PASO 6: Sin cambio real — early return ────────────────
+                    # No escribir en PostgreSQL (no tocar updated_at).
+                    # No invalidar caché Redis.
+                    # Solo actualizar last_synced para tracking de polling.
+                    # Loguear a DEBUG, no INFO (reduce ruido en logs de producción).
+                    await conn.execute(
+                        query_touch_last_synced,
+                        sub_intent, language, normalized_category
+                    )
+                    logger.debug(
+                        "kb_content_unchanged",
+                        sub_intent=sub_intent,
+                        language=language,
+                        category=normalized_category,
+                        shopify_page_id=shopify_page_id,
+                        content_hash=stored_hash[:16] + "...",
+                        content_version=existing["content_version"],
+                        note="skip_write_skip_cache_invalidation",
+                    )
+                    return  # ← sale ANTES de _invalidate_cache en sync_page()
+
+            # ── PASO 4: Archivar versión actual (solo si el registro ya existía) ──
+            # Si existing is None, es un INSERT nuevo — no hay nada que archivar.
+            if existing is not None:
+                await self._archive_content_version(
+                    conn=conn,
+                    kb_content_id=str(existing["id"]),
+                    version=existing["content_version"],
+                    content=existing["content"],
+                    content_html=existing["content_html"],
+                    content_hash=existing["content_hash"] or incoming_hash,
+                    title=existing["title"],
+                    sync_source="background_sync",
+                )
+
+            # ── PASO 5: Escribir nuevo contenido en kb_contents ───────────────
+            if existing is None:
+                # Registro nuevo: INSERT con content_version=1
+                row = await conn.fetchrow(
+                    query_insert,
+                    sub_intent, language, normalized_category,
+                    content, content_html, title,
+                    shopify_page_id, shopify_url, shopify_handle,
+                    incoming_hash,
+                )
+                new_version = row["content_version"] if row else 1
+                logger.debug(
+                    "kb_content_inserted",
+                    sub_intent=sub_intent,
+                    language=language,
+                    category=normalized_category,
+                    shopify_page_id=shopify_page_id,
+                    content_hash=incoming_hash[:16] + "...",
+                    content_version=new_version,
+                    distributed_lock_used=distributed_lock_used,
+                )
+            else:
+                # Registro existente con cambio real: UPDATE + incremento de versión
+                row = await conn.fetchrow(
+                    query_update,
+                    content, content_html, title,
+                    shopify_url, shopify_handle,
+                    incoming_hash,
+                    sub_intent, language, normalized_category,
+                )
+                new_version = row["content_version"] if row else existing["content_version"] + 1
+                kb_content_id = str(existing["id"])
+
+                logger.debug(
+                    "kb_content_updated",
+                    sub_intent=sub_intent,
+                    language=language,
+                    category=normalized_category,
+                    shopify_page_id=shopify_page_id,
+                    content_hash_new=incoming_hash[:16] + "...",
+                    content_version_new=new_version,
+                    distributed_lock_used=distributed_lock_used,
+                )
+
+                # ── PASO 7: Poda de versiones antiguas ───────────────────────
+                # Solo si hubo cambio real (hay una nueva versión archivada).
+                # La poda borra versiones archivadas, no el registro actual.
+                await self._prune_old_versions(
+                    conn=conn,
+                    kb_content_id=kb_content_id,
+                    max_versions=self._max_versions_per_content,
+                )
     
     # ──────────────────────────────────────────────────────────────────────
     # CACHE INVALIDATION
