@@ -1,0 +1,228 @@
+{
+  "displayName": "Retail Recommender - Business Metrics",
+  "dashboardFilters": [],
+  "description": "Retail Recommender - Business Metrics",
+  "labels": {},
+  "mosaicLayout": {
+    "columns": 48,
+    "tiles": [
+      {
+        "xPos": 0,
+        "yPos": 0,
+        "height": 16,
+        "width": 24,
+        "widget": {
+          "title": "Recommendation Requests / sec",
+          "xyChart": {
+            "chartOptions": { "mode": "COLOR", "showLegend": true },
+            "dataSets": [
+              {
+                "minAlignmentPeriod": "60s",
+                "plotType": "LINE",
+                "targetAxis": "Y1",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"custom.googleapis.com/recommender_requests_total\" resource.type=\"generic_task\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_RATE",
+                      "crossSeriesReducer": "REDUCE_SUM",
+                      "groupByFields": ["metric.labels.strategy"]
+                    }
+                  }
+                }
+              }
+            ],
+            "yAxis": { "label": "req/sec", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 24,
+        "yPos": 0,
+        "height": 16,
+        "width": 24,
+        "widget": {
+          "title": "Recommendation Latency p95 (seconds)",
+          "xyChart": {
+            "chartOptions": { "mode": "COLOR", "showLegend": true },
+            "dataSets": [
+              {
+                "minAlignmentPeriod": "60s",
+                "plotType": "LINE",
+                "targetAxis": "Y1",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"custom.googleapis.com/recommender_duration_seconds\" resource.type=\"generic_task\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_DELTA",
+                      "crossSeriesReducer": "REDUCE_PERCENTILE_95",
+                      "groupByFields": ["metric.labels.strategy"]
+                    }
+                  }
+                }
+              }
+            ],
+            "yAxis": { "label": "seconds", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 16,
+        "height": 16,
+        "width": 24,
+        "widget": {
+          "title": "Recommendation Errors / sec",
+          "xyChart": {
+            "chartOptions": { "mode": "COLOR", "showLegend": true },
+            "dataSets": [
+              {
+                "minAlignmentPeriod": "60s",
+                "plotType": "LINE",
+                "targetAxis": "Y1",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"custom.googleapis.com/recommender_errors_total\" resource.type=\"generic_task\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_RATE",
+                      "crossSeriesReducer": "REDUCE_SUM",
+                      "groupByFields": ["metric.labels.error_type"]
+                    }
+                  }
+                }
+              }
+            ],
+            "yAxis": { "label": "errors/sec", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 24,
+        "yPos": 16,
+        "height": 16,
+        "width": 24,
+        "widget": {
+          "title": "KB Sync Operations / sec (success vs failed)",
+          "xyChart": {
+            "chartOptions": { "mode": "COLOR", "showLegend": true },
+            "dataSets": [
+              {
+                "minAlignmentPeriod": "60s",
+                "plotType": "LINE",
+                "targetAxis": "Y1",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"custom.googleapis.com/kb_sync_operations_total\" resource.type=\"generic_task\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_RATE",
+                      "crossSeriesReducer": "REDUCE_SUM",
+                      "groupByFields": ["metric.labels.status"]
+                    }
+                  }
+                }
+              }
+            ],
+            "yAxis": { "label": "ops/sec", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 32,
+        "height": 16,
+        "width": 24,
+        "widget": {
+          "title": "KB Sync Duration p95 (seconds)",
+          "xyChart": {
+            "chartOptions": { "mode": "COLOR", "showLegend": false },
+            "dataSets": [
+              {
+                "minAlignmentPeriod": "60s",
+                "plotType": "LINE",
+                "targetAxis": "Y1",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"custom.googleapis.com/kb_sync_duration_seconds\" resource.type=\"generic_task\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_DELTA",
+                      "crossSeriesReducer": "REDUCE_PERCENTILE_95",
+                      "groupByFields": []
+                    }
+                  }
+                }
+              }
+            ],
+            "yAxis": { "label": "seconds", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 24,
+        "yPos": 32,
+        "height": 16,
+        "width": 24,
+        "widget": {
+          "title": "Google Retail API Calls / sec [ACTIVA - visible con tráfico real]",
+          "xyChart": {
+            "chartOptions": { "mode": "COLOR", "showLegend": true },
+            "dataSets": [
+              {
+                "minAlignmentPeriod": "60s",
+                "plotType": "LINE",
+                "targetAxis": "Y1",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"custom.googleapis.com/google_retail_api_calls_total\" resource.type=\"generic_task\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_RATE",
+                      "crossSeriesReducer": "REDUCE_SUM",
+                      "groupByFields": ["metric.labels.method", "metric.labels.status"]
+                    }
+                  }
+                }
+              }
+            ],
+            "yAxis": { "label": "calls/sec", "scale": "LINEAR" }
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 48,
+        "height": 16,
+        "width": 24,
+        "widget": {
+          "title": "Google Retail API Latency p95 [ACTIVA - visible con tráfico real]",
+          "xyChart": {
+            "chartOptions": { "mode": "COLOR", "showLegend": true },
+            "dataSets": [
+              {
+                "minAlignmentPeriod": "60s",
+                "plotType": "LINE",
+                "targetAxis": "Y1",
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "metric.type=\"custom.googleapis.com/google_retail_api_duration_seconds\" resource.type=\"generic_task\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_DELTA",
+                      "crossSeriesReducer": "REDUCE_PERCENTILE_95",
+                      "groupByFields": ["metric.labels.method"]
+                    }
+                  }
+                }
+              }
+            ],
+            "yAxis": { "label": "seconds", "scale": "LINEAR" }
+          }
+        }
+      }
+    ]
+  }
+}

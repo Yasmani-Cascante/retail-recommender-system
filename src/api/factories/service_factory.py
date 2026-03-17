@@ -224,30 +224,66 @@ class ServiceFactory:
 
     @classmethod
     async def get_db_pool(cls) -> 'asyncpg.Pool':
-        """Get PostgreSQL connection pool singleton."""
+        """Get PostgreSQL connection pool singleton.
+
+        CRITICAL — por qué usamos os.environ con fallback a settings:
+        Pydantic-settings resuelve variables en orden: class defaults →
+        env_file (.env) → os.environ. En Cloud Run, las variables se
+        inyectan como variables de sistema (os.environ). Sin embargo, en
+        ciertas combinaciones de env_file='.env' + case_sensitive, si el
+        archivo .env no existe en el contenedor, Pydantic puede no leer
+        os.environ correctamente y retornar el default de la clase
+        (e.g. db_host='localhost').
+
+        os.environ.get('DB_HOST') or settings.db_host garantiza:
+          1. Prioridad absoluta a variables de sistema / Cloud Run
+          2. Fallback a settings si la env var no está definida
+          3. Comportamiento idéntico al pool creado en main_unified_redis.py
+        """
         lock = cls._get_db_pool_lock()
         
         async with lock:
             if cls._db_pool is None:
-                logger.info("Initializing PostgreSQL connection pool...")
+                logger.info("Initializing PostgreSQL connection pool (ServiceFactory)...")
                 
                 try:
+                    import os
                     import asyncpg
                     from src.api.core.config import get_settings
                         
                     settings = get_settings()
+
+                    # Leer credenciales con prioridad a os.environ (garantía Cloud Run)
+                    db_host     = os.environ.get("DB_HOST")     or settings.db_host
+                    db_port     = int(os.environ.get("DB_PORT", str(settings.db_port)))
+                    db_user     = os.environ.get("DB_USER")     or settings.db_user
+                    db_password = os.environ.get("DB_PASSWORD") or settings.db_password
+                    db_name     = os.environ.get("DB_NAME")     or settings.db_name
+
+                    # SSL: requerido en producción (Neon), desactivado en local.
+                    db_ssl_env  = os.environ.get("DB_SSL", "").lower()
+                    db_ssl      = db_ssl_env in ("true", "1", "yes") if db_ssl_env else settings.db_ssl
+                    ssl_param   = "require" if db_ssl else None
+
+                    # Log para diagnóstico — confirma qué valores se usaron
+                    logger.info(
+                        f"🔒 ServiceFactory DB pool: host={db_host}, port={db_port}, "
+                        f"db={db_name}, ssl={'require' if db_ssl else 'disabled'}"
+                    )
+
                     cls._db_pool = await asyncpg.create_pool(
-                        host=settings.db_host,
-                        port=settings.db_port,
-                        user=settings.db_user,
-                        password=settings.db_password,
-                        database=settings.db_name,
+                        host=db_host,
+                        port=db_port,
+                        user=db_user,
+                        password=db_password,
+                        database=db_name,
+                        ssl=ssl_param,
                         min_size=5,
                         max_size=20,
                         command_timeout=30
                     )
                     
-                    logger.info("✅ PostgreSQL pool initialized")
+                    logger.info(f"✅ PostgreSQL pool initialized via ServiceFactory (ssl={'require' if db_ssl else 'disabled'})")
                     
                 except Exception as e:
                     logger.error(f"❌ Failed to create DB pool: {e}")
@@ -1170,24 +1206,68 @@ class ServiceFactory:
 
     @classmethod
     async def get_mcp_recommender(cls):
-        """Get MCP recommender singleton with dependencies"""
+        """Get MCP recommender singleton with dependencies.
+        
+        CRÍTICO: Se debe pasar anthropic_client al constructor.
+        Sin él, self.claude = None y todas las llamadas a Claude
+        fallan con 'NoneType has no attribute messages'.
+        """
         if cls._mcp_recommender is None:
             mcp_lock = cls._get_mcp_lock()
             async with mcp_lock:
                 if cls._mcp_recommender is None:
                     try:
-                        # Get dependencies
+                        import os
+                        from anthropic import AsyncAnthropic
+                        from src.api.mcp.engines.mcp_personalization_engine import MCPPersonalizationEngine
+
+                        # Obtener dependencias
                         redis_service = await cls.get_redis_service()
                         conversation_manager = await cls.get_conversation_manager()
-                        
-                        # ✅ LAZY IMPORT: Avoid circular import
-                        from src.api.mcp.engines.mcp_personalization_engine import MCPPersonalizationEngine
-                        
+
+                        # Crear cliente Anthropic warm — se reutiliza en todas las requests.
+                        # Este es el cliente que MCPPersonalizationEngine usa en self.claude.
+                        #
+                        # HTTP/2 DESACTIVADO (http2=False):
+                        # AsyncAnthropic usa HTTP/2 por defecto. En Cloud Run, las conexiones
+                        # HTTP/2 salientes son más propensas a fallar con "Connection error"
+                        # cuando el NAT de GCP cierra el estado TCP tras períodos de inactividad.
+                        # HTTP/1.1 con keep-alive es más resiliente en este entorno.
+                        #
+                        # TIMEOUT EXPLÍCITO:
+                        # httpx.Timeout configura connect=10s (establecer la conexión TCP/TLS)
+                        # y read=25s (leer la respuesta). Sin esto, la SDK usa defaults que
+                        # pueden ser demasiado generosos o no respetarse en todos los paths.
+                        import httpx
+                        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+                        if not anthropic_api_key:
+                            logger.error("❌ ANTHROPIC_API_KEY not set — MCPPersonalizationEngine will have claude=None")
+                        # anthropic_client = AsyncAnthropic(api_key=anthropic_api_key) if anthropic_api_key else None
+                        anthropic_client = AsyncAnthropic(
+                            api_key=anthropic_api_key,
+                            http_client=httpx.AsyncClient(
+                                http2=False,  # ← HTTP/1.1: más resiliente en Cloud Run egress
+                                timeout=httpx.Timeout(
+                                    connect=10.0,   # tiempo máx para establecer TCP/TLS
+                                    read=25.0,      # tiempo máx para leer respuesta de Claude
+                                    write=10.0,
+                                    pool=5.0
+                                ),
+                                limits=httpx.Limits(
+                                    max_keepalive_connections=5,
+                                    max_connections=10,
+                                    keepalive_expiry=30.0  # cierra keep-alive tras 30s inactivo
+                                )
+                            )
+                        ) if anthropic_api_key else None
+
                         cls._mcp_recommender = MCPPersonalizationEngine(
                             redis_service=redis_service,
-                            conversation_manager=conversation_manager
+                            conversation_manager=conversation_manager,
+                            anthropic_client=anthropic_client,  # ← CRÍTICO: evita self.claude = None
                         )
-                        logger.info("✅ MCPPersonalizationEngine singleton initialized successfully")
+                        logger.info("✅ MCPPersonalizationEngine singleton initialized (claude=%s, http2=False)",
+                                    "ready" if anthropic_client else "None — calls will fail")
                     except Exception as e:
                         logger.error(f"❌ Failed to initialize MCPPersonalizationEngine: {e}")
                         raise

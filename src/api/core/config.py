@@ -165,7 +165,7 @@ class RecommenderSettings(BaseSettings):
 
 
     # ═══════════════════════════════════════════════════════════
-    # POSTGRESQL CONFIGURATIONe
+    # POSTGRESQL CONFIGURATION
     # ═══════════════════════════════════════════════════════════
 
     db_host: str = Field(default="localhost", env="DB_HOST")
@@ -176,6 +176,20 @@ class RecommenderSettings(BaseSettings):
     DB_MIN_POOL_SIZE: int = Field(default=2, env="DB_MIN_POOL_SIZE")
     DB_MAX_POOL_SIZE: int = Field(default=10, env="DB_MAX_POOL_SIZE")
     DB_POOL_TIMEOUT: int = Field(default=30, env="DB_POOL_TIMEOUT")
+
+    # SSL para PostgreSQL — controlado por entorno:
+    #   - Local (default False): PostgreSQL local/Docker no requiere SSL
+    #   - Producción (True):     Neon/Cloud SQL exigen SSL obligatoriamente
+    # Configurar DB_SSL=true en Cloud Run env vars; dejar sin definir en .env local.
+    db_ssl: bool = Field(
+        default=False,
+        env="DB_SSL",
+        description=(
+            "Activar SSL en la conexión asyncpg a PostgreSQL. "
+            "False en desarrollo (PostgreSQL local/Docker), "
+            "True en producción (Neon, Cloud SQL)."
+        ),
+    )
 
     # DB_HOST: str = Field(default="localhost", env="DB_HOST")
     # DB_PORT: int = Field(default=5432, env="DB_PORT")
@@ -283,7 +297,7 @@ class RecommenderSettings(BaseSettings):
         # Pydantic v2 con pydantic-settings
         model_config = {
             "env_file": ".env",
-            "case_sensitive": False,
+            "case_sensitive": True,   # ← Linux es case-sensitive; Cloud Run inyecta en MAYÚSCULAS
             "extra": "ignore"
         }
     else:

@@ -450,39 +450,27 @@ async def get_mcp_conversation_recommendations(
                 return []
 
         async def prepare_mcp_engine() -> Optional[Any]:
-            """Wrapper function para preparar MCPPersonalizationEngine"""
+            """
+            Obtiene el MCPPersonalizationEngine singleton via ServiceFactory.
+
+            Usar el singleton es crítico por dos razones:
+            1. El cliente AsyncAnthropic ya tiene la conexión TCP/TLS a api.anthropic.com
+               establecida (warm), eliminando el 'Connection error on attempt 1' que
+               ocurre cuando se crea un cliente nuevo por cada request.
+            2. Evita instanciar objetos pesados (~50ms de overhead) en el hot path.
+            """
             try:
-                anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-                if not anthropic_api_key:
-                    logger.warning("⚠️ ANTHROPIC_API_KEY not found")
-                    return None
-
-                from src.api.mcp.engines.mcp_personalization_engine import MCPPersonalizationEngine
-                from anthropic import AsyncAnthropic
-
-                anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
-
-                # Get Redis service
-                redis_service = None
-                try:
-                    from src.api.factories.service_factory import ServiceFactory
-                    redis_service = await ServiceFactory.get_redis_service()
-                    logger.info("✅ ServiceFactory imported successfully - Redis available")
-                except Exception as re:
-                    logger.warning(f"⚠️ Redis service unavailable: {re}")
-
-                mcp_engine = MCPPersonalizationEngine(
-                    anthropic_client=anthropic_client,
-                    redis_service=redis_service,
-                    profile_ttl=604800,
-                    enable_ml_predictions=bool(redis_service)
-                )
-                
-                logger.info("✅ MCPPersonalizationEngine created successfully")
+                from src.api.factories.service_factory import ServiceFactory
+                # get_mcp_recommender() retorna el singleton con cliente Anthropic ya warm.
+                # Si no existe aún, lo crea una sola vez y lo reutiliza en adelante.
+                mcp_engine = await ServiceFactory.get_mcp_recommender()
+                if mcp_engine is not None:
+                    logger.info("✅ MCPPersonalizationEngine singleton obtained (warm client)")
+                else:
+                    logger.warning("⚠️ MCPPersonalizationEngine singleton returned None")
                 return mcp_engine
-                
             except Exception as e:
-                logger.error(f"❌ Error creating MCPPersonalizationEngine: {e}")
+                logger.error(f"❌ Error obtaining MCPPersonalizationEngine singleton: {e}")
                 return None
 
         async def get_market_adapter():
@@ -644,43 +632,18 @@ async def get_mcp_conversation_recommendations(
                     # ✅ PASO 2: Cache miss - ejecutar personalización OPTIMIZADA
                     logger.info("🧠 Applying OPTIMIZED MCP personalization (cache miss)...")
                     
-                    try:
-                        # ✅ NUEVA OPTIMIZACIÓN: Usar Claude optimizer
-                        from src.api.core.claude_optimization import get_claude_optimizer
-                        
-                        claude_optimizer = get_claude_optimizer(mcp_engine.anthropic_client if hasattr(mcp_engine, 'anthropic_client') else None)
-                        
-                        # Preparar contexto optimizado
-                        optimized_context = {
-                            "conversation_history": [],  # Simplificado para speed
-                            "market_id": market_id,
-                            "user_preferences": {}  # Simplificado
-                        }
-                        
-                        # Llamada optimizada con múltiples estrategias de speed
-                        personalization_result = await asyncio.wait_for(
-                            claude_optimizer.generate_optimized_personalization(
-                                user_context=optimized_context,
-                                recommendations=base_recommendations,
-                                query=conversation_query,
-                                market_id=market_id
-                            ),
-                            timeout=1.5  # ✅ MÁS AGRESIVO: 2s → 1.5s con optimizaciones
-                        )
-                        
-                        logger.info("✅ Claude optimization successful")
-                        
-                    except (ImportError, AttributeError) as e:
-                        logger.warning(f"⚠️ Claude optimizer not available, using standard approach: {e}")
-                        
-                        # Fallback a método original pero con timeout reducido
-                        personalization_result = await asyncio.wait_for(
-                            mcp_engine.generate_personalized_response(
-                                mcp_context=mcp_context,
-                                recommendations=base_recommendations
-                            ),
-                            timeout=1.5  # ✅ TIMEOUT REDUCIDO: 2s → 1.5s
-                        )
+                    # Personalización directa via MCPPersonalizationEngine
+                    # (claude_optimization.py fue removido — mcp_engine es el camino correcto)
+                    # Timeout: 3.0s — calibrado para Claude Sonnet en Cloud Run.
+                    # 1.5s era el valor del optimizer deprecado y resulta demasiado agresivo
+                    # para llamadas en producción (~1.6-1.7s según dashboards GCP).
+                    personalization_result = await asyncio.wait_for(
+                        mcp_engine.generate_personalized_response(
+                            mcp_context=mcp_context,
+                            recommendations=base_recommendations
+                        ),
+                        timeout=3.0
+                    )
                     
                     # Actualizar respuesta con datos personalizados
                     final_response.update({
@@ -729,9 +692,9 @@ async def get_mcp_conversation_recommendations(
                     logger.info("✅ MCP personalization completed and cached successfully")
                     
             except asyncio.TimeoutError:
-                logger.warning("⏰ MCP personalization timeout (1.5s) - using base recommendations")
+                logger.warning("⏰ MCP personalization timeout (3.0s) - using base recommendations")
                 final_response["metadata"]["personalization_timeout"] = True
-                final_response["metadata"]["timeout_reason"] = "Optimized Claude API call exceeded 1.5s limit"
+                final_response["metadata"]["timeout_reason"] = "Claude API call exceeded 3.0s limit"
                 final_response["metadata"]["optimization_attempted"] = True
             except Exception as e:
                 logger.error(f"❌ Error in MCP personalization: {e}")

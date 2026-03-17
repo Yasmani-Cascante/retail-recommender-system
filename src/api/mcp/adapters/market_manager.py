@@ -10,13 +10,17 @@ Gestiona contexto específico por mercado con soporte para:
 
 Author: Senior Architecture Team
 Date: 2025-11-28
-Version: 2.0.0 - Enterprise Migration
+Version: 2.1.0 - Redis Serialization Fix
 
 FIX APLICADO:
 - ✅ TYPE_CHECKING pattern para evitar "RedisService is not defined"
 - ✅ Soporte para RedisService (enterprise) como prioridad
 - ✅ Fallback a AsyncRedisWrapper (legacy)
 - ✅ Graceful degradation sin Redis
+- ✅ FIX: get_supported_markets() y get_market_config() usan set_json/get_json
+       RedisService.set() espera str, no dict. El dict sin serializar causaba:
+       "Invalid input of type: 'dict'. Convert to a bytes, string, int or float first."
+       Ahora se usa set_json() (serializa) y get_json() (deserializa) automáticamente.
 """
 
 from typing import Dict, Optional, List, Any, TYPE_CHECKING
@@ -187,10 +191,13 @@ class MarketContextManager:
         cache_key = f"market_config:{market_id}"
         
         # Check cache first
+        # ✅ FIX: usar get_json() que deserializa automáticamente el JSON string → dict.
+        # Antes: self.redis.get() retornaba str crudo — el return cached devolvía un
+        # string cuando el caller esperaba un dict.
         if self.redis:
-            cached = await self.redis.get(cache_key)
+            cached = await self.redis.get_json(cache_key)
             if cached:
-                return cached  # RedisCache ya deserializa automáticamente
+                return cached
             
         # Load from configuration files or fall back to supported markets
         try:
@@ -199,8 +206,11 @@ class MarketContextManager:
                 config = json.load(f)
                 
             # Cache for 1 hour
+            # ✅ FIX: usar set_json() que serializa dict → JSON string antes de SET.
+            # Antes: self.redis.set(cache_key, config) fallaba con
+            # "Invalid input of type: 'dict'" porque RedisService.set() espera str.
             if self.redis:
-                await self.redis.set(cache_key, config, ttl=3600)
+                await self.redis.set_json(cache_key, config, ttl=3600)
             return config
             
         except FileNotFoundError:
@@ -233,10 +243,13 @@ class MarketContextManager:
         cache_key = "supported_markets"
         
         # Check cache first
+        # ✅ FIX: usar get_json() que deserializa automáticamente el JSON string → dict.
+        # Antes: self.redis.get() retornaba str crudo — el return cached devolvía un
+        # string cuando el caller esperaba un dict.
         if self.redis:
-            cached = await self.redis.get(cache_key)
+            cached = await self.redis.get_json(cache_key)
             if cached:
-                return cached  # RedisCache ya deserializa automáticamente
+                return cached
         
         # Definición de mercados soportados
         markets = {
@@ -342,8 +355,11 @@ class MarketContextManager:
         }
         
         # Cache for 24 hours
+        # ✅ FIX: usar set_json() que serializa dict → JSON string antes de SET.
+        # Antes: self.redis.set(cache_key, markets) fallaba con
+        # "Invalid input of type: 'dict'" porque RedisService.set() espera str.
         if self.redis:
-            await self.redis.set(cache_key, markets, ttl=86400)
+            await self.redis.set_json(cache_key, markets, ttl=86400)
         
         return markets
     

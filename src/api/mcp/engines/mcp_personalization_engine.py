@@ -1198,9 +1198,25 @@ class MCPPersonalizationEngine:
                 context, personalization_result
             )
             
-            # ✅ ROBUST CLAUDE CALL: Handle timeouts and retries
+            # CLAUDE CALL con retry controlado por presupuesto de tiempo.
+            #
+            # DISEÑO DELIBERADO:
+            # El handler externo (mcp_conversation_handler.py) envuelve esta función
+            # con asyncio.wait_for(timeout=3.0). El retry loop interno debe respetar
+            # ese presupuesto. El timeout=15 interno nunca se alcanza — el externo
+            # cancela antes.
+            #
+            # PROBLEMA PREVIO:
+            # asyncio.sleep(1) entre intentos consumía ~1s del presupuesto de 3.0s,
+            # dejando <0.8s para el reintento. Claude Sonnet necesita ~1.5-2.5s →
+            # el reintento siempre llegaba tarde y el handler lanzaba TimeoutError.
+            #
+            # FIX APLICADO:
+            # sleep reducido a 0.05s (50ms) — suficiente para que la SDK libere el
+            # descriptor de socket del intento fallido, sin consumir el presupuesto.
+            # El intento 2 tiene ahora ~1.7s disponibles para completarse.
             max_retries = 2
-            timeout = 15  # seconds
+            timeout = 15  # interno; el externo (3.0s) lo cancela primero en prod
             
             for attempt in range(max_retries + 1):
                 try:
@@ -1222,11 +1238,10 @@ class MCPPersonalizationEngine:
                 except asyncio.TimeoutError:
                     logger.warning(f"Claude API timeout on attempt {attempt + 1}/{max_retries + 1}")
                     if attempt == max_retries:
-                        # Final fallback
                         response_text = "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
                         logger.error("Claude API timeout - using fallback response")
                     else:
-                        await asyncio.sleep(1)  # Wait before retry
+                        await asyncio.sleep(0.05)  # ← FIX: 1s→50ms; libera socket sin consumir presupuesto
                         continue
                         
                 except Exception as api_error:
@@ -1235,7 +1250,7 @@ class MCPPersonalizationEngine:
                         response_text = "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
                         logger.error(f"Claude API failed after {max_retries + 1} attempts - using fallback")
                     else:
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(0.05)  # ← FIX: 1s→50ms; mismo razonamiento
                         continue
             
             # Parsejar respuesta estructurada si es posible

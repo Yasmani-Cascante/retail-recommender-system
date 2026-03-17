@@ -25,6 +25,9 @@ scikit-learn==1.2.2
 google-cloud-retail==1.24.0
 google-cloud-storage==2.19.0
 google-cloud-core==2.4.1
+google-api-core>=2.15.0
+# M3: Push de métricas Prometheus a GCP Cloud Monitoring (exporter activo en Cloud Run)
+google-cloud-monitoring>=2.0.0
 
 # === SHOPIFY INTEGRATION ===
 shopify-python-api==1.0.1

@@ -375,11 +375,17 @@ async def get_recommendations(
         if effective_user_id:
             logger.info(f"[HYBRID] Usuario identificado: {effective_user_id} - usando sistema híbrido completo")
             # ✅ UPDATED: Usar hybrid_recommender inyectado
+            # FIX: exclude_seen NO se pasa como kwarg porque EnhancedHybridRecommenderWithExclusion
+            # implementa la exclusión de productos vistos internamente. Su firma get_recommendations()
+            # acepta: (user_id, product_id, n_recommendations, user_query) — NO exclude_seen.
+            # La exclusión se activa automáticamente cuando settings.exclude_seen_products=True
+            # (default en config.py), que hace que ServiceFactory instancie
+            # EnhancedHybridRecommenderWithExclusion en lugar de la clase base.
+            # Pasar exclude_seen=True aquí causaba: TypeError: got an unexpected keyword argument
             recommendations = await hybrid_recommender.get_recommendations(
                 user_id=effective_user_id,
                 product_id=str(product_id),
-                n_recommendations=n_effective,
-                exclude_seen=True  # Excluir productos vistos por defecto
+                n_recommendations=n_effective
             )
         else:
             logger.info(f"[HYBRID] Usuario no identificado - usando solo TF-IDF para mayor eficiencia")
@@ -539,10 +545,12 @@ async def get_user_recommendations(
 
         # Obtener recomendaciones
         logger.info("Getting recommendations from hybrid recommender")
+        # FIX: exclude_seen eliminado — EnhancedHybridRecommenderWithExclusion maneja
+        # la exclusión internamente. Su firma no acepta este kwarg.
+        # Ver: src/api/core/enhanced_hybrid_recommender.py :: get_recommendations()
         recommendations = await hybrid_recommender.get_recommendations(
             user_id=user_id,
-            n_recommendations=n_effective,
-            exclude_seen=True  # Excluir productos vistos por defecto
+            n_recommendations=n_effective
         )
         
         if not recommendations:

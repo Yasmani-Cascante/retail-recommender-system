@@ -7,6 +7,11 @@ Design Principles:
 - High precision over high recall - better to default to products than give wrong info
 - Easy to extend - adding new patterns is trivial
 - Ready for extraction - designed as standalone module
+
+Changelog:
+- 2026-03-04: Renamed PRODUCT_SIZE → PRODUCT_SIZING to match DB value "product_sizing".
+              Added question_words for PRODUCT_SIZING to prevent false-positive matches
+              from PRODUCT_AVAILABILITY (which also matches the word "have/hay").
 """
 
 import re
@@ -32,14 +37,29 @@ class IntentPatterns:
     """
     Pattern definitions for intent detection.
     Organized by intent type and sub-intent.
+
+    ──────────────────────────────────────────────────────────────
+    SCORING LOGIC (for reference when adding new patterns):
+    ──────────────────────────────────────────────────────────────
+    Each keyword match adds +0.4 pts.
+    Each question_word match adds +0.3 pts (bonus, one-time).
+    Each negative_context match adds +0.2 pts (bonus, one-time).
+    Minimum threshold to be considered: 0.4 pts (at least 1 keyword).
+    Minimum confidence to be returned as INFORMATIONAL: 0.7 pts.
+
+    IMPORTANT: Be careful with generic verbs like "have/hay/tiene" —
+    they appear in queries about ANY sub-intent (sizing, availability,
+    payment, etc.).  Put them in question_words (bonus) rather than
+    keywords (required) to avoid unintended matches.
     """
-    
+
     # ───────────────────────────────────────────────────────────
     # INFORMATIONAL PATTERNS
     # ───────────────────────────────────────────────────────────
-    
+
     INFORMATIONAL_PATTERNS = {
-        # Policy - Returns/Refunds
+
+        # ── Policy: Returns / Refunds ───────────────────────────
         InformationalSubIntent.POLICY_RETURN: {
             "keywords": [
                 r"\b(política|policy|políticas|policies)\b",
@@ -47,8 +67,8 @@ class IntentPatterns:
                 r"\b(reembolso|refund|reintegro)\b",
                 r"\b(cambio|cambiar|exchange)\b",
                 r"\b(garantía|warranty|garantia)\b",
-                r"\b(regresar|devuelta|volver)\b",  # ✅ NUEVO: LATAM variants
-                r"\b(días|plazo|tiempo)\b",         # ✅ NUEVO: Time references
+                r"\b(regresar|devuelta|volver)\b",   # LATAM variants
+                r"\b(días|plazo|tiempo)\b",           # Time references
             ],
             "question_words": [
                 r"\b(cómo|como|how)\b",
@@ -58,10 +78,10 @@ class IntentPatterns:
             "negative_context": [
                 r"\b(no (me )?(queda|gusta|sirve))\b",
                 r"\b(mal(o)?|defectuoso|roto|damaged)\b",
-            ]
+            ],
         },
-        
-        # Policy - Shipping/Delivery
+
+        # ── Policy: Shipping / Delivery ─────────────────────────
         InformationalSubIntent.POLICY_SHIPPING: {
             "keywords": [
                 r"\b(envío|envio|shipping|delivery|entrega)\b",
@@ -73,10 +93,10 @@ class IntentPatterns:
                 r"\b(cómo|como|how)\b",
                 r"\b(cuándo|cuando|cuanto|cuánto|cuanto.*tarda|when)\b",
                 r"\b(dónde|donde|where)\b",
-            ]
+            ],
         },
-        
-        # Policy - Payment
+
+        # ── Policy: Payment ──────────────────────────────────────
         InformationalSubIntent.POLICY_PAYMENT: {
             "keywords": [
                 r"\b(pago|payment|pagos|payments)\b",
@@ -90,10 +110,37 @@ class IntentPatterns:
                 r"\b(cómo|como|how)\b",
                 r"\b(acepta|accept|aceptan)\b",
                 r"\b(puedo|puede|can)\b",
-            ]
+            ],
         },
-        
-        # Product Info - Material
+
+        # ── Policy: Warranty ────────────────────────────────────
+        InformationalSubIntent.POLICY_WARRANTY: {
+            "keywords": [
+                r"\b(garantía|garantia|warranty|garantías)\b",
+                r"\b(defecto|defectuoso|defect|broken|roto)\b",
+                r"\b(reparar|repair|reemplazar|replace)\b",
+            ],
+            "question_words": [
+                r"\b(cómo|como|how)\b",
+                r"\b(cuál|cual|what)\b",
+                r"\b(puedo|puede|can)\b",
+            ],
+        },
+
+        # ── Policy: Privacy ─────────────────────────────────────
+        InformationalSubIntent.POLICY_PRIVACY: {
+            "keywords": [
+                r"\b(privacidad|privacy|datos|data)\b",
+                r"\b(información personal|personal information)\b",
+                r"\b(cookies|gdpr|lgpd)\b",
+            ],
+            "question_words": [
+                r"\b(cómo|como|how)\b",
+                r"\b(qué|que|what)\b",
+            ],
+        },
+
+        # ── Product Info: Material ───────────────────────────────
         InformationalSubIntent.PRODUCT_MATERIAL: {
             "keywords": [
                 r"\b(material|tela|fabric|hecho.*de)\b",
@@ -103,25 +150,49 @@ class IntentPatterns:
             "question_words": [
                 r"\b(de qué|what.*made|qué tipo)\b",
                 r"\b(cuál|cual|what)\b",
-            ]
+            ],
         },
-        
-        # Product Info - Size/Fit
-        InformationalSubIntent.PRODUCT_SIZE: {
+
+        # ── Product Info: Sizing / Size Guide ───────────────────
+        # ✅ FIX 2026-03-04: Clave actualizada de PRODUCT_SIZE → PRODUCT_SIZING
+        #    para coincidir con el valor "product_sizing" en KB y Shopify.
+        #
+        #    BUG ANTERIOR: "What sizes do they have?" se clasificaba como
+        #    PRODUCT_AVAILABILITY porque "have" está en sus keywords (+0.4)
+        #    y question_words (+0.3 bonus) → score 0.7.
+        #    PRODUCT_SIZING solo tenía "size" en keywords (+0.4) sin question_words
+        #    → score 0.4, menor que AVAILABILITY.
+        #
+        #    FIX: Añadidos question_words para PRODUCT_SIZING que capturan
+        #    "do they have", "what sizes", "how do I know", etc.
+        #    Ahora PRODUCT_SIZING gana: keywords(0.4) + question_word(0.3) = 0.7
+        #    vs AVAILABILITY: keywords(0.4) + question_word(0.3) = 0.7 (empate)
+        #    → En empate gana el primero detectado (PRODUCT_SIZING por orden).
+        #
+        #    ALTERNATIVA si quieres más margen: añadir más keywords específicos
+        #    de tallas que no aparezcan en availability (ver comentarios abajo).
+        InformationalSubIntent.PRODUCT_SIZING: {
             "keywords": [
-                r"\b(talla|size|sizing|medida|número)\b",
-                r"\b(chico|mediano|grande|small|medium|large)\b",
-                r"\b(guía.*de.*tallas|size.*guide|sizing.*chart)\b",
-                r"\b(corre|queda|fit|fits)\b",
+                r"\b(talla|tallas|size|sizes|sizing|medida|medidas|número)\b",
+                r"\b(chico|mediano|grande|pequeño|small|medium|large|xl|xxl|xs)\b",
+                r"\b(guía.*de.*tallas|size.*guide|sizing.*chart|tabla.*de.*tallas)\b",
+                r"\b(corre|queda|fit|fits|ajuste|ajusta)\b",
+                # ✅ NUEVO: keywords que indican necesidad de guía de tallas
+                r"\b(mido|mide|medida.*corporal|body.*measurement)\b",
+                r"\b(centímetros?|cms?|inches?|pulgadas?)\b",
             ],
             "question_words": [
-                r"\b(qué.*talla|what.*size)\b",
-                r"\b(cómo.*saber|how.*know)\b",
-                r"\b(cuál.*es.*mi|what.*my)\b",
-            ]
+                r"\b(qué.*talla|what.*size|which.*size)\b",
+                r"\b(cómo.*saber|how.*know|how.*find)\b",
+                r"\b(cuál.*es.*mi|what.*my|which.*is.*my)\b",
+                # ✅ FIX: Capturar "What sizes do they have?" / "¿Qué tallas tienen?"
+                # El patrón anterior no tenía esto → perdía contra PRODUCT_AVAILABILITY
+                r"\b(qué.*tallas.*tienen|what.*sizes.*do|do.*they.*have.*sizes?)\b",
+                r"\b(tienen|they.*have|do.*you.*have)\b",  # Genérico pero en contexto de tallas
+            ],
         },
-        
-        # Product Info - Care
+
+        # ── Product Info: Care ───────────────────────────────────
         InformationalSubIntent.PRODUCT_CARE: {
             "keywords": [
                 r"\b(lavar|wash|washing|limpieza|clean)\b",
@@ -131,27 +202,75 @@ class IntentPatterns:
             "question_words": [
                 r"\b(cómo|como|how)\b",
                 r"\b(puedo|puede|can)\b",
-            ]
+            ],
         },
-        
-        # Product Info - Availability
+
+        # ── Product Info: Availability ──────────────────────────
+        # ⚠️  IMPORTANTE: No añadir "have/hay/tienen" a keywords aquí.
+        #    Mantenerlos SOLO en question_words (bonus) para evitar que
+        #    queries como "What sizes do they have?" caigan aquí en lugar
+        #    de en PRODUCT_SIZING (que tiene keywords más específicos).
         InformationalSubIntent.PRODUCT_AVAILABILITY: {
             "keywords": [
                 r"\b(disponible|available|availability|stock)\b",
-                r"\b(hay|have|tiene|there.*is)\b",
                 r"\b(cuándo.*llega|when.*arrive|when.*available)\b",
+                r"\b(agotado|out.*of.*stock|sold.*out|sin.*stock)\b",
+                # ✅ FIX: "hay/have/tiene" movidos a question_words.
+                #    Antes estaban como keywords, lo que causaba falsos positivos
+                #    cuando la query preguntaba sobre tallas ("do they have sizes").
             ],
             "question_words": [
-                r"\b(hay|have|tiene)\b",
+                # ✅ FIX: "hay/have/tiene" son question_words (bonus +0.3) no keywords.
+                #    Así solo suman si YA hay un keyword de disponibilidad.
+                r"\b(hay|have|tiene|there.*is)\b",
                 r"\b(cuándo|cuando|when)\b",
-            ]
-        }
+            ],
+        },
+
+        # ── Account: Orders ──────────────────────────────────────
+        InformationalSubIntent.ACCOUNT_ORDERS: {
+            "keywords": [
+                r"\b(pedido|order|orders|pedidos)\b",
+                r"\b(compra|purchase|compras|purchases)\b",
+                r"\b(historial.*pedidos|order.*history)\b",
+            ],
+            "question_words": [
+                r"\b(cómo|como|how)\b",
+                r"\b(dónde|donde|where)\b",
+                r"\b(ver|see|consultar|check)\b",
+            ],
+        },
+
+        # ── Account: Modifications ──────────────────────────────
+        InformationalSubIntent.ACCOUNT_MODIFICATIONS: {
+            "keywords": [
+                r"\b(modificar|modify|cambiar|change|editar|edit)\b",
+                r"\b(cuenta|account|perfil|profile)\b",
+                r"\b(contraseña|password|dirección|address)\b",
+            ],
+            "question_words": [
+                r"\b(cómo|como|how)\b",
+                r"\b(puedo|puede|can)\b",
+            ],
+        },
+
+        # ── General FAQ ──────────────────────────────────────────
+        InformationalSubIntent.GENERAL_FAQ: {
+            "keywords": [
+                r"\b(faq|preguntas.*frecuentes|frequently.*asked)\b",
+                r"\b(ayuda|help|soporte|support|contacto|contact)\b",
+            ],
+            "question_words": [
+                r"\b(cómo|como|how)\b",
+                r"\b(qué|que|what)\b",
+            ],
+        },
     }
-    
+
     # ───────────────────────────────────────────────────────────
     # TRANSACTIONAL PATTERNS
     # ───────────────────────────────────────────────────────────
-    
+
     TRANSACTIONAL_PATTERNS = {
         TransactionalSubIntent.PRODUCT_SEARCH: {
             "keywords": [
@@ -160,34 +279,34 @@ class IntentPatterns:
                 r"\b(mostrar|ver|enseñar|dame|show|display)\b",
                 r"\b(recomienda|sugerir|suggest|recommend)\b",
                 r"\b(opciones.*de|options|alternativas)\b",
-            ]
+            ],
         },
-        
+
         TransactionalSubIntent.PRODUCT_VIEW: {
             "keywords": [
                 r"\b(ver.*este|ver.*ese|see.*this|see.*that)\b",
                 r"\b(detalles|details|información.*del.*producto)\b",
                 r"\b(características|features|especificaciones)\b",
-            ]
+            ],
         },
-        
+
         TransactionalSubIntent.PURCHASE_INTENT: {
             "keywords": [
                 r"\b(comprar|buy|purchase|adquirir)\b",
                 r"\b(llevar|me.*llevo|take|get)\b",
                 r"\b(agregar.*carrito|add.*cart|añadir)\b",
                 r"\b(checkout|finalizar.*compra|pay)\b",
-            ]
-        }
+            ],
+        },
     }
-    
+
     # ───────────────────────────────────────────────────────────
     # QUESTION INDICATORS
     # ───────────────────────────────────────────────────────────
-    
+
     QUESTION_INDICATORS = [
-        r"^\s*¿",  # Spanish question start
-        r"\?\s*$",  # Question mark at end
+        r"^\s*¿",       # Spanish question start
+        r"\?\s*$",      # Question mark at end
         r"\b(cómo|como|cuál|cual|cuáles|cuales|qué|que|cuándo|cuando|cuánto|cuántos|cuanto|dónde|donde|por qué|porque)\b",
         r"\b(how|what|which|when|where|why|who)\b",
         r"\b(puedo|puede|pueden|can|may|could)\b",
@@ -202,31 +321,31 @@ class IntentPatterns:
 class RuleBasedIntentDetector:
     """
     Rule-based intent detector.
-    
+
     Strategy:
     1. Detect if query is a question
     2. Check for informational patterns
     3. Check for transactional patterns
     4. Default to TRANSACTIONAL (safe fallback)
     """
-    
+
     def __init__(self):
         """Initialize detector."""
         self.patterns = IntentPatterns()
-        
-        # Compile regex patterns for performance
+
+        # Compile regex patterns for performance — done once at init
         self._compiled_patterns = self._compile_patterns()
-        
+
         # Metrics
         self.metrics = {
             "total_detections": 0,
             "informational_detected": 0,
             "transactional_detected": 0,
-            "avg_confidence": 0.0
+            "avg_confidence": 0.0,
         }
-        
+
         logger.info("✅ RuleBasedIntentDetector initialized")
-    
+
     def _compile_patterns(self) -> Dict:
         """
         Compile regex patterns for better performance.
@@ -238,9 +357,9 @@ class RuleBasedIntentDetector:
                 for pattern in self.patterns.QUESTION_INDICATORS
             ],
             "informational": {},
-            "transactional": {}
+            "transactional": {},
         }
-        
+
         # Compile informational patterns
         for sub_intent, patterns_dict in self.patterns.INFORMATIONAL_PATTERNS.items():
             compiled["informational"][sub_intent] = {
@@ -255,201 +374,202 @@ class RuleBasedIntentDetector:
                 "negative_context": [
                     re.compile(pattern, re.IGNORECASE)
                     for pattern in patterns_dict.get("negative_context", [])
-                ] if "negative_context" in patterns_dict else []
+                ] if "negative_context" in patterns_dict else [],
             }
-        
+
         # Compile transactional patterns
         for sub_intent, patterns_dict in self.patterns.TRANSACTIONAL_PATTERNS.items():
             compiled["transactional"][sub_intent] = {
                 "keywords": [
                     re.compile(pattern, re.IGNORECASE)
                     for pattern in patterns_dict.get("keywords", [])
-                ]
+                ],
             }
-        
+
         return compiled
-    
+
     def detect(self, query: str, context: Optional[Dict] = None) -> IntentDetectionResult:
         """
         Detect intent from user query.
-        
+
         Args:
             query: User query string
             context: Optional context (not used yet, for future expansion)
-        
+
         Returns:
             IntentDetectionResult with detected intent
         """
         self.metrics["total_detections"] += 1
-        
+
         logger.debug(f"Detecting intent for query: '{query[:50]}...'")
-        
+
         # ═══════════════════════════════════════════════════════
         # STEP 1: Check if it's a question
         # ═══════════════════════════════════════════════════════
-        
+
         is_question = self._is_question(query)
-        
+
         # ═══════════════════════════════════════════════════════
         # STEP 2: Try informational detection
         # ═══════════════════════════════════════════════════════
-        
+
         if is_question:
             info_result = self._detect_informational(query)
-            
+
             if info_result and info_result.confidence >= 0.7:
                 self.metrics["informational_detected"] += 1
                 self._update_avg_confidence(info_result.confidence)
-                logger.info(f"✅ Detected INFORMATIONAL: {info_result.sub_intent} "
-                           f"(confidence: {info_result.confidence:.2f})")
+                logger.info(
+                    f"✅ Detected INFORMATIONAL: {info_result.sub_intent} "
+                    f"(confidence: {info_result.confidence:.2f})"
+                )
                 return info_result
-        
+
         # ═══════════════════════════════════════════════════════
         # STEP 3: Try transactional detection
         # ═══════════════════════════════════════════════════════
-        
+
         trans_result = self._detect_transactional(query)
-        
-        # ✅ FIX: Lower threshold for transactional (0.5) since single keyword is strong signal
+
+        # Lower threshold for transactional (0.5) since single keyword is strong signal
         if trans_result and trans_result.confidence >= 0.5:
             self.metrics["transactional_detected"] += 1
             self._update_avg_confidence(trans_result.confidence)
-            logger.info(f"✅ Detected TRANSACTIONAL: {trans_result.sub_intent} "
-                       f"(confidence: {trans_result.confidence:.2f})")
+            logger.info(
+                f"✅ Detected TRANSACTIONAL: {trans_result.sub_intent} "
+                f"(confidence: {trans_result.confidence:.2f})"
+            )
             return trans_result
-        
+
         # ═══════════════════════════════════════════════════════
         # STEP 4: Default fallback (TRANSACTIONAL)
         # ═══════════════════════════════════════════════════════
-        
-        logger.warning(f"⚠️ No clear pattern match, defaulting to TRANSACTIONAL")
-        
+
+        logger.warning("⚠️ No clear pattern match, defaulting to TRANSACTIONAL")
+
         default_result = IntentDetectionResult(
             primary_intent=IntentType.TRANSACTIONAL,
             sub_intent=TransactionalSubIntent.PRODUCT_SEARCH,
             confidence=0.5,
             reasoning="Default fallback - no clear pattern matched",
-            matched_patterns=[]
+            matched_patterns=[],
         )
-        
+
         self.metrics["transactional_detected"] += 1
         self._update_avg_confidence(0.5)
-        
+
         return default_result
-    
+
     def _is_question(self, query: str) -> bool:
         """Check if query is a question."""
         for pattern in self._compiled_patterns["question_indicators"]:
             if pattern.search(query):
                 return True
         return False
-    
+
     def _detect_informational(self, query: str) -> Optional[IntentDetectionResult]:
         """
         Detect informational intent and sub-intent.
-        
+
         Returns best match based on:
-        1. Keywords match
-        2. Question words match (bonus)
-        3. Negative context (bonus for returns)
+        1. Keywords match (+0.4 each)
+        2. Question words match (+0.3 bonus, one-time)
+        3. Negative context (+0.2 bonus, one-time)
         """
-        best_match = None
         best_score = 0.0
         best_sub_intent = None
-        matched_patterns_list = []
-        
+        matched_patterns_list: List[str] = []
+
         for sub_intent, patterns in self._compiled_patterns["informational"].items():
             score = 0.0
-            local_matches = []
-            
-            # Check keywords (required)
+            local_matches: List[str] = []
+
+            # ── Keywords (required) ──────────────────────────────
             keyword_matches = 0
             for pattern in patterns["keywords"]:
                 if pattern.search(query):
                     keyword_matches += 1
                     local_matches.append(pattern.pattern)
-            
+
             if keyword_matches == 0:
-                continue  # No keyword match, skip this sub-intent
-            
+                continue  # No keyword match → skip this sub-intent entirely
+
             score += keyword_matches * 0.4  # Base score from keywords
-            
-            # Check question words (bonus)
+
+            # ── Question words (bonus) ───────────────────────────
             if patterns["question_words"]:
                 for pattern in patterns["question_words"]:
                     if pattern.search(query):
-                        score += 0.3  # Bonus for question word match
+                        score += 0.3  # One-time bonus
                         local_matches.append(pattern.pattern)
-                        break
-            
-            # Check negative context (bonus for returns)
+                        break  # Only count the first matching question word
+
+            # ── Negative context (bonus) ─────────────────────────
             if patterns["negative_context"]:
                 for pattern in patterns["negative_context"]:
                     if pattern.search(query):
-                        score += 0.2  # Bonus for negative context
+                        score += 0.2  # One-time bonus
                         local_matches.append(pattern.pattern)
                         break
-            
-            # Update best match
+
+            # ── Update best match ────────────────────────────────
             if score > best_score:
                 best_score = score
                 best_sub_intent = sub_intent
                 matched_patterns_list = local_matches
-        
-        if best_score >= 0.4:  # Minimum threshold
+
+        if best_score >= 0.4 and best_sub_intent is not None:
             confidence = min(best_score, 1.0)  # Cap at 1.0
-            
+
             return IntentDetectionResult(
                 primary_intent=IntentType.INFORMATIONAL,
                 sub_intent=best_sub_intent.value,
                 confidence=confidence,
                 reasoning=f"Question + {best_sub_intent.value} keywords",
-                matched_patterns=matched_patterns_list[:3]  # Limit to 3 for readability
+                matched_patterns=matched_patterns_list[:3],  # Limit for readability
             )
-        
+
         return None
-    
+
     def _detect_transactional(self, query: str) -> Optional[IntentDetectionResult]:
         """Detect transactional intent and sub-intent."""
-        best_match = None
         best_score = 0.0
         best_sub_intent = None
-        matched_patterns_list = []
-        
+        matched_patterns_list: List[str] = []
+
         for sub_intent, patterns in self._compiled_patterns["transactional"].items():
             score = 0.0
-            local_matches = []
-            
-            # Check keywords
+            local_matches: List[str] = []
+
             for pattern in patterns["keywords"]:
                 if pattern.search(query):
                     score += 0.5  # Each keyword match
                     local_matches.append(pattern.pattern)
-            
+
             if score > best_score:
                 best_score = score
                 best_sub_intent = sub_intent
                 matched_patterns_list = local_matches
-        
-        if best_score >= 0.5:  # Minimum threshold
-            confidence = min(best_score, 0.95)  # Cap at 0.95 (not 1.0, less certain than informational)
-            
+
+        if best_score >= 0.5 and best_sub_intent is not None:
+            confidence = min(best_score, 0.95)  # Cap at 0.95 (less certain than informational)
+
             return IntentDetectionResult(
                 primary_intent=IntentType.TRANSACTIONAL,
                 sub_intent=best_sub_intent.value,
                 confidence=confidence,
                 reasoning=f"Transactional keywords: {best_sub_intent.value}",
-                matched_patterns=matched_patterns_list[:3]
+                matched_patterns=matched_patterns_list[:3],
             )
-        
+
         return None
-    
+
     def _update_avg_confidence(self, confidence: float):
         """Update rolling average confidence."""
         n = self.metrics["total_detections"]
         current_avg = self.metrics["avg_confidence"]
         self.metrics["avg_confidence"] = (current_avg * (n - 1) + confidence) / n
-    
+
     def get_metrics(self) -> Dict:
         """Get detector metrics."""
         total = self.metrics["total_detections"]
@@ -462,7 +582,7 @@ class RuleBasedIntentDetector:
             "transactional_rate": (
                 self.metrics["transactional_detected"] / total
                 if total > 0 else 0.0
-            )
+            ),
         }
 
 
@@ -470,7 +590,7 @@ class RuleBasedIntentDetector:
 # PUBLIC API
 # ═══════════════════════════════════════════════════════════════
 
-# Singleton instance
+# Singleton instance — lazy initialization
 _detector_instance: Optional[RuleBasedIntentDetector] = None
 
 
@@ -488,20 +608,24 @@ def get_intent_detector() -> RuleBasedIntentDetector:
 def detect_intent(query: str, context: Optional[Dict] = None) -> IntentDetectionResult:
     """
     Public API for intent detection.
-    
+
     Args:
         query: User query string
         context: Optional context dictionary
-    
+
     Returns:
         IntentDetectionResult
-    
+
     Example:
         >>> result = detect_intent("¿cuál es la política de devolución?")
         >>> print(result.primary_intent)
         IntentType.INFORMATIONAL
         >>> print(result.sub_intent)
         'policy_return'
+
+        >>> result = detect_intent("What sizes do they have?")
+        >>> print(result.sub_intent)
+        'product_sizing'   # ← correcto tras el fix
     """
     detector = get_intent_detector()
     return detector.detect(query, context)

@@ -171,12 +171,22 @@ def configure_structlog(
     # ──────────────────────────────────────────────────────────────────────
     # Configure Python standard logging
     # ──────────────────────────────────────────────────────────────────────
+    # NOTE: We do NOT use logging.basicConfig() here.
+    # basicConfig() adds a second StreamHandler to the root logger, which
+    # causes every log event to be emitted TWICE:
+    #   - Once via basicConfig's handler (raw dict string, unformatted)
+    #   - Once via our ProcessorFormatter handler (structlog-formatted)
+    # Instead, we configure the root logger directly and clear any
+    # pre-existing handlers (e.g., those added by uvicorn on startup)
+    # before attaching our single structlog handler.
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, log_level.upper()))
     
-    logging.basicConfig(
-        format="%(message)s",
-        stream=sys.stdout,
-        level=getattr(logging, log_level.upper())
-    )
+    # Clear ALL existing handlers from root logger to avoid duplicates.
+    # This is safe because we are the authoritative logging configurator
+    # for this application — uvicorn's own access/error loggers use child
+    # loggers ("uvicorn", "uvicorn.access") and are unaffected by this.
+    root_logger.handlers.clear()
     
     # ──────────────────────────────────────────────────────────────────────
     # Configure structlog processors pipeline
@@ -252,12 +262,12 @@ def configure_structlog(
         foreign_pre_chain=shared_processors,
     )
     
+    # Attach the single structlog-formatted handler to the root logger.
+    # All application loggers inherit from root, so this one handler
+    # covers every logger in the system — no duplicate output.
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
-    
-    root_logger = logging.getLogger()
     root_logger.addHandler(handler)
-    root_logger.setLevel(getattr(logging, log_level.upper()))
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -18,7 +18,6 @@ try:
     from src.api.mcp_services.market_config.service import MarketConfigService
     from src.api.mcp_services.currency.service import CurrencyConversionService
     mcp_available = True
-    # print("✅ MCP services disponibles")
     print(" MCP services disponibles")
 except ImportError as e:
     # print(f"⚠️ WARNING: MCP services not available: {e}")

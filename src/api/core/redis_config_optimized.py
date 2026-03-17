@@ -178,32 +178,32 @@ def get_optimized_config_for_service_factory() -> dict:
 # 🔧 BACKWARD COMPATIBILITY - Para PatchedRedisClient
 # ============================================================================
 
-def patch_redis_config_with_optimization():
-    """
-    ✅ Patch PatchedRedisClient con configuración optimizada
-    """
-    try:
-        from src.api.core.redis_config_fix import PatchedRedisClient
+# def patch_redis_config_with_optimization():
+#     """
+#     ✅ Patch PatchedRedisClient con configuración optimizada
+#     """
+#     try:
+#         from src.api.core.redis_config_fix import PatchedRedisClient
         
-        # Sobrescribir configuración por defecto
-        optimized_config = OptimizedRedisConfig.get_optimized_config()
+#         # Sobrescribir configuración por defecto
+#         optimized_config = OptimizedRedisConfig.get_optimized_config()
         
-        # Crear método para usar configuración optimizada
-        def get_optimized_client():
-            return PatchedRedisClient(
-                host=optimized_config['redis_host'],
-                port=optimized_config['redis_port'],
-                db=optimized_config['redis_db'],
-                password=optimized_config['redis_password'],
-                username=optimized_config['redis_username'],
-                ssl=optimized_config['redis_ssl'],
-                socket_timeout=optimized_config['socket_timeout'],
-                socket_connect_timeout=optimized_config['socket_connect_timeout'],
-                max_connections=optimized_config['max_connections']
-            )
+#         # Crear método para usar configuración optimizada
+#         def get_optimized_client():
+#             return PatchedRedisClient(
+#                 host=optimized_config['redis_host'],
+#                 port=optimized_config['redis_port'],
+#                 db=optimized_config['redis_db'],
+#                 password=optimized_config['redis_password'],
+#                 username=optimized_config['redis_username'],
+#                 ssl=optimized_config['redis_ssl'],
+#                 socket_timeout=optimized_config['socket_timeout'],
+#                 socket_connect_timeout=optimized_config['socket_connect_timeout'],
+#                 max_connections=optimized_config['max_connections']
+#             )
         
-        return get_optimized_client
+#         return get_optimized_client
         
-    except ImportError as e:
-        logger.warning(f"⚠️ Could not patch PatchedRedisClient: {e}")
-        return None
+#     except ImportError as e:
+#         logger.warning(f"⚠️ Could not patch PatchedRedisClient: {e}")
+#         return None

@@ -10,8 +10,21 @@ FIXES APLICADOS:
 3. ✅ Imports optimizados del ServiceFactory corregido
 4. ✅ Proper startup/shutdown order
 
+CHANGELOG:
+- 05/03/2026: H1 — configure_structlog() ACTIVADO (descomentado). Logs JSON activos en producción.
+             GCP Cloud Logging puede indexar logs con campos level/timestamp/event/module.
+             Prerequisito completado para L4 (features ML desde logs estructurados).
+- 05/03/2026: SSL FIX — asyncpg.create_pool() usa ssl dinámico via settings.db_ssl (DB_SSL env var).
+             DB_SSL=false (default) → sin SSL (local/Docker compatible).
+             DB_SSL=true → ssl="require" (Neon/Cloud SQL exigen SSL).
+             Resuelve: ❌ PostgreSQL: Error → ✅ PostgreSQL: Connected en ambos entornos.
+- 05/03/2026: Housekeeping — src/api/ y src/api/core/ limpiados.
+             Archivos muertos archivados en 0_backups/. Ambigüedad redis_config resuelta.
+             redis_config_optimized.py es el canónico (usado por redis_service.py → service_factory.py).
+             mcp_router_conservative_enhancement.py es el canónico (aplicado en lifespan).
+
 Author: Senior Architecture Team
-Version: 2.1.0 - Enterprise Migration FIXED
+Version: 2.1.0 - Observability Consolidation
 """
 
 import os
@@ -57,20 +70,37 @@ from src.api.core.logging_config import configure_structlog
 log_level = os.getenv("LOG_LEVEL", "INFO")
 json_format = os.getenv("LOG_JSON_FORMAT", "false").lower() == "true"
 
-# configure_structlog(
-#     log_level=log_level,
-#     json_format=json_format
-# )
+# ✅ H1 ACTIVADO (05/03/2026): configure_structlog descomentado — logs JSON activos en producción.
+# ✅ H1 REACTIVADO (10/03/2026): Se confirmó que las líneas quedaron comentadas en el deploy
+#    anterior. Ahora activas definitivamente. Prerequisito de L4 (ML desde logs) satisfecho.
+#
+# COMPORTAMIENTO POR ENTORNO:
+#   - LOG_JSON_FORMAT=false (local/.env default) → logs humanos (consola)  
+#   - LOG_JSON_FORMAT=true  (Cloud Run env var)  → logs JSON (GCP Cloud Logging indexa)
+if json_format:
+    # Entorno productivo — JSON estructurado para GCP Cloud Logging
+    configure_structlog(
+        log_level=log_level,
+        json_format=True
+    )
+else:
+    # Entorno local — output humano legible para desarrollo
+    configure_structlog(
+        log_level=log_level,
+        json_format=False
+    )
 
 # ✅ PASO 2: NOW create logger (after configuration)
 logger = structlog.get_logger(__name__)
 
-# ✅ PASO 3: Log configuration confirmation
+# ✅ PASO 3: Log configuration confirmation — activo para confirmar H1 en Cloud Logging.
+# En GCP, buscar: jsonPayload.event="structured_logging_initialized"
 logger.info(
     "structured_logging_initialized",
     log_level=log_level,
     json_format=json_format,
-    module=__name__
+    module=__name__,
+    h1_phase="active"
 )
 
 # ✅ OBSERVABILITY MANAGER ENTERPRISE
@@ -101,9 +131,31 @@ except Exception as e:
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import REGISTRY, generate_latest, CONTENT_TYPE_LATEST
 from fastapi.responses import Response
-from src.api.core.prometheus_metrics import kb_sync_semaphore_size
+from src.api.core.prometheus_metrics import (
+    kb_sync_semaphore_size,
+    recommendation_requests_total,   # M2: counter de requests por market/strategy
+    recommendation_duration_seconds,  # M2: histograma de latencia por strategy
+    recommendation_errors_total,      # M2: counter de errores por tipo
+)
 
 logger.info("🔧 M2: Prometheus metrics integration enabled")
+
+# ════════════════════════════════════════════════════════════════════════
+# M3: GCP CLOUD MONITORING — METRICS PUSH EXPORTER
+# ════════════════════════════════════════════════════════════════════════
+# Cloud Run NO hace auto-scraping de Prometheus. Este exporter hace "push"
+# de nuestras métricas custom a Cloud Monitoring cada 60s como background
+# task del lifespan. Solo activo cuando GCP_MONITORING_ENABLED=true.
+# En local (GCP_MONITORING_ENABLED=false) no hace nada — cero overhead.
+# Dependencia: google-cloud-monitoring>=2.0.0 (añadida a requirements.txt)
+# ════════════════════════════════════════════════════════════════════════
+try:
+    from src.api.core.gcp_metrics_exporter import get_gcp_metrics_exporter
+    GCP_EXPORTER_AVAILABLE = True
+    logger.info("🔧 M3: GCP Metrics Exporter module loaded")
+except ImportError as e:
+    GCP_EXPORTER_AVAILABLE = False
+    logger.warning(f"⚠️ GCP Metrics Exporter not available: {e}")
 
 # ✅ Variables globales para compatibilidad con endpoints legacy
 settings = None
@@ -490,7 +542,51 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"⚠️ MCP Recommender initialization failed: {e}")
             app.state.mcp_recommender = None
-        
+
+        # ════════════════════════════════════════════════════════════════════
+        # 🆕 PASO 8.5: CLAUDE API CONNECTION WARM-UP
+        # ════════════════════════════════════════════════════════════════════
+        # POR QUÉ ES NECESARIO:
+        # AsyncAnthropic usa conexiones TCP lazy: la primera llamada real
+        # establece la conexión TCP/TLS a api.anthropic.com. En Cloud Run,
+        # ese primer intento tarda ~1.5s y falla sistemáticamente ("Connection
+        # error"), lo que provoca que el wait_for(3.0s) del handler se agote.
+        #
+        # SOLUCIÓN: Hacer una llamada mínima aquí, durante el startup, donde
+        # hay tiempo y presupuesto para tolerarla. Esto establece la conexión
+        # TCP/TLS y la mantiene warm para los requests reales que vendrán.
+        # Si falla, se loguea warning y se continúa — el sistema sigue
+        # funcionando con el timeout como fallback.
+        #
+        # LLAMADA DE WARM-UP: messages.create con max_tokens=1 y timeout=15s.
+        # Costo mínimo (~0.00001 USD). No se usa la respuesta.
+        # ════════════════════════════════════════════════════════════════════
+        if app.state.mcp_recommender and hasattr(app.state.mcp_recommender, 'claude') and app.state.mcp_recommender.claude:
+            try:
+                logger.info("🔥 Warming up Claude API connection (TCP/TLS handshake)...")
+                warmup_start = time.time()
+
+                # Llamada mínima para establecer la conexión. Solo 1 token de respuesta.
+                await asyncio.wait_for(
+                    app.state.mcp_recommender.claude.messages.create(
+                        model="claude-haiku-4-5-20251001",  # Haiku: más rápido y económico para warm-up
+                        max_tokens=1,
+                        messages=[{"role": "user", "content": "hi"}]
+                    ),
+                    timeout=15.0  # presupuesto generoso — solo en startup
+                )
+
+                warmup_ms = (time.time() - warmup_start) * 1000
+                logger.info(f"✅ Claude API connection warmed up in {warmup_ms:.0f}ms — TCP/TLS established")
+
+            except asyncio.TimeoutError:
+                logger.warning("⚠️ Claude API warm-up timeout (15s) — first MCP request may be slow")
+            except Exception as warmup_err:
+                # No crítico: el sistema funciona sin warm-up, solo con peor latencia
+                logger.warning(f"⚠️ Claude API warm-up failed: {warmup_err} — first MCP request may timeout")
+        else:
+            logger.warning("⚠️ Claude API warm-up skipped — MCP recommender or claude client not available")
+
         # ============================================================================
         # 🎯 PASO 9: COMPREHENSIVE HEALTH CHECK
         # ============================================================================
@@ -551,13 +647,52 @@ async def lifespan(app: FastAPI):
             try:
                 # 1. Create PostgreSQL Pool
                 logger.info("🔄 Creating PostgreSQL connection pool...")
+                # ✅ SSL (05/03/2026): Controlado por DB_SSL env var.
+                #   - Local/Docker: DB_SSL=false (default) → ssl=False
+                #   - Neon/Cloud SQL: DB_SSL=true → ssl="require"
+                # Esto evita "SSL upgrade rejected" en local y
+                # "connection is insecure" en producción.
+                # ══════════════════════════════════════════════════════════════
+                # DB CREDENTIALS — Lectura directa de os.environ
+                # ══════════════════════════════════════════════════════════════
+                # Por qué usamos os.environ aquí en lugar de settings.*:
+                #
+                # Pydantic-settings carga variables en el orden: defaults →
+                # env_file (.env) → variables de sistema (os.environ).
+                # En Cloud Run, las variables inyectadas (incluyendo secrets)
+                # llegan como variables de sistema. Sin embargo, hemos observado
+                # que en ciertas combinaciones de `env_file` + `case_sensitive`,
+                # los valores de os.environ no sobreescriben los defaults cuando
+                # el .env no existe — resultado: settings.* devuelve los defaults
+                # de la clase (localhost, postgres, etc.).
+                #
+                # os.environ.get("KEY") or settings.field garantiza:
+                #   1. Prioridad absoluta a variables de sistema/Cloud Run
+                #   2. Fallback a settings si la env var no existe
+                #   3. Independencia total del comportamiento de Pydantic
+                db_host_final     = os.environ.get("DB_HOST")     or settings.db_host
+                db_port_final     = int(os.environ.get("DB_PORT", str(settings.db_port)))
+                db_user_final     = os.environ.get("DB_USER")     or settings.db_user
+                db_password_final = os.environ.get("DB_PASSWORD") or settings.db_password
+                db_name_final     = os.environ.get("DB_NAME")     or settings.db_name
+                db_ssl_env        = os.environ.get("DB_SSL", "").lower()
+                db_ssl_final      = db_ssl_env in ("true", "1", "yes") if db_ssl_env else settings.db_ssl
+                db_ssl_value_final = "require" if db_ssl_final else False
+
+                logger.info(
+                    f"🔒 PostgreSQL SSL mode (final): "
+                    f"{'require' if db_ssl_final else 'disabled'} "
+                    f"(DB_SSL env='{db_ssl_env}', settings={settings.db_ssl})"
+                )
+
                 try:
                     db_pool = await asyncpg.create_pool(
-                        host=settings.db_host,
-                        port=settings.db_port,
-                        user=settings.db_user,
-                        password=settings.db_password,
-                        database=settings.db_name,
+                        host=db_host_final,
+                        port=db_port_final,
+                        user=db_user_final,
+                        password=db_password_final,
+                        database=db_name_final,
+                        ssl=db_ssl_value_final,     # ✅ Dinámico según entorno
                         min_size=5,  # Mínimo 5 conexiones
                         max_size=20, # Máximo 20 conexiones (suficiente para 20 páginas)
                         command_timeout=60
@@ -756,6 +891,41 @@ async def lifespan(app: FastAPI):
         logger.info("🎉 CORRECTED Enterprise startup completed successfully")
         logger.info("🔧 DEPENDENCY INJECTION FIX (OPCIÓN B) APPLIED - ProductCache singleton via ServiceFactory")
         logger.info("✅ T1 CRITICAL FIX: local_catalog injected, DiversityAwareCache should use DYNAMIC categories")
+
+        # ════════════════════════════════════════════════════════════════════
+        # 🆕 PASO 11.5: GCP METRICS EXPORTER — M3 Push Integration
+        # ════════════════════════════════════════════════════════════════════
+        # Arrancar el background task que hace push de métricas Prometheus
+        # a GCP Cloud Monitoring. Se hace AL FINAL del startup para garantizar
+        # que todos los servicios estén listos antes del primer export.
+        #
+        # Si GCP_MONITORING_ENABLED=false (local), start() retorna False
+        # inmediatamente sin crear ningún task. Cero overhead en desarrollo.
+        # ════════════════════════════════════════════════════════════════════
+        if GCP_EXPORTER_AVAILABLE:
+            try:
+                gcp_exporter = get_gcp_metrics_exporter()
+                exporter_started = await gcp_exporter.start()
+                app.state.gcp_metrics_exporter = gcp_exporter
+                if exporter_started:
+                    logger.info(
+                        "gcp_metrics_exporter_active",
+                        interval_seconds=gcp_exporter.EXPORT_INTERVAL_SECONDS
+                        if hasattr(gcp_exporter, 'EXPORT_INTERVAL_SECONDS') else 60,
+                        m3_phase="active",
+                    )
+                else:
+                    logger.info(
+                        "gcp_metrics_exporter_skipped",
+                        reason="GCP_MONITORING_ENABLED=false or SDK not available",
+                    )
+            except Exception as exporter_error:
+                logger.warning(
+                    f"⚠️ GCP Metrics Exporter startup failed (non-critical): {exporter_error}"
+                )
+                app.state.gcp_metrics_exporter = None
+        else:
+            app.state.gcp_metrics_exporter = None
         
     except Exception as e:
         logger.error(f"❌ Enterprise startup encountered error: {e}")
@@ -796,6 +966,16 @@ async def lifespan(app: FastAPI):
     logger.info("🔄 Shutting down Enterprise Retail Recommender System")
     
     try:
+        # ════════════════════════════════════════════════════════════════════
+        # M3: SHUTDOWN GCP METRICS EXPORTER — cancela el background task
+        # ════════════════════════════════════════════════════════════════════
+        if hasattr(app.state, 'gcp_metrics_exporter') and app.state.gcp_metrics_exporter:
+            try:
+                await app.state.gcp_metrics_exporter.stop()
+                logger.info("✅ GCP Metrics Exporter stopped")
+            except Exception as e:
+                logger.warning(f"⚠️ GCP Metrics Exporter shutdown warning: {e}")
+
         # ✅ Shutdown ProductCache background tasks
         if product_cache and hasattr(product_cache, 'health_task'):
             try:
@@ -1151,7 +1331,7 @@ async def get_recommendations(
         
         logger.info(f"✅ Recomendaciones obtenidas en {processing_time_ms:.1f}ms (OPTIMIZADO)")
         
-        # Registrar métricas si están habilitadas
+        # Registrar métricas legacy si están habilitadas
         if settings.metrics_enabled and 'recommendation_metrics' in globals():
             from src.api.core.metrics import recommendation_metrics
             recommendation_metrics.record_recommendation_request(
@@ -1166,7 +1346,33 @@ async def get_recommendations(
                 user_id=user_id or "anonymous",
                 product_id=product_id
             )
-        
+
+        # ── M2: Prometheus metrics ─────────────────────────────────────────────
+        # CONTEXTO: Este endpoint (/v1/recommendations/{product_id}) está definido
+        # directamente en main_unified_redis.py y toma prioridad sobre el handler
+        # homónimo en recommendations.py (por orden de registro en FastAPI).
+        # Por eso, el .inc() de Prometheus debe estar AQUÍ — no en el router modular.
+        #
+        # Market: este endpoint legacy no recibe market como parámetro.
+        # Usamos "default" para no romper el esquema de labels (GCP requiere
+        # que todos los samples de un counter tengan los mismos labels).
+        # En el futuro, se puede extraer de un header X-Market o de user_id.
+        #
+        # Strategy: hybrid_recommender decide internamente (tfidf + retail).
+        # Reportamos "hybrid" ya que ese es el recomendador activo.
+        try:
+            recommendation_requests_total.labels(
+                market="default",
+                strategy="hybrid",
+            ).inc()
+            recommendation_duration_seconds.labels(
+                strategy="hybrid",
+            ).observe(processing_time_ms / 1000.0)  # ms → segundos
+        except Exception as _prom_err:
+            # Las métricas son observabilidad — nunca deben derribar el endpoint
+            logger.debug("prometheus_metric_error", error=str(_prom_err))
+        # ─────────────────────────────────────────────────────────────────────
+
         return {
             "product": {
                 "id": product.get('id'),
