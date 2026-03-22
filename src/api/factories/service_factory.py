@@ -1239,24 +1239,58 @@ class ServiceFactory:
                         # y read=25s (leer la respuesta). Sin esto, la SDK usa defaults que
                         # pueden ser demasiado generosos o no respetarse en todos los paths.
                         import httpx
-                        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+                        # Strip whitespace/newlines defensively — Secret Manager puede
+                        # inyectar la clave con \r\n al final si fue creada desde
+                        # Windows o con un editor que añade newline al guardar.
+                        # httpx lanza LocalProtocolError si el header contiene \r\n.
+                        anthropic_api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip() or None
                         if not anthropic_api_key:
                             logger.error("❌ ANTHROPIC_API_KEY not set — MCPPersonalizationEngine will have claude=None")
+                        else:
+                            logger.info(f"✅ ANTHROPIC_API_KEY loaded (length={len(anthropic_api_key)}, ends_with_newline=False)")
                         # anthropic_client = AsyncAnthropic(api_key=anthropic_api_key) if anthropic_api_key else None
+                        # ────────────────────────────────────────────────────────────────
+                        # CONFIGURACIÓN HTTPX PARA CLOUD RUN (18/03/2026)
+                        # ────────────────────────────────────────────────────────────────
+                        #
+                        # PROBLEMA RAIZ del timeout MCP (~3.3s):
+                        # AsyncAnthropic crea conexiones TCP lazy. En Cloud Run, el
+                        # NAT de GCP cierra estados TCP salientes inactivos. El warm-up
+                        # del PASO 8.5 establece la conexión, pero si la primera request
+                        # real llega >keepalive_expiry segundos después, httpx descarta
+                        # la conexión del pool y el siguiente intento hace un nuevo
+                        # TCP connect que tarda ~1.5s y falla en Cloud Run.
+                        #
+                        # SOLUCIÓN PARTE A — keepalive_expiry=300s:
+                        # El startup completo tarda ~90s. Las primeras requests pueden
+                        # llegar 30-120s después. 300s da margen suficiente para que
+                        # la conexión warm del PASO 8.5 siga viva cuando llegue la
+                        # primera request real. La tarea keep-alive periódica del
+                        # lifespan (PASO 8.6) renueva la conexión cada 90s indefinidamente.
+                        #
+                        # max_retries=0: el SDK no reintenta solo; el loop de
+                        # _generate_claude_personalized_response ya maneja reintentos
+                        # con sleep(50ms) entre intentos.
+                        # ────────────────────────────────────────────────────────────────
                         anthropic_client = AsyncAnthropic(
                             api_key=anthropic_api_key,
+                            max_retries=0,        # fallo rápido: el loop interno maneja reintentos
                             http_client=httpx.AsyncClient(
-                                http2=False,  # ← HTTP/1.1: más resiliente en Cloud Run egress
+                                http2=False,      # HTTP/1.1: más resiliente en Cloud Run NAT
                                 timeout=httpx.Timeout(
-                                    connect=10.0,   # tiempo máx para establecer TCP/TLS
-                                    read=25.0,      # tiempo máx para leer respuesta de Claude
+                                    connect=10.0,  # tiempo máx para establecer TCP/TLS
+                                    read=25.0,     # tiempo máx para leer respuesta de Claude
                                     write=10.0,
                                     pool=5.0
                                 ),
                                 limits=httpx.Limits(
                                     max_keepalive_connections=5,
                                     max_connections=10,
-                                    keepalive_expiry=30.0  # cierra keep-alive tras 30s inactivo
+                                    # 300s: cubre startup (~90s) + margen hasta primera request.
+                                    # La tarea keep-alive periódica (PASO 8.6 en lifespan)
+                                    # renueva la conexión cada 90s y mantiene el pool activo
+                                    # indefinidamente mientras el servidor esté vivo.
+                                    keepalive_expiry=300.0  # ← FIX: 120s → 300s
                                 )
                             )
                         ) if anthropic_api_key else None

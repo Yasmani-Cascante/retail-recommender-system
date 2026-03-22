@@ -632,35 +632,17 @@ async def get_mcp_conversation_recommendations(
                     # ✅ PASO 2: Cache miss - ejecutar personalización OPTIMIZADA
                     logger.info("🧠 Applying OPTIMIZED MCP personalization (cache miss)...")
                     
-                    # Personalización directa via MCPPersonalizationEngine.
+                    # Personalización directa via MCPPersonalizationEngine
                     # (claude_optimization.py fue removido — mcp_engine es el camino correcto)
-                    #
-                    # HISTORIAL DE TIMEOUTS:
-                    # - 1.5s: optimizer deprecado — demasiado agresivo
-                    # - 3.0s: calibrado para Sonnet ~1.6-1.7s (dashboards GCP)
-                    #         → pero genera timeouts constantes en primera request
-                    #           post-startup y en smoke tests (observado 20/03/2026)
-                    # - 8.0s: valor actual
-                    #
-                    # POR QUÉ 8s:
-                    # Los logs de producción muestran que keep-alive #2 tarda 2196ms
-                    # (primera llamada post-startup) y #3 tarda 1201ms (estado caliente).
-                    # generate_personalized_response hace UNA llamada a Claude con un
-                    # prompt complejo (contexto + recomendaciones + historial).
-                    # En el peor caso razonable (primera request, conexión semi-fría,
-                    # contención de CPU durante arranque): ~4-5s.
-                    # 8s cubre ese peor caso con margen sin comprometer UX — el
-                    # timeout del handler HTTP de Cloud Run es 300s, por lo que 8s
-                    # no causa problemas a nivel de plataforma.
+                    # Timeout: 3.0s — calibrado para Claude Sonnet en Cloud Run.
+                    # 1.5s era el valor del optimizer deprecado y resulta demasiado agresivo
+                    # para llamadas en producción (~1.6-1.7s según dashboards GCP).
                     personalization_result = await asyncio.wait_for(
                         mcp_engine.generate_personalized_response(
                             mcp_context=mcp_context,
                             recommendations=base_recommendations
                         ),
-                        timeout=12.0  # ← aumentado de 8.0s (21/03/2026): los logs muestran
-                                       # que Claude API tarda ~7.5s incluso con Haiku en condiciones
-                                       # normales (warm TCP). Con 8.0s el margen era 0.5s — la primera
-                                       # request sistemáticamente se agotaba. 12s da margen real.
+                        timeout=3.0
                     )
                     
                     # Actualizar respuesta con datos personalizados
@@ -710,13 +692,9 @@ async def get_mcp_conversation_recommendations(
                     logger.info("✅ MCP personalization completed and cached successfully")
                     
             except asyncio.TimeoutError:
-                logger.warning("⏰ MCP personalization timeout (8.0s) - using base recommendations")
-                # NOTA: Si este mensaje aparece en logs, significa que generate_personalized_response
-                # tardó más de 8s. El ParallelTask de mcp_recommendations tiene timeout=10s
-                # y el de personalization=5s. Si cualquiera de ellos expira antes, este
-                # bloque NO se ejecuta — en ese caso ver logs de parallel_processor.
+                logger.warning("⏰ MCP personalization timeout (3.0s) - using base recommendations")
                 final_response["metadata"]["personalization_timeout"] = True
-                final_response["metadata"]["timeout_reason"] = "Claude API call exceeded 8.0s limit"
+                final_response["metadata"]["timeout_reason"] = "Claude API call exceeded 3.0s limit"
                 final_response["metadata"]["optimization_attempted"] = True
             except Exception as e:
                 logger.error(f"❌ Error in MCP personalization: {e}")

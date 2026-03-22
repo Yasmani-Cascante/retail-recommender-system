@@ -553,7 +553,7 @@ async def lifespan(app: FastAPI):
         # error"), lo que provoca que el wait_for(3.0s) del handler se agote.
         #
         # SOLUCIÓN: Hacer una llamada mínima aquí, durante el startup, donde
-        # hay tiempo y presupuesto para tolerarla. Esto establece la conexión
+        # hay tiempo y presupuesto para tolerarla. 
         # TCP/TLS y la mantiene warm para los requests reales que vendrán.
         # Si falla, se loguea warning y se continúa — el sistema sigue
         # funcionando con el timeout como fallback.
@@ -582,10 +582,112 @@ async def lifespan(app: FastAPI):
             except asyncio.TimeoutError:
                 logger.warning("⚠️ Claude API warm-up timeout (15s) — first MCP request may be slow")
             except Exception as warmup_err:
-                # No crítico: el sistema funciona sin warm-up, solo con peor latencia
-                logger.warning(f"⚠️ Claude API warm-up failed: {warmup_err} — first MCP request may timeout")
+                # No crítico: el sistema funciona sin warm-up, solo con peor latencia.
+                # DIAGNÓSTICO (19/03/2026): loguear traceback completo para identificar
+                # si el fallo es TCP, TLS, autenticación, o httpx pool.
+                import traceback
+                logger.warning(
+                    f"⚠️ Claude API warm-up failed: {type(warmup_err).__name__}: {warmup_err} — "
+                    f"first MCP request may timeout | "
+                    f"traceback: {traceback.format_exc()}"
+                )
         else:
             logger.warning("⚠️ Claude API warm-up skipped — MCP recommender or claude client not available")
+
+        # ════════════════════════════════════════════════════════════════════
+        # 🆕 PASO 8.6: CLAUDE API KEEP-ALIVE PERIÓDICO (background task)
+        # ════════════════════════════════════════════════════════════════════
+        # POR QUÉ ES NECESARIO:
+        # El PASO 8.5 (warm-up) establece la conexión TCP durante el startup.
+        # Sin embargo, si no hay tráfico MCP durante más de keepalive_expiry
+        # segundos (300s), httpx descarta la conexión del pool y el siguiente
+        # intento hace un nuevo TCP connect que tarda ~1.5s y falla en Cloud Run.
+        #
+        # Esta tarea hace un ping mínimo a Claude cada 90 segundos, manteniendo
+        # la conexión TCP activa en el pool de httpx indefinidamente mientras el
+        # servidor esté vivo. Es análoga a los keepalive pings de un pool de BD.
+        #
+        # COSTE: ~0.000001 USD por ping (max_tokens=1, modelo Haiku).
+        # INTERVALO: 90s — bien por debajo de keepalive_expiry=300s.
+        # IMPACTO EN LATENCIA DE REQUESTS: ninguno — corre en background task.
+        # ════════════════════════════════════════════════════════════════════
+        async def _claude_keepalive_loop(mcp_recommender):
+            """
+            Background task que mantiene la conexión TCP a api.anthropic.com
+            activa en el pool de httpx, previniendo que el NAT de GCP cierre
+            el estado TCP saliente por inactividad.
+
+            Intervalo: 90s (< keepalive_expiry=300s).
+            Se cancela limpiamente cuando el lifespan hace shutdown.
+            """
+            KEEPALIVE_INTERVAL_S = 90  # segundos entre pings
+            ping_count = 0
+
+            while True:
+                try:
+                    # Esperar antes del primer ping (el warm-up del PASO 8.5
+                    # ya estableció la conexión; damos margen antes de renovarla)
+                    await asyncio.sleep(KEEPALIVE_INTERVAL_S)
+                    ping_count += 1
+
+                    if not (mcp_recommender and
+                            hasattr(mcp_recommender, 'claude') and
+                            mcp_recommender.claude):
+                        logger.warning("⚠️ Keep-alive: claude client not available, stopping loop")
+                        break
+
+                    ping_start = time.time()
+                    await asyncio.wait_for(
+                        mcp_recommender.claude.messages.create(
+                            model="claude-haiku-4-5-20251001",
+                            max_tokens=1,
+                            messages=[{"role": "user", "content": "k"}]
+                        ),
+                        timeout=10.0  # falla rápido para no acumular pings
+                    )
+                    ping_ms = (time.time() - ping_start) * 1000
+                    logger.info(
+                        f"🔄 Claude keep-alive #{ping_count} OK in {ping_ms:.0f}ms — TCP connection renewed"
+                    )
+
+                except asyncio.CancelledError:
+                    # Shutdown limpio — lifespan está terminando
+                    logger.info(f"✅ Claude keep-alive loop cancelled after {ping_count} pings (clean shutdown)")
+                    break
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"⚠️ Claude keep-alive #{ping_count} timeout (10s) — "
+                        "connection may be cold on next real request"
+                    )
+                    # Continuar el loop; el próximo ping intentará renovar
+                except Exception as ka_err:
+                    # Error puntual de red — logueamos con traceback completo para diagnóstico
+                    # DIAGNÓSTICO (19/03/2026): keep-alive falla con "Connection error" en
+                    # producción. El traceback completo revela si es TCP, TLS, o httpx pool.
+                    import traceback
+                    logger.warning(
+                        f"⚠️ Claude keep-alive #{ping_count} error: {type(ka_err).__name__}: {ka_err} — "
+                        f"will retry in {KEEPALIVE_INTERVAL_S}s | "
+                        f"traceback: {traceback.format_exc()}"
+                    )
+
+        # Arrancar el keep-alive solo si el cliente Claude está disponible
+        claude_keepalive_task = None
+        if (app.state.mcp_recommender and
+                hasattr(app.state.mcp_recommender, 'claude') and
+                app.state.mcp_recommender.claude):
+            claude_keepalive_task = asyncio.create_task(
+                _claude_keepalive_loop(app.state.mcp_recommender)
+            )
+            logger.info(
+                "✅ Claude API keep-alive background task started "
+                "(interval=90s, keepalive_expiry=300s) — TCP connection will stay warm indefinitely"
+            )
+        else:
+            logger.warning(
+                "⚠️ Claude keep-alive task NOT started — "
+                "MCP recommender or claude client not available"
+            )
 
         # ============================================================================
         # 🎯 PASO 9: COMPREHENSIVE HEALTH CHECK
@@ -966,6 +1068,22 @@ async def lifespan(app: FastAPI):
     logger.info("🔄 Shutting down Enterprise Retail Recommender System")
     
     try:
+        # ════════════════════════════════════════════════════════════════════
+        # 🆕 PASO 8.6 SHUTDOWN: Cancelar Claude keep-alive background task
+        # ════════════════════════════════════════════════════════════════════
+        # claude_keepalive_task es una variable local del lifespan scope.
+        # asyncio.Task.cancel() envía CancelledError al loop, que lo captura
+        # limpiamente y loguea el ping_count antes de terminar.
+        # ════════════════════════════════════════════════════════════════════
+        if claude_keepalive_task is not None and not claude_keepalive_task.done():
+            try:
+                claude_keepalive_task.cancel()
+                # Esperar a que el task procese la CancelledError
+                await asyncio.gather(claude_keepalive_task, return_exceptions=True)
+                logger.info("✅ Claude keep-alive background task stopped cleanly")
+            except Exception as e:
+                logger.warning(f"⚠️ Claude keep-alive task shutdown warning: {e}")
+        
         # ════════════════════════════════════════════════════════════════════
         # M3: SHUTDOWN GCP METRICS EXPORTER — cancela el background task
         # ════════════════════════════════════════════════════════════════════
