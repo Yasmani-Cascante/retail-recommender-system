@@ -32,8 +32,11 @@ from src.api.core.parallel_processor import (
     execute_mcp_operations_parallel
 )
 
-# ✅ NUEVO: Import hybrid intent detector for ML support
-from src.api.ml.hybrid_detector import get_hybrid_intent_detector
+# FIX (24/03/2026): Import hybrid_detector dentro de función para evitar
+# que un ImportError de nivel-módulo silenciosamente rompa el handler completo.
+# El import original en nivel-módulo hacía que cualquier fallo de sklearn/joblib
+# durante el cold start corrompiera todo el módulo sin log visible.
+# Ahora se importa lazy dentro del bloque try de intent detection.
 
 logger = logging.getLogger(__name__)
 
@@ -138,12 +141,26 @@ async def get_mcp_conversation_recommendations(
         
         intent_result = None
         intent_enabled = False
+
+        # FIX (24/03/2026): Diagnóstico explícito al entrar en el bloque.
+        # Sin estos logs era imposible saber si el bloque se ejecutaba o si
+        # era silenciado por el except. El logger.debug anterior era invisible
+        # con LOG_LEVEL=INFO en producción.
+        logger.info("🔍 INTENT DETECTION BLOCK: Evaluating...")
         
         try:
             from src.api.core.config import get_settings
-            settings = get_settings()
 
+            # FIX (24/03/2026): get_settings() usa @lru_cache. Si hay error de
+            # Pydantic al arrancar (case_sensitive=True + variable faltante),
+            # el caché queda con valores por defecto y enable_intent_detection=False.
+            # Forzar re-lectura del env directamente como backup de diagnóstico.
+            settings = get_settings()
             intent_enabled = settings.enable_intent_detection
+
+            # Log explícito del valor leído — visible en GCP Logs con LOG_LEVEL=INFO
+            logger.info(f"🔍 INTENT DETECTION: enable_intent_detection={intent_enabled} "
+                        f"(from settings, env raw='{os.environ.get('ENABLE_INTENT_DETECTION', 'NOT_SET')}')")
             
             if intent_enabled:
                 # ✅ NUEVO: Verificar si ML está habilitado
@@ -154,6 +171,9 @@ async def get_mcp_conversation_recommendations(
                     logger.info(f"🎯 ML Intent Detection ENABLED - analyzing query: '{conversation_query[:50]}...'")
                     
                     try:
+                        # FIX (24/03/2026): Import lazy para evitar que
+                        # sklearn/joblib falle en import-time y silencie el handler.
+                        from src.api.ml.hybrid_detector import get_hybrid_intent_detector
                         hybrid_detector = get_hybrid_intent_detector()
                         
                         # Detectar intent con híbrido (async)
@@ -280,12 +300,15 @@ async def get_mcp_conversation_recommendations(
                         # Continue normal flow (low confidence)
             
             else:
-                logger.debug("Intent Detection is DISABLED in settings")
+                # FIX: era logger.debug — invisible con LOG_LEVEL=INFO en producción.
+                logger.info("ℹ️ Intent Detection is DISABLED in settings (enable_intent_detection=False)")
         
         except ImportError as e:
-            logger.warning(f"⚠️ Intent Detection modules not available: {e}")
+            # exc_info=True añade el stack trace completo al log — esencial para debug
+            logger.warning(f"⚠️ Intent Detection modules not available: {e}", exc_info=True)
         except Exception as e:
-            logger.error(f"❌ Intent Detection error: {e} - falling back to products")
+            # FIX: exc_info=True añade stack trace. Sin esto el error era invisible.
+            logger.error(f"❌ Intent Detection error: {e} - falling back to products", exc_info=True)
 
 
         # ===== FASE 2: CREAR FUNCIONES WRAPPER PARA PARALLEL PROCESSING =====

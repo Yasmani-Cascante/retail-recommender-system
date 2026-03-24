@@ -66,8 +66,21 @@ export class ConversationAPI {
         body: JSON.stringify(request),
       });
 
+      // FIX (23/03/2026): Lanzar errores diferenciados por código HTTP.
+      // Antes: throw new Error('API Error: 500 ...') → caía al catch → se
+      // confundía con error de red porque el mensaje podía contener 'fetch'.
+      // Ahora: errores HTTP se manejan explícitamente ANTES del catch genérico.
       if (!response.ok) {
-        throw new Error(`API Error: ${response.status} ${response.statusText}`);
+        // Intentar leer el body del error para más contexto
+        let errorDetail = '';
+        try {
+          const errBody = await response.json();
+          errorDetail = errBody.detail || errBody.message || '';
+        } catch {
+          // Body no es JSON, continuar sin detalle
+        }
+        // Lanzar con un marcador que NO contenga 'fetch' para no confundir el catch
+        throw new Error(`HTTP_${response.status}:${errorDetail}`);
       }
 
       const data: ConversationResponse = await response.json();
@@ -95,14 +108,30 @@ export class ConversationAPI {
       
       // Return a user-friendly error message
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      let friendlyMessage = 'Sorry, I encountered an error. Please try again.';
-      
-      if (errorMessage.includes('fetch')) {
-        friendlyMessage = 'Unable to connect to the server. Please check your internet connection.';
-      } else if (errorMessage.includes('401') || errorMessage.includes('403')) {
-        friendlyMessage = 'Authentication error. Please contact support.';
-      } else if (errorMessage.includes('500')) {
-        friendlyMessage = 'Server error. Please try again in a moment.';
+      let friendlyMessage = 'Lo siento, ha ocurrido un error. Por favor intenta de nuevo.';
+
+      // FIX (23/03/2026): Diferenciar errores HTTP (HTTP_NNN:) de errores de red.
+      // Los errores HTTP usan el prefijo HTTP_NNN: — no contienen 'fetch'.
+      // Los errores de red (TypeError: Failed to fetch) sí contienen 'fetch'.
+      if (errorMessage.startsWith('HTTP_')) {
+        const code = errorMessage.split(':')[0].replace('HTTP_', '');
+        if (code === '401' || code === '403') {
+          friendlyMessage = 'Error de autenticación. Por favor contacta con soporte.';
+        } else if (code === '429') {
+          friendlyMessage = 'Demasiadas solicitudes. Por favor espera un momento.';
+        } else if (code.startsWith('5')) {
+          // Errores 5xx del servidor — mensaje claro, no confundirlo con red
+          friendlyMessage = 'El servidor encontró un error. Por favor intenta de nuevo en unos segundos.';
+        } else {
+          friendlyMessage = `Error del servidor (${code}). Por favor intenta de nuevo.`;
+        }
+      } else if (
+        errorMessage.toLowerCase().includes('failed to fetch') ||
+        errorMessage.toLowerCase().includes('networkerror') ||
+        errorMessage.toLowerCase().includes('load failed')
+      ) {
+        // Error genuino de red — sin conexión al servidor
+        friendlyMessage = 'No se puede conectar con el servidor. Verifica tu conexión a internet.';
       }
       
       return {

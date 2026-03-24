@@ -1764,6 +1764,26 @@ async def get_customers(
 #         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
+# 📦 STATIC FILES — Widget Frontend
+# ============================================================================
+# FIX (22/03/2026): Montar el directorio static/ para servir el widget React
+# compilado. Sin este mount, FastAPI devuelve 404 para cualquier request a
+# /static/widget/widget.umd.cjs aunque el archivo exista en el contenedor.
+#
+# FLUJO COMPLETO:
+#   1. npm run build  → genera static/widget/widget.umd.cjs (150KB)
+#   2. Dockerfile copia static/ → /app/static/ (PHASE 3, fix 22/03/2026)
+#   3. Este mount   → FastAPI sirve GET /static/** desde /app/static/
+#   4. embed.js     → carga /static/widget/widget.umd.cjs desde el navegador
+#
+# IMPORTANTE: app.mount() debe declararse ANTES de include_router() porque
+# FastAPI procesa las rutas en orden de registro. Si se declara después, una
+# ruta dinámica podría interceptar /static/* antes que el StaticFiles handler.
+from fastapi.staticfiles import StaticFiles
+app.mount("/static", StaticFiles(directory="static"), name="static")
+logger.info("✅ StaticFiles mounted at /static — widget available at /static/widget/widget.umd.cjs")
+
+# ============================================================================
 # 🚀 ENTERPRISE ROUTER REGISTRATION - CÓDIGO ORIGINAL PRESERVADO
 # ============================================================================
 

@@ -1,0 +1,86 @@
+/*
+ * ChatBubble.module.css
+ * Estilos del botón flotante del widget.
+ *
+ * CSS Modules: Vite genera nombres únicos con hash (ej: _bubble_a7f3k)
+ * que nunca colisionan con el CSS del sitio host (Shopify, etc.).
+ * El plugin cssInjectedByJsPlugin los inyecta en el <head> junto con el .cjs.
+ */
+
+/* ── Botón principal ───────────────────────────────── */
+.bubble {
+  /* Posición fija al viewport — no al contenedor padre */
+  position: fixed;
+  bottom: 6vh;
+  right: 0px;
+  z-index: 2147483647; /* Máximo posible — por encima de cualquier elemento de Shopify */
+
+  /* Forma */
+  width: 56px;
+  height: 56px;
+  border-radius: 0;
+  border: 2px solid #1c1c1c;
+  /* border: none; */
+
+  /* Colores */
+  background: rgba(255,255,255, 0.85);
+   /* background: linear-gradient(90deg, #1c1c1c 0%, #ffffff 100%);1  */
+  color: #1c1c1c;
+  /* box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25), 0 2px 8px rgba(0, 0, 0, 0.12); */
+
+  /* Layout interno */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  /* Animación de entrada */
+  animation: bubbleAppear 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+
+  /* Transición hover */
+  transition:
+    transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.2s ease;
+}
+
+.bubble:hover {
+  transform: scale(1.1);
+  border: 2px solid #1c1c1c;
+  color: #ffffff;
+  background:rgba(28, 28, 28, 1);
+  cursor: pointer;
+  /* box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.15); */
+}
+
+.bubble:active {
+  transform: scale(0.96);
+}
+
+/* ── Badge de mensajes no leídos ───────────────────── */
+.badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 14px;
+  height: 14px;
+  background: #ef4444;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* ── Animaciones ────────────────────────────────────── */
+@keyframes bubbleAppear {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.2); opacity: 0.8; }
+}

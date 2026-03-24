@@ -46,9 +46,12 @@ class WidgetManager {
         document.body.appendChild(this.container);
       }
 
-      // Enable pointer events for the widget
+      // FIX (23/03/2026): El contenedor debe mantener position:fixed y
+      // pointer-events:none para no bloquear clicks en la página.
+      // El ChatWidget renderiza el icono con rr-fixed internamente,
+      // así que el contenedor solo necesita ser un portal transparente.
+      // NUNCA sobreescribir position:fixed con relative — haría invisible el icono.
       this.container.style.pointerEvents = 'none';
-      this.container.style.position = 'relative';
 
       // Create React root and render
       this.root = createRoot(this.container);
@@ -106,7 +109,10 @@ window.RetailRecommenderWidget = {
 
 // Auto-initialize if config is provided via data attributes
 document.addEventListener('DOMContentLoaded', () => {
-  const scripts = document.querySelectorAll('script[data-rr-auto-init]');
+  // FIX (23/03/2026): embed.js y el snippet de Shopify usan data-auto-init.
+  // main.tsx buscaba data-rr-auto-init — los dos nunca coincidían.
+  // Ahora soportamos ambos atributos para compatibilidad total.
+  const scripts = document.querySelectorAll('script[data-auto-init], script[data-rr-auto-init]');
   
   scripts.forEach((script) => {
     const apiUrl = script.getAttribute('data-api-url');

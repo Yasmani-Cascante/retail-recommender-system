@@ -21,7 +21,9 @@
 
       // Create script element
       const script = document.createElement('script');
-      script.src = config.scriptUrl || `${config.apiUrl}/static/widget/widget.js`;
+      // FIX (22/03/2026): Vite 4 con "type":"module" genera widget.umd.cjs, no widget.js.
+      // Verificado en static/widget/ — el archivo real es widget.umd.cjs (150KB).
+      script.src = config.scriptUrl || `${config.apiUrl}/static/widget/widget.umd.cjs`;
       script.onload = () => {
         if (window.RetailRecommenderWidget) {
           resolve(window.RetailRecommenderWidget);

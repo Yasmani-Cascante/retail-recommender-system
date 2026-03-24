@@ -35,6 +35,17 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # ============================================================================
 COPY src/ /app/src/
 COPY data/ /app/data/
+# FIX (22/03/2026): Copiar el widget compilado al contenedor.
+# Sin esta línea, static/widget/widget.umd.cjs no llega a Cloud Run
+# y FastAPI no puede servirlo en /static/widget/.
+COPY static/ /app/static/
+# FIX (23/03/2026): Copiar modelos ML de intent detection.
+# MLIntentClassifier carga model.pkl y vectorizer.pkl desde
+# Path("models/intent_classifier") relativo a WORKDIR /app.
+# Sin esta línea, ML_INTENT_ENABLED=true falla silenciosamente
+# y el sistema degrada a rule-based sin error visible.
+# Tamaño total: ~131 KB (model.pkl 24KB + vectorizer.pkl 107KB).
+COPY models/ /app/models/
 
 # ============================================================================
 # FASE 4: CONFIGURACIÓN DE RUNTIME

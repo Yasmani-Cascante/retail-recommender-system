@@ -16,7 +16,7 @@ adapt_product_for_market_async,
 from src.core.market.adapter import get_market_adapter
 from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 # 🚀 PERFORMANCE: Import optimized performance components
@@ -153,31 +153,61 @@ def extract_answer_from_claude_response(claude_response: Any) -> str:
 
 # Modelos de datos para la API
 class ConversationRequest(BaseModel):
-    """Modelo para peticiones de conversación con MCP"""
+    """Modelo para peticiones de conversación con MCP.
+    
+    FIX (23/03/2026): Añadido widget_context para recibir el contexto de página
+    enviado por el widget React (page_url, page_type, product_id, user_agent).
+    Pydantic lo ignoraba silenciosamente antes — ahora se persiste para uso futuro.
+    """
     query: str
     user_id: Optional[str] = None
     session_id: Optional[str] = None
     market_id: str = "default"
-    # language: str = "en"
-    language: Optional[str] = None # ISO language code, e.g., 'en', 'es'
+    language: Optional[str] = None  # ISO language code, e.g., 'en', 'es'
     product_id: Optional[str] = None
     n_recommendations: int = 5
+    # FIX (23/03/2026): El widget envía widget_context con page_url, page_type, etc.
+    # Sin este campo, Pydantic lo descartaba — ahora se recibe correctamente.
+    widget_context: Optional[Dict[str, Any]] = None
 
 class ConversationResponse(BaseModel):
-    """Modelo para respuestas conversacionales"""
+    """Modelo para respuestas conversacionales.
+    
+    FIX (23/03/2026): ResponseValidationError en producción — 1 validation error.
+    Causa raíz: el handler devuelve took_ms calculado como (time.time() - start) * 1000
+    que puede ser un float normal, pero en algunas rutas de código era un objeto
+    datetime o None, rompiendo la validación Pydantic en el middleware de FastAPI.
+    
+    SOLUCIÓN: model_config con arbitrary_types_allowed=True NO resuelve esto.
+    La solución correcta es sanitizar took_ms con un validator antes de serializar.
+    Adicionalmente, metadata puede estar ausente en paths de error — default a {}.
+    """
     answer: str
     recommendations: List[Dict[str, Any]]
     
-    # ✅ ADDED: Required fields for Phase 2 validation
+    # Phase 2 fields
     session_metadata: Dict[str, Any] = {}
     intent_analysis: Dict[str, Any] = {}
     market_context: Dict[str, Any] = {}
     personalization_metadata: Dict[str, Any] = {}
     
-    # ✅ PRESERVED: Original fields
-    metadata: Dict[str, Any]
-    session_id: str
+    # Original fields — metadata tiene default para paths de error
+    metadata: Dict[str, Any] = {}
+    session_id: str = ""
+    # FIX (23/03/2026): Usar validator para garantizar que took_ms sea siempre float.
+    # Sin esto, un valor None o datetime causaba ResponseValidationError → HTTP 500.
     took_ms: float = 0.0
+
+    @field_validator('took_ms', mode='before')
+    @classmethod
+    def coerce_took_ms_to_float(cls, v: Any) -> float:
+        """Garantiza que took_ms sea siempre un float válido.
+        Convierte None, str, datetime, o cualquier otro tipo a 0.0 como fallback.
+        Esto previene ResponseValidationError cuando el handler retorna un tipo inesperado."""
+        try:
+            return float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
 
 class MarketSupportedResponse(BaseModel):
     """Modelo para respuesta de mercados soportados"""
@@ -704,9 +734,27 @@ async def process_conversation(
                     # Continue with response even if state fails
                     
                 # ✅ CONSTRUIR respuesta con datos del handler
+                # FIX (23/03/2026): Sanitizar recommendations a dicts puros.
+                # El handler puede retornar Pydantic models o custom objects.
+                # Pydantic v2 exige List[Dict] — cualquier objeto no-dict causa
+                # ResponseValidationError: 1 validation error (recommendations.0).
+                safe_recs = []
+                for rec in recommendations:
+                    if isinstance(rec, dict):
+                        safe_recs.append(rec)
+                    elif hasattr(rec, '__dict__'):
+                        safe_recs.append(vars(rec))
+                    elif hasattr(rec, 'model_dump'):
+                        safe_recs.append(rec.model_dump())
+                    else:
+                        try:
+                            safe_recs.append(dict(rec))
+                        except Exception:
+                            logger.warning(f"Skipping non-serializable recommendation: {type(rec)}")
+
                 return {
-                    "answer": ai_response,
-                    "recommendations": recommendations,
+                    "answer": str(ai_response) if ai_response is not None else "",
+                    "recommendations": safe_recs,
                     "session_metadata": {
                         "session_id": real_session_id,
                         "turn_number": turn_number,

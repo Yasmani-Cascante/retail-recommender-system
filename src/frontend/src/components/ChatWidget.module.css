@@ -1,0 +1,128 @@
+/*
+ * ChatWidget.module.css
+ * Panel principal del chat.
+ */
+
+/* ── Panel flotante ─────────────────────────────────── */
+.panel {
+  position: fixed;
+  bottom: 6vh;
+  right: 20px;
+  /* width: 360px; */
+  width: 25vw;
+  height: 520px;
+  background: #ffffff;
+  border-radius: 6px;
+  border: none;
+  border: 1px solid #1c1c1c;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.15),
+    0 4px 16px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  z-index: 2147483646;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  animation: panelSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Responsive: móvil ocupa casi toda la pantalla */
+@media (max-width: 480px) {
+  .panel {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 100px);
+    right: 12px;
+    bottom: 80px;
+  }
+}
+
+/* ── Header ─────────────────────────────────────────── */
+.header {
+  background: linear-gradient(135deg, #1c1c1c 0%, #333 100%);
+  /* background: rgba(0, 0, 0, 0.671); */
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.headerAvatar {
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, #f3ede6, #e8ddd4);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.headerName {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.headerStatus {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.headerStatus::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: #4ade80;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+  animation: statusPulse 2s ease-in-out infinite;
+}
+
+.closeBtn {
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  cursor: pointer;
+  color: #fff;
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: background 0.15s;
+  line-height: 1;
+}
+
+.closeBtn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Animaciones ─────────────────────────────────────── */
+@keyframes panelSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes statusPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

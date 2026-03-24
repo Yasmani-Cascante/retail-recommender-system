@@ -1,47 +1,39 @@
 import { useState, useCallback, useEffect } from 'react';
-import { X } from 'lucide-react';
-import { clsx } from 'clsx';
-
 import { ChatBubble } from './ChatBubble';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { ConversationAPI } from '../services/api';
 import type { WidgetConfig, Message, ConversationState } from '../types/widget';
+import styles from './ChatWidget.module.css';
 
 interface ChatWidgetProps {
   config: WidgetConfig;
-  className?: string;
 }
 
-export function ChatWidget({ config, className }: ChatWidgetProps) {
+export function ChatWidget({ config }: ChatWidgetProps) {
   const [state, setState] = useState<ConversationState>({
     sessionId: '',
     messages: [],
     isLoading: false,
     isMinimized: false,
   });
-  
+
   const [isOpen, setIsOpen] = useState(false);
   const [api] = useState(() => new ConversationAPI(config));
 
-  // Initialize with welcome message
+  // Mensaje de bienvenida
   useEffect(() => {
     const welcomeMessage: Message = {
       id: 'welcome',
       type: 'assistant',
-      content: '👋 Hi! I\'m here to help you find the perfect products. What are you looking for today?',
+      content: '👋 ¡Hola! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?',
       timestamp: Date.now(),
       recommendations: [],
     };
-
-    setState(prev => ({
-      ...prev,
-      messages: [welcomeMessage],
-    }));
+    setState(prev => ({ ...prev, messages: [welcomeMessage] }));
   }, []);
 
   const handleSendMessage = useCallback(async (messageText: string) => {
-    // Add user message immediately
     const userMessage: Message = {
       id: `user_${Date.now()}`,
       type: 'user',
@@ -56,26 +48,20 @@ export function ChatWidget({ config, className }: ChatWidgetProps) {
     }));
 
     try {
-      // Send to API and get response
       const assistantMessage = await api.sendMessage(messageText);
-      
       setState(prev => ({
         ...prev,
         messages: [...prev.messages, assistantMessage],
         isLoading: false,
         sessionId: assistantMessage.metadata?.sessionId || prev.sessionId,
       }));
-
-    } catch (error) {
-      console.error('Error sending message:', error);
-      
+    } catch {
       const errorMessage: Message = {
         id: `error_${Date.now()}`,
         type: 'error',
-        content: 'Sorry, something went wrong. Please try again.',
+        content: 'Lo siento, ha ocurrido un error. Por favor intenta de nuevo.',
         timestamp: Date.now(),
       };
-
       setState(prev => ({
         ...prev,
         messages: [...prev.messages, errorMessage],
@@ -89,58 +75,56 @@ export function ChatWidget({ config, className }: ChatWidgetProps) {
     setState(prev => ({ ...prev, isMinimized: false }));
   }, []);
 
-  const handleMinimize = useCallback(() => {
-    setState(prev => ({ ...prev, isMinimized: true }));
-  }, []);
-
   const handleClose = useCallback(() => {
     setIsOpen(false);
     setState(prev => ({ ...prev, isMinimized: false }));
   }, []);
 
   return (
-    <div className={clsx('rr-widget-container', className)}>
-      {/* Chat Interface */}
+    <>
+      {/* ── Panel de chat ─────────────────────────────── */}
       {isOpen && !state.isMinimized && (
-        <div className="rr-fixed rr-bottom-20 rr-right-4 rr-w-80 rr-h-96 rr-bg-white rr-rounded-lg rr-shadow-xl rr-border rr-border-gray-200 rr-flex rr-flex-col rr-z-40 rr-animate-slide-up">
+        <div className={styles.panel} role="dialog" aria-label="Asistente de moda">
+          
           {/* Header */}
-          <div className="rr-bg-primary-600 rr-text-white rr-px-4 rr-py-3 rr-rounded-t-lg rr-flex rr-items-center rr-justify-between">
-            <div>
-              <h3 className="rr-font-semibold rr-text-sm">Product Assistant</h3>
-              <p className="rr-text-xs rr-opacity-90">Ask me anything!</p>
+          <div className={styles.header}>
+            <div className={styles.headerLeft}>
+              <div className={styles.headerAvatar} aria-hidden="true">✨</div>
+              <div>
+                <div className={styles.headerName}>Asistente de Moda</div>
+                <div className={styles.headerStatus}>En línea</div>
+              </div>
             </div>
-            
+
             <button
               onClick={handleClose}
-              className="rr-text-white rr-hover:rr-bg-primary-700 rr-rounded rr-p-1 rr-transition-colors"
+              className={styles.closeBtn}
+              aria-label="Cerrar chat"
             >
-              <X size={16} />
+              ✕
             </button>
           </div>
 
-          {/* Messages */}
-          <MessageList 
-            messages={state.messages} 
-            isLoading={state.isLoading} 
-          />
+          {/* Mensajes */}
+          <MessageList messages={state.messages} isLoading={state.isLoading} />
 
           {/* Input */}
           <MessageInput
             onSendMessage={handleSendMessage}
             disabled={state.isLoading}
-            placeholder="Ask about products, get recommendations..."
+            placeholder="Escribe tu consulta..."
           />
         </div>
       )}
 
-      {/* Chat Bubble */}
+      {/* ── Burbuja flotante ─────────────────────────── */}
       <ChatBubble
         isOpen={isOpen}
         isMinimized={state.isMinimized}
         hasUnreadMessages={false}
         onToggle={handleToggle}
-        onMinimize={handleMinimize}
+        onMinimize={() => {}}
       />
-    </div>
+    </>
   );
 }
