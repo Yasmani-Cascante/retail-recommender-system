@@ -26,6 +26,34 @@ from src.api.core.intent_types import (
     IntentDetectionResult
 )
 
+
+# ═══════════════════════════════════════════════════════════════
+# GREETING PATTERNS
+# ═══════════════════════════════════════════════════════════════
+# Pre-compiled at module level for performance (used on every request).
+# Kept separate from IntentPatterns to keep the greeting check fast
+# and independent of the informational/transactional scoring logic.
+#
+# Design decision: greetings are detected BEFORE the question-indicator
+# check, because "Hi!" and "Hola!" are NOT questions, so the existing
+# is_question() gate would exclude them entirely, sending them to the
+# TRANSACTIONAL fallback — which produces products with no greeting.
+#
+# Confidence assigned: 0.95 (very high — these patterns are unambiguous).
+# If a query matches a greeting AND a transactional/informational pattern,
+# the greeting wins because it is checked first.
+
+_GREETING_PATTERNS = [
+    # English greetings
+    re.compile(r"^\s*(hi|hello|hey|howdy|greetings|good\s*(morning|afternoon|evening|day|night))\b",
+               re.IGNORECASE),
+    # Spanish greetings
+    re.compile(r"^\s*(hola|buenos\s*(días|días|dias|tardes|noches)|buenas|qué\s*tal|que\s*tal|saludos)\b",
+               re.IGNORECASE),
+    # Short conversational openers without topic
+    re.compile(r"^\s*(hi+!*|hey!*|hola!*|hello!*)\s*$", re.IGNORECASE),
+]
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,8 +112,13 @@ class IntentPatterns:
         # ── Policy: Shipping / Delivery ─────────────────────────
         InformationalSubIntent.POLICY_SHIPPING: {
             "keywords": [
-                r"\b(envío|envio|shipping|delivery|entrega)\b",
-                r"\b(enviar|mandar|send|ship)\b",
+                # FIX (25/03/2026): \b(envio)\b did NOT match 'envios' (plural) because
+                # the trailing 's' is a word character — no word boundary fires after 'o'.
+                # "hacen envios hasta casa?" scored 0.0 and fell to TRANSACTIONAL (products).
+                # Added s? to cover plural; added 'envía(n)?' and 'domicilio' for natural variants.
+                r"\b(envíos?|envios?|envía(n|s)?|envia(n|s)?|shipping|deliver(y|s)?|entregas?)\b",
+                r"\b(enviar|mandar|manda|mandan|send|ship)\b",
+                r"\b(domicilio|a\s+casa|home\s+delivery|a\s+mi\s+casa)\b",
                 r"\b(paquete|package|pedido|order)\b",
                 r"\b(rastreo|tracking|seguimiento)\b",
             ],
@@ -93,6 +126,10 @@ class IntentPatterns:
                 r"\b(cómo|como|how)\b",
                 r"\b(cuándo|cuando|cuanto|cuánto|cuanto.*tarda|when)\b",
                 r"\b(dónde|donde|where)\b",
+                # Added: catches action-style queries with no explicit question word.
+                # "hacen envios hasta casa?" has no cómo/cuándo/dónde — 'hacen' fills the gap.
+                # 'dirección' catches "enviar a otra dirección?"; 'home' catches English variants.
+                r"\b(hacen|mandan|llega|llegan|hasta|do\s+you|can\s+you|dirección|direccion|home|address)\b",
             ],
         },
 
@@ -105,11 +142,22 @@ class IntentPatterns:
                 r"\b(efectivo|cash|transferencia|transfer)\b",
                 r"\b(paypal|mercadopago|mercado.*pago)\b",
                 r"\b(cuotas|meses.*sin.*intereses|installments)\b",
+                # FIX (25/03/2026): "Cuales son los Metodos de Pagos aceptados?" scored
+                # only 0.4 (just 'pagos' keyword matched), below the 0.7 INFORMATIONAL
+                # threshold — fell through to TRANSACTIONAL and got the prior turn's response.
+                # With 'métodos' as a keyword the query now scores:
+                #   'pagos'(+0.4) + 'metodos'(+0.4) + question_word 'son'(+0.3) = 1.0
+                # Safely scoped: only fires when paired with another payment keyword.
+                r"\b(métodos?|metodos?|method|methods|forma|formas|medio|medios)\b",
             ],
             "question_words": [
                 r"\b(cómo|como|how)\b",
-                r"\b(acepta|accept|aceptan)\b",
+                # FIX (25/03/2026): 'aceptan' missed 'aceptados' (different verb form).
+                # Broadened to match: acepta, aceptan, aceptados, accepted, accepts.
+                r"\b(acepta(n|dos?)?|accept(s|ed)?)\b",
                 r"\b(puedo|puede|can)\b",
+                # Added: catches "Cuales son..." / "What are..." list-style questions.
+                r"\b(cuáles?|cuales?|son|are|what)\b",
             ],
         },
 
@@ -404,6 +452,24 @@ class RuleBasedIntentDetector:
         logger.debug(f"Detecting intent for query: '{query[:50]}...'")
 
         # ═══════════════════════════════════════════════════════
+        # STEP 0: Check for GREETING (before question-indicator gate)
+        # ═══════════════════════════════════════════════════════
+        # Greetings must be detected BEFORE the is_question() check because
+        # "Hi!" and "Hola!" are not questions, so they would fall through to
+        # the TRANSACTIONAL default (confidence 0.5) and return products
+        # without any conversational response. Added 24/03/2026 — BUG #3 fix.
+
+        greeting_result = self._detect_greeting(query)
+        if greeting_result is not None:
+            self.metrics["informational_detected"] += 1  # reuse counter (no products)
+            self._update_avg_confidence(greeting_result.confidence)
+            logger.info(
+                f"👋 Detected GREETING (confidence: {greeting_result.confidence:.2f}) "
+                f"for query: '{query[:40]}'"
+            )
+            return greeting_result
+
+        # ═══════════════════════════════════════════════════════
         # STEP 1: Check if it's a question
         # ═══════════════════════════════════════════════════════
 
@@ -459,6 +525,32 @@ class RuleBasedIntentDetector:
         self._update_avg_confidence(0.5)
 
         return default_result
+
+    def _detect_greeting(self, query: str) -> Optional[IntentDetectionResult]:
+        """
+        Detect if the query is a greeting / conversational opener.
+
+        Uses module-level _GREETING_PATTERNS (pre-compiled) for speed.
+        Returns an IntentDetectionResult with IntentType.GREETING if matched,
+        or None if the query is not a greeting.
+
+        Design notes:
+        - Confidence 0.95: greeting patterns are highly unambiguous.
+        - sub_intent is None: greetings have no KB sub-category.
+        - Called BEFORE is_question() because greetings are not questions
+          and would otherwise reach the TRANSACTIONAL fallback.
+        """
+        query_stripped = query.strip()
+        for pattern in _GREETING_PATTERNS:
+            if pattern.search(query_stripped):
+                return IntentDetectionResult(
+                    primary_intent=IntentType.GREETING,
+                    sub_intent=None,
+                    confidence=0.95,
+                    reasoning="Greeting pattern matched — conversational opener detected",
+                    matched_patterns=[pattern.pattern],
+                )
+        return None
 
     def _is_question(self, query: str) -> bool:
         """Check if query is a question."""

@@ -9,8 +9,8 @@
   bottom: 6vh;
   right: 20px;
   /* width: 360px; */
-  width: 25vw;
-  height: 520px;
+  width: 420px;
+  height: 650px;
   background: #ffffff;
   border-radius: 6px;
   border: none;
@@ -56,7 +56,7 @@
 .headerAvatar {
   width: 36px;
   height: 36px;
-  background: linear-gradient(135deg, #f3ede6, #e8ddd4);
+  /* background: linear-gradient(135deg, #f3ede6, #e8ddd4); */
   border-radius: 50%;
   display: flex;
   align-items: center;

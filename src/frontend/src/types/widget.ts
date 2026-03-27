@@ -14,6 +14,7 @@ export interface Message {
   content: string;
   timestamp: number;
   recommendations?: ProductRecommendation[];
+  kb_document?: string;
   metadata?: {
     sessionId?: string;
     intentAnalysis?: any;

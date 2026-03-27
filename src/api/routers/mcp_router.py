@@ -184,6 +184,15 @@ class ConversationResponse(BaseModel):
     """
     answer: str
     recommendations: List[Dict[str, Any]]
+
+    # FIX (26/03/2026): kb_document was missing from the Pydantic model.
+    # The handler returns it inside response_dict (key 'kb_document') and the
+    # router extracted it into the return dict, but Pydantic silently dropped it
+    # because the field was not declared here.  Adding it with default="" means:
+    #   - Generic queries  → kb_document = full KB page text (answer == kb_document)
+    #   - Specific queries → kb_document = full KB page text, answer = Claude summary
+    # The frontend can use kb_document to offer a "see full policy" expansion.
+    kb_document: str = ""
     
     # Phase 2 fields
     session_metadata: Dict[str, Any] = {}
@@ -690,9 +699,93 @@ async def process_conversation(
             ai_response = response_dict.get("ai_response", f"Based on your query '{conversation.query}', here are some recommendations.")
             recommendations = response_dict.get("recommendations", [])
             metadata = response_dict.get("metadata", {})
-            
+            response_type = response_dict.get("type", "transactional")
+
             logger.info("✅ MCP conversation recommendations obtained successfully with corrected architecture")
-            
+            logger.info(f"📤 Handler response type: {response_type}")
+
+            # FIX (25/03/2026): INFORMATIONAL and GREETING responses are already complete
+            # when they leave the handler — they carry a clean string in ai_response and
+            # need no further personalisation. Without this guard, execution falls through
+            # to the second path below which calls mcp_recommender.generate_personalized_response();
+            # that call returns a dict {'response': '...', 'tone_adaptation': ...} which gets
+            # serialised as a raw JSON string and displayed verbatim in the chat widget.
+            if response_type in ("informational", "greeting"):
+                logger.info(f"📤 Early return for '{response_type}' response — skipping personalisation path")
+
+                # Persist the turn (no recommendation IDs for KB/greeting responses)
+                if state_manager and conversation_session:
+                    try:
+                        updated_session = await state_manager.add_conversation_turn_with_recommendations(
+                            session=conversation_session,
+                            user_query=conversation.query,
+                            ai_response=str(ai_response),
+                            recommendation_ids=[],
+                            metadata={
+                                "response_type": response_type,
+                                "knowledge_base_used": metadata.get("knowledge_base_used", False),
+                                "kb_contextualised": metadata.get("kb_contextualised", False),
+                                "market_id": conversation.market_id,
+                                "source": "mcp_router_early_return",
+                            }
+                        )
+                        await state_manager.save_conversation_state(updated_session)
+                        real_session_id = updated_session.session_id
+                        turn_number = len(updated_session.turns)
+                        state_persisted = True
+                        logger.info(f"✅ {response_type.upper()} turn persisted: session={real_session_id}, turn={turn_number}")
+                    except Exception as state_err:
+                        logger.error(f"❌ State persistence failed for {response_type}: {state_err}")
+
+                # FIX (26/03/2026): Extract kb_document from handler response.
+                # The handler always sets response_dict["kb_document"] = kb_answer.answer
+                # (the full KB page text) regardless of whether the answer was
+                # contextualised by Claude or returned verbatim.  We extract it here
+                # and include it as a top-level field so the frontend can:
+                #   a) display the short contextualised answer in the chat bubble
+                #   b) offer an expandable "view full policy" using kb_document
+                # Without this extraction the field was present in response_dict but
+                # never forwarded — and even if it had been, Pydantic would have dropped
+                # it because ConversationResponse lacked the kb_document declaration.
+                kb_document = response_dict.get("kb_document", "")
+
+                return {
+                    "answer": str(ai_response),
+                    "kb_document": kb_document,  # full KB source page (always present for informational)
+                    "recommendations": [],
+                    "session_metadata": {
+                        "session_id": real_session_id,
+                        "turn_number": turn_number,
+                        "state_persisted": state_persisted,
+                        "conversation_stage": response_type,
+                    },
+                    "intent_analysis": {
+                        "intent": response_type,
+                        "confidence": metadata.get("intent_detection", {}).get("confidence", 0.9),
+                        "attributes": [response_type, "early_return"],
+                        "urgency": "low",
+                    },
+                    "market_context": {
+                        "market_id": conversation.market_id,
+                        "currency": "EUR",
+                        "availability_checked": False,
+                        "market_optimization": {},
+                    },
+                    "personalization_metadata": {
+                        "strategy_used": "kb_direct",
+                        "personalization_applied": False,
+                        "kb_contextualised": metadata.get("kb_contextualised", False),
+                        "kb_had_specific_entities": metadata.get("kb_had_specific_entities", False),
+                    },
+                    "metadata": {
+                        **metadata,
+                        "architecture_pattern": "early_return_informational",
+                        "state_management": "centralized_in_router",
+                    },
+                    "session_id": real_session_id,
+                    "took_ms": (time.time() - start_time) * 1000,
+                }
+
             # 🎯 SOLUCIÓN CRÍTICA: Extraer recommendation IDs del handler
             recommendation_ids = metadata.get("recommendation_ids", [])
             next_turn_number = metadata.get("session_context", {}).get("next_turn_number", 1)

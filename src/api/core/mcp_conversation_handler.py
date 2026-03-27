@@ -149,24 +149,63 @@ async def get_mcp_conversation_recommendations(
         logger.info("🔍 INTENT DETECTION BLOCK: Evaluating...")
         
         try:
-            from src.api.core.config import get_settings
+            # FIX (24/03/2026 — SEGUNDA ITERACIÓN): get_settings() usa @lru_cache().
+            # La instancia se congela durante el startup de FastAPI, antes de que
+            # Cloud Run inyecte todos los secrets/env vars (incluido ENABLE_INTENT_DETECTION).
+            # Resultado: @lru_cache devuelve enable_intent_detection=False aunque
+            # os.environ contenga 'true' — confirmado en GCP Logs revision 00073-xhd:
+            #   "enable_intent_detection=False (from settings, env raw='true')"
+            #
+            # SOLUCIÓN: Crear una instancia fresca de RecommenderSettings() en el
+            # momento de cada request. Pydantic-settings lee os.environ en __init__,
+            # garantizando que lee el valor actual del entorno, no el valor cacheado
+            # del startup. Overhead: <1ms (la clase es ligera, sin I/O).
+            #
+            # ALTERNATIVA DESCARTADA: invalidar el cache con get_settings.cache_clear()
+            # en el lifespan — más complejo y con side effects en otros módulos que
+            # también usan get_settings(). La instancia local es el fix más seguro.
 
-            # FIX (24/03/2026): get_settings() usa @lru_cache. Si hay error de
-            # Pydantic al arrancar (case_sensitive=True + variable faltante),
-            # el caché queda con valores por defecto y enable_intent_detection=False.
-            # Forzar re-lectura del env directamente como backup de diagnóstico.
+            # FIX (24/03/2026 — TERCERA ITERACIÓN): Diagnóstico demostró que
+            # pydantic-settings v2 con case_sensitive=True NO resuelve correctamente
+            # el alias env='ENABLE_INTENT_DETECTION' cuando el nombre del campo Python
+            # es lowercase ('enable_intent_detection'). Con case_sensitive=True,
+            # pydantic-settings busca literalmente 'enable_intent_detection' (lowercase)
+            # en os.environ, pero Cloud Run inyecta 'ENABLE_INTENT_DETECTION' (uppercase).
+            # El Field(env='ENABLE_INTENT_DETECTION') NO sobreescribe este comportamiento
+            # de forma fiable en todas las versiones de pydantic-settings v2.
+            #
+            # EVIDENCIA (GCP Logs revision 00074-q2f, con RecommenderSettings() ya aplicado):
+            #   "enable_intent_detection=False (from settings, env raw='true')"
+            # → RecommenderSettings() (sin caché) también devuelve False.
+            # → La causa NO era @lru_cache, era case_sensitive=True + mismatch de casing.
+            #
+            # SOLUCIÓN DEFINITIVA: Leer os.environ directamente, sin pasar por Pydantic.
+            # os.environ es la fuente de verdad — no tiene problemas de case sensitivity.
+            # Overhead: 0ms (acceso a dict en memoria).
+            #
+            # Para los demás parámetros (threshold, etc.) seguimos usando settings,
+            # pero enable_intent_detection es el único flag que fallaba.
+            intent_enabled = os.environ.get('ENABLE_INTENT_DETECTION', 'false').lower() in ('true', '1', 'yes')
+            ml_intent_enabled = os.environ.get('ML_INTENT_ENABLED', 'false').lower() in ('true', '1', 'yes')
+
+            # Leer el resto de settings normalmente para threshold y otros valores
+            from src.api.core.config import get_settings
             settings = get_settings()
-            intent_enabled = settings.enable_intent_detection
 
             # Log explícito del valor leído — visible en GCP Logs con LOG_LEVEL=INFO
             logger.info(f"🔍 INTENT DETECTION: enable_intent_detection={intent_enabled} "
-                        f"(from settings, env raw='{os.environ.get('ENABLE_INTENT_DETECTION', 'NOT_SET')}')")
+                        f"(direct os.environ read, raw='{os.environ.get('ENABLE_INTENT_DETECTION', 'NOT_SET')}')")
+            
+            logger.info(f"🔍 ML INTENT DETECTION: ml_intent_enabled={ml_intent_enabled} "
+                    f"(direct os.environ read, raw='{os.environ.get('ML_INTENT_ENABLED', 'NOT_SET')}')")
             
             if intent_enabled:
                 # ✅ NUEVO: Verificar si ML está habilitado
-                ml_enabled = getattr(settings, 'ml_intent_enabled', False)
+                # ml_enabled = getattr(settings, 'ml_intent_enabled', False)
+                # logger.info(f"🔍 ML INTENT ENABLED: ml_enabled={ml_enabled} "
+                #             f"(from settings, raw='{getattr(settings, 'ml_intent_enabled', 'NOT_SET')}')")
                 
-                if ml_enabled:
+                if ml_intent_enabled:
                     # ✅ HÍBRIDO: Usar detector ML + rule-based
                     logger.info(f"🎯 ML Intent Detection ENABLED - analyzing query: '{conversation_query[:50]}...'")
                     
@@ -261,12 +300,97 @@ async def get_mcp_conversation_recommendations(
                             logger.warning("⚠️ No Knowledge Base instance available to query")
                         
                         if kb_answer:
-                            logger.info("✅ Knowledge Base answer found - returning informational response")
-                            
+                            logger.info("✅ Knowledge Base answer found - checking for query specificity")
+
+                            # ══════════════════════════════════════════════════════════════
+                            # BUG #1 FIX (25/03/2026): Contextualise KB responses for
+                            # queries that contain named entities or specific constraints.
+                            #
+                            # WHY: The KB stores one generic document per sub_intent.  Two
+                            # queries that share sub_intent=policy_payment hit the SAME
+                            # document regardless of specificity:
+                            #   "¿Qué métodos de pago aceptan?"   → generic  → doc OK
+                            #   "¿Puedo pagar con Mastercard?"     → specific → doc generic
+                            # The second case needs Claude to answer the actual question
+                            # ("does this store accept Mastercard?") using the document
+                            # as a knowledge source, not just dump the whole document.
+                            #
+                            # HOW:
+                            #   1. has_specific_entities() — rule-based regex check, <1ms,
+                            #      returns True if the query names a brand/provider/metric.
+                            #   2. If True → generate_contextual_answer() — Haiku call,
+                            #      ~300-700ms, answers the specific question in 2-3 sentences.
+                            #   3. If False or Claude fails → kb_answer.answer returned
+                            #      verbatim (same as before, zero regressions).
+                            #
+                            # COST: ~$0.025/day (see kb_contextualizer.py module docstring).
+                            # LATENCY: Only on specific queries (~20-30% of INFORMATIONAL).
+                            # ══════════════════════════════════════════════════════════════
+                            from src.api.core.kb_contextualizer import (
+                                has_specific_entities,
+                                generate_contextual_answer,
+                            )
+
+                            # Decide whether the query needs contextualisation
+                            needs_contextualisation = has_specific_entities(
+                                query=conversation_query,
+                                sub_intent=intent_result.sub_intent,
+                            )
+
+                            if needs_contextualisation:
+                                logger.info(
+                                    "🎯 Query has specific entities — contextualising KB answer via Claude "
+                                    "(sub_intent=%s, query='%s')",
+                                    intent_result.sub_intent,
+                                    conversation_query[:60],
+                                )
+                                # Try to get the Anthropic client from the warm MCP engine singleton
+                                try:
+                                    from src.api.factories.service_factory import ServiceFactory
+                                    mcp_engine_for_kb = await ServiceFactory.get_mcp_recommender()
+                                    anthropic_client_for_kb = getattr(mcp_engine_for_kb, 'claude', None) if mcp_engine_for_kb else None
+                                except Exception:
+                                    anthropic_client_for_kb = None
+
+                                contextual_answer = await generate_contextual_answer(
+                                    query=conversation_query,
+                                    kb_document=kb_answer.answer,
+                                    sub_intent=intent_result.sub_intent,
+                                    language=language,
+                                    anthropic_client=anthropic_client_for_kb,
+                                )
+
+                                if contextual_answer:
+                                    # Claude generated a specific answer — use it
+                                    final_answer = contextual_answer
+                                    contextualised = True
+                                    logger.info("✅ KB answer contextualised successfully")
+                                else:
+                                    # Claude failed or timed out — fall back to generic document
+                                    final_answer = kb_answer.answer
+                                    contextualised = False
+                                    logger.warning(
+                                        "⚠️ KB contextualisation failed — returning generic KB document"
+                                    )
+                            else:
+                                # Generic query — return document directly (zero latency, zero cost)
+                                final_answer = kb_answer.answer
+                                contextualised = False
+                                logger.info("📄 Generic query — returning KB document as-is")
+
                             return {
                                 "type": "informational",
-                                "answer": kb_answer.answer,
-                                "ai_response": kb_answer.answer, 
+                                # answer   → always the primary text the frontend should display.
+                                #            · Generic query:      full KB document.
+                                #            · Specific query:     Claude's focused answer (2-3 sentences).
+                                # ai_response → alias of answer (kept for backward compatibility).
+                                # kb_document → always the full KB source document.
+                                #               Present on both branches so the frontend can always
+                                #               offer a "view full policy" option regardless of
+                                #               whether contextualisation happened.
+                                "answer": final_answer,
+                                "ai_response": final_answer,
+                                **({"kb_document": kb_answer.answer} if needs_contextualisation else {}),
                                 "recommendations": [],  # NO products for informational queries
                                 "metadata": {
                                     "intent_detection": {
@@ -275,9 +399,11 @@ async def get_mcp_conversation_recommendations(
                                         "confidence": intent_result.confidence,
                                         "reasoning": intent_result.reasoning,
                                         "matched_patterns": intent_result.matched_patterns,
-                                        "method_used": getattr(hybrid_result, 'method_used', 'rule_based') if ml_enabled else 'rule_based'
+                                        "method_used": getattr(hybrid_result, 'method_used', 'rule_based') if ml_intent_enabled else 'rule_based'
                                     },
                                     "knowledge_base_used": True,
+                                    "kb_contextualised": contextualised,
+                                    "kb_had_specific_entities": needs_contextualisation,
                                     "sources": kb_answer.sources,
                                     "related_links": kb_answer.related_links,
                                     "processing_time_ms": (time.time() - start_time) * 1000,
@@ -289,6 +415,60 @@ async def get_mcp_conversation_recommendations(
                             logger.warning("⚠️ No knowledge base answer found - falling back to products")
                             # Continue to product recommendations (fallback)
                     
+                    # GREETING → Return warm conversational response, NO products
+                    # FIX (25/03/2026 — BUG #3): "Hi!" / "Hola" were falling through
+                    # to the TRANSACTIONAL default because greetings are not questions
+                    # and the old code had no GREETING branch here. Result: the user
+                    # received a dump of random products with no greeting at all.
+                    #
+                    # The _detect_greeting() in intent_detection.py already returns
+                    # GREETING with confidence=0.95, which is above the threshold (0.7),
+                    # so we land here. We return a short template response immediately
+                    # (no Claude call → zero latency hit for a simple greeting).
+                    # The template is bilingual: 'es' for Spanish markets, 'en' otherwise.
+                    elif intent_result.primary_intent == IntentType.GREETING:
+                        logger.info("👋 GREETING intent detected - returning conversational response (no products)")
+
+                        # Bilingual greeting templates. No Claude call needed:
+                        # the message is fixed, short, and market-appropriate.
+                        # Normalise language code: 'en-US' → 'en', 'es-MX' → 'es'.
+                        lang_key = (language or "es").split("-")[0].lower()
+                        greeting_templates = {
+                            "es": (
+                                "¡Hola! Bienvenido/a a nuestra tienda. "
+                                "¿En qué puedo ayudarte hoy? Puedo mostrarte productos, "
+                                "o responder preguntas sobre envíos, pagos o devoluciones."
+                            ),
+                            "en": (
+                                "Hello! Welcome to our store. "
+                                "How can I help you today? I can show you products "
+                                "or answer questions about shipping, payments, or returns."
+                            ),
+                        }
+                        greeting_text = greeting_templates.get(lang_key, greeting_templates["es"])
+
+                        logger.info("✅ GREETING response ready — returning early without products")
+                        return {
+                            "type": "greeting",
+                            "answer": greeting_text,
+                            "ai_response": greeting_text,
+                            "recommendations": [],  # No products for a greeting
+                            "metadata": {
+                                "intent_detection": {
+                                    "primary_intent": intent_result.primary_intent,
+                                    "sub_intent": intent_result.sub_intent,
+                                    "confidence": intent_result.confidence,
+                                    "reasoning": intent_result.reasoning,
+                                    "matched_patterns": intent_result.matched_patterns,
+                                    "method_used": "rule_based",
+                                },
+                                "knowledge_base_used": False,
+                                "processing_time_ms": (time.time() - start_time) * 1000,
+                                "market_id": market_id,
+                                "session_id": actual_session_id,
+                            },
+                        }
+
                     # TRANSACTIONAL QUERY → Continue normal flow
                     else:
                         logger.info("🛍️ TRANSACTIONAL intent detected - continuing with product recommendations")
@@ -579,6 +759,20 @@ async def get_mcp_conversation_recommendations(
         # ✅ NUEVA OPTIMIZACIÓN: Cache inteligente para personalización via ServiceFactory
         if mcp_engine and mcp_context and base_recommendations:
             try:
+                # FIX (25/03/2026 — BUG #2 COMPLETE): Inject the current query into mcp_context
+                # HERE, before any cache check, so that BOTH the cache-miss path and the
+                # cache-hit path operate on the right query.
+                #
+                # Previous placement: only inside the `else` (cache miss) branch.
+                # Problem: on a cache HIT, mcp_context.current_query was never set,
+                # so MCPPersonalizationEngine._determine_optimal_strategy() fell back to
+                # mcp_context.turns[-1].user_query, which was the PREVIOUS turn's query.
+                # Evidence (screenshot 25/03/2026): query="Cuales son los Metodos de Pagos"
+                # returned a response referencing "Hi!" (the prior turn's query).
+                if mcp_context is not None:
+                    mcp_context.current_query = conversation_query  # type: ignore[attr-defined]
+                    logger.info(f"🎯 BUG#2 FIX: current_query set on mcp_context BEFORE cache check: '{conversation_query[:50]}...'")
+
                 # ✅ FIX LEGACY MODE: Usar ServiceFactory para obtener cache configurado correctamente
                 from src.api.factories.service_factory import ServiceFactory
                 
@@ -654,7 +848,8 @@ async def get_mcp_conversation_recommendations(
                 else:
                     # ✅ PASO 2: Cache miss - ejecutar personalización OPTIMIZADA
                     logger.info("🧠 Applying OPTIMIZED MCP personalization (cache miss)...")
-                    
+
+                    # current_query already injected above (before cache check).
                     # Personalización directa via MCPPersonalizationEngine.
                     # (claude_optimization.py fue removido — mcp_engine es el camino correcto)
                     #

@@ -19,7 +19,7 @@ anyio>=3.7.0,<5.0.0
 # === ML Y PROCESAMIENTO DE DATOS ===
 numpy==1.23.5
 scipy==1.10.1
-scikit-learn==1.2.2
+scikit-learn==1.6.1  # CRITICAL: must match the version used to train models/intent_classifier/*.pkl (trained 2026-01-08)
 
 # === GOOGLE CLOUD INTEGRATIONS ===
 google-cloud-retail==1.24.0

@@ -17,6 +17,7 @@ interface ConversationRequest {
 interface ConversationResponse {
   answer: string;
   recommendations: ProductRecommendation[];
+  kb_document?: string;
   session_metadata: {
     session_id: string;
     user_id: string;
@@ -96,6 +97,7 @@ export class ConversationAPI {
         content: data.answer,
         timestamp: Date.now(),
         recommendations: data.recommendations || [],
+        kb_document: data.kb_document,
         metadata: {
           sessionId: this.sessionId,
           intentAnalysis: data.intent_analysis,

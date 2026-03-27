@@ -15,13 +15,17 @@ from pydantic import BaseModel, Field
 class IntentType(str, Enum):
     """
     Primary user intent types.
-    
-    Only 2 types for simplicity:
+
     - TRANSACTIONAL: User wants to see/buy products
     - INFORMATIONAL: User wants information (policies, FAQs, etc)
+    - GREETING: User sends a salutation or conversational opener
+                ("Hi!", "Hola", "Buenos días", etc.).
+                These require a warm conversational response, NOT products.
+                Added 24/03/2026 — BUG #3 fix.
     """
     TRANSACTIONAL = "transactional"
     INFORMATIONAL = "informational"
+    GREETING      = "greeting"
 
 
 class InformationalSubIntent(str, Enum):
