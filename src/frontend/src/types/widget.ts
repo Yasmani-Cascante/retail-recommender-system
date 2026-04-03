@@ -17,8 +17,8 @@ export interface Message {
   kb_document?: string;
   metadata?: {
     sessionId?: string;
-    intentAnalysis?: any;
-    marketContext?: any;
+    intentAnalysis?: unknown;
+    marketContext?: unknown;
   };
 }
 
@@ -27,9 +27,17 @@ export interface ProductRecommendation {
   title: string;
   description: string;
   price: number;
+  // FIX (27/03/2026): currency was missing from the type — ProductCard received
+  // undefined and defaulted to 'EUR' even for non-EUR markets. Now it flows from
+  // the backend through normalizeRecommendation() → ProductCard.formatPrice().
+  currency: string;
   category: string;
   score: number;
-  imageUrl?: string;
+  image_url?: string;
+  // FIX (27/03/2026): url field added so ProductCard can navigate to the product
+  // page when the backend supplies it. The backend returns it inconsistently —
+  // it is optional here and the card renders without it gracefully.
+  url?: string;
 }
 
 export interface ConversationState {

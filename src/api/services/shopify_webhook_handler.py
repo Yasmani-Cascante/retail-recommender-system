@@ -449,3 +449,65 @@ class ShopifyWebhookHandler:
                 page_id=page_id,
                 error=str(e),
             )
+
+    # ══════════════════════════════════════════════════════════════════════
+    # F-04 — Handler para customers/update
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def handle_customer_event(
+        self,
+        customer_id: str,
+        topic: str,
+    ) -> None:
+        """Invalida el cache de perfil de cliente cuando Shopify notifica un cambio.
+
+        Cuando llega customers/create o customers/update, el perfil cacheado en Redis
+        bajo 'mcp:customer:profile:{customer_id}' puede estar desactualizado
+        (nueva compra, cambio de tags, etc.). Este handler lo elimina para que el
+        siguiente request haga un fetch fresco desde Shopify.
+
+        Idempotency: usa el mismo patron SET NX que el resto de handlers.
+        El customer_id se trata como page_id a efectos de la clave de idempotencia.
+
+        Args:
+            customer_id: ID numerico del cliente en Shopify (str).
+            topic: 'customers/create' o 'customers/update'.
+        """
+        start_time = time.time()
+
+        try:
+            # ── Idempotency check ─────────────────────────────────────────
+            # Usamos customer_id como identificador (mismo patron que page_id)
+            if await self.is_duplicate_event(int(customer_id), topic):
+                return
+
+            logger.info(
+                "webhook_customer_invalidating_cache",
+                customer_id=customer_id,
+                topic=topic,
+            )
+
+            # ── Invalidar cache via CustomerProfileService ────────────────
+            from src.api.factories.service_factory import ServiceFactory
+            cps = await ServiceFactory.get_customer_profile_service()
+            await cps.invalidate(customer_id)
+
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.info(
+                "webhook_customer_processed",
+                customer_id=customer_id,
+                topic=topic,
+                duration_ms=round(elapsed_ms, 2),
+            )
+
+        except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.error(
+                "webhook_customer_failed",
+                customer_id=customer_id,
+                topic=topic,
+                error=str(e),
+                duration_ms=round(elapsed_ms, 2),
+            )
+            # No re-raise: la invalidacion de cache no es critica.
+            # El perfil stale expirara en 24 h por TTL.

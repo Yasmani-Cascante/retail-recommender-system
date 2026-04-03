@@ -1,0 +1,161 @@
+# Análisis Revisado — Arquitectura de Precios Multi-Mercado (Lazy Resolution)
+
+# Análisis Revisado: Arquitectura de Precios Multi-Mercado
+
+> **Fecha:** 02/04/2026 | Revisión del análisis anterior tras reflexión profunda
+> 
+
+---
+
+## El error en el análisis anterior
+
+El análisis anterior propuso **Redis como caché del batch completo**. Esa propuesta resolvía el síntoma (9 minutos por instancia) sin atacar el problema raíz: el sistema pre-calcula 12.248 precios cuando en cada sesión solo necesita 12-20.
+
+La analogía: es como calentar todo el menú del restaurante al abrir. La propuesta anterior calentaba todo el menú más rápido (desde Redis). La solución correcta es **no calentar nada al abrir** — calentar solo lo que el cliente pide, cuando lo pide.
+
+---
+
+## Respuestas a las tres preguntas
+
+### 1. Impacto negativo en rendimiento de la propuesta Redis (batch completo)
+
+Sí, hay dos que no se mencionaron:
+
+**Deserialización bloqueante:** Un JSON de ~490 KB (`json.loads`) bloquea el event loop de Python durante ~20-50ms. Requiere `asyncio.to_thread()` para no afectar requests concurrentes.
+
+**Redis se vuelve critical path:** Si Redis falla transitoriamente, el sistema pierde el caché y relanza los 9 minutos completos. Con el diseño actual, Redis es opcional. Con el batch en Redis, Redis es crítico para el tiempo de startup.
+
+### 2. Cómo otros sistemas tratan este problema
+
+El patrón de industria es uniforme:
+
+- **Algolia:** índice propio, actualizado por webhooks de Shopify. Resolución lazy por query, no batch al startup.
+- **Shopify Markets nativo:** precios almacenados en DB, resueltos por query individual con market context. Cero batch.
+- **Klaviyo, Recharge, ISVs:** solo sincronizan cuando reciben `products/update`. Si no hay webhook, el dato se considera fresco. Event-driven, no batch-at-startup.
+
+**Ningún sistema de la industria hace batch de todo el catálogo al arrancar.** Todos combinan webhooks + resolución lazy con caché por producto.
+
+### 3. ¿Es mejor sincronizar solo los productos que se recomiendan?
+
+**Sí. Esta es la pregunta que cambia el análisis completo.**
+
+El flujo real del sistema muestra que por sesión se muestran 3-5 productos. El enriquecimiento de 3.062 productos es trabajo hecho para datos que en su mayoría nunca van a ser mostrados en esa sesión.
+
+---
+
+## Arquitectura objetivo: resolución lazy con caché por producto
+
+```
+Primera vez que el producto X se recomienda para mercado CH:
+  1. _format_price_for_market(product_X, "CH") → market_prices vacío
+  2. Redis.get("price:product_X:CH") → MISS
+  3. Shopify GraphQL para ese único producto → ~200ms
+  4. Redis.set("price:product_X:CH", precio, ttl=3600)
+  5. Usuario recibe precio correcto
+
+Segunda vez (mismo producto, misma o diferente instancia):
+  1. Redis.get("price:product_X:CH") → HIT en ~1ms
+  2. Usuario recibe precio correcto
+
+Cuando Shopify cambia el precio:
+  1. Webhook products/update → Redis.delete("price:product_X:*")
+  2. Próximo request → fresh fetch de Shopify
+```
+
+**Resultado:** Los 9 minutos desaparecen completamente. No hay proceso de startup. No hay batch.
+
+### Impacto en latencia
+
+El primer usuario que pide el producto X para CH tiene ~200ms extra (una query GraphQL para ese producto). Esta query puede ejecutarse **en paralelo con la llamada a Claude** (que ya tarda ~1.2s), haciendo que el overhead neto sea cercano a cero.
+
+Con distribución Pareto típica (20% de productos = 80% del tráfico), el caché Redis se calienta orgánicamente en las primeras horas con los productos populares, sin proceso batch.
+
+---
+
+## Plan de implementación en fases
+
+### Fase 1 — Sin cambio de comportamiento observable (1 día, riesgo cero)
+
+Añadir Redis lookup en `_format_price_for_market()` antes del fallback CLP_RATES:
+
+```python
+async def _format_price_for_market(self, rec, market_id, market_currency):
+    # Prioridad 1: market_prices en memoria (Opción A, ya enriquecido)
+    if market_id in rec.get("market_prices", {}):
+        ...
+    
+    # Prioridad 2 (NUEVO): Redis cache por producto
+    redis_key = f"price:{rec.get('id')}:{market_id}"
+    cached = await redis_service.get(redis_key)
+    if cached:
+        price_data = json.loads(cached)
+        return formatear(price_data)
+    
+    # Prioridad 3: CLP_RATES fallback (sin cambios)
+    ...
+```
+
+Esta fase no cambia nada observable. Solo añade un lookup antes del fallback existente. Deployable hoy sin riesgo.
+
+### Fase 2 — Resolución lazy desde Shopify (1 día)
+
+Cuando Redis falla, consultar Shopify GraphQL para ese producto individual y guardar en Redis:
+
+```python
+# Prioridad 2: Redis cache
+cached = await redis_service.get(redis_key)
+if cached:
+    return formatear(json.loads(cached))
+
+# Prioridad 3 (NUEVO): Shopify GraphQL para este producto
+try:
+    price_data = await shopify_client.get_price_for_product(
+        product_id=rec.get('id'),
+        market_id=market_id
+    )
+    await redis_service.set(redis_key, json.dumps(price_data), ttl=3600)
+    return formatear(price_data)
+except Exception:
+    pass  # Continuar al fallback
+
+# Prioridad 4: CLP_RATES (último recurso)
+...
+```
+
+El enriquecimiento batch del startup pasa a ser opcional (puede desactivarse).
+
+### Fase 3 — Webhook products/update e eliminación del batch (cuando el webhook esté implementado)
+
+- Invalidar Redis al recibir `products/update`
+- Eliminar `_enrich_catalog_with_shopify_prices()` del startup
+- Eliminar `CLP_RATES` del código
+- Eliminar el campo `market_prices` del pickle TF-IDF
+
+---
+
+## Tabla comparativa
+
+| Dimensión | Sistema actual | Propuesta anterior (Redis batch) | Propuesta revisada (lazy) |
+| --- | --- | --- | --- |
+| Tiempo startup | 9 min background | 9 min (1ª vez) / ~1s (2ª+) | 0 min |
+| Latencia primer request producto nuevo | 0ms (usa CLP_RATES) | 0ms (usa CLP_RATES) | ~200ms (amortizado con Claude) |
+| Latencia requests posteriores | 0ms (ya enriquecido) | 0ms | ~1ms (Redis) |
+| Frescura de precios | Solo en restart | Cada 1 hora | Cada 1 hora (TTL) + webhook inmediato |
+| Carga Shopify en escalado | Lineal (instancias × 9 min) | Constante (1 batch/hora) | Constante (solo productos demandados) |
+| Riesgo si Redis falla | Ninguno (RAM funciona) | 9 min de proceso | Fallback a CLP_RATES |
+| CLP_RATES como deuda técnica | Siempre activo | Activo durante TTL | Eliminado en Fase 3 |
+| Complejidad de implementación | Ya implementado | Baja | Media |
+
+---
+
+## Conclusión
+
+La propuesta revisada (resolución lazy) es superior en todos los ejes:
+
+- Elimina los 9 minutos completamente
+- No añade carga innecesaria a Shopify
+- Escala linealmente con el tráfico real, no con el catálogo
+- Cada fase es deployable independientemente con riesgo mínimo
+- Converge con el patrón de la industria (ningún sistema hace batch al startup)
+
+**La Fase 1 puede implementarse hoy.** Las Fases 2 y 3 siguen el ritmo del webhook `products/update`.

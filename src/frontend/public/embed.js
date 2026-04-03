@@ -3,11 +3,15 @@
   
   // Configuration
   const WIDGET_VERSION = '1.0.0';
+  // FIX v2.2.0 (29/03/2026): Mercado primario es Chile (CL), no US.
+  // El Liquid snippet de Shopify inyecta data-market-id dinamicamente para
+  // cada mercado activo. Este default aplica SOLO si el snippet no lo setea
+  // (ej. modo standalone fuera de Shopify).
   const DEFAULT_CONFIG = {
     theme: 'light',
     position: 'bottom-right',
-    marketId: 'US',
-    language: 'en'
+    marketId: 'CL',
+    language: 'es'
   };
 
   // Load widget script
@@ -76,7 +80,7 @@
         initWidget({
           apiUrl,
           apiKey,
-          marketId: currentScript.getAttribute('data-market-id') || 'US',
+          marketId: currentScript.getAttribute('data-market-id') || 'CL',  // FIX v2.2.0: default CL
           theme: currentScript.getAttribute('data-theme') || 'light',
         });
       }

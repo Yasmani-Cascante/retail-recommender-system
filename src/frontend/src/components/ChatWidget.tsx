@@ -5,6 +5,7 @@ import { MessageInput } from './MessageInput';
 import { ConversationAPI } from '../services/api';
 import type { WidgetConfig, Message, ConversationState } from '../types/widget';
 import styles from './ChatWidget.module.css';
+import AnimatedFloatFormEnhanced from "./AnimatedFloatForm";
 
 interface ChatWidgetProps {
   config: WidgetConfig;
@@ -83,9 +84,21 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   return (
     <>
       {/* ── Panel de chat ─────────────────────────────── */}
+      {/* {isOpen && !state.isMinimized && (
+        <div className={styles.float_form_back_wrapper}>
+          <div className={styles.float_form_back}></div>
+        </div>
+      )} */}
+
       {isOpen && !state.isMinimized && (
         <div className={styles.panel} role="dialog" aria-label="Asistente de moda">
+          {/* <div className={styles.float_form_front}></div> */}
+          <div className={styles.float_form_wrapper}>
+            {/* <div className={styles.float_form}></div> */}
+            {/* <div className={styles.float_form_small}></div> */}
+          </div>
           
+          {/* <AnimatedFloatFormEnhanced /> */}
           {/* Header */}
           <div className={styles.header}>
             <div className={styles.headerLeft}>

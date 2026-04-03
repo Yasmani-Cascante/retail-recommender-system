@@ -13,6 +13,8 @@ class MarketConfigService:
     """Market Configuration Service Implementation"""
     
     def __init__(self):
+        # FIX v2.1.0 (27/03/2026): Añadido "CL" (Chile, CLP).
+        # CL es el mercado primario de AI-Shoppings.
         self.market_configs = {
             "US": MarketContext(
                 market_id="US",
@@ -65,9 +67,27 @@ class MarketConfigService:
                 conversation_style="enthusiastic_helpful",
                 ai_personality="energetic_local",
                 local_events=["dia_muertos", "cinco_mayo"]
-            )
+            ),
+            # FIX v2.1.0 (27/03/2026): Chile — mercado primario de AI-Shoppings
+            "CL": MarketContext(
+                market_id="CL",
+                currency="CLP",
+                language="es",
+                tier=MarketTier.TIER_2,
+                cultural_preferences={
+                    "communication_style": "warm_personal",
+                    "color_preferences": ["neutral", "classic"],
+                },
+                regulatory_requirements={
+                    "tax_display": "inclusive",  # IVA incluido en CLP
+                    "return_policy_days": 10,    # Ley del Consumidor de Chile
+                },
+                conversation_style="conversational_warm",
+                ai_personality="friendly_local",
+                local_events=["cyber_monday_cl", "navidad"]
+            ),
         }
-    
+
     async def get_market_context(self, market_id: str) -> MarketContext:
         """Service boundary: Market configuration lookup"""
         return self.market_configs.get(market_id, self.market_configs["US"])

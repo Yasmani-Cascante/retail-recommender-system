@@ -150,155 +150,6 @@ def extract_answer_from_claude_response(claude_response: Any) -> str:
         return f"Error processing response: {str(e)}"
 
 # ============================================================================
-# FIX (27/03/2026): sanitize_rec_for_frontend — red de seguridad última milla
-# ============================================================================
-
-def sanitize_rec_for_frontend(rec: Any) -> Dict[str, Any]:
-    """
-    Garantiza que cada recomendación tenga los campos mínimos que el frontend
-    espera, independientemente del path que la generó.
-
-    PROBLEMA: Dos paths distintos producen estructuras diferentes:
-
-      Path A — Primera ronda (sin diversificación):
-        HybridRecommender → MCPPersonalizationEngine → MarketAdapter
-        MarketAdapter normaliza price, currency, score, image_url.
-        Los campos llegan correctamente al frontend.
-
-      Path B — Segunda ronda (con diversificación):
-        ImprovedFallbackStrategies.smart_fallback()
-        Construye dicts con **product (catálogo TF-IDF) + score + metadata.
-        El catálogo fue indexado para búsqueda textual, no para presentación.
-        'price' puede estar ausente si Shopify devolvió el precio en
-        variants[0].price y el catálogo no lo aplanó al indexar.
-        El handler tiene Fase 5 de market adaptation, pero si market_adapter
-        falla o no está disponible, los campos crudos llegan al router.
-
-    SOLUCIÓN: Aplicar este saneado en el router sobre TODAS las recomendaciones
-    antes de construir el response. Principio tolerant reader: acepta cualquier
-    estructura que llegue y emite siempre la estructura canónica que
-    ProductCard.tsx espera.
-
-    Invariantes garantizados:
-      • id          — str non-empty  (fallback: 'unknown')
-      • title       — str non-empty  (fallback: 'Producto')
-      • price       — float >= 0     (acepta price o market_price; NaN-safe)
-      • currency    — str non-empty  (fallback: 'EUR' para mercado ES)
-      • score       — float en [0,1] (acepta score, hybrid_score, market_score…)
-      • description — str sin HTML, máx 300 chars
-      • image_url   — str | None     (acepta image_url, imageUrl, images[0])
-      • url         — str | None     (opcional, para el link de ProductCard)
-
-    Los campos extra útiles (reason, market_adapted, recommendation_type, etc.)
-    se preservan tal cual — no se descarta información que el frontend use.
-    """
-    import re as _re
-    import os as _os
-
-    # ── Normalizar a dict puro ────────────────────────────────────────────────
-    # El handler puede retornar Pydantic models, dataclasses o dicts crudos.
-    if not isinstance(rec, dict):
-        if hasattr(rec, 'model_dump'):
-            rec = rec.model_dump()
-        elif hasattr(rec, '__dict__'):
-            rec = vars(rec)
-        else:
-            try:
-                rec = dict(rec)
-            except Exception:
-                rec = {}
-
-    # ── price ─────────────────────────────────────────────────────────────────
-    # Acepta 'price' (primera ronda, ya adaptado) o 'market_price' (adapter).
-    # Catálogo TF-IDF puede tener price=None o ausente → default 0.0.
-    raw_price = rec.get("price") if rec.get("price") is not None else rec.get("market_price")
-    try:
-        price = float(raw_price) if raw_price is not None else 0.0
-        if not (price >= 0):  # captura NaN y negativos
-            price = 0.0
-    except (TypeError, ValueError):
-        price = 0.0
-
-    # ── score ─────────────────────────────────────────────────────────────────
-    # Path de diversificación emite 'score'; personalización emite
-    # 'hybrid_score' o 'market_score'. Acepta cualquiera de los cinco.
-    raw_score = (
-        rec.get("score")
-        or rec.get("market_score")
-        or rec.get("hybrid_score")
-        or rec.get("similarity_score")
-        or rec.get("viability_score")
-    )
-    try:
-        score = float(raw_score) if raw_score is not None else 0.5
-        score = max(0.0, min(1.0, score))
-    except (TypeError, ValueError):
-        score = 0.5
-
-    # ── description ───────────────────────────────────────────────────────────
-    # El catálogo puede guardar body_html con etiquetas HTML residuales.
-    raw_desc = str(rec.get("description") or rec.get("body_html") or "")
-    description = _re.sub(r'<[^>]+>', '', raw_desc).strip()[:300]
-
-    # ── image_url ─────────────────────────────────────────────────────────────
-    # Shopify puede devolver el campo como image_url, imageUrl, o images[].
-    image_url: Optional[str] = None
-    for key in ("image_url", "imageUrl"):
-        val = rec.get(key)
-        if isinstance(val, str) and val:
-            image_url = val
-            break
-    if image_url is None:
-        images = rec.get("images")
-        if isinstance(images, list) and images:
-            # images puede ser lista de strings o lista de dicts {"src": ...}
-            first = images[0]
-            image_url = first if isinstance(first, str) else (
-                first.get("src") or first.get("url") if isinstance(first, dict) else None
-            )
-
-    # ── url ───────────────────────────────────────────────────────────────────
-    # Use the url field if already present, otherwise construct from handle.
-    product_url: Optional[str] = None
-    existing_url = rec.get("url")
-    if isinstance(existing_url, str) and existing_url:
-        product_url = existing_url
-    else:
-        handle = rec.get("handle") or ""
-        if handle:
-            shop_url = _os.environ.get("SHOPIFY_SHOP_URL", "").strip()
-            if shop_url:
-                shop_url = shop_url.rstrip("/").removeprefix("https://").removeprefix("http://")
-                product_url = f"https://{shop_url}/products/{handle}"
-
-    # ── Campos a descartar del spread ─────────────────────────────────────────
-    # Nombres alternativos ya normalizados arriba; no enviarlos duplicados.
-    _drop = frozenset({
-        "imageUrl", "images", "body_html",
-        "market_price", "market_score", "hybrid_score",
-        "similarity_score", "viability_score",
-        "localized_title",
-    })
-
-    return {
-        "id":          str(rec.get("id") or "unknown"),
-        "title":       str(rec.get("title") or rec.get("localized_title") or "Producto"),
-        "description": description,
-        "price":       price,
-        "currency":    str(rec.get("currency") or "EUR"),
-        "category":    str(rec.get("category") or rec.get("product_type") or ""),
-        "score":       score,
-        "image_url":   image_url,
-        "url":         product_url,
-        # Preservar campos extra útiles sin duplicar los ya normalizados arriba.
-        **{k: v for k, v in rec.items() if k not in (
-            "id", "title", "description", "price", "currency",
-            "category", "score", "image_url", "url",
-            *_drop
-        )},
-    }
-
-# ============================================================================
 
 # Modelos de datos para la API
 class ConversationRequest(BaseModel):
@@ -976,18 +827,23 @@ async def process_conversation(
                     # Continue with response even if state fails
                     
                 # ✅ CONSTRUIR respuesta con datos del handler
-                # FIX (27/03/2026): Reemplaza el loop de conversión manual.
-                # sanitize_rec_for_frontend() garantiza que TODAS las recomendaciones
-                # —tanto de primera ronda (MarketAdapter) como de segunda ronda
-                # (ImprovedFallbackStrategies.smart_fallback / catálogo TF-IDF)—
-                # emitan los invariantes que ProductCard.tsx requiere:
-                # price float>=0, score [0,1], description sin HTML, image_url str|None.
-                safe_recs = [sanitize_rec_for_frontend(rec) for rec in recommendations]
-
-                logger.info(f"✅ sanitize_rec_for_frontend aplicado a {len(safe_recs)} recs")
-                if safe_recs:
-                    prices = [r.get('price', 0) for r in safe_recs]
-                    logger.info(f"   Price sample (primeros 3): {prices[:3]}")
+                # FIX (23/03/2026): Sanitizar recommendations a dicts puros.
+                # El handler puede retornar Pydantic models o custom objects.
+                # Pydantic v2 exige List[Dict] — cualquier objeto no-dict causa
+                # ResponseValidationError: 1 validation error (recommendations.0).
+                safe_recs = []
+                for rec in recommendations:
+                    if isinstance(rec, dict):
+                        safe_recs.append(rec)
+                    elif hasattr(rec, '__dict__'):
+                        safe_recs.append(vars(rec))
+                    elif hasattr(rec, 'model_dump'):
+                        safe_recs.append(rec.model_dump())
+                    else:
+                        try:
+                            safe_recs.append(dict(rec))
+                        except Exception:
+                            logger.warning(f"Skipping non-serializable recommendation: {type(rec)}")
 
                 return {
                     "answer": str(ai_response) if ai_response is not None else "",
@@ -1421,35 +1277,11 @@ async def process_conversation(
                             self.intent_signals = {}
                             self.conversation_history = []
                             self.currency = 'USD' if conversation.market_id == 'US' else 'EUR'
-
-                            # === F-04: PERFIL DE CLIENTE (se rellena post-construccion) ===
-                            self.customer_profile = None  # poblado abajo si hay customer_id
-
+                            
                             logger.debug(f"✅ Created CompleteMCPContext with all {len(self.__dict__)} required attributes")
-
+                    
                     mcp_context = CompleteMCPContext()
                     logger.info("✅ Created complete MCP context with ALL required attributes including engagement_score")
-
-                    # ── F-04: Lazy fetch del perfil de cliente ─────────────────────
-                    # customer_id llega via widget_context (inyectado desde Shopify
-                    # Liquid: window.shopifyCustomer.id en theme.liquid).
-                    # Si no hay customer_id (usuario anonimo) el servicio retorna None
-                    # y el chat continua sin personalizacion de historial.
-                    try:
-                        widget_ctx = conversation.widget_context or {}
-                        customer_id_raw = widget_ctx.get("customer_id") or widget_ctx.get("customerId")
-                        if customer_id_raw:
-                            from src.api.factories.service_factory import ServiceFactory as _SF
-                            _cps = await _SF.get_customer_profile_service()
-                            mcp_context.customer_profile = await _cps.get_profile(str(customer_id_raw))
-                            if mcp_context.customer_profile:
-                                logger.info(
-                                    "customer_profile_injected",
-                                    customer_id=customer_id_raw,
-                                    ltv_tier=mcp_context.customer_profile.get("ltv_tier"),
-                                )
-                    except Exception as _cp_err:
-                        logger.warning(f"F-04 customer profile fetch failed (graceful degradation): {_cp_err}")
                 
                 # ✅ CORRECCIÓN: Aplicar personalización con fallback robusto y performance optimization
                 try:
@@ -1992,12 +1824,49 @@ async def get_market_recommendations(
             recommendations = []
             market_context = {}
     
-        # FIX (27/03/2026): Reemplaza el loop manual de extracción de campos.
-        # sanitize_rec_for_frontend() normaliza price, score, image_url y description
-        # independientemente del path que produjo la recomendación (primera ronda
-        # MarketAdapter o segunda ronda ImprovedFallbackStrategies / catálogo TF-IDF).
-        # Se preserva 'reason' como campo extra a través del spread **{k:v}.
-        simplified_recs = [sanitize_rec_for_frontend(rec) for rec in recommendations]
+        simplified_recs = []
+        for rec in recommendations:
+            reason = (
+                rec.get("reason") or
+                rec.get("explanation") or
+                rec.get("recommendation_reason") or
+                (rec.get("metadata", {}).get("reason") if isinstance(rec.get("metadata"), dict) else None) or
+                f"Recommended based on similarity to {rec.get('title', 'your preferences')}"
+            )
+            reason = str(reason).strip() if reason else "Recommended for you"
+
+            if hasattr(rec, 'product'):
+                product = rec.product
+                simplified_rec = {
+                    "id": rec.id,
+                    "title": rec.localized_title or rec.title,
+                    "price": rec.price,
+                    "currency": rec.currency,
+                    "score": rec.similarity_score or 0.0,
+                    "reason": reason,
+                    "market_adapted": True,
+                    "source": getattr(rec, 'metadata', {}).get("source", "unknown")
+                }
+            else:
+                product = rec.get("product", {})
+                simplified_rec = {
+                    "id": rec.get("id"),
+                    "title": rec.get("localized_title") or rec.get("title"),
+                    "price": rec.get("price"),
+                    "currency": rec.get("currency"),
+                    "score": rec.get("similarity_score", 0.0),
+                    "reason": reason,
+                    "market_adapted": True,
+                    "source": rec.get("metadata", {}).get("source", "mcp")
+                }
+            
+            # try:
+            #     adapter = get_market_adapter()
+            #     simplified_rec = await adapter.adapt_product(simplified_rec, market_id)
+            # except Exception as e:
+            #     logger.error(f"Market adaptation failed: {e}")
+
+            simplified_recs.append(simplified_rec)
             
         response = {
             "product_id": validated_product_id,
@@ -2258,10 +2127,9 @@ async def process_conversation_fixed(
         )
         
         # Transform to expected ConversationResponse format
-        # FIX (27/03/2026): sanitize_rec_for_frontend aplicado aquí también.
         return {
             "answer": response["ai_response"],
-            "recommendations": [sanitize_rec_for_frontend(r) for r in response.get("recommendations", [])],
+            "recommendations": response["recommendations"],
             "session_metadata": {
                 "session_id": response["metadata"].get("session_id", f"fixed_{int(time.time())}"),
                 "turn_number": 1,
@@ -2334,8 +2202,7 @@ async def get_market_recommendations_fixed(
             "product_id": product_id,
             "market_id": market_id,
             "user_id": user_id,
-            # FIX (27/03/2026): sanitize_rec_for_frontend aplicado aquí también.
-            "recommendations": [sanitize_rec_for_frontend(r) for r in response.get("recommendations", [])],
+            "recommendations": response["recommendations"],
             "ai_response": response["ai_response"],
             "metadata": {
                 **response["metadata"],

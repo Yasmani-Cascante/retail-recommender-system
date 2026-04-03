@@ -171,6 +171,9 @@ async def handle_shopify_webhook(
         "pages/update",
         "pages/delete",
         "translations/update",
+        # F-04: invalidacion de cache de perfil de cliente
+        "customers/create",
+        "customers/update",
     }
 
     topic = x_shopify_topic or ""
@@ -196,7 +199,17 @@ async def handle_shopify_webhook(
     # pages/* envían { "id": <int>, "handle": "<str>", ... }
     # translations/update envía { "locale": "<str>", "resource_id": <int>,
     #                              "resource_type": "Page", ... }
-    if topic in ("pages/create", "pages/update", "pages/delete"):
+    # customers/* envían { "id": <int>, "email": "<str>", ... }
+    if topic in ("customers/create", "customers/update"):
+        customer_id = payload.get("id")
+        if not customer_id:
+            logger.warning("webhook_missing_customer_id", topic=topic, payload_keys=list(payload.keys()))
+            raise HTTPException(status_code=400, detail="Missing customer ID in payload")
+        # Valores dummy para los parametros de pages que no aplican aqui
+        page_id = customer_id
+        page_handle = ""
+
+    elif topic in ("pages/create", "pages/update", "pages/delete"):
         page_id = payload.get("id")
         page_handle = payload.get("handle", "")
 

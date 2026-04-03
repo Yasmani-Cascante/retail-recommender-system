@@ -1,0 +1,262 @@
+# Análisis Arquitectónico — Opción A Enriquecimiento de Precios Shopify
+
+# Evaluación Arquitectónica: Enriquecimiento de Precios Shopify (Opción A)
+
+> **Fecha:** 02/04/2026 | **Versión:** v2.1.0 | **Autor:** Architecture Review
+> 
+
+---
+
+## 1. Descripción del sistema actual
+
+Cada vez que el servidor arranca, el sistema lanza un background task (`_enrich_catalog_with_shopify_prices`) que:
+
+1. Toma el catálogo TF-IDF en memoria (3.062 productos desde pickle)
+2. Lo divide en **103 batches de 30 productos**
+3. Por cada batch, ejecuta **una query GraphQL** a Shopify Admin API con `contextualPricing` para los 4 mercados (CL, CH, MX, ES) → 120 aliases por query
+4. Inyecta el campo `market_prices` en cada producto en memoria
+5. Tiempo total: **~9 minutos en producción**
+
+Durante esos 9 minutos, el sistema usa tasas de conversión hardcodeadas (`CLP_RATES`) como fallback. Una vez completo, usa los precios directamente de Shopify.
+
+```
+Estructura del campo inyectado:
+product["market_prices"] = {
+    "CL": {"price": 160000.0, "currency": "CLP"},
+    "CH": {"price": 26.0,     "currency": "CHF"},
+    "MX": {"price": 3200.0,  "currency": "MXN"},
+    "ES": {"price": 159.0,   "currency": "EUR"}
+}
+```
+
+---
+
+## 2. Evaluación del enfoque híbrido actual
+
+### ✅ Lo que funciona bien
+
+- **Startup no bloqueante:** El `asyncio.create_task()` permite que el servidor esté listo en ~3 segundos. Correcto.
+- **Fallback funcional:** Los `CLP_RATES` hardcodeados funcionan como degradación graciosa durante la ventana de enriquecimiento.
+- **Datos correctos una vez completo:** Shopify es la fuente de verdad de precios. Una vez inyectados, los precios son exactos.
+- **Cero conversión interna post-enriquecimiento:** El objetivo original de Opción A se cumple *después* de los 9 minutos.
+
+### ❌ Problemas del enfoque actual
+
+#### Problema 1: La ventana de inconsistencia es inaceptablemente larga
+
+Durante **9 minutos tras cada restart**, el sistema muestra precios calculados con tasas hardcodeadas. En producción, los restarts ocurren en:
+
+- Cada nuevo deploy (Cloud Run)
+- Cada escalado automático (nueva instancia)
+- Cada crash/recovery
+
+En un sistema de e-commerce, mostrar precios incorrectos durante 9 minutos por instancia es un **riesgo de negocio real**: el usuario ve CHF 23.14 (tasa hardcodeada 0.00089) en lugar de CHF 26.00 (precio real de Shopify). Si hace clic en "comprar", verá un precio diferente en el checkout de Shopify. Eso es **inconsistencia de precios visible al usuario**.
+
+#### Problema 2: El proceso derrota su propio propósito
+
+La Opción A se implementó *precisamente para no mantener tasas de cambio actualizadas*. Sin embargo:
+
+- Durante ~9 min post-startup: el sistema **sí usa** `CLP_RATES` hardcodeadas
+- Si el servidor tiene restarts frecuentes (instancias efímeras de Cloud Run): el sistema pasa **más tiempo en fallback que en Opción A**
+- Las `CLP_RATES` siguen existiendo en el código como deuda técnica activa
+
+**El objetivo de Opción A solo se cumple parcialmente.**
+
+#### Problema 3: El diseño acopla el catálogo de precios al ciclo de vida del proceso
+
+Los precios viven **en memoria RAM**, inyectados en el pickle TF-IDF. Esto significa:
+
+- Si el proceso muere y se reinicia → 9 minutos de ventana nuevamente
+- Si escala a 2 instancias → **cada instancia hace 103 batches GraphQL independientes** → duplica la carga sobre Shopify Admin API
+- Si escala a 5 instancias → 5 × 103 = 515 batches simultáneos → throttling masivo → ventana aún mayor
+
+#### Problema 4: Fragilidad ante el throttling de Shopify
+
+Logs confirmados: 4 eventos de throttling en una sola sesión. El Shopify Admin GraphQL API tiene un bucket de **1.000 puntos** que se recarga a **50 puntos/segundo**. Cada query de 30 productos × 4 mercados = 120 aliases consume ~12 puntos. Con la pausa obligatoria de 0.5s entre batches, el sistema está operando cerca del límite de rate. Cualquier carga adicional (otras llamadas al sistema, otras instancias) puede prolongar los 9 minutos a 15-20 minutos.
+
+#### Problema 5: El catálogo no se actualiza después del enriquecimiento inicial
+
+Una vez que los 9 minutos terminan, `market_prices` está inyectado y **nunca se refresca**. Si Shopify cambia un precio durante el día (descuento, promoción, ajuste de tipo de cambio), el sistema seguirá mostrando el precio stale hasta el próximo restart. Esto es un **gap silencioso de frescura de datos** sin ningún mecanismo de alerta.
+
+---
+
+## 3. Análisis del problema de los 9 minutos
+
+### Desglose matemático
+
+```
+Productos:     3.062
+Batch size:    30 productos × 4 mercados = 120 aliases/query
+Batches:       ceil(3062/30) = 103 batches
+Por batch:     ~1.5s request + 0.5s pausa obligatoria = 2.0s
+Base teórica:  103 × 2.0s = 206s (~3.4 min)
+Con throttling (4 retries × 2s wait): +8s adicionales
+Overhead real: ~480s total (~8 min)
+Observado:     ~473s = 7.9 min (confirmado en logs de producción)
+```
+
+La pausa de **0.5s entre batches es estructuralmente obligatoria**: sin ella, el bucket de Shopify se agota en ~20 batches y el throttling acumula backoff exponencial (2s, 4s, 8s, 16s). El tiempo de 9 minutos **no es un bug de implementación — es el coste real de consultar 3.062 × 4 = 12.248 precios individuales vía API REST-style**.
+
+### ¿Es aceptable en producción?
+
+**No, bajo dos condiciones que ya están presentes:**
+
+1. **Cloud Run escala instancias bajo demanda:** Cada nueva instancia repite los 9 minutos. Con tráfico variable, el sistema puede estar siempre en ventana de fallback en alguna instancia.
+2. **El catálogo crece:** Con 3.062 productos y 4 mercados ya tarda 9 minutos. Con 5.000 productos o 6 mercados, serían 20-30 minutos.
+
+---
+
+## 4. Propuestas de mejora
+
+### Propuesta 1 — Caché de precios en Redis con TTL (recomendada para corto plazo)
+
+**Idea:** En lugar de inyectar `market_prices` en RAM por producto, almacenar un único hash `shopify:prices:{market_id}` en Redis con todos los precios del mercado. TTL de 1 hora.
+
+```
+Redis key:  shopify:prices:CH
+Value:      {"9978700071221": 26.0, "9978782712117": 29.0, ...}
+TTL:        3600s (refresco automático cada hora)
+```
+
+**Flujo:**
+
+1. Al startup: hacer el enriquecimiento **una sola vez** y guardar en Redis
+2. En cada request: `_format_price_for_market()` lee de Redis en ~1ms (ya conectado)
+3. Nuevas instancias: leen de Redis → **ventana de 0 segundos** en lugar de 9 minutos
+4. TTL de 1h: los precios se actualizan solos sin restart
+
+**Beneficios:**
+
+- El enriquecimiento de 9 minutos solo ocurre **una vez** (cuando Redis está vacío)
+- Nuevas instancias son instantáneas
+- Precios frescos cada hora sin intervención humana
+- Elimina la ventana de inconsistencia para instancias subsiguientes
+
+**Limitación:** El primer startup sigue tardando 9 minutos. Pero solo ocurre una vez por día (cuando Redis expira), no por cada instancia.
+
+### Propuesta 2 — Webhooks de precio de Shopify (recomendada para mediano plazo)
+
+Shopify emite webhooks `products/update` cuando cambia un precio. Con el sistema de webhooks M4 ya implementado en el proyecto, es posible:
+
+1. Suscribirse a `products/update`
+2. Cuando llega un webhook → actualizar solo los precios del producto afectado en Redis
+3. El catálogo en memoria siempre tiene precios frescos sin batch polling
+
+**Resultado:** Los precios se actualizan en segundos cuando Shopify los cambia, en lugar de esperar el próximo restart o el TTL de Redis.
+
+**Prerequisito:** Verificar que `products/update` está en la lista de webhooks registrables (actualmente los webhooks de pages están limitados, pero los de products sí son estándar en Shopify).
+
+### Propuesta 3 — Consulta lazy por producto (solución de emergencia)
+
+En lugar de pre-enriquecer todo el catálogo al startup, consultar el precio de Shopify **solo cuando un producto específico va a ser mostrado al usuario**.
+
+```python
+async def _format_price_for_market(rec, market_id, market_currency):
+    # 1. Si ya tiene market_prices en memoria → usarlo
+    if rec.get("market_prices", {}).get(market_id):
+        return rec["market_prices"][market_id]
+    # 2. Si no → consultar Redis cache
+    redis_price = await redis.get(f"price:{rec['id']}:{market_id}")
+    if redis_price:
+        return json.loads(redis_price)
+    # 3. Si no está en Redis → consultar Shopify GraphQL para este producto
+    price = await shopify_client.get_price(rec['id'], market_id)
+    await redis.set(f"price:{rec['id']}:{market_id}", json.dumps(price), ttl=3600)
+    return price
+```
+
+**Beneficio:** Cero tiempo de startup. Los precios se cachean progresivamente.
+
+**Limitación:** El primer usuario que pide cada producto tiene ~300ms de latencia extra por la consulta a Shopify. No recomendado como solución permanente, pero es una alternativa de transición.
+
+### Propuesta 4 — Bulk Price Export de Shopify (solución de largo plazo)
+
+Shopify tiene una API de Bulk Operations que permite exportar **todos los precios de todos los productos** en una sola operación asíncrona:
+
+```graphql
+mutation {
+  bulkOperationRunQuery(query: """
+    { products { contextualPricing(context: {country: CH}) { ... } } }
+  """)
+}
+```
+
+Esta operación devuelve un archivo JSONL con todos los datos. Para 3.062 productos: ~5-10 segundos en lugar de 9 minutos. Sin throttling porque es una operación batch del lado de Shopify.
+
+**Limitación:** La API Bulk Operations requiere polling para saber cuándo está lista, y la respuesta es un archivo que hay que descargar. Más complejo de implementar, pero el resultado es dramáticamente mejor en performance.
+
+---
+
+## 5. Recomendación final
+
+### Decisión: **Modificar el enfoque — no rediseñarlo completamente**
+
+El diagnóstico es claro: la Opción A tiene la dirección correcta (Shopify como fuente de verdad) pero la implementación tiene un **defecto arquitectónico fundamental**: los precios viven en RAM acoplados al ciclo de vida del proceso. Esto convierte un proceso de 9 minutos que debería ocurrir una vez en un proceso que se repite en cada instancia.
+
+**La solución de mínimo esfuerzo y máximo impacto es la Propuesta 1: Redis como capa de caché de precios.**
+
+### Plan de implementación recomendado (por fases)
+
+#### Fase 1 — Corto plazo: Redis como caché de precios (1-2 días)
+
+```
+Impacto:    Ventana de inconsistencia: 9 min → 0 min para instancias 2+
+Esfuerzo:   Bajo — modificar _enrich_catalog_with_shopify_prices()
+Riesgo:     Bajo — Redis ya está integrado y funciona
+```
+
+Cambios concretos:
+
+1. Al finalizar el enriquecimiento, además de inyectar en RAM, guardar en Redis:
+    
+    ```python
+    await redis_service.set(
+        "shopify:prices:all",
+        json.dumps(market_price_map),
+        ttl=3600  # 1 hora
+    )
+    ```
+    
+2. Al inicio del enriquecimiento, verificar si Redis ya tiene datos frescos:
+    
+    ```python
+    cached = await redis_service.get("shopify:prices:all")
+    if cached:
+        market_price_map = json.loads(cached)
+        # Inyectar directamente sin llamar a Shopify
+        # Tiempo: ~1 segundo en lugar de 9 minutos
+    ```
+    
+
+#### Fase 2 — Mediano plazo: Webhook products/update (1 semana)
+
+Suscribirse a `products/update` de Shopify para mantener Redis actualizado en tiempo real cuando cambian precios, sin esperar el TTL de 1 hora.
+
+#### Fase 3 — Largo plazo: Bulk Operations API (opcional, si el catálogo crece)
+
+Si el catálogo supera 5.000 productos o se añaden más mercados, migrar el enriquecimiento inicial a la API Bulk Operations de Shopify para mantener el proceso de primera carga bajo 30 segundos.
+
+### Por qué no rediseñar completamente
+
+El rediseño completo (abandonar Opción A, volver a tasas de cambio internas, o adoptar un microservicio de precios) implicaría:
+
+- Volver a la deuda técnica original (tasas hardcodeadas desactualizándose)
+- Semanas de desarrollo para un microservicio de pricing
+- Riesgo de regresión en funcionalidad que ya funciona correctamente
+
+La Propuesta 1 resuelve el 80% del problema con el 10% del esfuerzo. Es la decisión correcta para un sistema en producción.
+
+---
+
+## 6. Resumen ejecutivo
+
+| Dimensión | Estado actual | Estado con Propuesta 1 |
+| --- | --- | --- |
+| Tiempo de enriquecimiento (1ª instancia) | 9 min | 9 min (sin cambio) |
+| Tiempo de enriquecimiento (instancias 2+) | 9 min cada una | ~1 segundo |
+| Ventana de inconsistencia de precios | 9 min por instancia | 9 min solo en el primer arranque del día |
+| Frescura de precios | Solo en restart | Cada 1 hora (TTL Redis) |
+| Carga sobre Shopify API en escalado | Lineal (5 instancias = 515 batches) | Constante (1 enriquecimiento/hora) |
+| Mantenimiento de tasas de cambio | CLP_RATES como fallback (deuda técnica) | CLP_RATES solo si Redis y Shopify ambos fallan |
+
+**El enfoque híbrido actual es arquitectónicamente correcto en su dirección pero incompleto en su implementación. La adición de Redis como capa de caché de precios lo convierte en una solución sólida para el horizonte de 6-12 meses.**

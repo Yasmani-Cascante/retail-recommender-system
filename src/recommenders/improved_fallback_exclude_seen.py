@@ -1067,6 +1067,7 @@ class ImprovedFallbackStrategies:
                 "price": price,
                 "category": product.get("product_type", ""),
                 "score": score,
+                "handle": product.get("handle", ""),
                 "recommendation_type": "popular_fallback"
             })
         
@@ -1212,6 +1213,7 @@ class ImprovedFallbackStrategies:
                             "price": price,
                             "category": product.get("product_type", ""),
                             "score": 0.5,
+                            "handle": product.get("handle", ""),
                             "recommendation_type": "smart_diverse_fallback"
                         })
                     
@@ -1278,6 +1280,7 @@ class ImprovedFallbackStrategies:
                 "price": price,
                 "category": product.get("product_type", ""),
                 "score": 0.5,
+                "handle": product.get("handle", ""),
                 "recommendation_type": "diverse_fallback"
             })
         
@@ -1361,9 +1364,17 @@ class ImprovedFallbackStrategies:
                         # Score decreciente: más alto para primeros productos
                         # Rango: 0.95 (primero) → 0.70 (último)
                         score = 0.95 - (i * 0.25 / n)
-                        
+
                         recommendations.append({
                             **product,
+                            # FIX (27/03/2026): sobrescribir price explicitamente.
+                            # **product puede traer price=None (catalogo TF-IDF crudo).
+                            # safe_extract_price() sube variants[0].price al nivel
+                            # raiz si price es None o 0, garantizando que
+                            # sanitize_rec_for_frontend y ProductCard.tsx reciban
+                            # el valor correcto incluso si tfidf aun no fue
+                            # reentrenado con _normalize_product_price.
+                            "price": safe_extract_price(product),
                             "score": score,
                             "recommendation_type": "query_category_driven_multi",
                             "detected_categories": query_categories,
@@ -1437,9 +1448,13 @@ class ImprovedFallbackStrategies:
                     for i, product in enumerate(personalized_products):
                         # Score decreciente: 0.9 → 0.5
                         score = 0.9 - (i * 0.4 / n)
-                        
+
                         recommendations.append({
                             **product,
+                            # FIX (27/03/2026): mismo razonamiento que Prioridad 1.
+                            # safe_extract_price() sube variants[0].price al nivel
+                            # raiz si product["price"] es None (catalogo TF-IDF crudo).
+                            "price": safe_extract_price(product),
                             "score": score,
                             "recommendation_type": "personalized_fallback",
                             "based_on_categories": preferred_categories

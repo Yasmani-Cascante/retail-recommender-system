@@ -6,15 +6,17 @@
 /* ── Panel flotante ─────────────────────────────────── */
 .panel {
   position: fixed;
+  /* display: none !important; */
   bottom: 6vh;
   right: 20px;
   /* width: 360px; */
   width: 420px;
-  height: 650px;
-  background: #ffffff;
+  height: 720px;
+  /* background: #ffffff; */
+  background: #f8f7f5;
   border-radius: 6px;
   border: none;
-  border: 1px solid #1c1c1c;
+  /* border: 1px solid #1c1c1c; */
   box-shadow:
     0 20px 60px rgba(0, 0, 0, 0.15),
     0 4px 16px rgba(0, 0, 0, 0.08);
@@ -25,6 +27,90 @@
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   animation: panelSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
+
+.float_form_wrapper{
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 80%, #fcf3f0 100%);
+    overflow: hidden;
+    height: 100%;
+    width: 100%;
+    z-index: -2;
+}
+/* .float_form{
+  position: absolute;
+  top: 100px;
+  right: 0px;
+  width: 420;
+  width: 100%;
+  height: 100%;
+  width: 180px;
+  height: 180px;
+  filter: blur(10px);
+  background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 25%, #ffa178cc 100%);
+
+  border-radius: 100px;
+ 
+  z-index: -1;
+} */
+
+.float_form_back_wrapper {
+  position: fixed;
+  bottom: 6vh;
+  right: 20px;
+  /* width: 360px; */
+  width: 420px;
+  height: 720px;
+  /* background: #ffffff; */
+  background: transparent;
+  border-radius: 6px;
+  border: none;
+  /* border: 1px solid #1c1c1c; */
+  /* box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.15),
+    0 4px 16px rgba(0, 0, 0, 0.08); */
+  display: flex;
+  flex-direction: column;
+  z-index: 2047483646;
+  /* background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 25%, #78e0ffcc 100%); */
+
+}
+/* .float_form_back{
+  position: absolute;
+  bottom: 0px;
+  left: -5%;
+  width: 400px;
+  height: 180px;
+  filter: blur(12px);
+  background:  #f7d8ce;
+  border-radius: 100px;
+  z-index: -1;
+} */
+/* .float_form_front {
+  position: absolute;
+  bottom: 0px;
+  left: 0;
+
+  width: 200px;
+  height: 200px; 
+  filter: blur(16px);
+  background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 20%, #fcf3f0 100%);
+  border-radius: 0px 100px 0px 0px;
+
+  z-index: -1;
+} */
+/* .float_form_small{
+  position: absolute;
+  bottom: -225px;
+  left: 45px;
+  width: 350px;
+  height: 350px;
+    filter: blur(5px);
+  background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 20%, #ffa178 100%);
+  border-radius: 100%;
+  z-index: -1;
+} */
 
 /* Responsive: móvil ocupa casi toda la pantalla */
 @media (max-width: 480px) {
@@ -38,8 +124,9 @@
 
 /* ── Header ─────────────────────────────────────────── */
 .header {
-  background: linear-gradient(135deg, #1c1c1c 0%, #333 100%);
-  /* background: rgba(0, 0, 0, 0.671); */
+  /* background: linear-gradient(135deg, #1c1c1c 0%, #333 100%); */
+  background: #292929;
+  box-shadow: 0 6px 8px rgb(0 0 0 / 21%);
   padding: 16px 20px;
   display: flex;
   align-items: center;

@@ -316,6 +316,11 @@ class MarketContextManager:
                 "language": "es",
                 "timezone": "America/Santiago",
                 "enabled": True,
+                # FIX v2.1.0 (27/03/2026): CL es el mercado primario de
+                # AI-Shoppings. Se marca como mercado local — los precios del
+                # catálogo ya están en CLP, no se aplica conversión.
+                "is_primary_market": True,
+                "catalog_currency": "CLP",
                 "scoring_weights": {
                     "relevance": 0.45,
                     "popularity": 0.35,
@@ -448,12 +453,14 @@ class MarketContextManager:
             - CL -> CL
             - Others -> default
         """
+        # FIX v2.1.0 (27/03/2026): CL estaba mapeado pero CL no existía en MARKETS.
+        # Ahora CL existe en MarketAdapter.MARKETS y en get_supported_markets().
         country_market_map = {
             "US": "US",
             "CA": "US",  # Canadá usa mercado US
             "ES": "ES",
             "MX": "MX",
-            "CL": "CL",
+            "CL": "CL",  # Chile — mercado primario de AI-Shoppings
         }
         
         return country_market_map.get(country_code.upper(), self.default_market)

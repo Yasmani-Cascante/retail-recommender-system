@@ -41,7 +41,74 @@ class TFIDFRecommender:
         
         # Variables para fallback
         self.fallback_active = False
-    
+
+    @staticmethod
+    def _normalize_product_price(product: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Aplana el precio de Shopify al nivel raíz del producto.
+
+        FIX (27/03/2026) — Causa raíz del bug de precios en segunda ronda.
+
+        La API REST de Shopify NO devuelve 'price' en el nivel raíz del producto.
+        El precio está anidado en:
+            product["variants"][0]["price"]  → str, ej. "159.00"
+
+        Al guardar los productos crudos en product_data, product.get("price")
+        retorna None. Cuando smart_fallback hace **product en el dict de la
+        recomendación, hereda ese None. sanitize_rec_for_frontend lo convierte
+        a 0.0, y ProductCard muestra €0.
+
+        Este método crea una copia del producto con 'price' al nivel raíz,
+        extrado de variants[0]["price"]. Si el producto ya tiene 'price' con
+        un valor válido (>0), lo preserva sin modificar para no pisar datos
+        ya normalizados por el MarketAdapter.
+
+        Adicionalmente aplana image_url desde images[0]["src"] si no existe
+        como campo directo, para que sanitize_rec_for_frontend también pueda
+        encontrarlo sin depender de la lista anidada.
+        """
+        # Si ya tiene precio válido a nivel raíz, no modificar.
+        # Permite que productos ya normalizados por el MarketAdapter pasen sin cambios.
+        existing_price = product.get("price")
+        try:
+            if existing_price is not None and float(existing_price) > 0:
+                return product  # Ya normalizado, devolver tal cual
+        except (TypeError, ValueError):
+            pass  # Valor inválido: continuar con extacción desde variants
+
+        # Extraer precio desde variants[0].price (formato Shopify REST)
+        price: float = 0.0
+        variants = product.get("variants") or []
+        if variants and isinstance(variants, list):
+            try:
+                price_str = variants[0].get("price") or "0"
+                price = float(price_str)
+            except (TypeError, ValueError, IndexError, AttributeError):
+                price = 0.0
+
+        # Extraer image_url desde images[0]["src"] si no existe como campo directo
+        # para evitar que sanitize_rec_for_frontend deba parsear la lista anidada.
+        image_url = product.get("image_url") or product.get("imageUrl")
+        if not image_url:
+            images = product.get("images") or []
+            if images and isinstance(images, list):
+                first = images[0]
+                if isinstance(first, str):
+                    image_url = first
+                elif isinstance(first, dict):
+                    image_url = first.get("src") or first.get("url") or first.get("originalSrc")
+
+        # Devolver copia con campos normalizados al nivel raíz.
+        # Usamos {**product, ...} para no mutar el original y mantener
+        # todos los demás campos intactos (tags, body_html, variants, etc.).
+        return {
+            **product,
+            "price": price,                   # float al nivel raíz
+            **({
+                "image_url": image_url,       # str al nivel raíz (si se encontró)
+            } if image_url else {}),
+        }
+
     async def fit(self, products: List[Dict[str, Any]]) -> bool:
         """
         Entrena el modelo TF-IDF con los datos de productos.
@@ -55,9 +122,16 @@ class TFIDFRecommender:
         try:
             logger.info(f"Entrenando recomendador TF-IDF con {len(products)} productos")
             
-            # Guardar datos de productos
-            self.product_data = products
-            self.product_ids = [str(p.get('id', i)) for i, p in enumerate(products)]
+            # Guardar datos de productos.
+            # FIX (27/03/2026): Aplanar price desde variants[0].price al nivel raíz
+            # antes de indexar.  La API REST de Shopify devuelve el precio en:
+            #   product["variants"][0]["price"]  (str, ej. "159.00")
+            # y NO en product["price"] (campo ausente o None a nivel raíz).
+            # Sin este aplano, product_data[i].get("price") retorna None para todos
+            # los productos.  El path de diversificación (smart_fallback) hace
+            # **product y hereda ese None, por eso ProductCard recibe price=0.
+            self.product_data = [self._normalize_product_price(p) for p in products]
+            self.product_ids = [str(p.get('id', i)) for i, p in enumerate(self.product_data)]
             
             # Extraer textos para vectorización
             texts = []
@@ -202,6 +276,7 @@ class TFIDFRecommender:
                     "id": self.product_ids[index],
                     "title": product.get("title", ""),
                     "similarity_score": float(similarities[index]),
+                    "handle": product.get("handle", ""),
                     "product_data": product
                 })
             

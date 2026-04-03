@@ -124,6 +124,10 @@ class ServiceFactory:
     _knowledge_base: Optional['ShopifyKnowledgeBase'] = None
     _kb_sync_service: Optional['ShopifyKBSyncService'] = None
     _db_pool: Optional['asyncpg.Pool'] = None
+
+    # ── F-04: CustomerProfileService ──────────────────────────────────────
+    _customer_profile_service = None
+    _customer_profile_lock: Optional[asyncio.Lock] = None
     
     @classmethod
     def _get_redis_lock(cls):
@@ -588,6 +592,52 @@ class ServiceFactory:
             logger.info("✅ InventoryService singleton initialized")
         return cls._inventory_service
     
+    # ── F-04: CustomerProfileService ──────────────────────────────────────
+
+    @classmethod
+    def _get_customer_profile_lock(cls) -> asyncio.Lock:
+        if cls._customer_profile_lock is None:
+            cls._customer_profile_lock = asyncio.Lock()
+        return cls._customer_profile_lock
+
+    @classmethod
+    async def get_customer_profile_service(cls):
+        """Singleton de CustomerProfileService (F-04 — Personalizacion por historial).
+
+        Inyecta RedisService y ShopifyClient. Ambas dependencias son opcionales:
+        si no estan disponibles el servicio retorna None para todos los perfiles
+        (degradacion graceful — el chat sigue funcionando sin personalizacion).
+        """
+        if cls._customer_profile_service is not None:
+            return cls._customer_profile_service
+
+        async with cls._get_customer_profile_lock():
+            # Double-check dentro del lock
+            if cls._customer_profile_service is not None:
+                return cls._customer_profile_service
+
+            from src.api.mcp_services.customer.service import CustomerProfileService
+
+            redis_service = None
+            shopify_client = None
+
+            try:
+                redis_service = await cls.get_redis_service()
+            except Exception as e:
+                logger.warning(f"CustomerProfileService: Redis unavailable — {e}")
+
+            try:
+                shopify_client = get_shopify_client()
+            except Exception as e:
+                logger.warning(f"CustomerProfileService: ShopifyClient unavailable — {e}")
+
+            cls._customer_profile_service = CustomerProfileService(
+                redis_service=redis_service,
+                shopify_client=shopify_client,
+            )
+            logger.info("✅ CustomerProfileService singleton initialized (F-04)")
+            return cls._customer_profile_service
+
     @classmethod
     async def create_product_cache(cls, local_catalog=None) -> ProductCache:
         """
@@ -1299,6 +1349,7 @@ class ServiceFactory:
                             redis_service=redis_service,
                             conversation_manager=conversation_manager,
                             anthropic_client=anthropic_client,  # ← CRÍTICO: evita self.claude = None
+                            shopify_client=get_shopify_client(),  # Para resolucion lazy de precios por turno
                         )
                         logger.info("✅ MCPPersonalizationEngine singleton initialized (claude=%s, http2=False)",
                                     "ready" if anthropic_client else "None — calls will fail")

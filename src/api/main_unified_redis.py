@@ -432,6 +432,224 @@ async def lifespan(app: FastAPI):
                 logger.error(f"❌ Error en startup manager: {e}")
         
         # ============================================================================
+        # 🎯 PASO 4.5: ENRIQUECER CATÁLOGO TF-IDF CON PRECIOS SHOPIFY (OPCIÓN A)
+        # ============================================================================
+        #
+        # POR QUÉ ESTE PASO ES NECESARIO:
+        #   load_recommender() carga el pickle data/tfidf_model.pkl que tiene precios
+        #   CLP brutos (moneda nativa del catálogo). Cuando el sistema sirve mercados
+        #   extra (CH, MX, ES), mcp_personalization_engine.py necesita el campo
+        #   'market_prices' en cada producto para ofrecer precios exactos de Shopify.
+        #   Sin este paso, el motor usa tasas hardcodeadas (CLP_RATES fallback) y
+        #   emite [OpcionA-fallback] WARNINGs por cada producto servido.
+        #
+        # FLUJO:
+        #   1. ShopifyIntegration.get_products_with_shopify_prices() llama a Admin
+        #      GraphQL con contextualPricing para los 4 mercados activos (CL/CH/MX/ES).
+        #   2. El resultado es un dict {product_id -> market_prices} con precios
+        #      autorizados por Shopify para cada mercado.
+        #   3. Iteramos tfidf_recommender.product_data e inyectamos 'market_prices'
+        #      en los productos que Shopify retorna. Los productos no encontrados
+        #      (p. ej. variantes descontinuadas) conservan su estado sin market_prices.
+        #   4. El campo 'market_prices' ya tiene la estructura esperada por
+        #      _format_price_for_market():
+        #         {"CL": {"price": 160000.0, "currency": "CLP"}, "CH": {...}, ...}
+        #
+        # FALLBACK:
+        #   Si la llamada GraphQL falla (timeout, credenciales, etc.), se loguea
+        #   warning y se continua sin market_prices. El sistema funciona con
+        #   CLP_RATES hardcodeadas (comportamiento anterior, no hay crash).
+        #
+        # TIEMPO ESTIMADO: ~3-8s para 3062 productos en batches de 50.
+        # PUNTO DE INSERCIÓN: Justo tras el TF-IDF load exitoso, antes de
+        #   ProductCache, para que el caché ya tenga los datos enriquecidos.
+        # ============================================================================
+
+        # -- Definicion de la corrutina que se ejecutara en background ----------
+        async def _enrich_catalog_with_shopify_prices(
+            catalog,
+            shop_url: str,
+            access_token: str
+        ):
+            """
+            Background task: inyecta market_prices en cada producto del catalogo
+            TF-IDF en memoria, consultando Shopify GraphQL contextualPricing.
+            Corre en segundo plano sin bloquear el startup del servidor.
+            """
+            import requests as _req_lib
+
+            ACTIVE_MARKETS = [
+                {"market_id": "CL", "country_code": "CL"},
+                {"market_id": "CH", "country_code": "CH"},
+                {"market_id": "MX", "country_code": "MX"},
+                {"market_id": "ES", "country_code": "ES"},
+            ]
+            BATCH_SIZE = 30
+            MAX_RETRIES_PER_BATCH = 4
+
+            _raw = shop_url.rstrip("/").replace("https://", "").replace("http://", "")
+            gql_url = f"https://{_raw}/admin/api/2025-01/graphql.json"
+            gql_headers = {
+                "Content-Type": "application/json",
+                "X-Shopify-Access-Token": access_token
+            }
+
+            market_price_map = {m["market_id"]: {} for m in ACTIVE_MARKETS}
+            batches_done = batches_failed = 0
+            t0 = time.time()
+
+            logger.info(
+                "🛒 [PASO 4.5 BG] Iniciando enriquecimiento de precios (%d productos, %d batches)...",
+                len(catalog), (len(catalog) + BATCH_SIZE - 1) // BATCH_SIZE
+            )
+
+            for batch_start in range(0, len(catalog), BATCH_SIZE):
+                batch = catalog[batch_start: batch_start + BATCH_SIZE]
+
+                # Construir query GraphQL con alias p{idx}_{market_id}
+                alias_fragments = []
+                for idx, product in enumerate(batch):
+                    pid = str(product.get("id", ""))
+                    gid = f"gid://shopify/Product/{pid}"
+                    for market in ACTIVE_MARKETS:
+                        alias_fragments.append(
+                            f'p{idx}_{market["market_id"]}: product(id: "{gid}") {{\n'
+                            f'  contextualPricing(context: {{country: {market["country_code"]}}}) {{\n'
+                            f'    priceRange {{ minVariantPrice {{ amount currencyCode }} }}\n'
+                            f'  }}\n'
+                            f'}}'
+                        )
+
+                bulk_query = (
+                    "query GetMultiMarketPrices {\n"
+                    + "\n".join(alias_fragments)
+                    + "\n}"
+                )
+
+                batch_attempt = 0
+                batch_succeeded = False
+
+                while batch_attempt <= MAX_RETRIES_PER_BATCH and not batch_succeeded:
+                    try:
+                        response = await asyncio.to_thread(
+                            _req_lib.post, gql_url,
+                            json={"query": bulk_query},
+                            headers=gql_headers,
+                            timeout=45
+                        )
+                        response.raise_for_status()
+                        resp_data = response.json()
+
+                        if "errors" in resp_data:
+                            err_msgs = [e.get("message", str(e)) for e in resp_data["errors"]]
+                            is_throttled = any("throttl" in str(m).lower() for m in err_msgs)
+                            if is_throttled and batch_attempt < MAX_RETRIES_PER_BATCH:
+                                retry_after = float(response.headers.get("Retry-After", 0))
+                                wait_s = retry_after if retry_after > 0 else (2.0 ** (batch_attempt + 1))
+                                logger.warning(
+                                    "⚠️ [PASO 4.5 BG] batch %d Throttled (%d/%d), esperando %.1fs",
+                                    batch_start, batch_attempt + 1, MAX_RETRIES_PER_BATCH, wait_s
+                                )
+                                await asyncio.sleep(wait_s)
+                                batch_attempt += 1
+                                continue
+                            logger.warning(
+                                "⚠️ [PASO 4.5 BG] batch %d GraphQL errors: %s",
+                                batch_start, err_msgs
+                            )
+                            batches_failed += 1
+                            break
+
+                        graph_data = resp_data.get("data", {})
+                        for idx, product in enumerate(batch):
+                            pid = str(product.get("id", ""))
+                            for market in ACTIVE_MARKETS:
+                                mid = market["market_id"]
+                                node = graph_data.get(f"p{idx}_{mid}")
+                                if not node:
+                                    continue
+                                min_price = (
+                                    node.get("contextualPricing", {})
+                                    .get("priceRange", {})
+                                    .get("minVariantPrice", {})
+                                )
+                                try:
+                                    amt = float(min_price.get("amount", "0"))
+                                except (TypeError, ValueError):
+                                    amt = 0.0
+                                cur = min_price.get("currencyCode", "")
+                                if amt > 0 and cur:
+                                    market_price_map[mid][pid] = {"price": amt, "currency": cur}
+
+                        batches_done += 1
+                        batch_succeeded = True
+
+                    except Exception as batch_err:
+                        if batch_attempt < MAX_RETRIES_PER_BATCH:
+                            wait_s = 2.0 ** (batch_attempt + 1)
+                            await asyncio.sleep(wait_s)
+                            batch_attempt += 1
+                        else:
+                            logger.warning(
+                                "⚠️ [PASO 4.5 BG] batch %d fallo tras %d intentos: %s",
+                                batch_start, MAX_RETRIES_PER_BATCH, batch_err
+                            )
+                            batches_failed += 1
+                            break
+
+                # Pausa entre batches para respetar el rate limit de Shopify
+                await asyncio.sleep(0.5 if batch_succeeded else 2.0)
+
+            # Inyectar market_prices en el catalogo en memoria (escritura atomica por producto)
+            enriched = 0
+            for product in catalog:
+                pid = str(product.get("id", ""))
+                mp = {}
+                for market in ACTIVE_MARKETS:
+                    mid = market["market_id"]
+                    if pid in market_price_map[mid]:
+                        mp[mid] = market_price_map[mid][pid]
+                if mp:
+                    product["market_prices"] = mp
+                    enriched += 1
+
+            elapsed_ms = (time.time() - t0) * 1000
+            logger.info(
+                "✅ [PASO 4.5 BG] Completado: %d/%d productos enriquecidos | "
+                "batches OK=%d FAIL=%d | CL=%d CH=%d MX=%d ES=%d | %.0fms",
+                enriched, len(catalog),
+                batches_done, batches_failed,
+                len(market_price_map.get("CL", {})),
+                len(market_price_map.get("CH", {})),
+                len(market_price_map.get("MX", {})),
+                len(market_price_map.get("ES", {})),
+                elapsed_ms
+            )
+            if enriched == 0:
+                logger.warning(
+                    "⚠️ [PASO 4.5 BG] Ningun producto enriquecido. "
+                    "Verificar IDs del pickle vs IDs de Shopify GraphQL."
+                )
+
+        # -- Lanzar como background task (no bloqueante) -----------------------
+        if (tfidf_recommender and
+                getattr(tfidf_recommender, 'loaded', False) and
+                tfidf_recommender.product_data and
+                shopify_client):
+            asyncio.create_task(
+                _enrich_catalog_with_shopify_prices(
+                    catalog=tfidf_recommender.product_data,
+                    shop_url=os.environ.get("SHOPIFY_SHOP_URL", ""),
+                    access_token=os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
+                )
+            )
+            logger.info(
+                "✅ PASO 4.5: Enriquecimiento Shopify lanzado en segundo plano. "
+                "Startup continua sin bloquear. market_prices se inyectaran "
+                "automaticamente en ~3-4 min mientras el sistema ya sirve requests."
+            )
+
+        # ============================================================================
         # 🎯 PASO 5: CREAR PRODUCT CACHE CON DEPENDENCY INJECTION CORREGIDA (OPCIÓN B)
         # ============================================================================
         
@@ -463,6 +681,11 @@ async def lifespan(app: FastAPI):
                         logger.info(f"  → local_catalog.product_data: {product_count} products")
                         if product_count > 0:
                             logger.info("✅ OPCIÓN B SUCCESSFUL: ProductCache has access to trained catalog!")
+                            # logger.warning(f"✅ Producto (ejemplo): {product_cache.local_catalog.product_data[0]}")
+                            # producto = product_cache.local_catalog.product_data[0]
+                            # shop_url=os.environ.get("SHOPIFY_SHOP_URL", "")
+                            # logger.warning(f" Producto page url: https://{shop_url}/products/{producto['handle']}")
+
                         else:
                             logger.warning("⚠️ local_catalog.product_data is empty")
                 else:
@@ -1835,18 +2058,66 @@ app.include_router(
 # ============================================================================
 
 async def load_shopify_products():
-    """Carga productos desde Shopify (compatibilidad legacy)."""
+    """Carga productos desde Shopify con precios autorizados por Shopify via GraphQL.
+
+    OPCIÓN A — Shopify como fuente de verdad de precios (v2.1.0, 28/03/2026).
+
+    Por qué:
+        get_products() REST devuelve el precio como string crudo en la moneda
+        nativa (CLP). Ese valor se almacenaba en el catálogo TF-IDF y se
+        convertía con tasas hardcodeadas en MarketAdapter y en el prompt de Claude.
+        Esas tasas son deuda técnica que se desactualiza silenciosamente.
+
+        get_products_with_shopify_prices() obtiene el precio directamente de
+        Shopify via Admin GraphQL contextualPricing — misma fuente que usa el
+        storefront de Shopify para mostrar el precio al cliente. No hay tasas
+        hardcodeadas ni conversión manual. El campo `price` del producto ya
+        tiene el valor correcto en CLP confirmado por Shopify.
+
+    Fallback:
+        Si la llamada GraphQL falla para un producto, se usa el precio REST como
+        antes (variants[0].price). El sistema nunca queda con precio 0 por esto.
+        Si toda la llamada falla, se cae a load_sample_data() como antes.
+    """
     try:
         client = init_shopify()
-        if client:
-            products = client.get_products()
-            logger.info(f"Cargados {len(products)} productos desde Shopify")
-            return products
-        else:
+        if not client:
             logger.warning("No se pudo inicializar el cliente de Shopify")
             return await load_sample_data()
+
+        # OPCIÓN A: precio autorizado por Shopify via GraphQL contextualPricing.
+        # Fallback por producto a REST si GraphQL falla para ese producto.
+        # Fallback global a load_sample_data() si el método lanza excepción.
+        logger.info("🛈 Loading Shopify products with Shopify-authorized prices (Option A)...")
+        products = await client.get_products_with_shopify_prices()
+
+        if products:
+            # Log muestra del primer producto para confirmar que el precio llega bien
+            first = products[0]
+            logger.info(
+                f"✅ Shopify products loaded: {len(products)} products, "
+                f"first product '{first.get('title', '?')}' price={first.get('price')} "
+                f"currency={first.get('shopify_currency', 'CLP')}"
+            )
+            return products
+
+        logger.warning("get_products_with_shopify_prices() returned empty list")
+        return await load_sample_data()
+
     except Exception as e:
-        logger.error(f"Error cargando productos desde Shopify: {e}")
+        logger.error(f"Error cargando productos desde Shopify (Opción A): {e}", exc_info=True)
+        # Fallback al método REST anterior — precio sin garantizar peró sin crash
+        try:
+            client = init_shopify()
+            if client:
+                products = client.get_products()
+                if products:
+                    logger.warning(
+                        f"⚠️ Opción A falló, usando REST fallback: {len(products)} productos (sin precios GraphQL)"
+                    )
+                    return products
+        except Exception as rest_e:
+            logger.error(f"REST fallback también falló: {rest_e}")
         return await load_sample_data()
 
 async def load_sample_data():

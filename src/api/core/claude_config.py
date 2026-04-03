@@ -120,6 +120,7 @@ class ClaudeConfigurationService:
         ClaudeModelTier.HAIKU: ClaudeModelConfig(
             model_name="claude-3-haiku-20240307",
             max_tokens=300,          # reducido de 1000: respuesta conversacional breve
+            # max_tokens=200,          # reducido de 1000: respuesta conversacional breve
             temperature=0.7,
             top_p=0.9,
             cost_per_1k_tokens=0.50,
