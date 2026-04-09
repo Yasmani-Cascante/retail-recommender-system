@@ -272,6 +272,312 @@ async def handle_shopify_webhook(
 # ENDPOINT DE VERIFICACIÓN — para setup en Shopify Partners Dashboard
 # ══════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════
+# F-04 (03/04/2026) — ENDPOINT PARA WEBHOOKS DE CLIENTES
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Recibe dos topics de Shopify (via header X-Shopify-Topic):
+#
+#   customers/update
+#     → Cambios en datos del perfil: email, nombre, dirección, tags.
+#     → Desde Shopify 2025-01 ya NO incluye total_spent ni orders_count.
+#
+#   customers/purchasing_summary
+#     → Nuevo topic (Shopify 2025-01) que dispara cuando el cliente
+#       compra o cancela, actualizando su LTV.
+#     → Contiene total_spent y orders_count (movidos desde customers/update).
+#
+# En ambos casos la acción es la misma: INVALIDAR el cache Redis del perfil
+# bajo la clave 'mcp:customer:profile:{customer_id}' (TTL 24h).
+# El siguiente request del chat hará un fetch fresco desde la API REST
+# de Shopify, que sigue devolviendo todos los campos sin cambios.
+#
+# Seguridad: misma validación HMAC que el endpoint de páginas.
+# Idempotencia: misma lógica SET NX de ShopifyWebhookHandler.
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/shopify/customers",
+    status_code=200,
+    summary="Shopify Customers Webhook (F-04)",
+    description=(
+        "Recibe eventos de clientes de Shopify.\n"
+        "Topics soportados (via X-Shopify-Topic):\n"
+        "- `customers/update` → invalidar cache de perfil\n"
+        "- `customers/purchasing_summary` → invalidar cache de LTV"
+    ),
+)
+async def handle_customers_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_shopify_hmac_sha256: Optional[str] = Header(default=None),
+    x_shopify_shop_domain: Optional[str] = Header(default=None),
+    x_shopify_topic: Optional[str] = Header(default=None),
+):
+    """
+    Receptor de webhooks de clientes Shopify — F-04 Personalización por historial.
+
+    Flujo (mismo patrón M4 que el endpoint de páginas):
+        1. Leer body raw   (antes del JSON parsing — requerido por HMAC)
+        2. Validar HMAC    (hmac.compare_digest, resistente a timing attacks)
+        3. Validar topic   (customers/update o customers/purchasing_summary)
+        4. Extraer customer_id del payload
+        5. ACK inmediato   (Shopify exige respuesta < 5 s)
+        6. Invalidar cache en background (ShopifyWebhookHandler.handle_customer_event)
+    """
+    # ── 1. Leer body raw ────────────────────────────────────────────────────────
+    raw_body = await request.body()
+
+    # ── 2. Validar HMAC ────────────────────────────────────────────────────────
+    webhook_secret = settings.SHOPIFY_WEBHOOK_SECRET
+    if not webhook_secret:
+        logger.error("customers_webhook_no_secret_configured")
+        raise HTTPException(status_code=500, detail="Webhook secret not configured")
+
+    if not x_shopify_hmac_sha256:
+        _inc_hmac_failure()
+        logger.warning("customers_webhook_missing_hmac_header",
+                        shop=x_shopify_shop_domain)
+        raise HTTPException(status_code=401, detail="Missing HMAC header")
+
+    if not validate_shopify_webhook(raw_body, x_shopify_hmac_sha256, webhook_secret):
+        _inc_hmac_failure()
+        logger.warning("customers_webhook_invalid_hmac",
+                        shop=x_shopify_shop_domain, topic=x_shopify_topic)
+        raise HTTPException(status_code=401, detail="Invalid HMAC signature")
+
+    # ── 3. Validar topic ───────────────────────────────────────────────────────
+    topic = x_shopify_topic or ""
+    SUPPORTED_TOPICS = {"customers/update", "customers/purchasing_summary"}
+
+    if topic not in SUPPORTED_TOPICS:
+        # Topic no soportado — responder 200 para evitar reintentos de Shopify
+        logger.info("customers_webhook_unsupported_topic", topic=topic)
+        return {"status": "ignored", "reason": f"topic={topic} not handled here"}
+
+    # ── 4. Parsear payload y extraer customer_id ───────────────────────────
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        logger.error("customers_webhook_invalid_json", topic=topic)
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # customers/update:            payload["id"]          (ID del cliente)
+    # customers/purchasing_summary: payload["customer_id"] (Shopify 2025-01)
+    if topic == "customers/purchasing_summary":
+        customer_id_raw = payload.get("customer_id")
+    else:
+        customer_id_raw = payload.get("id")
+
+    if not customer_id_raw:
+        logger.warning("customers_webhook_missing_customer_id",
+                        topic=topic, keys=list(payload.keys()))
+        return {"status": "ignored", "reason": "customer_id not found in payload"}
+
+    customer_id = str(customer_id_raw)
+
+    # ── 5. Métrica de recepción ────────────────────────────────────────────────────
+    _inc_received(topic)
+
+    logger.info(
+        "customers_webhook_accepted",
+        customer_id=customer_id,
+        topic=topic,
+        shop=x_shopify_shop_domain,
+    )
+
+    # ── 6. ACK inmediato + dispatch a BackgroundTask ───────────────────────────
+    # La invalidación de cache es rápida (~1-2 ms en Redis) pero va en
+    # background para no comprometer el ACK < 5s exigido por Shopify.
+    background_tasks.add_task(
+        _dispatch_customer_event,
+        customer_id=customer_id,
+        topic=topic,
+    )
+
+    return {
+        "status": "accepted",
+        "customer_id": customer_id,
+        "topic": topic,
+        "message": "Customer webhook received, cache invalidation queued",
+    }
+
+
+async def _dispatch_customer_event(customer_id: str, topic: str) -> None:
+    """
+    Procesa el webhook de cliente en background tras el ACK.
+
+    Delega a ShopifyWebhookHandler.handle_customer_event() que implementa:
+      - Idempotencia via Redis SET NX (evita procesar el mismo evento dos veces)
+      - Invalidación del cache 'mcp:customer:profile:{id}'
+      - Logging estructurado con duración
+
+    Args:
+        customer_id: ID numérico del cliente como string.
+        topic: 'customers/update' o 'customers/purchasing_summary'.
+    """
+    handler = ShopifyWebhookHandler()
+    await handler.handle_customer_event(
+        customer_id=customer_id,
+        topic=topic,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# F-01 (07/04/2026) — ENDPOINT PARA WEBHOOKS DE PRODUCTOS
+# ══════════════════════════════════════════════════════════════════════
+#
+# Cuando un producto se actualiza en Shopify Admin (título, descripción,
+# colecciones, tags, precio, estado), el contexto cacheado en Redis bajo
+# 'mcp:product:context:{handle}:{market_id}' queda desactualizado.
+# Sin este webhook, Claude puede sugerir el upsell con información
+# antigua hasta que el TTL de 5 minutos expire naturalmente.
+#
+# Con este endpoint:
+#   Shopify Admin edita producto → products/update → cache invalidado
+#   → el siguiente request del chat hace un fetch fresco (~600ms)
+#
+# Payload de Shopify products/update:
+#   { "id": 9978786152757, "handle": "vestido-corto-emma-champagne",
+#     "title": "...", "product_type": "...", "tags": "...", ... }
+#
+# Seguridad: misma validación HMAC que customers y pages.
+# Idempotencia: misma lógica SET NX de ShopifyWebhookHandler.
+# ══════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/shopify/products",
+    status_code=200,
+    summary="Shopify Products Webhook (F-01)",
+    description=(
+        "Recibe eventos de productos de Shopify.\n"
+        "Topics soportados (via X-Shopify-Topic):\n"
+        "- `products/update` → invalidar cache de contexto de producto\n"
+        "- `products/delete` → invalidar cache de contexto de producto"
+    ),
+)
+async def handle_products_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_shopify_hmac_sha256: Optional[str] = Header(default=None),
+    x_shopify_shop_domain: Optional[str] = Header(default=None),
+    x_shopify_topic: Optional[str] = Header(default=None),
+):
+    """
+    Receptor de webhooks de productos Shopify — F-01 Upsell Contextual.
+
+    Invalida el cache 'mcp:product:context:{handle}:{market_id}' cuando
+    un producto se actualiza en Shopify Admin, garantizando que Claude
+    siempre tiene información fresca al construir el prompt de upsell.
+    """
+    # ── 1. Leer body raw (HMAC requiere los bytes exactos) ─────────────
+    raw_body = await request.body()
+
+    # ── 2. Validar HMAC ─────────────────────────────────────────────
+    webhook_secret = settings.SHOPIFY_WEBHOOK_SECRET
+    if not webhook_secret:
+        logger.error("products_webhook_no_secret_configured")
+        raise HTTPException(status_code=500, detail="Webhook secret not configured")
+
+    if not x_shopify_hmac_sha256:
+        _inc_hmac_failure()
+        logger.warning("products_webhook_missing_hmac", shop=x_shopify_shop_domain)
+        raise HTTPException(status_code=401, detail="Missing HMAC header")
+
+    if not validate_shopify_webhook(raw_body, x_shopify_hmac_sha256, webhook_secret):
+        _inc_hmac_failure()
+        logger.warning(
+            "products_webhook_invalid_hmac",
+            shop=x_shopify_shop_domain,
+            topic=x_shopify_topic,
+        )
+        raise HTTPException(status_code=401, detail="Invalid HMAC signature")
+
+    # ── 3. Validar topic ─────────────────────────────────────────────
+    topic = x_shopify_topic or ""
+    SUPPORTED_TOPICS = {"products/update", "products/delete"}
+
+    if topic not in SUPPORTED_TOPICS:
+        # ACK sin procesar — evita reintentos de Shopify por topics no gestionados
+        logger.info("products_webhook_topic_ignored", topic=topic)
+        return {"status": "ignored", "reason": f"topic={topic} not handled here"}
+
+    # ── 4. Parsear payload y extraer campos ─────────────────────────
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        logger.error("products_webhook_invalid_json", topic=topic)
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # products/update payload: { "id": 12345, "handle": "vestido-...", ... }
+    product_id_raw = payload.get("id")
+    product_handle = payload.get("handle", "").strip()
+
+    if not product_id_raw:
+        logger.warning(
+            "products_webhook_missing_id",
+            topic=topic,
+            keys=list(payload.keys()),
+        )
+        # 200 para evitar reintentos — sin ID no podemos procesar
+        return {"status": "ignored", "reason": "product_id not found in payload"}
+
+    product_id = str(product_id_raw)
+
+    # ── 5. Métrica de recepción ─────────────────────────────────────────
+    _inc_received(topic)
+    logger.info(
+        "products_webhook_accepted",
+        product_id=product_id,
+        product_handle=product_handle,
+        topic=topic,
+        shop=x_shopify_shop_domain,
+    )
+
+    # ── 6. ACK inmediato + dispatch a BackgroundTask ────────────────
+    background_tasks.add_task(
+        _dispatch_product_event,
+        product_id=product_id,
+        product_handle=product_handle,
+        topic=topic,
+    )
+
+    return {
+        "status": "accepted",
+        "product_id": product_id,
+        "product_handle": product_handle,
+        "topic": topic,
+        "message": "Product webhook received, cache invalidation queued",
+    }
+
+
+async def _dispatch_product_event(
+    product_id: str,
+    product_handle: str,
+    topic: str,
+) -> None:
+    """
+    Procesa el webhook de producto en background tras el ACK.
+
+    Delega a ShopifyWebhookHandler.handle_product_event() que implementa:
+      - Idempotencia via Redis SET NX
+      - Invalidación de cache 'mcp:product:context:{handle}:{market_id}'
+        para todos los mercados activos (CL, CH, MX, ES)
+      - Logging estructurado con duración
+
+    Args:
+        product_id:     ID numérico del producto como string.
+        product_handle: Handle/slug del producto.
+        topic:          'products/update' o 'products/delete'.
+    """
+    handler = ShopifyWebhookHandler()
+    await handler.handle_product_event(
+        product_id=product_id,
+        product_handle=product_handle,
+        topic=topic,
+    )
+
+
 @router.get(
     "/shopify/verify",
     summary="Webhook endpoint verification",
@@ -293,8 +599,16 @@ async def verify_webhook_endpoint():
             "pages/update",
             "pages/delete",
             "translations/update",
+            "customers/update",
+            "customers/purchasing_summary",
+            "products/update",
+            "products/delete",
         ],
-        "endpoint": "/api/webhooks/shopify/pages",
+        "endpoints": {
+            "pages": "/api/webhooks/shopify/pages",
+            "customers": "/api/webhooks/shopify/customers",
+            "products": "/api/webhooks/shopify/products",
+        },
     }
 
 

@@ -336,23 +336,38 @@ class TFIDFRecommender:
     def get_product_by_id(self, product_id: str) -> Optional[Dict[str, Any]]:
         """
         Obtiene un producto del catálogo local por su ID.
-        
+
+        Usa id_index (O(1)) si está disponible (construido por _build_category_index).
+        Fallback al scan lineal O(n) si id_index aún no existe (ej. modelos cargados
+        antes de este cambio que no tienen el índice en memoria).
+
         Args:
             product_id: ID del producto a buscar
-            
+
         Returns:
             Dict con la información del producto, o None si no se encuentra
         """
         if not self.loaded or not self.product_data:
             logger.warning("El recomendador TF-IDF no está cargado o no tiene datos de productos")
             return None
-            
+
         try:
-            # Buscar producto por ID
+            # O(1): usar id_index si está disponible
+            if hasattr(self, 'id_index') and self.id_index:
+                return self.id_index.get(str(product_id))
+
+            # Fallback O(n): scan lineal para compatibilidad con modelos legacy
+            # (solo ocurre en el primer request tras cargar un modelo antiguo;
+            # _build_category_index ya corre en fit() y load(), así que este
+            # camino solo se activa si id_index no existía en el pickle).
+            logger.debug(
+                f"id_index not available, falling back to linear scan "
+                f"for product_id={product_id}"
+            )
             for product in self.product_data:
                 if str(product.get('id', '')) == str(product_id):
                     return product
-            
+
             logger.warning(f"Producto con ID {product_id} no encontrado en el catálogo local")
             return None
         except Exception as e:
@@ -395,30 +410,45 @@ class TFIDFRecommender:
 
     async def _build_category_index(self):
         """
-        Build category index for O(1) lookups.
-        
-        Performance: O(n) one-time cost, O(1) lookups después
-        Async: Allows event loop to process other requests during indexing
+        Build category index and id index for O(1) lookups.
+
+        Performance: O(n) one-time cost, O(1) lookups después.
+        Async: yields control every batch_size products so the event loop
+        can serve other requests during indexing.
+
+        id_index (NEW): maps str(product_id) → product dict.
+        Used by get_product_by_id() to replace the previous O(n) linear scan,
+        which caused the 'product_cache_preload_completed' log to take ~2.2s
+        for 8 products x 3062 catalog scan per product.
+        After this change: get_product_by_id() is O(1) — instant lookup.
         """
         self.category_index = {}
-        
-        # Process products in batches to avoid blocking
-        # Process in batches to yield control
+        # id_index: str(id) -> product dict, para lookup O(1)
+        self.id_index: dict = {}
+
+        # Process in batches to yield control to the event loop
         batch_size = 500
         for i in range(0, len(self.product_data), batch_size):
             batch = self.product_data[i:i + batch_size]
-            
+
             for product in batch:
+                # ── Category index ───────────────────────────────────────
                 category = product.get("product_type", "").upper()
                 if category:
                     if category not in self.category_index:
                         self.category_index[category] = []
                     self.category_index[category].append(product)
-            
+
+                # ── ID index (nuevo) ──────────────────────────────────
+                pid = str(product.get("id", ""))
+                if pid:
+                    self.id_index[pid] = product
+
             # Yield control to event loop every batch (500 products)
             await asyncio.sleep(0)
-        
+
         logger.info(f"✅ Category index built: {len(self.category_index)} categories")
         logger.info(f"   Categories: {sorted(self.category_index.keys())}")
-        
+        logger.info(f"✅ ID index built: {len(self.id_index)} products (O(1) lookups enabled)")
+
         return self.category_index

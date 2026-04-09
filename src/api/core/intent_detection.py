@@ -325,8 +325,24 @@ class IntentPatterns:
                 r"\b(busco|buscando|estoy.*buscando|looking.*for)\b",
                 r"\b(necesito|quiero|me.*interesa|need|want)\b",
                 r"\b(mostrar|ver|enseñar|dame|show|display)\b",
-                r"\b(recomienda|sugerir|suggest|recommend)\b",
+                # FIX (09/04/2026): El patrón anterior \b(recomienda)\b no capturaba
+                # "Recoméndame" ni "recómiendanos" por dos razones:
+                #   1. Python re con IGNORECASE NO normaliza acentos Unicode:
+                #      "recomienda" != "Recoménda" (é vs e son code points distintos).
+                #   2. Los sufijos pronominales "me/te/nos/le" están fuera del grupo.
+                # Solución: capturar la raíz "recomend" con variantes acentuadas
+                # y sufijos opcionales, más verbos sinónimos con el mismo patrón.
+                r"\b(recom[ie][eé]nda(?:me|te|nos|le|r)?|suggest|recommend(?:me)?)\b",
+                r"\b(sug[ie]e?re(?:me|te|nos)?|sugerir|sugiere)\b",
                 r"\b(opciones.*de|options|alternativas)\b",
+                # FIX (09/04/2026): Patrones de SIMILITUD — deben ser siempre TRANSACTIONAL.
+                # Queries como "Muéstrame similares", "Ver productos similares",
+                # "Recoméndame parecidos a este" son peticisiones de producto, no
+                # consultas informacionales. Se añaden aquí para que el rule-based
+                # alcance confianza >= 0.5 y el ML no pueda hacer override a INFORMATIONAL.
+                r"\b(similar(?:es)?|parecido(?:s)?|como.*este|like.*this)\b",
+                r"\b(muéstrame|muestrame|enséñame|ensenname)\b",
+                r"\b(más.*opciones|more.*options|otras.*opciones|other.*options)\b",
             ],
         },
 

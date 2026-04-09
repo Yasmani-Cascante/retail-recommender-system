@@ -119,6 +119,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const apiKey = script.getAttribute('data-api-key');
     const marketId = script.getAttribute('data-market-id') || 'US';
     const theme = script.getAttribute('data-theme') || 'light';
+    // F-04: leer customer_id y customer_name desde los data attributes
+    // inyectados por Shopify Liquid en theme.liquid.
+    // Si el usuario no está logueado, customer.id devuelve '' en Liquid.
+    const customerId = script.getAttribute('data-customer-id') || undefined;
+    const customerName = script.getAttribute('data-customer-name') || undefined;
     
     if (apiUrl && apiKey) {
       widgetManager.init({
@@ -126,6 +131,8 @@ document.addEventListener('DOMContentLoaded', () => {
         apiKey,
         marketId,
         theme: theme as 'light' | 'dark' | 'auto',
+        customerId,
+        customerName,
       });
     }
   });

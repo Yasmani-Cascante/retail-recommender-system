@@ -54,9 +54,35 @@ class CustomerProfileService:
     Acepta redis=None y shopify=None para degradacion graceful (usuario anonimo).
     """
 
-    def __init__(self, redis_service=None, shopify_client=None):
+    def __init__(self, redis_service=None, shopify_client=None, product_catalog=None):
         self._redis = redis_service
         self._shopify = shopify_client
+
+        # Indice O(1): {str(product_id): product_type} construido una vez al init.
+        # Permite que _derive_preferences() resuelva el product_type de cada
+        # line_item de orden sin llamadas adicionales a Shopify ni a Redis.
+        #
+        # Por que se construye aqui y no en cada llamada:
+        #   - product_catalog es el TFIDFRecommender singleton (3062 productos).
+        #   - El indice se construye una sola vez cuando se crea el singleton de
+        #     CustomerProfileService (primer request). Las llamadas sucesivas
+        #     reusan el mismo dict en memoria — costo O(1) por lookup.
+        #
+        # Si product_catalog es None (ej. TF-IDF aun no cargado, o en tests),
+        # el indice queda vacio y _derive_preferences() hace fallback al campo
+        # product_type del line_item, que en ordenes REST de Shopify siempre
+        # esta vacio — preferred_categories quedara [] como antes.
+        self._product_type_index: Dict[str, str] = {}
+        if product_catalog and hasattr(product_catalog, 'product_data'):
+            for p in (product_catalog.product_data or []):
+                pid = str(p.get('id', ''))
+                ptype = (p.get('product_type') or '').strip()
+                if pid and ptype:
+                    self._product_type_index[pid] = ptype
+            logger.info(
+                'customer_profile_service_index_built',
+                product_type_index_size=len(self._product_type_index),
+            )
 
     # ──────────────────────────────────────────────────────────────────────
     # API publica
@@ -177,7 +203,9 @@ class CustomerProfileService:
         tags_raw = customer.get("tags") or ""
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
 
-        preferred_categories, top_brands = self._derive_preferences(orders)
+        preferred_categories, top_brands = self._derive_preferences(
+            orders, self._product_type_index
+        )
 
         last_order_date = ""
         if orders:
@@ -215,26 +243,64 @@ class CustomerProfileService:
 
     @staticmethod
     def _derive_preferences(
-        orders: List[Dict[str, Any]]
+        orders: List[Dict[str, Any]],
+        product_type_index: Dict[str, str] = None,
     ) -> tuple[List[str], List[str]]:
         """Extrae categorias y marcas preferidas de las ultimas N ordenes.
 
-        Recorre los line_items de cada orden para acumular product_type (categoria)
-        y vendor (marca). Retorna las 3 mas frecuentes de cada uno.
+        La API REST de Shopify (/orders.json) NO incluye el campo product_type
+        en los line_items de una orden — ese campo solo existe en el objeto
+        producto del catalogo. Por eso se usa el product_type_index: un dict
+        {str(product_id): product_type} construido en __init__() a partir del
+        catalogo TF-IDF ya cargado en memoria.
+
+        Flujo de resolucion de product_type para cada line_item:
+          1. Lookup O(1) en product_type_index usando el product_id del item
+             (fuente canonica — datos del catalogo TF-IDF, identicos a Shopify).
+          2. Fallback a item.get('product_type') si el indice no esta disponible
+             o el producto no se encuentra en el (poco probable pero defensivo).
+          3. Si ninguna fuente tiene el valor, el item no contribuye a categorias.
+
+        El campo vendor si viene en los line_items de ordenes REST y se usa
+        directamente para top_brands sin lookup adicional.
+
+        Retorna las 3 categorias y marcas mas frecuentes.
         """
         category_counts: Dict[str, int] = {}
         brand_counts: Dict[str, int] = {}
 
         for order in orders:
             for item in order.get("line_items", []):
-                product_type = (item.get("product_type") or "").strip()
+
+                # -- Resolver product_type ----------------------------------
+                # Intentar lookup en el indice del catalogo (fuente canonica).
+                # product_id es int en el JSON de Shopify; convertir a str
+                # para que coincida con las claves del indice.
+                product_id = str(item.get("product_id") or "")
+                if product_type_index and product_id:
+                    product_type = product_type_index.get(product_id, "")
+                else:
+                    # Fallback: el campo directo del line_item (siempre vacio
+                    # en ordenes REST, pero se mantiene por si Shopify cambia
+                    # su comportamiento en el futuro).
+                    product_type = (item.get("product_type") or "").strip()
+
+                # -- Resolver vendor ----------------------------------------
+                # vendor si viene en los line_items de ordenes REST de Shopify.
                 vendor = (item.get("vendor") or "").strip()
+
                 if product_type:
-                    category_counts[product_type] = category_counts.get(product_type, 0) + 1
+                    category_counts[product_type] = (
+                        category_counts.get(product_type, 0) + 1
+                    )
                 if vendor:
                     brand_counts[vendor] = brand_counts.get(vendor, 0) + 1
 
-        top_categories = sorted(category_counts, key=category_counts.get, reverse=True)[:3]
-        top_brands = sorted(brand_counts, key=brand_counts.get, reverse=True)[:3]
+        top_categories = sorted(
+            category_counts, key=category_counts.get, reverse=True
+        )[:3]
+        top_brands = sorted(
+            brand_counts, key=brand_counts.get, reverse=True
+        )[:3]
 
         return top_categories, top_brands

@@ -3,7 +3,7 @@
  * Lista de mensajes del chat.
  */
 
-/* ── Contenedor scrollable ──────────────────────────── */
+/* -- Contenedor scrollable */
 .list {
   flex: 1;
   overflow-y: auto;
@@ -11,26 +11,18 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  /* background: #f8f7f5; */
   scroll-behavior: smooth;
+  max-width: 700px;
+  margin: 0 auto;
 }
 
 /* Scrollbar personalizado */
-.list::-webkit-scrollbar {
-  width: 4px;
-}
-.list::-webkit-scrollbar-track {
-  background: transparent;
-}
-.list::-webkit-scrollbar-thumb {
-  background: #ddd;
-  border-radius: 4px;
-}
-.list::-webkit-scrollbar-thumb:hover {
-  background: #bbb;
-}
+.list::-webkit-scrollbar { width: 4px; }
+.list::-webkit-scrollbar-track { background: transparent; }
+.list::-webkit-scrollbar-thumb { background: #ddd; border-radius: 4px; }
+.list::-webkit-scrollbar-thumb:hover { background: #bbb; }
 
-/* ── Fila de mensaje ────────────────────────────────── */
+/* -- Fila de mensaje */
 .row {
   display: flex;
   align-items: flex-end;
@@ -38,15 +30,10 @@
   animation: msgFadeIn 0.2s ease-out both;
 }
 
-.rowUser {
-  justify-content: flex-end;
-}
+.rowUser      { justify-content: flex-end; }
+.rowAssistant { justify-content: flex-start; }
 
-.rowAssistant {
-  justify-content: flex-start;
-}
-
-/* ── Avatar del asistente ───────────────────────────── */
+/* -- Avatar del asistente */
 .avatar {
   width: 32px;
   height: 32px;
@@ -59,14 +46,13 @@
   flex-shrink: 0;
 }
 
-/* ── Burbuja de texto ───────────────────────────────── */
+/* -- Burbuja de texto */
 .bubble {
   max-width: 78%;
   padding: 10px 14px;
   font-size: 13.5px;
   line-height: 1.5;
   white-space: pre-wrap;
-  /* word-break: break-word; */
   padding-right: 25px;
 }
 
@@ -91,7 +77,7 @@
   border: 1px solid #fca5a5;
 }
 
-/* ── Contenedor de contenido del mensaje ────────────── */
+/* -- Contenedor de contenido del mensaje */
 .messageContent {
   display: flex;
   flex-direction: column;
@@ -99,7 +85,7 @@
   min-width: 0;
 }
 
-/* ── Botón "Ver política completa" ──────────────────── */
+/* -- Boton "Ver politica completa" */
 .kbToggleBtn {
   display: inline-flex;
   align-items: center;
@@ -121,7 +107,7 @@
   border-color: rgba(0, 0, 0, 0.2);
 }
 
-/* ── Panel del documento KB ─────────────────────────── */
+/* -- Panel del documento KB */
 .kbPanel {
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
@@ -157,9 +143,7 @@
   transition: color 0.15s;
 }
 
-.kbCloseBtn:hover {
-  color: #1c1c1c;
-}
+.kbCloseBtn:hover { color: #1c1c1c; }
 
 .kbPanelBody {
   padding: 12px;
@@ -172,15 +156,80 @@
   overflow-y: auto;
 }
 
-.kbPanelBody::-webkit-scrollbar {
-  width: 4px;
-}
-.kbPanelBody::-webkit-scrollbar-thumb {
-  background: #ddd;
-  border-radius: 4px;
+.kbPanelBody::-webkit-scrollbar { width: 4px; }
+.kbPanelBody::-webkit-scrollbar-thumb { background: #ddd; border-radius: 4px; }
+
+/*
+ * -- CHIP DE SUGERENCIA (elemento independiente, fuera de .bubble)
+ *
+ * Arquitectura: .suggestionChipBadge es HERMANO de .bubble dentro
+ * de .messageContent, NO un hijo. Esto garantiza independencia total
+ * de estilos: cambiar font-size, color o padding del chip no afecta
+ * a .bubbleUser y viceversa.
+ *
+ * DOM resultante para mensajes con chip:
+ *   <div class="messageContent">
+ *     <span class="suggestionChipBadge">   <- chip, estilos propios
+ *     <div class="bubble bubbleUser">       <- mensaje, estilos propios
+ *
+ * Para estilizar SOLO el chip sin tocar el mensaje:
+ *   .suggestionChipBadge { font-size: 10px; color: rgba(255,255,255,0.6); }
+ *
+ * Para estilizar SOLO el mensaje sin tocar el chip:
+ *   .bubbleUser { font-size: 14px; }
+ */
+.suggestionChipBadge {
+  /* Alineacion: flex-end para pegarse al lado derecho igual que la burbuja
+     del usuario. .rowUser usa justify-content flex-end para la fila, pero
+     los hijos de .messageContent necesitan align-self para alinearse. */
+  align-self: flex-end;
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+
+  /* Estilo visual: pastilla semitransparente oscura */
+  background: #2b2b2b;
+  /* border: 1px solid rgba(255, 255, 255, 0.15); */
+  border-radius: 8px;
+
+  /* Padding simetrico por defecto; se ajusta via :has cuando hay imagen */
+  padding: 8px 10px;
+
+  /* Tipografia INDEPENDIENTE del mensaje — cambia aqui sin afectar .bubbleUser */
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.75);
+
+  width: fit-content;
+  max-width: 70%;
+  line-height: 1.5;
+  /* white-space: nowrap; */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* opacity: 0.80; */
+  color: #aaaaaa;
 }
 
-/* ── Label de recomendaciones ───────────────────────── */
+/* Cuando hay imagen: padding izquierdo reducido (la imagen da margen visual) */
+.suggestionChipBadge:has(.suggestionChipImg) {
+  padding-left: 6px;
+}
+
+/* Imagen circular del producto (disponible en "Ver similares" y "Preguntar") */
+.suggestionChipImg {
+  /* Tamano INDEPENDIENTE del badge — cambia aqui sin afectar el texto del chip */
+  width: 42px;
+  height: 100%;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0);
+  opacity: 0.8;
+  ;
+}
+
+/* -- Label de recomendaciones */
 .recoLabel {
   font-size: 11px;
   color: #888;
@@ -193,7 +242,7 @@
   display: block;
 }
 
-/* ── Indicador de escritura ─────────────────────────── */
+/* -- Indicador de escritura */
 .typing {
   display: flex;
   align-items: flex-end;
@@ -222,25 +271,13 @@
 .typingDot:nth-child(2) { animation-delay: 0.15s; }
 .typingDot:nth-child(3) { animation-delay: 0.3s; }
 
-/* ── Animaciones ─────────────────────────────────────── */
+/* -- Animaciones */
 @keyframes msgFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes rrBounce {
-  0%, 80%, 100% {
-    transform: translateY(0);
-    opacity: 0.5;
-  }
-  40% {
-    transform: translateY(-5px);
-    opacity: 1;
-  }
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.5; }
+  40%           { transform: translateY(-5px); opacity: 1; }
 }

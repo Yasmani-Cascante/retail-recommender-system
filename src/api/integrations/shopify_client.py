@@ -683,6 +683,208 @@ class ShopifyIntegration:
 
 
 # ==========================================================================
+# F-01: PRODUCT CONTEXT BY HANDLE
+# ==========================================================================
+
+    async def get_product_context_by_handle(
+        self,
+        handle: str,
+    ) -> "dict | None":
+        """
+        Obtiene metadatos de un producto a partir de su handle de URL.
+
+        Por qué handle y no ID numérico:
+            El widget extrae el product_id de la URL /products/{handle},
+            entregando un string como "camisa-azul". El endpoint REST
+            /products/{id}.json requiere el ID numérico (ej. 9978700071221).
+            Este método resuelve la conversión en un solo fetch usando
+            /products.json?handle={handle}, que acepta el slug y retorna
+            el producto completo incluyendo su ID numérico.
+
+        Flujo:
+            1. GET /products.json?handle={handle}  → producto + ID numérico
+            2. GET /collections.json?product_id={id} → colecciones del producto
+            3. Combinar en dict normalizado y retornar
+
+        Implementación async:
+            Usa asyncio.to_thread() para envolver las llamadas síncronas
+            de requests en el thread pool de asyncio, igual que el patrón
+            establecido en _graphql_query(). Esto garantiza que el event
+            loop no se bloquea durante las llamadas HTTP a Shopify.
+
+        Args:
+            handle: Slug del producto extraído de la URL
+                    (ej. "camisa-azul" de /products/camisa-azul).
+                    Debe estar ya normalizado (lowercase, sin slashes).
+
+        Returns:
+            Dict normalizado con:
+                id, handle, title, product_type, tags (list),
+                collections (list[str]), vendor, variants_count
+            None si el producto no existe o hay error de red.
+        """
+        import asyncio
+
+        # ── Paso 1: Obtener producto por handle ───────────────────────────
+        # /products.json?handle= devuelve una lista de 0-1 elementos.
+        # Pedimos solo los campos que necesita el prompt de upsell:
+        #   id           → para el segundo fetch de colecciones
+        #   title        → para mencionarlo en el prompt ("el usuario ve X")
+        #   product_type → categoría principal ("Camisas", "Zapatos")
+        #   tags         → atributos semánticos ("formal", "algodón")
+        #   vendor       → marca del producto
+        #   variants     → para contar tallas/opciones disponibles
+        #   handle       → para construir URL de vuelta si se necesita
+        products_url = (
+            f"{self.api_url}/products.json"
+            f"?handle={handle}&fields=id,title,product_type,tags,vendor,variants,handle"
+        )
+        try:
+            # asyncio.to_thread envuelve la llamada síncrona
+            # _make_request_with_retry en el executor del event loop,
+            # evitando bloquear el thread principal.
+            response = await asyncio.to_thread(
+                self._make_request_with_retry, products_url
+            )
+            products_data = response.json().get("products", [])
+        except Exception as e:
+            logging.warning(
+                f"[get_product_context_by_handle] "
+                f"GET /products.json?handle={handle} failed: {e}"
+            )
+            return None
+
+        if not products_data:
+            # Handle no encontrado — puede ocurrir si el producto fue
+            # archivado o si el widget envió un handle de una página
+            # que no es de producto (ej. colección o blog).
+            logging.info(
+                f"[get_product_context_by_handle] "
+                f"No product found for handle='{handle}'"
+            )
+            return None
+
+        product = products_data[0]
+        product_id = product.get("id")
+
+        # Parsear tags: Shopify los retorna como string CSV separado por comas.
+        # ej. "formal, manga larga, algodón" → ["formal", "manga larga", "algodón"]
+        # Algunos endpoints retornan lista ya parseada — manejamos ambos casos.
+        raw_tags = product.get("tags", "")
+        tags: list = (
+            [t.strip() for t in raw_tags.split(",") if t.strip()]
+            if isinstance(raw_tags, str)
+            else list(raw_tags)
+        )
+
+        # Contar variantes disponibles.
+        # Útil para el prompt: "disponible en 4 tallas/opciones".
+        variants_count = len(product.get("variants", []))
+
+        # ── Paso 2: Obtener colecciones del producto via GraphQL ───────────
+        # Por qué GraphQL en lugar del enfoque REST previo:
+        #
+        # El enfoque anterior (collects.json + N fetches de títulos) fallaba
+        # silenciosamente para smart collections: el código intentaba
+        # /custom_collections/{id}.json y si retornaba 404, intentaba
+        # /smart_collections/{id}.json. Si ambos fallaban por cualquier motivo,
+        # la lista quedaba vacía sin log de error visible — exactamente lo
+        # observado: colecciones presentes en Shopify Admin, collections=[] en logs.
+        #
+        # Solución: una sola query GraphQL que retorna títulos directamente,
+        # sin distinguir entre custom y smart collections:
+        #
+        #   product(id: gid://shopify/Product/{id}) {
+        #     collections(first: 5) { nodes { title } }
+        #   }
+        #
+        # Usa el mismo cliente GraphQL ya establecido para precios.
+        collections: list = []
+        if product_id:
+            gql_query = """
+              query GetProductCollections($id: ID!) {
+                product(id: $id) {
+                  collections(first: 5) {
+                    nodes { title }
+                  }
+                }
+              }
+            """
+            gql_variables = {"id": f"gid://shopify/Product/{product_id}"}
+            try:
+                gql_url = f"https://{self.shop_url}/admin/api/2025-01/graphql.json"
+                gql_headers = {
+                    "Content-Type": "application/json",
+                    "X-Shopify-Access-Token": self.access_token,
+                }
+                gql_response = await asyncio.to_thread(
+                    requests.post,
+                    gql_url,
+                    json={"query": gql_query, "variables": gql_variables},
+                    headers=gql_headers,
+                    timeout=5,
+                )
+                gql_response.raise_for_status()
+                gql_data = gql_response.json()
+
+                if "errors" in gql_data:
+                    logging.warning(
+                        f"[get_product_context_by_handle] "
+                        f"GraphQL errors for collections product_id={product_id}: "
+                        f"{[e.get('message') for e in gql_data['errors']]}"
+                    )
+                else:
+                    nodes = (
+                        gql_data.get("data", {})
+                        .get("product", {})
+                        .get("collections", {})
+                        .get("nodes", [])
+                    )
+                    collections = [
+                        node["title"]
+                        for node in nodes
+                        if node.get("title")
+                    ]
+                    logging.info(
+                        f"[get_product_context_by_handle] "
+                        f"Collections resolved via GraphQL "
+                        f"product_id={product_id}: {collections}"
+                    )
+
+            except Exception as coll_err:
+                # Las colecciones son enriquecimiento, no datos criticos.
+                # Si GraphQL falla, el upsell sigue funcionando con
+                # product_type y tags como contexto alternativo.
+                logging.warning(
+                    f"[get_product_context_by_handle] "
+                    f"Collections GraphQL failed for product_id={product_id} "
+                    f"(non-critical, continuing without): {coll_err}"
+                )
+
+        # ── Paso 3: Construir y retornar el dict normalizado ──────────────
+        # Estructura canónica que MCPPersonalizationEngine espera en
+        # mcp_context.current_product_context.
+        context = {
+            "id":             str(product_id) if product_id else "",
+            "handle":         handle,
+            "title":          product.get("title", ""),
+            "product_type":   product.get("product_type", ""),
+            "tags":           tags,
+            "collections":    collections,
+            "vendor":         product.get("vendor", ""),
+            "variants_count": variants_count,
+        }
+
+        logging.info(
+            f"[get_product_context_by_handle] OK: "
+            f"handle='{handle}' id={context['id']} "
+            f"type='{context['product_type']}' "
+            f"tags={tags[:3]} collections={collections}"
+        )
+        return context
+
+
+# ==========================================================================
 # GRAPHQL RETRY LOGIC
 # ==========================================================================
 

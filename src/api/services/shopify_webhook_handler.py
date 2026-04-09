@@ -476,7 +476,7 @@ class ShopifyWebhookHandler:
         start_time = time.time()
 
         try:
-            # ── Idempotency check ─────────────────────────────────────────
+            # ── Idempotency check ──────────────────────────────────────
             # Usamos customer_id como identificador (mismo patron que page_id)
             if await self.is_duplicate_event(int(customer_id), topic):
                 return
@@ -511,3 +511,113 @@ class ShopifyWebhookHandler:
             )
             # No re-raise: la invalidacion de cache no es critica.
             # El perfil stale expirara en 24 h por TTL.
+
+    # ══════════════════════════════════════════════════════════════════════
+    # F-01 (07/04/2026) — Handler para products/update
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # Cuando un producto se actualiza en Shopify Admin (título, descripción,
+    # colecciones, tags, precio, estado), el contexto cacheado en Redis bajo
+    # 'mcp:product:context:{handle}:{market_id}' queda desactualizado.
+    # Sin invalidación, Claude puede sugerir el upsell con información antigua
+    # hasta que el TTL de 5 minutos expire naturalmente.
+    #
+    # Con este handler:
+    #   Shopify edita el producto → webhook products/update → cache invalidado
+    #   → el siguiente request hace un fetch fresco en ~600ms
+    #
+    # Complejidad del payload:
+    #   products/update envía el producto completo incluyendo el campo 'handle'.
+    #   Invalidamos TODOS los mercados (CL, CH, MX, ES) porque el handle
+    #   es el mismo para todos y la clave incluye market_id como sufijo.
+    #   El pattern de clave es: mcp:product:context:{handle}:*
+    # ══════════════════════════════════════════════════════════════════════
+
+    async def handle_product_event(
+        self,
+        product_id: str,
+        product_handle: str,
+        topic: str,
+    ) -> None:
+        """Invalida el cache de contexto de producto cuando Shopify notifica un cambio.
+
+        Cuando llega products/update o products/delete, el contexto de producto
+        cacheado en Redis bajo 'mcp:product:context:{handle}:{market_id}' puede
+        estar desactualizado. Este handler lo elimina para que el próximo request
+        del chat haga un fetch fresco desde Shopify (ProductContextService).
+
+        Por qué invalidar TODOS los mercados:
+            La cache key incluye market_id (CL, CH, MX, ES) como sufijo para
+            permitir futuros contextos por mercado. Como el handle es el mismo
+            para todos los mercados, un cambio de producto afecta a todas las
+            claves. Usamos SCAN con patrón glob para invalidarlas en batch.
+
+        Idempotency: mismo patrón SET NX que customers/update.
+
+        Args:
+            product_id:     ID numérico del producto en Shopify (str).
+            product_handle: Handle del producto (ej. 'vestido-corto-emma').
+                            Si viene vacío, intentamos extraerlo del cache key.
+            topic:          'products/update' o 'products/delete'.
+        """
+        start_time = time.time()
+
+        try:
+            # ── Idempotency check ──────────────────────────────────────
+            if await self.is_duplicate_event(int(product_id), topic):
+                return
+
+            logger.info(
+                "webhook_product_invalidating_cache",
+                product_id=product_id,
+                product_handle=product_handle,
+                topic=topic,
+            )
+
+            # ── Invalidar cache via ProductContextService ────────────────
+            # Invalidamos todos los mercados activos porque el handle es único
+            # y el contexto de producto es el mismo independientemente del mercado.
+            # Si en el futuro el contexto incluye datos por mercado (precio,
+            # disponibilidad), esta lista ya cubrirá todos los casos.
+            invalidated = 0
+            if product_handle:
+                from src.api.factories.service_factory import ServiceFactory
+                pcs = await ServiceFactory.get_product_context_service()
+                for market_id in ("CL", "CH", "MX", "ES"):
+                    await pcs.invalidate(handle=product_handle, market_id=market_id)
+                    invalidated += 1
+            else:
+                # Handle no disponible en el payload — usar SCAN directo por ID.
+                # Este caso ocurre con productos recien creados (handle generado
+                # después del webhook) o si Shopify no lo incluye.
+                # En estos casos no hay nada que invalidar porque el cache nunca
+                # se creó sin handle, pero logueamos para visibilidad.
+                logger.warning(
+                    "webhook_product_no_handle_skip",
+                    product_id=product_id,
+                    topic=topic,
+                    reason="product_handle_empty_cannot_build_cache_key",
+                )
+
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.info(
+                "webhook_product_processed",
+                product_id=product_id,
+                product_handle=product_handle,
+                topic=topic,
+                markets_invalidated=invalidated,
+                duration_ms=round(elapsed_ms, 2),
+            )
+
+        except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.error(
+                "webhook_product_failed",
+                product_id=product_id,
+                product_handle=product_handle,
+                topic=topic,
+                error=str(e),
+                duration_ms=round(elapsed_ms, 2),
+            )
+            # No re-raise: la invalidación de cache no es crítica.
+            # El contexto stale expira en 5 min por TTL.

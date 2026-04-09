@@ -1,22 +1,20 @@
 /*
  * ChatWidget.module.css
- * Panel principal del chat.
+ * Panel principal del chat + pantalla de bienvenida estilo Zalando.
  */
 
-/* ── Panel flotante ─────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   PANEL FLOTANTE — modo compacto (por defecto)
+   ═══════════════════════════════════════════════════════════════ */
 .panel {
   position: fixed;
-  /* display: none !important; */
   bottom: 6vh;
   right: 20px;
-  /* width: 360px; */
   width: 420px;
   height: 720px;
-  /* background: #ffffff; */
   background: #f8f7f5;
   border-radius: 6px;
   border: none;
-  /* border: 1px solid #1c1c1c; */
   box-shadow:
     0 20px 60px rgba(0, 0, 0, 0.15),
     0 4px 16px rgba(0, 0, 0, 0.08);
@@ -26,93 +24,45 @@
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   animation: panelSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+  /* Transición suave al cambiar entre compacto y expandido */
+  transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              height 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              bottom 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              right 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              border-radius 0.3s ease;
 }
 
-.float_form_wrapper{
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 80%, #fcf3f0 100%);
-    overflow: hidden;
-    height: 100%;
-    width: 100%;
-    z-index: -2;
+/* ── Modo expandido (pantalla completa en desktop) ───────────── */
+/* Inspirado en el asistente de Zalando: ocupa casi toda la pantalla   */
+/* dejando un margen decorativo. En móvil ya es full-screen por defecto.*/
+.panelExpanded {
+  /* width: calc(70vw - 48px); */
+  width: 1440px;
+  height: calc(100vh - 48px);
+  bottom: 24px;
+  right: 24px;
+  border-radius: 12px;
+  /* Sombra más pronunciada en modo expandido */
+  box-shadow:
+    0 32px 80px rgba(0, 0, 0, 0.2),
+    0 8px 24px rgba(0, 0, 0, 0.1);
 }
-/* .float_form{
-  position: absolute;
-  top: 100px;
-  right: 0px;
-  width: 420;
-  width: 100%;
-  height: 100%;
-  width: 180px;
-  height: 180px;
-  filter: blur(10px);
-  background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 25%, #ffa178cc 100%);
 
-  border-radius: 100px;
- 
-  z-index: -1;
-} */
 
-.float_form_back_wrapper {
-  position: fixed;
-  bottom: 6vh;
-  right: 20px;
-  /* width: 360px; */
-  width: 420px;
-  height: 720px;
-  /* background: #ffffff; */
-  background: transparent;
-  border-radius: 6px;
-  border: none;
-  /* border: 1px solid #1c1c1c; */
-  /* box-shadow:
-    0 20px 60px rgba(0, 0, 0, 0.15),
-    0 4px 16px rgba(0, 0, 0, 0.08); */
-  display: flex;
-  flex-direction: column;
-  z-index: 2047483646;
-  /* background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 25%, #78e0ffcc 100%); */
-
-}
-/* .float_form_back{
+/* ── Fondo decorativo del panel ─────────────────────────────── */
+.float_form_wrapper {
   position: absolute;
-  bottom: 0px;
-  left: -5%;
-  width: 400px;
-  height: 180px;
-  filter: blur(12px);
-  background:  #f7d8ce;
-  border-radius: 100px;
-  z-index: -1;
-} */
-/* .float_form_front {
-  position: absolute;
-  bottom: 0px;
+  bottom: 0;
   left: 0;
+  background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 80%, #fcf3f0 100%);
+  overflow: hidden;
+  height: 100%;
+  width: 100%;
+  z-index: -2;
+  pointer-events: none;
+}
 
-  width: 200px;
-  height: 200px; 
-  filter: blur(16px);
-  background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 20%, #fcf3f0 100%);
-  border-radius: 0px 100px 0px 0px;
-
-  z-index: -1;
-} */
-/* .float_form_small{
-  position: absolute;
-  bottom: -225px;
-  left: 45px;
-  width: 350px;
-  height: 350px;
-    filter: blur(5px);
-  background: linear-gradient(225deg, #f8f7f5 0%, #f8f7f5 20%, #ffa178 100%);
-  border-radius: 100%;
-  z-index: -1;
-} */
-
-/* Responsive: móvil ocupa casi toda la pantalla */
+/* ── Responsive: móvil ocupa casi toda la pantalla ──────────── */
 @media (max-width: 480px) {
   .panel {
     width: calc(100vw - 24px);
@@ -120,14 +70,26 @@
     right: 12px;
     bottom: 80px;
   }
+  .panelExpanded {
+    width: 100vw;
+    height: 100vh;
+    bottom: 0;
+    right: 0;
+    border-radius: 0;
+  }
+  /* En móvil el botón de expandir no tiene mucho sentido: ocultarlo */
+  .expandBtn {
+    display: none !important;
+  }
 }
 
-/* ── Header ─────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   HEADER
+   ═══════════════════════════════════════════════════════════════ */
 .header {
-  /* background: linear-gradient(135deg, #1c1c1c 0%, #333 100%); */
   background: #292929;
   box-shadow: 0 6px 8px rgb(0 0 0 / 21%);
-  padding: 16px 20px;
+  padding: 14px 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -141,14 +103,12 @@
 }
 
 .headerAvatar {
-  width: 36px;
-  height: 36px;
-  /* background: linear-gradient(135deg, #f3ede6, #e8ddd4); */
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
   flex-shrink: 0;
 }
 
@@ -177,27 +137,378 @@
   animation: statusPulse 2s ease-in-out infinite;
 }
 
-.closeBtn {
+/* ── Acciones del header (expand + close) ────────────────────── */
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Botón expandir/comprimir */
+.expandBtn {
   background: rgba(255, 255, 255, 0.1);
   border: none;
   cursor: pointer;
-  color: #fff;
-  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.75);
+  border-radius: 6px;
   width: 28px;
   height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
-  transition: background 0.15s;
-  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.expandBtn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+/* Botón cerrar */
+.closeBtn {
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.75);
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
 }
 
 .closeBtn:hover {
   background: rgba(255, 255, 255, 0.2);
+  color: #fff;
 }
 
-/* ── Animaciones ─────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   PANTALLA DE BIENVENIDA — estilo Zalando
+   Se muestra cuando no hay mensajes de usuario todavía.
+   ═══════════════════════════════════════════════════════════════ */
+.welcomeScreen {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px 24px;
+  gap: 0;
+  /* Scroll suave */
+  scroll-behavior: smooth;
+}
+
+/* ── Saludo personalizado (solo usuarios logueados) ──────────── */
+.personalGreeting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 100px;
+  padding: 6px 14px 6px 12px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+
+.personalGreetingHi {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1c1c1c;
+  letter-spacing: -0.01em;
+}
+
+.personalGreetingVerif {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: #16a34a;
+  font-weight: 500;
+}
+
+/* ── Título principal ────────────────────────────────────────── */
+.welcomeTitle {
+  font-size: 24px;
+  font-weight: 700;
+  color: #1c1c1c;
+  text-align: center;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  margin: 0 0 10px;
+}
+
+/* ── Subtítulo ───────────────────────────────────────────────── */
+.welcomeSubtitle {
+  font-size: 14px;
+  color: #6b7280;
+  text-align: center;
+  line-height: 1.5;
+  margin: 0 0 28px;
+  max-width: 300px;
+}
+
+/* ── Chips de sugerencia ─────────────────────────────────────── */
+.suggestions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 340px;
+  margin-bottom: 20px;
+}
+
+.suggestionsLabel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+}
+
+/* Chip individual — botón de sugerencia */
+.chip {
+  width: 100%;
+  text-align: left;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  padding: 11px 16px;
+  font-size: 13.5px;
+  color: #1c1c1c;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  line-height: 1.4;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  /* Sin font-weight extra — lectura natural */
+}
+
+.chip:hover {
+  background: #f3f4f6;
+  border-color: rgba(0, 0, 0, 0.18);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(0,0,0,0.08);
+}
+
+.chip:active {
+  transform: translateY(0);
+  background: #e9eaec;
+}
+
+/* ── Nota beta ───────────────────────────────────────────────── */
+.betaNote {
+  font-size: 11px;
+  color: #9ca3af;
+  text-align: center;
+  margin-top: 8px;
+}
+
+.betaLink {
+  color: #6b7280;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.betaLink:hover {
+  color: #1c1c1c;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ZONA INFERIOR — chip de contexto + sugerencias + input
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Contenedor de todo lo que va debajo de la lista de mensajes */
+.bottomZone {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  /* max-width: 700px;
+  margin: 0 auto; */
+
+}
+
+/* ── Chip de contexto activo — "Hablemos sobre [Producto]" ────── */
+/*
+ * Aparece cuando el usuario hace click en el botón 💬 de una tarjeta.
+ * Diseño inspirado en Zalando: fondo oscuro con imagen miniatura y título
+ * truncado. Botón × para volver al contexto normal.
+ */
+.contextChip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 16px 8px;
+  padding: 10px 12px;
+  background: #1c1c1c;
+  color: #ffffff;
+  border-radius: 10px;
+  animation: chipSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  width: 80%;
+  max-width: 400px;
+  margin: 0 auto; 
+}
+
+@keyframes chipSlideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Imagen miniatura del producto en el chip */
+.contextChipImg {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Emoji placeholder cuando no hay imagen */
+.contextChipEmoji {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+/* Bloque de texto del chip */
+.contextChipInfo {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* Label pequeño "Hablemos sobre" */
+.contextChipLabel {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Título del producto — truncado si es largo */
+.contextChipTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+/* Botón × para limpiar el contexto */
+.contextChipClose {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.contextChipClose:hover {
+  background: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+/* ── Suggestion chips contextuales al producto activo ──────── */
+/*
+ * Aparecen debajo del chip de contexto.
+ * Diseño horizontal con scroll — los chips son más compactos que los
+ * chips de la pantalla de bienvenida (que son verticales y full-width).
+ */
+.productSuggestions {
+  padding: 0 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: chipSlideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 0.05s;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.productSuggestionsLabel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Fila horizontal con scroll para los chips contextuales */
+.productSuggestionsRow {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  /* Ocultar scrollbar pero mantener funcionalidad */
+  scrollbar-width: none;
+}
+
+.productSuggestionsRow::-webkit-scrollbar {
+  display: none;
+}
+
+/* Chip individual en fila horizontal */
+.productSuggestionChip {
+  flex-shrink: 0;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 100px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #1c1c1c;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  line-height: 1.3;
+}
+
+.productSuggestionChip:hover {
+  background: #f3f4f6;
+  border-color: rgba(0, 0, 0, 0.2);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.productSuggestionChip:active {
+  transform: translateY(0);
+  background: #e9eaec;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ANIMACIONES
+   ═══════════════════════════════════════════════════════════════ */
 @keyframes panelSlideUp {
   from {
     opacity: 0;
@@ -211,5 +522,5 @@
 
 @keyframes statusPulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50%       { opacity: 0.4; }
 }

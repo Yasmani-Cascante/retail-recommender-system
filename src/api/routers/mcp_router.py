@@ -626,9 +626,29 @@ async def process_conversation(
         if not validated_user_id or validated_user_id.lower() in ['string', 'null', 'undefined', 'none']:
             validated_user_id = "anonymous"
             
-        validated_product_id = conversation.product_id
+        # F-01 (04/04/2026): product_id puede llegar por dos vías:
+        #   1. conversation.product_id  — campo raíz del body (legado, rara vez populado)
+        #   2. widget_context.product_id — donde api.ts realmente lo envía siempre
+        #      (extractProductId() lo lee de window.location.pathname en cada mensaje)
+        #
+        # Hasta ahora solo se leía la vía 1, por eso validated_product_id era
+        # siempre None aunque el usuario estuviera en /products/camisa-azul.
+        # Este fix lee también la vía 2 y usa la primera que no sea vacía.
+        _widget_ctx_early = conversation.widget_context or {}
+        _widget_product_id = (
+            _widget_ctx_early.get("product_id")
+            or _widget_ctx_early.get("productId")
+            or None
+        )
+        validated_product_id = conversation.product_id or _widget_product_id
         if validated_product_id and validated_product_id.lower() in ['string', 'null', 'undefined', 'none']:
             validated_product_id = None
+        logger.info(
+            f"F-01 product_id resolution: "
+            f"body={conversation.product_id!r} "
+            f"widget_ctx={_widget_product_id!r} "
+            f"resolved={validated_product_id!r}"
+        )
 
         # 🔧 FIX CRÍTICO #2: Obtener o crear sesión conversacional ANTES del procesamiento
         conversation_session = None
@@ -831,6 +851,19 @@ async def process_conversation(
         try:
             # ✅ Use corrected architecture handler instead of problematic mcp_recommender.get_recommendations()
             # ✅ LLAMADA AL HANDLER (business logic only)
+            # F-04 (04/04/2026): Extraer customer_id de widget_context.
+            # El frontend lo inyecta via data-customer-id="{{ customer.id }}"
+            # en theme.liquid. Para usuarios anonimos llega vacio o ausente.
+            # F-04: Extraer customer_id de widget_context.
+            # _widget_ctx_early ya fue construido arriba para product_id;
+            # lo reutilizamos aquí para no releer widget_context.
+            _widget_ctx = _widget_ctx_early
+            _customer_id = (
+                _widget_ctx.get("customer_id")
+                or _widget_ctx.get("customerId")
+                or None
+            )
+
             response_dict = await get_mcp_conversation_recommendations(
                 validated_user_id=validated_user_id,
                 validated_product_id=validated_product_id,
@@ -838,7 +871,8 @@ async def process_conversation(
                 market_id=conversation.market_id,
                 n_recommendations=conversation.n_recommendations,
                 session_id=real_session_id,
-                language=detected_language  # ✅ CRÍTICO: Pasar idioma detectado
+                language=detected_language,  # Idioma detectado
+                customer_id=_customer_id,    # F-04: perfil de cliente
             )
 
             # ✅ NUEVO: Log para confirmar que se pasó correctamente
@@ -1890,6 +1924,8 @@ async def get_market_recommendations(
             
         # ✅ VALIDACIÓN: product_id
         validated_product_id = product_id
+        # Yo: Aqui no entra
+        logging.info(f"Received product_id 2 http: {validated_product_id}")
         if not validated_product_id or validated_product_id.lower() in ['string', 'null', 'undefined', 'none']:
             raise HTTPException(status_code=400, detail="Valid product_id is required")
         

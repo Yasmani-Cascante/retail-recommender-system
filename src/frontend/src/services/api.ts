@@ -159,6 +159,8 @@ interface ConversationRequest {
     page_type: string;
     product_id?: string;
     user_agent: string;
+    // F-04: ID del cliente Shopify logueado. Undefined para usuarios anónimos.
+    customer_id?: string;
   };
 }
 
@@ -188,7 +190,7 @@ export class ConversationAPI {
     this.userId = this.generateUserId();
   }
 
-  async sendMessage(message: string): Promise<Message> {
+  async sendMessage(message: string, productHandle?: string): Promise<Message> {
     try {
       const request: ConversationRequest = {
         query: message,
@@ -199,8 +201,15 @@ export class ConversationAPI {
         widget_context: {
           page_url: window.location.href,
           page_type: this.detectPageType(),
-          product_id: this.extractProductId(),
+          // Si hay un producto activo seleccionado por el usuario (chip de contexto),
+          // usamos su handle como product_id en lugar del de la URL actual.
+          // Esto hace que el backend base las recomendaciones en ese producto
+          // específico en lugar del producto de la página.
+          product_id: productHandle ?? this.extractProductId(),
           user_agent: navigator.userAgent,
+          // F-04: propagar el customer_id al backend para enriquecimiento
+          // del perfil de cliente. Undefined si el usuario no está logueado.
+          customer_id: this.config.customerId || undefined,
         }
       };
 
@@ -231,14 +240,17 @@ export class ConversationAPI {
 
       const data: ConversationResponse = await response.json();
 
-      // Sync the session ID returned by the backend
+      // Sync the session ID returned by the backend.
+      // syncSessionFromBackend() actualiza this.sessionId Y localStorage
+      // con el valor canónico del servidor, garantizando continuidad multi-turno
+      // y persistencia entre recargas de página (F-07 / Paso 3).
       if (
         data.session_metadata &&
         typeof data.session_metadata === 'object' &&
         'session_id' in data.session_metadata &&
         typeof data.session_metadata.session_id === 'string'
       ) {
-        this.sessionId = data.session_metadata.session_id;
+        this.syncSessionFromBackend(data.session_metadata.session_id);
       }
 
       // ── FIX (27/03/2026): Normalize the answer field.
@@ -309,7 +321,63 @@ export class ConversationAPI {
   }
 
   private generateSessionId(): string {
-    return `widget_session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // F-07 / Paso 3 (06/04/2026): Persistir session_id en localStorage con TTL 24h.
+    // Sin esta persistencia, cada recarga de página genera un session_id nuevo
+    // y el backend crea una sesión nueva vacía — rompiendo la memoria multi-turno.
+    //
+    // Flujo completo:
+    //   1. Primera visita: se genera session_id nuevo + se guarda en localStorage
+    //   2. Misma visita, mensaje 2: se envía el mismo session_id → backend acumula turns
+    //   3. El backend retorna el session_id canónico en session_metadata.session_id
+    //   4. syncSessionFromBackend() actualiza localStorage con el valor del servidor
+    //   5. Próxima visita (< 24h): se recupera de localStorage → misma sesión
+    //   6. Próxima visita (> 24h): TTL expirado → nueva sesión
+    //
+    // TTL 24h coincide con el TTL de Redis en el backend (86400s).
+    try {
+      const stored = localStorage.getItem('rr_widget_session_id');
+      const storedTs = localStorage.getItem('rr_widget_session_ts');
+      const TTL_MS = 24 * 60 * 60 * 1000; // 24 horas en ms
+
+      if (stored && storedTs) {
+        const age = Date.now() - parseInt(storedTs, 10);
+        if (age < TTL_MS) {
+          // Sesión válida — reusar
+          return stored;
+        }
+        // TTL expirado — limpiar y generar nueva
+        localStorage.removeItem('rr_widget_session_id');
+        localStorage.removeItem('rr_widget_session_ts');
+      }
+    } catch {
+      // localStorage no disponible (iframe, modo privado extremo) — continuar
+    }
+
+    // Generar nuevo session_id
+    const newId = `widget_session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    try {
+      localStorage.setItem('rr_widget_session_id', newId);
+      localStorage.setItem('rr_widget_session_ts', String(Date.now()));
+    } catch {
+      // No crítico — el session_id funcionará en memoria durante esta visita
+    }
+    return newId;
+  }
+
+  private syncSessionFromBackend(backendSessionId: string): void {
+    // Actualizar el session_id con el valor canónico que devuelve el servidor.
+    // El backend puede normalizar o transformar el session_id recibido
+    // (ej. añadir prefijo de mercado). Este método garantiza que el widget
+    // siempre use el mismo ID que el servidor tiene en Redis.
+    if (!backendSessionId || backendSessionId === this.sessionId) return;
+
+    this.sessionId = backendSessionId;
+    try {
+      localStorage.setItem('rr_widget_session_id', backendSessionId);
+      localStorage.setItem('rr_widget_session_ts', String(Date.now()));
+    } catch {
+      // No crítico
+    }
   }
 
   private generateUserId(): string {

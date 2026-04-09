@@ -133,9 +133,19 @@ function containsMarkdown(text: string): boolean {
 interface MessageListProps {
   messages: Message[];
   isLoading: boolean;
+  /**
+   * onChatAbout — callback propagado desde ChatWidget a cada ProductCard.
+   * Activa el chip de contexto en el input (Sabor 3).
+   */
+  onChatAbout?: (product: import('../types/widget').ProductRecommendation) => void;
+  /**
+   * onShowSimilar — callback propagado desde ChatWidget a cada ProductCard.
+   * Envía automáticamente una petición de productos similares (Sabor 2).
+   */
+  onShowSimilar?: (product: import('../types/widget').ProductRecommendation) => void;
 }
 
-export function MessageList({ messages, isLoading }: MessageListProps) {
+export function MessageList({ messages, isLoading, onChatAbout, onShowSimilar }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [expandedKbId, setExpandedKbId] = useState<string | null>(null);
 
@@ -184,6 +194,37 @@ export function MessageList({ messages, isLoading }: MessageListProps) {
           )}
 
           <div className={styles.messageContent}>
+            {/*
+             * CHIP DE SUGERENCIA — elemento separado, FUERA de la burbuja.
+             *
+             * Requisito: el chip debe poder estilizarse independientemente
+             * del mensaje. Tenerlo fuera de .bubble permite cambiar su
+             * font-size, color, padding, etc. sin heredar ni afectar los
+             * estilos de .bubbleUser.
+             *
+             * Estructura final:
+             *   <div messageContent>
+             *     <span suggestionChipBadge>  ← chip, clase propia
+             *     <div bubble bubbleUser>      ← mensaje, clase propia
+             *
+             * Solo se renderiza para mensajes de usuario con chip.
+             */}
+            {message.type === 'user' && message.suggestionChip && (
+              <span className={styles.suggestionChipBadge}>
+                {/* Imagen circular del producto ("Ver similares" / "Preguntar") */}
+                {message.suggestionChip.image_url && (
+                  <img
+                    src={message.suggestionChip.image_url}
+                    alt=""
+                    className={styles.suggestionChipImg}
+                    aria-hidden="true"
+                    onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                )}
+                {message.suggestionChip.label}
+              </span>
+            )}
+
             {/* Burbuja principal
                 FIX (27/03/2026): User messages are always plain text.
                 Assistant messages may contain Markdown (KB responses, personalised
@@ -201,8 +242,16 @@ export function MessageList({ messages, isLoading }: MessageListProps) {
               }`}
             >
               {message.type === 'user' || message.type === 'error' ? (
-                // Plain text for user input and error messages — never render Markdown
-                message.content
+                /*
+                 * Mensajes de usuario: siempre mostrar el texto plano.
+                 * El chip (si existe) ya se renderizó como elemento separado
+                 * encima de esta burbuja con su propia clase CSS.
+                 *
+                 * IMPORTANTE: chip.label = título del PRODUCTO (no la query).
+                 * message.content = texto de la PREGUNTA del usuario.
+                 * Son siempre distintos — no hay riesgo de duplicado.
+                 */
+                message.content || null
               ) : containsMarkdown(message.content) ? (
                 // Markdown detected in assistant message — render as safe HTML
                 <span
@@ -278,7 +327,12 @@ export function MessageList({ messages, isLoading }: MessageListProps) {
               <div>
                 <span className={styles.recoLabel}>Recomendado para ti</span>
                 {message.recommendations.slice(0, 3).map((product) => (
-                  <ProductCard key={product.id} product={product} />
+                  <ProductCard
+                    key={product.id}
+                    product={product}
+                    onChatAbout={onChatAbout}
+                    onShowSimilar={onShowSimilar}
+                  />
                 ))}
               </div>
             )}

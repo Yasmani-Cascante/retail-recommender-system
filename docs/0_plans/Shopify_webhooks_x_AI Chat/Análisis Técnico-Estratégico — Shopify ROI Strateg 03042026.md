@@ -1,4 +1,5 @@
 # Análisis Técnico-Estratégico — Shopify ROI Strategy 2026
+# Fecha: 03.04.2026
 
 ## 📊 Análisis del Documento
 

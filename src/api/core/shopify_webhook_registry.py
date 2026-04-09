@@ -38,14 +38,71 @@ logger = structlog.get_logger(__name__)
 # Solo registramos webhooks que Shopify realmente soporta.
 # pages/* NO existe — ver nota al inicio del archivo.
 #
-# Lista de topics que SÍ funcionan y que podrían ser útiles en el futuro:
-#   - locales/create, locales/update  → detectar nuevos idiomas en la tienda
-#   - collections/update              → cambios en colecciones
+# F-04 (03/04/2026): Añadidos webhooks de clientes para invalidar el cache
+# de perfil de CustomerProfileService cuando Shopify notifica cambios.
+#
+# NOTA IMPORTANTE sobre Shopify 2025-01:
+#   El endpoint REST GET /customers/{id}.json NO fue modificado.
+#   Los campos total_spent, orders_count y tags siguen disponibles en REST.
+#   El cambio afectó SOLO al payload del webhook customers/update, donde
+#   esos campos fueron movidos al nuevo topic customers/purchasing_summary.
+#
+#   Por eso registramos AMBOS topics:
+#     - customers/update            → cambios en datos del perfil (email,
+#                                     dirección, tags de segmentación)
+#     - customers/purchasing_summary → cambios en LTV y conteo de pedidos
+#                                     (campos movidos aquí desde 2025-01)
+#
+#   En ambos casos la acción es la misma: invalidar el cache Redis del
+#   perfil para que el siguiente request haga un fetch fresco desde la
+#   API REST, que sigue devolviendo todos los campos correctamente.
 # ──────────────────────────────────────────────────────────────────────────
 
-# Vacío intencionalmente: pages/create, pages/update, pages/delete
-# no existen en Shopify. El sistema usa polling incremental en su lugar.
-REQUIRED_WEBHOOKS: List[Dict] = []
+# F-04: Webhooks de clientes para invalidación de cache de perfil.
+# Endpoint destino: POST /api/webhooks/shopify/customers
+# Handler: ShopifyWebhookHandler.handle_customer_event()
+#
+# F-01 (07/04/2026): Webhooks de productos para invalidación de cache de contexto.
+# Cuando un producto se actualiza en Shopify Admin (título, descripción,
+# colecciones, tags), el contexto cacheado bajo
+# 'mcp:product:context:{handle}:{market_id}' queda obsoleto.
+# Endpoint destino: POST /api/webhooks/shopify/products
+# Handler: ShopifyWebhookHandler.handle_product_event()
+REQUIRED_WEBHOOKS: List[Dict] = [
+    {
+        # Dispara cuando cambian datos del perfil: email, dirección, tags,
+        # nombre. Permite mantener actualizada la segmentación del cliente.
+        "topic": "customers/update",
+        "address": "{APP_URL}/api/webhooks/shopify/customers",
+        "format": "json",
+    },
+    {
+        # Shopify 2025-01: nuevo topic que contiene total_spent y orders_count
+        # (movidos desde customers/update). Dispara cuando el cliente realiza
+        # o cancela una compra, afectando su LTV y tier de personalización.
+        "topic": "customers/purchasing_summary",
+        "address": "{APP_URL}/api/webhooks/shopify/customers",
+        "format": "json",
+    },
+    {
+        # F-01: Dispara cuando un producto se edita en Shopify Admin.
+        # Invalida el cache de contexto del producto en todos los mercados
+        # para que Claude use datos frescos al construir el prompt de upsell.
+        # Incluye cambios en: título, descripción, colecciones, tags,
+        # precio, estado (active/draft/archived), variantes, imágenes.
+        "topic": "products/update",
+        "address": "{APP_URL}/api/webhooks/shopify/products",
+        "format": "json",
+    },
+    {
+        # F-01: Dispara cuando un producto se elimina de Shopify Admin.
+        # Invalida cualquier contexto en cache para evitar que Claude
+        # sugiera un producto que ya no existe en la tienda.
+        "topic": "products/delete",
+        "address": "{APP_URL}/api/webhooks/shopify/products",
+        "format": "json",
+    },
+]
 
 
 async def ensure_webhooks_registered(shopify_client, app_url: str) -> None:

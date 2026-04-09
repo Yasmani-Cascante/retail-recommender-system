@@ -650,6 +650,190 @@ async def lifespan(app: FastAPI):
             )
 
         # ============================================================================
+        # 🎯 PASO 4.6: ENRIQUECER CATÁLOGO TF-IDF CON COLECCIONES SHOPIFY (BACKGROUND)
+        # ============================================================================
+        #
+        # POR QUÉ ES NECESARIO:
+        #   La API REST /products.json NO incluye el campo 'collections' en ninguno
+        #   de sus productos. El catálogo TF-IDF (pickle) tampoco tiene este campo.
+        #   Sin él, el reranking por colección de F-01 (en mcp_conversation_handler)
+        #   nunca puede hacer boost de productos de la misma colección porque
+        #   rec_product_data.get("collections") siempre devuelve [] o None.
+        #
+        # FLUJO:
+        #   1. Una query GraphQL por batch de 50 productos obtiene sus colecciones
+        #      via product(id: gid://...) { collections(first: 5) { nodes { title } } }
+        #   2. Los títulos de colecciones se inyectan directamente en el dict
+        #      del catálogo en memoria como product["collections"] = ["Vestidos", ...]
+        #   3. El id_index del TF-IDF apunta a los mismos dicts en memoria,
+        #      por lo que el reranking de F-01 los ve automáticamente.
+        #
+        # TIMING:
+        #   ~2-4 min en background (3062 productos / 50 batch = 62 batches).
+        #   El sistema ya sirve requests. El reranking degrada graciosamente
+        #   (sin boost) para productos cuya colección aún no se ha cargado.
+        #   A partir del tercer o cuarto request (post-enriquecimiento), el
+        #   reranking activa el boost correctamente.
+        #
+        # COSTE: 0 USD adicional (GraphQL Admin API es gratuita).
+        # RATE LIMIT: batch=50, pausa 0.3s entre batches = ~19s/1000 productos.
+        # ============================================================================
+
+        async def _enrich_catalog_with_collections(
+            catalog,
+            shop_url: str,
+            access_token: str
+        ):
+            """
+            Background task: inyecta 'collections' en cada producto del catálogo
+            TF-IDF en memoria, consultando Shopify Admin GraphQL.
+            Corre en segundo plano sin bloquear el startup ni el PASO 4.5.
+
+            Modificación en el catálogo: product["collections"] = ["Vestidos", "Fiesta"]
+            El id_index del TF-IDF apunta a los mismos objetos dict —
+            los cambios son inmediatamente visibles para el reranking de F-01.
+            """
+            import requests as _req_lib
+
+            BATCH_SIZE = 50          # 50 aliases por query — bien dentro del límite de coste
+            MAX_RETRIES = 4
+
+            _raw = shop_url.rstrip("/").replace("https://", "").replace("http://", "")
+            gql_url   = f"https://{_raw}/admin/api/2025-01/graphql.json"
+            gql_hdrs  = {
+                "Content-Type": "application/json",
+                "X-Shopify-Access-Token": access_token,
+            }
+
+            total      = len(catalog)
+            batches    = (total + BATCH_SIZE - 1) // BATCH_SIZE
+            enriched   = 0
+            failed_b   = 0
+            t0 = time.time()
+
+            logger.info(
+                "📦 [PASO 4.6 BG] Iniciando enriquecimiento de colecciones "
+                "(%d productos, %d batches)...",
+                total, batches
+            )
+
+            for batch_start in range(0, total, BATCH_SIZE):
+                batch = catalog[batch_start: batch_start + BATCH_SIZE]
+
+                # --- Construir query con un alias por producto -------------------
+                # Formato: p{idx}: product(id: "gid://...") { collections(first:5) {
+                #              nodes { title } } }
+                # Un solo campo por alias — costo GraphQL mínimo.
+                alias_parts = []
+                for idx, prod in enumerate(batch):
+                    gid = f'gid://shopify/Product/{prod.get("id", "")}'
+                    alias_parts.append(
+                        f'p{idx}: product(id: "{gid}") {{\n'
+                        f'  collections(first: 5) {{ nodes {{ title }} }}\n'
+                        f'}}'
+                    )
+                query = "query GetCatalogCollections {\n" + "\n".join(alias_parts) + "\n}"
+
+                attempt = 0
+                success = False
+                while attempt <= MAX_RETRIES and not success:
+                    try:
+                        resp = await asyncio.to_thread(
+                            _req_lib.post, gql_url,
+                            json={"query": query},
+                            headers=gql_hdrs,
+                            timeout=30,
+                        )
+                        resp.raise_for_status()
+                        rdata = resp.json()
+
+                        if "errors" in rdata:
+                            msgs  = [e.get("message", str(e)) for e in rdata["errors"]]
+                            throttled = any("throttl" in m.lower() for m in msgs)
+                            if throttled and attempt < MAX_RETRIES:
+                                wait = float(resp.headers.get("Retry-After", 0)) or (2.0 ** (attempt + 1))
+                                logger.warning(
+                                    "⚠️ [PASO 4.6 BG] batch %d throttled (%d/%d), wait %.1fs",
+                                    batch_start, attempt + 1, MAX_RETRIES, wait
+                                )
+                                await asyncio.sleep(wait)
+                                attempt += 1
+                                continue
+                            logger.warning(
+                                "⚠️ [PASO 4.6 BG] batch %d GraphQL errors: %s",
+                                batch_start, msgs
+                            )
+                            failed_b += 1
+                            break
+
+                        gdata = rdata.get("data", {})
+                        for idx, prod in enumerate(batch):
+                            node = gdata.get(f"p{idx}")
+                            if not node:
+                                continue
+                            titles = [
+                                n["title"]
+                                for n in node.get("collections", {}).get("nodes", [])
+                                if n.get("title")
+                            ]
+                            if titles:
+                                # Escritura directa en el dict del catálogo en memoria.
+                                # El id_index ya apunta al mismo objeto — no requiere
+                                # actualizar el índice por separado.
+                                prod["collections"] = titles
+                                enriched += 1
+
+                        success = True
+
+                    except Exception as err:
+                        if attempt < MAX_RETRIES:
+                            await asyncio.sleep(2.0 ** (attempt + 1))
+                            attempt += 1
+                        else:
+                            logger.warning(
+                                "⚠️ [PASO 4.6 BG] batch %d fallo tras %d intentos: %s",
+                                batch_start, MAX_RETRIES, err
+                            )
+                            failed_b += 1
+                            break
+
+                # Pausa corta entre batches para respetar rate limit
+                await asyncio.sleep(0.3 if success else 1.0)
+
+            elapsed_ms = (time.time() - t0) * 1000
+            logger.info(
+                "✅ [PASO 4.6 BG] Colecciones enriquecidas: %d/%d productos | "
+                "batches OK=%d FAIL=%d | %.0fms",
+                enriched, total,
+                batches - failed_b, failed_b,
+                elapsed_ms
+            )
+            if enriched == 0:
+                logger.warning(
+                    "⚠️ [PASO 4.6 BG] Ningun producto enriquecido con colecciones. "
+                    "Verificar IDs del pickle vs IDs de Shopify GraphQL."
+                )
+
+        # -- Lanzar PASO 4.6 en background (paralelo a 4.5) --------------------
+        if (
+            tfidf_recommender
+            and getattr(tfidf_recommender, 'loaded', False)
+            and tfidf_recommender.product_data
+            and shopify_client
+        ):
+            asyncio.create_task(
+                _enrich_catalog_with_collections(
+                    catalog=tfidf_recommender.product_data,
+                    shop_url=os.environ.get("SHOPIFY_SHOP_URL", ""),
+                    access_token=os.environ.get("SHOPIFY_ACCESS_TOKEN", ""),
+                )
+            )
+            logger.info(
+                "✅ PASO 4.6: Enriquecimiento de colecciones lanzado en background. "
+                "El reranking F-01 activará el boost de colección una vez completado."
+            )
+
+        # ============================================================================
         # 🎯 PASO 5: CREAR PRODUCT CACHE CON DEPENDENCY INJECTION CORREGIDA (OPCIÓN B)
         # ============================================================================
         
@@ -815,6 +999,7 @@ async def lifespan(app: FastAPI):
                     f"traceback: {traceback.format_exc()}"
                 )
         else:
+            # logger.warning("⚠️ PASO 8.5: CLAUDE API CONNECTION WARM-UP (if condition COMMENTED OUT for testing)")
             logger.warning("⚠️ Claude API warm-up skipped — MCP recommender or claude client not available")
 
         # ════════════════════════════════════════════════════════════════════
@@ -894,23 +1079,27 @@ async def lifespan(app: FastAPI):
                         f"traceback: {traceback.format_exc()}"
                     )
 
+
+        # ⚠️ Claude keep-alive task NOT started   (ESTE PASO SE DEJA COMENTADO PARA EVITAR LLAMADAS ESXTRAS DURANTE PRUEBAS DE DESARROLLO)
+        # PARA REACTIVARLO: Descomentar el bloque siguiente aqui y en el shutdown (BUSCAR POR "claude_keepalive_task" y te lo encontraras).
+
         # Arrancar el keep-alive solo si el cliente Claude está disponible
-        claude_keepalive_task = None
-        if (app.state.mcp_recommender and
-                hasattr(app.state.mcp_recommender, 'claude') and
-                app.state.mcp_recommender.claude):
-            claude_keepalive_task = asyncio.create_task(
-                _claude_keepalive_loop(app.state.mcp_recommender)
-            )
-            logger.info(
-                "✅ Claude API keep-alive background task started "
-                "(interval=90s, keepalive_expiry=300s) — TCP connection will stay warm indefinitely"
-            )
-        else:
-            logger.warning(
-                "⚠️ Claude keep-alive task NOT started — "
-                "MCP recommender or claude client not available"
-            )
+        # claude_keepalive_task = None
+        # if (app.state.mcp_recommender and
+        #         hasattr(app.state.mcp_recommender, 'claude') and
+        #         app.state.mcp_recommender.claude):
+        #     claude_keepalive_task = asyncio.create_task(
+        #         _claude_keepalive_loop(app.state.mcp_recommender)
+        #     )
+        #     logger.info(
+        #         "✅ Claude API keep-alive background task started "
+        #         "(interval=90s, keepalive_expiry=300s) — TCP connection will stay warm indefinitely"
+        #     )
+        # else:
+        #     logger.warning(
+        #         "⚠️ Claude keep-alive task NOT started — "
+        #         "MCP recommender or claude client not available"
+        #     )
 
         # ============================================================================
         # 🎯 PASO 9: COMPREHENSIVE HEALTH CHECK
@@ -1298,14 +1487,14 @@ async def lifespan(app: FastAPI):
         # asyncio.Task.cancel() envía CancelledError al loop, que lo captura
         # limpiamente y loguea el ping_count antes de terminar.
         # ════════════════════════════════════════════════════════════════════
-        if claude_keepalive_task is not None and not claude_keepalive_task.done():
-            try:
-                claude_keepalive_task.cancel()
-                # Esperar a que el task procese la CancelledError
-                await asyncio.gather(claude_keepalive_task, return_exceptions=True)
-                logger.info("✅ Claude keep-alive background task stopped cleanly")
-            except Exception as e:
-                logger.warning(f"⚠️ Claude keep-alive task shutdown warning: {e}")
+        # if claude_keepalive_task is not None and not claude_keepalive_task.done():
+        #     try:
+        #         claude_keepalive_task.cancel()
+        #         # Esperar a que el task procese la CancelledError
+        #         await asyncio.gather(claude_keepalive_task, return_exceptions=True)
+        #         logger.info("✅ Claude keep-alive background task stopped cleanly")
+        #     except Exception as e:
+        #         logger.warning(f"⚠️ Claude keep-alive task shutdown warning: {e}")
         
         # ════════════════════════════════════════════════════════════════════
         # M3: SHUTDOWN GCP METRICS EXPORTER — cancela el background task

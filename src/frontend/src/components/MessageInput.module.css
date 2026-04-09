@@ -16,18 +16,32 @@
   display: flex;
   align-items: flex-end;
   gap: 8px;
+  max-width: 660px;
+  margin: 0 auto;
   /* background: #f4f4f4; */
   background: #ffffff;
   border-radius: 12px;
   padding: 6px 6px 6px 14px;
-  border: 1.5px solid transparent;
-  transition: border-color 0.15s;
+  border: 1px solid transparent;
+  transition: border-color, box-shadow 0.15s;
+  box-shadow: none
+  /* box-shadow: rgba(14, 63, 126, 0.06) 0px 0px 0px 1px, rgba(42, 51, 69, 0.06) 0px 1px 1px -0.5px, rgba(42, 51, 70, 0.06) 0px 3px 3px -1.5px, rgba(42, 51, 70, 0.06) 0px 6px 6px -3px, rgba(14, 63, 126, 0.06) 0px 12px 12px -6px, rgba(14, 63, 126, 0.06) 0px 24px 24px -12px; */
 }
 
 .inputRow:focus-within {
-  border-color: #1c1c1c;
-  background: #fff;
-}
+  border-color: #777777;
+  /* border: 1px solid #1c1c1c; */
+  /* border: 1px transparent solid #1c1c1c; */
+  /* background: #fff; */
+  /* box-shadow: rgba(14, 63, 126, 0.06) 0px 0px 0px 1px, rgba(42, 51, 69, 0.06) 0px 1px 1px -0.5px, rgba(42, 51, 70, 0.06) 0px 3px 3px -1.5px, rgba(42, 51, 70, 0.06) 0px 6px 6px -3px, rgba(14, 63, 126, 0.06) 0px 12px 12px -6px, rgba(14, 63, 126, 0.06) 0px 24px 24px -12px; */
+  /* box-shadow: 
+    rgba(251, 124, 28, 0.06) 0px 0px 0px 1px, 
+    rgba(196, 94, 11, 0.06) 0px 1px 1px -0.5px, 
+    rgba(209, 78, 18, 0.06) 0px 3px 3px -1.5px, 
+    rgba(209, 62, 18, 0.06) 0px 6px 6px -3px, 
+    rgba(250, 99, 40, 0.06) 0px 24px 24px -12px; */
+    box-shadow:rgba(59, 59, 59, 0.288) 0px 4px 4px -2px;
+} 
 
 /* ── Textarea ───────────────────────────────────────── */
 .textarea {

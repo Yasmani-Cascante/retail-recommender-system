@@ -1,21 +1,24 @@
 /*
  * ProductCard.module.css
- * Tarjeta de producto dentro del chat.
+ * Tarjeta de producto dentro del chat — patrón Zalando con barra de acciones.
  */
 
 /* ── Tarjeta ─────────────────────────────────────────── */
 .card {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;           /* columna: cuerpo arriba, barra abajo */
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.07);
   border-radius: 10px;
-  padding: 10px;
+  overflow: hidden;                 /* barra de acciones respeta border-radius */
   cursor: pointer;
   transition: box-shadow 0.15s, transform 0.15s;
   text-decoration: none;
   color: inherit;
+  max-width: 320px;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
 }
 
 .card:hover {
@@ -27,11 +30,28 @@
   transform: translateY(0);
 }
 
+/* Variante con barra de acciones — sin cambio visual extra, pero
+   permite animar la barra al hacer hover si se desea en el futuro */
+.cardWithActions {
+  /* reservado para overrides futuros */
+}
+
+/* ── Cuerpo principal: imagen + info ────────────────── */
+/* Layout horizontal igual que antes */
+.cardBody {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* padding: 10px; */
+  width: 74%;
+}
+
 /* ── Imagen / placeholder ────────────────────────────── */
 .imageBox {
-  width: 48px;
-  height: 48px;
-  border-radius: 8px;
+  width: 30%;
+  /* height: 48px; */
+  height: 100%;
+  border-radius: 8px 0 0 8px;
   overflow: hidden;
   flex-shrink: 0;
   background: linear-gradient(135deg, #f3ede6, #e8ddd4);
@@ -95,14 +115,78 @@
   border-radius: 20px;
 }
 
-/* ── Flecha de navegación ────────────────────────────── */
-.arrow {
-  flex-shrink: 0;
-  color: #ccc;
-  transition: color 0.15s, transform 0.15s;
+/* ── Barra de acciones — patrón Zalando ─────────────────
+ *
+ * Tres botones alineados horizontalmente debajo del cuerpo.
+ * Separados del cuerpo por un borde superior sutil.
+ * El hover de la tarjeta revela la barra con más contraste.
+ *
+ * Jerarquía visual:
+ *   Añadir (disabled, gris)  |  Ver similares (borde)  |  Preguntar (relleno)
+ */
+.actionBar {
+  display: flex;
+  align-items: stretch;
+  /* border-top: 1px solid rgba(0, 0, 0, 0.06); */
+  flex-direction: column;
+  width: 18%;
+  border-left: 1px solid rgba(0, 0, 0, 0.06);
+  /* background-color: #c7c7c7; */
+}
+.actionBtn:nth-last-child(2) {
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 
-.card:hover .arrow {
-  color: #888;
-  transform: translateX(2px);
+/* Botón base */
+.actionBtn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 7px 4px;
+  border: none;
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  color: #555;
+  line-height: 1;
+  /* Separador entre botones */
+  border-right: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.actionBtn:last-child {
+  border-right: none;
+}
+
+/* Botón deshabilitado — Add to basket */
+.actionBtnDisabled {
+  color: #c7c7c7;
+  cursor: not-allowed;
+  opacity: 0.15;
+  background: #f7f7f5;
+}
+
+/* Botón Ver similares */
+.actionBtnSimilar:hover {
+  background: #f4f4f4;
+  color: #1c1c1c;
+}
+
+.actionBtnSimilar:active {
+  background: #e9eaec;
+}
+
+/* Botón Preguntar — ligeramente destacado */
+.actionBtnChat:hover {
+  background: #1c1c1c;
+  color: #ffffff;
+}
+
+.actionBtnChat:active {
+  background: #333;
+  color: #ffffff;
 }

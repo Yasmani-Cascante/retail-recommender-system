@@ -48,7 +48,8 @@ async def get_mcp_conversation_recommendations(
     market_id: str,
     n_recommendations: int = 5,
     session_id: Optional[str] = None,
-    language: Optional[str] = "es"  # ✅ NUEVO: Idioma para KB y personalización
+    language: Optional[str] = "es",  # Idioma para KB y personalizacion
+    customer_id: Optional[str] = None,  # F-04: ID del cliente Shopify logueado
 ) -> Dict[str, Any]:
     """
     ✅ ARQUITECTURA PARALELA: HybridRecommender + MCPPersonalizationEngine + ParallelProcessor
@@ -83,6 +84,12 @@ async def get_mcp_conversation_recommendations(
         # ===== FASE 1: OBTENER ESTADO CONVERSACIONAL REAL =====
         # ✅ NUEVO: Obtener contexto conversacional real existente
         mcp_context = None
+        # F-07 / Paso 3 (06/04/2026): session_id siempre viene desde el router,
+        # que a su vez lo toma de conversation.session_id (enviado por el widget).
+        # El widget genera un session_id estable en el constructor de ConversationAPI
+        # y lo envia en CADA request, lo actualiza al recibirlo en la respuesta.
+        # Si no viene (curl de test sin session_id), se genera un fallback con
+        # timestamp para que no colisionen sesiones de usuarios diferentes.
         actual_session_id = session_id or f"session_{validated_user_id}_{int(time.time())}"
         
         try:
@@ -132,6 +139,114 @@ async def get_mcp_conversation_recommendations(
                 )
                 
             logger.info("✅ MCP context created successfully")
+
+            # ── F-04: Lazy fetch del perfil de cliente (04/04/2026) ────────────────
+            # customer_id llega desde mcp_router.py, que lo extrae de
+            # widget_context["customer_id"] (inyectado por Shopify Liquid en
+            # theme.liquid: data-customer-id="{{ customer.id }}").
+            #
+            # Flujo:
+            #   customer_id presente  → CustomerProfileService.get_profile()
+            #     cache hit  (~1ms)   → retorna perfil Redis
+            #     cache miss (~300ms) → fetch Shopify REST + guarda en Redis
+            #   customer_id ausente   → None (usuario anonimo, sin cambios)
+            #
+            # El perfil se guarda en mcp_context.customer_profile.
+            # MCPPersonalizationEngine lo usa para adaptar el tono de Claude
+            # segun el LTV tier (new/returning/loyal/vip) y las categorias
+            # preferidas del cliente.
+            if customer_id:
+                try:
+                    from src.api.factories.service_factory import ServiceFactory
+                    _cps = await ServiceFactory.get_customer_profile_service()
+                    _profile = await _cps.get_profile(str(customer_id))
+                    if _profile:
+                        mcp_context.customer_profile = _profile
+                        # NOTA: Este archivo usa logging estandar (no structlog),
+                        # por lo que los kwargs deben ir dentro del mensaje f-string.
+                        # structlog acepta kwargs arbitrarios; logging.Logger._log() no.
+                        logger.info(
+                            f"customer_profile_injected "
+                            f"customer_id={customer_id} "
+                            f"ltv_tier={_profile.get('ltv_tier')} "
+                            f"preferred_categories={_profile.get('preferred_categories', [])}"
+                        )
+                    else:
+                        logger.info(
+                            f"customer_profile_not_found customer_id={customer_id}"
+                        )
+                except Exception as _cp_err:
+                    # Degradacion graceful: si falla el fetch, el chat sigue
+                    # funcionando sin personalizacion de historial.
+                    logger.warning(
+                        f"F-04 customer profile fetch failed (graceful degradation): {_cp_err}"
+                    )
+            # ── Fin F-04 ─────────────────────────────────────────────────────
+
+            # ── F-01: Lazy fetch del contexto del producto actual (04/04/2026) ─────
+            # validated_product_id llega desde mcp_router.py, que lo extrae de
+            # widget_context["product_id"]. extractProductId() en api.ts lo
+            # obtiene del path /products/{handle} de la URL actual.
+            #
+            # El handle es un string slug (ej. "camisa-azul"), NO un ID numérico.
+            # ProductContextService.get_product_context() resuelve esta
+            # diferencia internamente con GET /products.json?handle=.
+            #
+            # Condición de activación:
+            #   validated_product_id presente  → el usuario está en página de
+            #                                    producto (page_type='product')
+            #   page_type check NO es necesario aquí porque validated_product_id
+            #   solo se popula cuando extractProductId() encuentra el slug en la
+            #   URL, lo que solo ocurre en rutas /products/*.
+            #
+            # Flujo:
+            #   cache hit  (~1ms)   → retorna dict Redis
+            #   cache miss (~400ms) → 2x fetch Shopify REST + guarda en Redis
+            #   fallo               → None (graceful degradation, chat sigue OK)
+            #
+            # El contexto se guarda en mcp_context.current_product_context.
+            # MCPPersonalizationEngine lo usa para construir el prompt de upsell.
+
+            # Yo: Validación adicional para debugging — log explícito del product_id recibido
+            if validated_product_id:
+                try:
+                    from src.api.factories.service_factory import ServiceFactory
+                    _pcs = await ServiceFactory.get_product_context_service()
+          
+                    if _pcs:
+                        _product_ctx = await _pcs.get_product_context(
+                            handle=validated_product_id,
+                            market_id=market_id,
+                        )
+
+                        if _product_ctx:
+                            mcp_context.current_product_context = _product_ctx
+                            logger.info(
+                                f"F-01 product_context_injected "
+                                f"handle={validated_product_id} "
+                                f"product_id={_product_ctx.get('id')} "
+                                f"title='{_product_ctx.get('title')}' "
+                                f"type='{_product_ctx.get('product_type')}' "
+                                f"collections={_product_ctx.get('collections', [])}"
+                            )
+                        else:
+                            logger.info(
+                                f"F-01 product_context_not_found "
+                                f"handle={validated_product_id}"
+                            )
+                    else:
+                        logger.info(
+                            "F-01 ProductContextService not available "
+                            "(graceful degradation)"
+                        )
+                except Exception as _pce:
+                # Degradacion graceful: si falla el fetch de producto,
+                # el chat sigue funcionando sin contexto de upsell.
+                    logger.warning(
+                        f"F-01 product context fetch failed "
+                        f"(graceful degradation): {_pce}"
+                    )
+            # ── Fin F-01 ──────────────────────────────────────────────────────────
         except Exception as e:
             logger.error(f"❌ Error creating MCP context: {e}")
 
@@ -636,14 +751,128 @@ async def get_mcp_conversation_recommendations(
                             logger.warning(f"⚠️ Diversification failed, using standard recommendations: {div_e}")
                             # Fallback to standard recommendations
                     
-                    # Standard recommendations (primera llamada o fallback)
+                    # Standard recommendations (primera llamada o fallback).
+                    #
+                    # F-01 (06/04/2026): Resolucion de product_id para el TF-IDF.
+                    # validated_product_id es el HANDLE (slug de URL, ej. "vestido-azul")
+                    # que llega desde widget_context["product_id"] via extractProductId().
+                    # El TF-IDF indexa productos por ID NUMERICO (ej. "9978786152757"),
+                    # no por handle — por eso aparecia:
+                    #   WARNING: Producto ID vestido-azul no encontrado
+                    # y el TF-IDF devolvía 0 recomendaciones por contenido.
+                    #
+                    # Fix: si mcp_context ya tiene current_product_context (inyectado
+                    # por F-01 unas lineas mas arriba), usamos su ID numerico.
+                    # Si no, mantenemos validated_product_id como estaba (no regresion).
+                    tfidf_product_id = validated_product_id  # default: handle o None
+                    if (
+                        mcp_context
+                        and hasattr(mcp_context, "current_product_context")
+                        and mcp_context.current_product_context
+                        and mcp_context.current_product_context.get("id")
+                    ):
+                        tfidf_product_id = mcp_context.current_product_context["id"]
+                        logger.info(
+                            f"F-01 TF-IDF product_id resolved: "
+                            f"handle={validated_product_id!r} → "
+                            f"numeric_id={tfidf_product_id!r}"
+                        )
+
                     recommendations = await main_unified_redis.hybrid_recommender.get_recommendations(
                         user_id=validated_user_id,
-                        product_id=validated_product_id,
+                        product_id=tfidf_product_id,
                         n_recommendations=n_recommendations,
                         user_query=conversation_query  # ✨ NUEVO: Permite detección de categoría desde query
                     )
                     logger.info(f"✅ Base recommendations obtained: {len(recommendations)} items")
+
+                    # ── F-01 Mejora: Reranking por colección del producto actual ──────────────────
+                    # Si el usuario está viendo un producto con colecciones conocidas
+                    # (ej. ["Vestidos cortos", "Fiesta"]), subimos en el ranking
+                    # los productos recomendados que también pertenecen a esas
+                    # colecciones. Esto hace el upsell más coherente: primero
+                    # aparecen productos de la misma colección, luego el resto.
+                    #
+                    # Diseño del boost:
+                    #   - Leemos current_product_context.collections (ya inyectado por F-01)
+                    #   - Para cada recomendación, buscamos su product_data en el
+                    #     id_index del TF-IDF (O(1) tras la mejora de latencia)
+                    #   - Si el producto tiene una colección en común con el producto
+                    #     actual, añadimos COLLECTION_BOOST a su similarity_score
+                    #   - Reordenamos por score final y retornamos
+                    #
+                    # COLLECTION_BOOST = 0.15: valor calibrado para que un producto
+                    # con score 0.75 + boost (0.90) supere a uno con score 0.85 sin
+                    # boost, pero sin que boost solo eleve productos muy irrelevantes
+                    # (score < 0.5 + boost = 0.65 < umbral natural).
+                    COLLECTION_BOOST = 0.15
+
+                    if (
+                        mcp_context
+                        and hasattr(mcp_context, "current_product_context")
+                        and mcp_context.current_product_context
+                    ):
+                        current_collections = set(
+                            c.lower()
+                            for c in mcp_context.current_product_context.get("collections", [])
+                        )
+
+                        if current_collections and recommendations:
+                            tfidf_recommender = getattr(
+                                main_unified_redis.hybrid_recommender,
+                                "content_recommender", None
+                            )
+
+                            boosted_count = 0
+                            for rec in recommendations:
+                                rec_product_data = None
+
+                                # Intentar leer product_data ya incluido en el dict
+                                if rec.get("product_data"):
+                                    rec_product_data = rec["product_data"]
+                                # Fallback: buscar en id_index del TF-IDF (O(1))
+                                elif tfidf_recommender and hasattr(tfidf_recommender, "id_index"):
+                                    rec_product_data = tfidf_recommender.id_index.get(
+                                        str(rec.get("id", ""))
+                                    )
+
+                                if rec_product_data:
+                                    # Extraer las colecciones del producto recomendado.
+                                    # En product_data del TF-IDF las colecciones pueden
+                                    # venir como string CSV o lista (dependiendo del
+                                    # enrichment del startup). Normalizamos ambos casos.
+                                    raw_rec_cols = rec_product_data.get("collections") or []
+                                    if isinstance(raw_rec_cols, str):
+                                        raw_rec_cols = [
+                                            c.strip()
+                                            for c in raw_rec_cols.split(",")
+                                            if c.strip()
+                                        ]
+                                    rec_collections = set(c.lower() for c in raw_rec_cols)
+
+                                    if current_collections & rec_collections:  # intersección
+                                        # Boost: añadir directamente al similarity_score
+                                        old_score = rec.get("similarity_score", rec.get("score", 0.5))
+                                        new_score = min(1.0, old_score + COLLECTION_BOOST)
+                                        rec["similarity_score"] = new_score
+                                        rec["score"] = new_score
+                                        rec["collection_boosted"] = True
+                                        boosted_count += 1
+
+                            if boosted_count > 0:
+                                # Reordenar por score actualizado
+                                recommendations = sorted(
+                                    recommendations,
+                                    key=lambda r: r.get("similarity_score", r.get("score", 0)),
+                                    reverse=True
+                                )
+                                logger.info(
+                                    f"F-01 collection_boost applied: "
+                                    f"{boosted_count}/{len(recommendations)} recs boosted "
+                                    f"(collections={list(current_collections)[:3]})"
+                                )
+                    # ── Fin F-01 reranking por colección ──────────────────────────────────
+
                     return recommendations
                 else:
                     logger.warning("❌ HybridRecommender not available")
@@ -844,6 +1073,32 @@ async def get_mcp_conversation_recommendations(
                     })
                     
                     logger.info("✅ Cache personalization completed successfully")
+
+                    # F-07 FIX (04/04/2026): Extraer recommendation IDs en el path
+                    # de cache HIT.
+                    # PROBLEMA: Solo el path de cache MISS extraia los IDs y los
+                    # guardaba en metadata["recommendation_ids"]. El path de cache HIT
+                    # nunca lo hacia, por lo que el router recibia 0 IDs y los turns
+                    # se guardaban vacios en Redis. Esto hacia que F-07 (historial
+                    # multi-turno) nunca tuviera datos para construir el contexto.
+                    # SOLUCION: Extraer los IDs aqui, exactamente igual que en el
+                    # path de cache MISS.
+                    if mcp_context:
+                        cache_hit_rec_ids = [
+                            rec.get('id')
+                            for rec in final_response.get("recommendations", [])
+                            if rec.get('id')
+                        ]
+                        final_response["metadata"]["recommendation_ids"] = cache_hit_rec_ids
+                        final_response["metadata"]["session_context"] = {
+                            "session_id": actual_session_id,
+                            "total_turns_before": mcp_context.total_turns,
+                            "next_turn_number": mcp_context.total_turns + 1,
+                        }
+                        logger.info(
+                            f"✅ F-07 FIX: cache-hit path extracted "
+                            f"{len(cache_hit_rec_ids)} recommendation IDs for router"
+                        )
                     
                 else:
                     # ✅ PASO 2: Cache miss - ejecutar personalización OPTIMIZADA

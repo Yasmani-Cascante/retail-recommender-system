@@ -93,6 +93,14 @@ class ServiceFactory:
 
     _conversation_state_manager = None
 
+    # F-01: ProductContextService singleton
+    _product_context_service = None
+    _product_context_lock: Optional[asyncio.Lock] = None
+
+    # F-04: CustomerProfileService singleton
+    _customer_profile_service = None
+    _customer_profile_lock: Optional[asyncio.Lock] = None
+
     # ✅ FASE 1: Recommender singletons
     _tfidf_recommender: Optional['TFIDFRecommender'] = None
     _retail_recommender: Optional['RetailAPIRecommender'] = None
@@ -596,6 +604,7 @@ class ServiceFactory:
 
     @classmethod
     def _get_customer_profile_lock(cls) -> asyncio.Lock:
+        """Lazy-init del lock async para CustomerProfileService singleton."""
         if cls._customer_profile_lock is None:
             cls._customer_profile_lock = asyncio.Lock()
         return cls._customer_profile_lock
@@ -1495,6 +1504,148 @@ class ServiceFactory:
                         return None
         
         return cls._conversation_state_manager
+
+    # ── Lock helpers para F-01 y F-04 ──────────────────────────────────────
+
+    @classmethod
+    def _get_product_context_lock(cls) -> asyncio.Lock:
+        """Lazy-init del lock async para ProductContextService singleton."""
+        if cls._product_context_lock is None:
+            cls._product_context_lock = asyncio.Lock()
+        return cls._product_context_lock
+
+    # ── F-01: ProductContextService ─────────────────────────────────────────
+
+    @classmethod
+    async def get_product_context_service(cls):
+        """
+        Retorna el singleton de ProductContextService (F-01).
+
+        Sigue el mismo patron que get_conversation_state_manager():
+        - Double-checked locking con asyncio.Lock para thread safety.
+        - Importa ProductContextService en runtime para evitar imports
+          circulares en nivel de modulo.
+        - Degradacion graceful: retorna None si Shopify o Redis no
+          estan disponibles. El bloque F-01 en el handler lo maneja.
+
+        Returns:
+            ProductContextService instance, o None si no disponible.
+        """
+        # logging.info(f"ServiceFactory: Requesting ProductContextService singleton... {cls._product_context_service}")
+        if cls._product_context_service is None:
+            lock = cls._get_product_context_lock()
+            async with lock:
+                if cls._product_context_service is None:
+                    try:
+                        from src.api.mcp_services.product_context.service import ProductContextService
+
+                        shopify_client = get_shopify_client()
+                        redis_service = await cls.get_redis_service()
+
+                        if not shopify_client:
+                            logger.warning(
+                                "F-01 ProductContextService: Shopify client not "
+                                "available, service will not be created."
+                            )
+                            return None
+
+                        if not redis_service:
+                            logger.warning(
+                                "F-01 ProductContextService: Redis not available, "
+                                "service will be created without cache."
+                            )
+                            # Aun asi creamos el servicio — funcionara sin cache,
+                            # haciendo fetch directo a Shopify en cada request.
+                            # ProductContextService maneja la ausencia de Redis
+                            # con degradacion graceful en get_product_context().
+
+                        cls._product_context_service = ProductContextService(
+                            shopify_client=shopify_client,
+                            redis_service=redis_service,
+                        )
+                        logger.info(
+                            "F-01 ProductContextService singleton created OK"
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            f"F-01 ProductContextService creation failed: {e}",
+                            exc_info=True,
+                        )
+                        return None
+
+        return cls._product_context_service
+
+    # ── F-04: CustomerProfileService ────────────────────────────────────────
+
+    @classmethod
+    async def get_customer_profile_service(cls):
+        """
+        Retorna el singleton de CustomerProfileService (F-04).
+
+        CustomerProfileService hace fetch lazy del perfil de cliente
+        (LTV tier, categorias preferidas) usando la Shopify REST API
+        y cacheando en Redis 24h.
+
+        Inyecta el TFIDFRecommender como product_catalog para que
+        _derive_preferences() pueda resolver product_type via lookup
+        O(1) en el catalogo en memoria, resolviendo el bug de
+        preferred_categories=[] causado por la ausencia de product_type
+        en los line_items de ordenes REST de Shopify.
+
+        Returns:
+            CustomerProfileService instance, o None si no disponible.
+        """
+        if cls._customer_profile_service is None:
+            lock = cls._get_customer_profile_lock()
+            async with lock:
+                if cls._customer_profile_service is None:
+                    try:
+                        from src.api.mcp_services.customer.service import CustomerProfileService
+
+                        shopify_client = get_shopify_client()
+                        redis_service = await cls.get_redis_service()
+
+                        if not shopify_client:
+                            logger.warning(
+                                "F-04 CustomerProfileService: Shopify client not "
+                                "available, service will not be created."
+                            )
+                            return None
+
+                        # Inyectar el catalogo TF-IDF como product_catalog.
+                        # _tfidf_recommender es el singleton cargado en PASO 4
+                        # del lifespan (antes del yield) — siempre disponible
+                        # cuando llega el primer request.
+                        # Si por alguna razon no esta cargado aun (ej. tests),
+                        # product_catalog=None activa el fallback graceful
+                        # en CustomerProfileService.__init__().
+                        product_catalog = cls._tfidf_recommender
+
+                        cls._customer_profile_service = CustomerProfileService(
+                            shopify_client=shopify_client,
+                            redis_service=redis_service,
+                            product_catalog=product_catalog,
+                        )
+
+                        # Log diagnostico: confirma cuantos productos se indexaron.
+                        # En produccion se espera: product_type_index_size=N (N > 0).
+                        # Si es 0, el TF-IDF no estaba cargado al crear el singleton.
+                        index_size = len(cls._customer_profile_service._product_type_index)
+                        logger.info(
+                            "F-04 CustomerProfileService singleton created OK "
+                            f"(product_type_index_size={index_size}, "
+                            f"catalog_injected={product_catalog is not None})"
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            f"F-04 CustomerProfileService creation failed: {e}",
+                            exc_info=True,
+                        )
+                        return None
+
+        return cls._customer_profile_service
 # ============================================================================
 # 🔧 CONVENIENCE FUNCTIONS - Backward Compatibility
 # ============================================================================
@@ -1546,3 +1697,11 @@ async def get_market_cache_service():
 async def get_conversation_state_manager_service():
     """Convenience function for Conversation State Manager"""
     return await ServiceFactory.get_conversation_state_manager()
+
+async def get_product_context_service():
+    """Convenience function for ProductContextService (F-01)"""
+    return await ServiceFactory.get_product_context_service()
+
+async def get_customer_profile_service():
+    """Convenience function for CustomerProfileService (F-04)"""
+    return await ServiceFactory.get_customer_profile_service()

@@ -2131,6 +2131,159 @@ class MCPPersonalizationEngine:
 
         return best_lang
 
+
+    def _build_tier_upsell_instruction(
+            self,
+            customer_profile: Optional[Dict],
+            product_ctx: Optional[Dict],
+            ref_price_clp: float,
+            preferred_categories: List[str],
+            market_currency: str,
+        ) -> str:
+            """
+            Genera instruccion de upsell especifica cruzando LTV tier x rango de precio.
+
+            Retorna string vacio si:
+            - No hay customer_profile (usuario anonimo) -> sin cambio en el prompt
+            - No hay product_ctx (no esta en una PDP)  -> sin cambio en el prompt
+
+            Bandas de precio CLP:
+            bajo:   < 60.000 CLP  (~60 USD)
+            medio:  60.000 - 120.000 CLP
+            alto:   > 120.000 CLP
+
+            Matriz tier x precio:
+            new   + bajo   -> add-on pequeno + incentivo envio gratis
+            new   + medio  -> complemento mismo rango, popular
+            new   + alto   -> reforzar calidad, cerrar primera compra
+            returning + bajo  -> cross-sell categoria adyacente
+            returning + medio -> alternativa mejor misma coleccion
+            returning + alto  -> alternativa premium o version especial
+            loyal + bajo   -> cross-sell categoria inexplorada
+            loyal + medio  -> item que completa el look del estilo habitual
+            loyal + alto   -> item de coleccion que combina con sus preferidas
+            vip   + bajo   -> add-on exclusivo o edicion limitada
+            vip   + medio  -> version premium del mismo producto
+            vip   + alto   -> novedad exclusiva, pre-order, o pieza especial
+
+            Args:
+                customer_profile:      Dict con ltv_tier, preferred_categories, etc.
+                product_ctx:           Dict con title, product_type, collections, tags.
+                ref_price_clp:         Precio de referencia en CLP (del primer recomendado).
+                preferred_categories:  Categorias preferidas del cliente (max 3).
+                market_currency:       Moneda del mercado activo (ej. "CLP", "CHF").
+
+            Returns:
+                str: Instruccion para Claude (vacia si no aplica).
+            """
+            if not customer_profile or not product_ctx:
+                return ""
+
+            ltv_tier = customer_profile.get("ltv_tier", "new")
+
+            # Clasificar rango de precio en CLP
+            if ref_price_clp < 60_000:
+                price_range = "bajo"
+            elif ref_price_clp <= 120_000:
+                price_range = "medio"
+            else:
+                price_range = "alto"
+
+            # Datos del producto actual para personalizar la instruccion
+            product_name = product_ctx.get("title", "este producto")[:50]
+            product_type = product_ctx.get("product_type", "")
+            collections  = product_ctx.get("collections", [])
+            collection_str = collections[0] if collections else ""
+            cats_str = ", ".join(preferred_categories[:2]) if preferred_categories else ""
+
+            # Matriz de instrucciones (12 combinaciones tier x precio)
+            INSTRUCTIONS = {
+                ("new", "bajo"): (
+                    f"Cliente nuevo. El producto actual ({product_name}) es accesible. "
+                    f"Sugiere un complemento pequeno (accesorios, basicos) que sume valor "
+                    f"sin aumentar mucho el ticket. "
+                    f"Menciona sutilmente si hay umbral de envio gratis cerca."
+                ),
+                ("new", "medio"): (
+                    f"Cliente nuevo explorando {product_type or 'la tienda'}. "
+                    f"Presenta el producto con confianza como eleccion popular. "
+                    f"Si hay un complemento natural de la misma coleccion, menciónalo brevemente."
+                ),
+                ("new", "alto"): (
+                    f"Cliente nuevo considerando un producto premium ({product_name}). "
+                    f"Refuerza la calidad y el valor. No presiones con upsell: "
+                    f"el objetivo es cerrar esta primera compra con confianza."
+                ),
+                ("returning", "bajo"): (
+                    f"Cliente recurrente que conoce la tienda. "
+                    + (f"Afinidad con: {cats_str}. " if cats_str else "")
+                    + f"Sugiere explorar una categoria adyacente que aun no ha probado, "
+                    f"a precio similar o menor."
+                ),
+                ("returning", "medio"): (
+                    f"Cliente recurrente viendo {product_name}. "
+                    + (f"Coleccion: {collection_str}. " if collection_str else "")
+                    + f"Menciona si hay una alternativa de mayor valor en la misma coleccion."
+                ),
+                ("returning", "alto"): (
+                    f"Cliente recurrente considerando producto premium. "
+                    f"Puede mencionar que ya conoce la calidad de la marca. "
+                    f"Sugiere alternativa premium o version especial si existe."
+                ),
+                ("loyal", "bajo"): (
+                    f"Cliente fiel con historial en {cats_str or 'la tienda'}. "
+                    f"Este producto es ideal para sugerir cross-sell "
+                    f"hacia una categoria que aun no ha explorado."
+                ),
+                ("loyal", "medio"): (
+                    f"Cliente fiel viendo {product_name}. "
+                    + (f"Estilo habitual: {cats_str}. " if cats_str else "")
+                    + f"Sugiere el item que completa el look coherente con su estilo. "
+                    f"Tono cercano, como recomendacion personal."
+                ),
+                ("loyal", "alto"): (
+                    f"Cliente fiel eligiendo pieza premium. "
+                    + (f"Coleccion favorita: {collection_str}. " if collection_str else "")
+                    + f"Sugiere item complementario de la misma coleccion que encaje "
+                    f"con sus preferencias."
+                ),
+                ("vip", "bajo"): (
+                    f"Cliente VIP viendo producto de entrada. "
+                    f"Sugiere si existe version exclusiva, edicion limitada o add-on premium "
+                    f"que eleve la experiencia. Tono exclusivo, no generico."
+                ),
+                ("vip", "medio"): (
+                    f"Cliente VIP viendo {product_name}. "
+                    f"Presenta la version premium o de mayor valor de este producto si existe. "
+                    f"Trato exclusivo: este cliente valora lo mejor de cada coleccion."
+                ),
+                ("vip", "alto"): (
+                    f"Cliente VIP eligiendo pieza de alto valor. "
+                    + (f"Coleccion: {collection_str}. " if collection_str else "")
+                    + f"Sugiere novedad exclusiva, pre-order o pieza especial. "
+                    f"Tono de asesor personal de moda, no de vendedor."
+                ),
+            }
+
+            key = (ltv_tier, price_range)
+            instruction = INSTRUCTIONS.get(key, "")
+
+            if not instruction:
+                # Tier desconocido — no modificar el prompt
+                return ""
+
+            logger.info(
+                "tier_upsell_instruction_built ltv_tier=%s price_range=%s price_clp=%.0f currency=%s",
+                ltv_tier, price_range, ref_price_clp, market_currency,
+            )
+
+            return (
+                f"\nPerfil cliente ({ltv_tier.upper()}, producto {price_range} en {market_currency}):\n"
+                f"{instruction}\n"
+                f"Integra esta orientacion de forma natural en la respuesta, "
+                f"sin mencionar el perfil explicitamente.\n"
+            )
+
     def _build_advanced_personalization_prompt(
         self,
         context: PersonalizationContext,
@@ -2250,34 +2403,89 @@ class MCPPersonalizationEngine:
         # Se lee desde mcp_context.customer_profile (Dict o None).
         # Si es None (usuario anonimo) no se añade nada al prompt — sin impacto
         # en tokens ni en comportamiento para sesiones no identificadas.
-        customer_context_line = ""
         customer_profile = getattr(mcp_context, "customer_profile", None)
-        if customer_profile:
-            ltv_tier = customer_profile.get("ltv_tier", "new")
-            _tier_hints = {
-                "new":       "Cliente nuevo — presenta opciones populares con confianza.",
-                "returning": "Cliente recurrente — puedes mencionar que conoce la tienda.",
-                "loyal":     "Cliente fiel — trato cercano, menciona categorias que ya le gustan.",
-                "vip":       "Cliente VIP — trato exclusivo, resalta novedades y exclusividades.",
-            }
-            tier_hint = _tier_hints.get(ltv_tier, "")
-            categories = customer_profile.get("preferred_categories", [])
-            cats_str = ", ".join(categories[:3]) if categories else ""
-            customer_context_line = f"Perfil cliente: {tier_hint}"
-            if cats_str:
-                customer_context_line += f" Categorias preferidas: {cats_str}."
-            customer_context_line += "\n"
-        # ─────────────────────────────────────────────────────────────────────
+        product_ctx      = getattr(mcp_context, "current_product_context", None)
+        top_recs         = personalization_result["recommendations"][:3]
 
+        # Extraer precio de referencia del turno actual (Opcion A):
+        # usamos el precio CLP del primer recomendado como proxy del rango
+        # de precio del producto que el usuario esta viendo.
+        ref_price_clp = 0.0
+        if top_recs:
+            first_rec = top_recs[0]
+            mp = first_rec.get("market_prices") or {}
+            if "CL" in mp:
+                try:
+                    ref_price_clp = float(mp["CL"].get("price", 0))
+                except (TypeError, ValueError):
+                    ref_price_clp = 0.0
+            elif first_rec.get("price"):
+                try:
+                    ref_price_clp = float(first_rec["price"])
+                except (TypeError, ValueError):
+                    ref_price_clp = 0.0
+
+        # Instruccion de upsell cruzada: tier + rango de precio + categorias preferidas.
+        # Retorna string vacio si no hay perfil de cliente, preservando el
+        # comportamiento actual para usuarios anonimos (sin cambios en el prompt).
+        tier_upsell_instruction = self._build_tier_upsell_instruction(
+            customer_profile=customer_profile,
+            product_ctx=product_ctx,
+            ref_price_clp=ref_price_clp,
+            preferred_categories=(
+                customer_profile.get("preferred_categories", []) if customer_profile else []
+            ),
+            market_currency=market_config.currency,
+        )
+
+         # ── F-01: Contexto del producto actual (upsell contextual) ─────────────────
+         # Construir lineas descriptivas del producto actual para el prompt
+        upsell_context_line = ""
+        if product_ctx:
+            ctx_parts = [f"Producto actual: {product_ctx['title']}"]
+            if product_ctx.get("product_type"):
+                ctx_parts.append(f"Categor\u00eda: {product_ctx['product_type']}")
+            if product_ctx.get("collections"):
+                ctx_parts.append(f"Colecci\u00f3n: {', '.join(product_ctx['collections'][:2])}")
+            if product_ctx.get("tags"):
+                ctx_parts.append(f"Atributos: {', '.join(product_ctx['tags'][:5])}")
+            if product_ctx.get("variants_count", 0) > 1:
+                ctx_parts.append(f"Variantes disponibles: {product_ctx['variants_count']}")
+            upsell_context_line = "\n".join(ctx_parts)
+            logger.info(
+                "F-01 upsell tier_instruction_active=%s ltv_tier=%s price_clp=%.0f",
+                bool(tier_upsell_instruction),
+                customer_profile.get("ltv_tier", "anon") if customer_profile else "anon",
+                ref_price_clp,
+            )
+
+        # Build prompt con instruccion cruzada tier x producto
+        # Si tier_upsell_instruction esta disponible (cliente identificado viendo un
+        # producto), se usa en lugar de la instruccion generica de upsell.
+        # Si no hay perfil ni producto, el prompt funciona igual que antes.
         prompt = (
-            f"Como experto en personalización de e-commerce, genera una respuesta conversacional personalizada. \n"
-            f"Responde en {language} con tono {tone} en 2 o 3 oraciones maximo:\n"
-            f"No inicies la conversacion con frases como 'Basándome en tu búsqueda...'\n"
-            f"Especialidad: Personalización comportamental\n"
-            f"Perfil del cliente: {customer_context_line}"
+            f"Como experto en personalizacion de e-commerce, genera una respuesta "
+            f"conversacional personalizada.\n"
+            f"Responde en {language} con tono {tone} en 2 o 3 oraciones maximo.\n"
+            f"No inicies con frases como 'Basandome en tu busqueda...'\n"
+            f"Especialidad: Personalizacion comportamental\n"
+        )
+
+        if tier_upsell_instruction:
+            # Instruccion especifica tier x producto (cliente identificado)
+            prompt += tier_upsell_instruction
+        elif upsell_context_line:
+            # Sin perfil de cliente: instruccion generica de upsell
+            prompt += (
+                f"\nContexto del producto que el usuario esta viendo:\n{upsell_context_line}\n"
+                "Si es natural en la conversacion, sugiere complementos o alternativas "
+                "de mayor valor de la misma coleccion o categoria. "
+                "No menciones el upsell de forma forzada, solo si enriquece la respuesta.\n"
+            )
+
+        prompt += (
             f"Historial conversacional (ultimos 3 turnos):\n{last_query}\n"
-            f"Construir sobre la conversacion sin repetir contexto.\n"
-            f"Mantén coherencia a traves de la conversacion con el usuario.\n"
+            f"Construir sobre la conversacion, manteniendo coherencia durante todo el flujo.\n"
             f"Moneda: {market_config.currency}\n"
             f"Productos recomendados: {recs_summary}\n\n"
             f"- Por que estos productos son ideales para su busqueda.\n"
