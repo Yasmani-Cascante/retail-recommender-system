@@ -358,8 +358,19 @@ async def get_mcp_conversation_recommendations(
                            f"(confidence: {intent_result.confidence:.2f})")
                 logger.info(f"   Reasoning: {intent_result.reasoning}")
                 
-                # Check if confidence meets threshold
-                if intent_result.confidence >= settings.intent_confidence_threshold:
+                # FIX (10/04/2026): El threshold de 0.7 fue disenado para INFORMATIONAL.
+                # Para TRANSACTIONAL el GUARD ya garantiza que el intent es correcto
+                # aunque la confidence sea 0.50 (un patron real fue matcheado).
+                # Usar threshold reducido de 0.5 para TRANSACTIONAL evita que requests
+                # validos (ej. "Recomiendame similares") caigan al path de diversificacion
+                # con historial contaminado en lugar de al path TF-IDF directo.
+                from src.api.core.intent_types import IntentType as _IntentType
+                _effective_threshold = (
+                    0.5
+                    if intent_result.primary_intent == _IntentType.TRANSACTIONAL
+                    else settings.intent_confidence_threshold
+                )
+                if intent_result.confidence >= _effective_threshold:
                     
                     # INFORMATIONAL QUERY → Return knowledge base answer
                     from src.api.core.intent_types import IntentType
@@ -684,54 +695,111 @@ async def get_mcp_conversation_recommendations(
                             all_products = main_unified_redis.hybrid_recommender.content_recommender.product_data
                             
                             # ═══════════════════════════════════════════════════════════════
-                            # ✨ FIX #1: POBLAR user_events DESDE MCP CONTEXT
+                            # ✨ FIX #1 v2 (10/04/2026): Priorizar current_product_context
+                            # sobre el historial para construir user_events.
+                            #
+                            # PROBLEMA ORIGINAL: FIX #1 iteraba TODOS los turns del
+                            # historial y extraia categorias de sus user_queries. Si el
+                            # usuario habia pedido vestidos en turnos anteriores, esas
+                            # queries dominaban los user_events aunque el usuario estuviera
+                            # actualmente en la pagina de unos aretes.
+                            #
+                            # EJEMPLO REAL (logs 10/04/2026):
+                            #   - Producto actual: Aros Alana (type='AROS')
+                            #   - Turn 7 historial: 'show me some dresses' → VESTIDOS
+                            #   - Turn 9 historial: 'Muestrame vestidos similares' → VESTIDOS
+                            #   - user_events resultantes: ['VESTIDOS LARGOS', 'VESTIDOS CORTOS', 'VESTIDOS MIDIS']
+                            #   - Resultado: se recomendaban vestidos en pagina de aretes
+                            #
+                            # FIX: Si current_product_context esta disponible, construir
+                            # user_events exclusivamente desde el producto actual.
+                            # El historial de turns solo se usa cuando NO hay producto actual.
                             # ═══════════════════════════════════════════════════════════════
                             user_events = []
                             
-                            if mcp_context and mcp_context.total_turns > 0:
+                            # Verificar si hay contexto del producto actual (F-01)
+                            _current_ctx = (
+                                getattr(mcp_context, "current_product_context", None)
+                                if mcp_context else None
+                            )
+                            
+                            if _current_ctx:
+                                # PATH PRINCIPAL: usar el producto que el usuario esta
+                                # viendo ahora. Esto garantiza que las recomendaciones
+                                # sean siempre relevantes al contexto actual.
+                                _product_type = _current_ctx.get("product_type", "")
+                                _collections = _current_ctx.get("collections", [])
+                                
+                                # Crear un evento por cada coleccion del producto actual
+                                for _col in _collections:
+                                    user_events.append({
+                                        "productId": _current_ctx.get("id"),
+                                        "product_info": {
+                                            "product_type": _col,
+                                            "source": "current_product_context"
+                                        },
+                                        "eventType": "view",
+                                        "source": "f01_product_context"
+                                    })
+                                # Anadir tambien el product_type directo
+                                if _product_type and not any(
+                                    e["product_info"]["product_type"] == _product_type
+                                    for e in user_events
+                                ):
+                                    user_events.append({
+                                        "productId": _current_ctx.get("id"),
+                                        "product_info": {
+                                            "product_type": _product_type,
+                                            "source": "current_product_context"
+                                        },
+                                        "eventType": "view",
+                                        "source": "f01_product_context"
+                                    })
+                                
+                                logger.info(
+                                    f"FIX #1 v2: user_events built from current_product_context "
+                                    f"(type={_product_type!r}, collections={_collections}) "
+                                    f"-- historial ignorado para evitar contaminacion de categorias"
+                                )
+                            
+                            elif mcp_context and mcp_context.total_turns > 0:
+                                # PATH FALLBACK: no hay producto actual (usuario en home o
+                                # categoria), usar historial de turns como antes.
+                                logger.info(f"FIX #1 v2: no current_product_context -- usando historial ({mcp_context.total_turns} turns)")
                                 logger.info(f"🔄 FIX #1: Building user_events from {mcp_context.total_turns} MCP turns")
                                 
                                 available_categories = get_concrete_categories()
                         
                                 for turn_idx, turn in enumerate(mcp_context.turns):
                                     try:
-                                        # Extraer query del usuario de este turn
                                         if hasattr(turn, 'user_query') and turn.user_query:
-                                            # Detectar TODAS las categorías de este turn (puede devolver múltiples)
                                             inferred_categories = extract_categories_from_query(
                                                 turn.user_query, 
                                                 available_categories
                                             )
                                             
-                                            # Si se detectaron categorías, crear un evento por cada una
                                             if inferred_categories:
                                                 for inferred_category in inferred_categories:
-                                                    # Crear pseudo-evento para esta categoría
                                                     user_events.append({
-                                                        "productId": None,  # No hay producto específico
+                                                        "productId": None,
                                                         "product_info": {
                                                             "product_type": inferred_category,
-                                                            "source_query": turn.user_query[:50]  # Snippet para debugging
+                                                            "source_query": turn.user_query[:50]
                                                         },
-                                                        "eventType": "view",  # Tipo genérico
+                                                        "eventType": "view",
                                                         "source": "mcp_context_turn",
                                                         "turn_number": turn_idx + 1
                                                     })
-                                                    
-                                                    logger.debug(f"   Turn {turn_idx + 1}: '{turn.user_query[:30]}...' → Category: {inferred_category}")
-                                            else:
-                                                logger.debug(f"   Turn {turn_idx + 1}: No category detected in '{turn.user_query[:30]}...'")
-                                    
                                     except Exception as turn_e:
-                                        logger.warning(f"⚠️ Error processing turn {turn_idx + 1} for user_events: {turn_e}")
+                                        logger.warning(f"FIX #1 v2: error en turn {turn_idx + 1}: {turn_e}")
                                         continue
                                 
-                                logger.info(f"✅ FIX #1: Generated {len(user_events)} user_events from MCP history")
+                                logger.info(f"FIX #1 v2: Generated {len(user_events)} user_events from turn history")
                                 if user_events:
                                     categories_found = [evt["product_info"]["product_type"] for evt in user_events]
                                     logger.info(f"   Historical categories: {categories_found}")
                             else:
-                                logger.debug("   No MCP context available, user_events remains empty")
+                                logger.debug("FIX #1 v2: no context available, user_events remains empty")
                             
                             # ✨ MEJORADO: Pasar query del usuario Y user_events poblado
                             recommendations = await ImprovedFallbackStrategies.smart_fallback(

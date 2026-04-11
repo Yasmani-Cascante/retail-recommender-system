@@ -210,19 +210,21 @@ export function MessageList({ messages, isLoading, onChatAbout, onShowSimilar }:
              * Solo se renderiza para mensajes de usuario con chip.
              */}
             {message.type === 'user' && message.suggestionChip && (
-              <span className={styles.suggestionChipBadge}>
-                {/* Imagen circular del producto ("Ver similares" / "Preguntar") */}
-                {message.suggestionChip.image_url && (
-                  <img
-                    src={message.suggestionChip.image_url}
-                    alt=""
-                    className={styles.suggestionChipImg}
-                    aria-hidden="true"
-                    onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                  />
-                )}
-                {message.suggestionChip.label}
-              </span>
+              <div className={styles.suggestionChip}>
+                <div className={styles.suggestionChipBadge}>
+                  {/* Imagen circular del producto ("Ver similares" / "Preguntar") */}
+                  {message.suggestionChip.image_url && (
+                    <img
+                      src={message.suggestionChip.image_url}
+                      alt=""
+                      className={styles.suggestionChipImg}
+                      aria-hidden="true"
+                      onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  )}
+                  <h4>{message.suggestionChip.label}</h4>
+                </div>
+              </div>
             )}
 
             {/* Burbuja principal
@@ -326,14 +328,16 @@ export function MessageList({ messages, isLoading, onChatAbout, onShowSimilar }:
             {message.recommendations && message.recommendations.length > 0 && (
               <div>
                 <span className={styles.recoLabel}>Recomendado para ti</span>
-                {message.recommendations.slice(0, 3).map((product) => (
-                  <ProductCard
-                    key={product.id}
-                    product={product}
-                    onChatAbout={onChatAbout}
-                    onShowSimilar={onShowSimilar}
-                  />
-                ))}
+                  <div className={styles.productsList}>
+                    {message.recommendations.slice(0, 3).map((product) => (
+                      <ProductCard
+                        key={product.id}
+                        product={product}
+                        onChatAbout={onChatAbout}
+                        onShowSimilar={onShowSimilar}
+                      />
+                    ))}
+                    </div>
               </div>
             )}
           </div>

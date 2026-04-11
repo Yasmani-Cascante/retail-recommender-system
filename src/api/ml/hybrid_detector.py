@@ -241,6 +241,42 @@ class HybridIntentDetector:
                 )
             
             # ML exitoso - usar resultado ML
+
+            # GUARD: Si el rule-based ya detecto TRANSACTIONAL con patron real,
+            # el ML NO puede cambiarlo a INFORMATIONAL.
+            # Distincion:
+            #   fallback default -> confidence == 0.5 Y matched_patterns == []
+            #   patron real      -> confidence >= 0.5 Y matched_patterns != []
+            is_rule_based_transactional = (
+                str(rule_result.primary_intent).upper() in ('TRANSACTIONAL', 'INTENTTYPE.TRANSACTIONAL')
+                and rule_result.matched_patterns  # lista no vacia = patron real matcheado
+            )
+            ml_wants_informational = ml_prediction.intent.upper() == 'INFORMATIONAL'
+
+            if is_rule_based_transactional and ml_wants_informational:
+                logger.info(
+                    f'GUARD: ML quiso cambiar TRANSACTIONAL a INFORMATIONAL '
+                    f'pero rule-based tenia patron real (patterns={rule_result.matched_patterns}). '
+                    f'Manteniendo TRANSACTIONAL. ML confidence fue {ml_prediction.confidence:.3f}'
+                )
+                self.stats['rule_based_used'] += 1
+                total_time = (time.time() - start_time) * 1000
+                return HybridIntentResult(
+                    primary_intent=rule_result.primary_intent,
+                    sub_intent=rule_result.sub_intent,
+                    confidence=rule_result.confidence,
+                    reasoning=(
+                        f'Rule-based TRANSACTIONAL protected from ML override '
+                        f'(ML said {ml_prediction.intent} @ {ml_prediction.confidence:.2f})'
+                    ),
+                    matched_patterns=rule_result.matched_patterns,
+                    product_context=rule_result.product_context,
+                    method_used='rule_based',
+                    rule_based_confidence=rule_result.confidence,
+                    ml_confidence=ml_prediction.confidence,
+                    total_time_ms=total_time
+                )
+
             self.stats["ml_used"] += 1
             total_time = (time.time() - start_time) * 1000
             

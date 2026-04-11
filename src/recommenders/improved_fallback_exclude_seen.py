@@ -254,11 +254,23 @@ CATEGORY_KEYWORDS = {
     },
     
     "ACCESSORIES": {
-        "type": "concrete",
+        # FIX (11/04/2026): ACCESSORIES era 'concrete' pero ningún producto
+        # real tiene product_type=='ACCESSORIES'. El catálogo usa nombres
+        # específicos: AROS, COLLARES, BRAZALETES, CLUTCH, CINTURONES, etc.
+        # Convirtiendo a 'parent' el sistema expande automáticamente a los
+        # product_types reales cuando el usuario dice 'accesorios'.
+        "type": "parent",
+        "subcategories": [
+            "AROS", "COLLARES", "BRAZALETES",
+            "CLUTCH", "CINTURONES", "CARTERAS",
+            "TOCADOS", "BRALETTES",
+        ],
         "keywords": [
-            # Genéricos
+            # Español genérico
             "accesorio", "accesorios",
+            # Inglés
             "accessory", "accessories",
+            # Complemento
             "complemento", "complementos",
             # Descriptivos
             "detalle", "detalles",
@@ -623,6 +635,34 @@ def extract_categories_from_query(
     query_lower = query.lower()
     query_normalized = query_lower.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
     
+    # -----------------------------------------------------------------------
+    # FIX (11/04/2026): Patrones relacionales para penalizar categorias de contexto.
+    # En "Que accesorios combinan con este vestido?", 'vestido' es contexto,
+    # no intencion. Las categorias DESPUES del marcador relacional reciben
+    # specificity=0.1 para quedar al final de la lista y no afectar el reparto.
+    # -----------------------------------------------------------------------
+    RELATIONAL_PATTERNS = [
+        r'combina[rn]?\s+con',
+        r'combinen?\s+con',
+        r'que\s+va[yn]a?\s+con',
+        r'van\s+con',
+        r'va\s+con',
+        r'para\s+(?:este|esta|ese|esa|un|una|el|la)\b',
+        r'con\s+(?:este|esta|ese|esa|el|la)\b',
+        r'que\s+combine[n]?\s+con',
+        r'que\s+pegue[n]?\s+con',
+        r'que\s+quede[n]?\s+con',
+        r'similar(?:es)?\s+a\s+este',
+        r'parecidos?\s+a\s+este',
+    ]
+    relational_cutoff_pos = None
+    for _pat in RELATIONAL_PATTERNS:
+        _m = re.search(_pat, query_normalized)
+        if _m:
+            relational_cutoff_pos = _m.start()
+            logger.debug(f"Relational pattern '{_pat}' at pos {relational_cutoff_pos}")
+            break
+
     # 2. Trackear categorías detectadas y su especificidad
     detected_categories = {}  # {category: specificity_score}
     
@@ -639,8 +679,22 @@ def extract_categories_from_query(
             pattern = r'\b' + re.escape(keyword_normalized) + r'\b'
             
             if re.search(pattern, query_normalized):
-                # Calcular especificidad (keywords más largos = más específicos)
-                specificity = len(keyword.split())  # Número de palabras
+                # Calcular especificidad (keywords mas largos = mas especificos)
+                specificity = len(keyword.split())  # Numero de palabras
+                
+                # FIX (11/04/2026): Si el keyword aparece DESPUES del marcador
+                # relacional, es categoria de contexto. Penalizar a 0.1.
+                _kw_match = re.search(pattern, query_normalized)
+                if (
+                    relational_cutoff_pos is not None
+                    and _kw_match is not None
+                    and _kw_match.start() > relational_cutoff_pos
+                ):
+                    specificity = 0.1
+                    logger.debug(
+                        f"Context cat '{category}' (kw:'{keyword}') penalized "
+                        f"after relational marker at pos {relational_cutoff_pos}"
+                    )
                 
                 # Si es categoría padre → expandir a subcategorías
                 if category_type == "parent":
@@ -1423,13 +1477,22 @@ class ImprovedFallbackStrategies:
                 
                 logger.info(f"   Preferred categories: {preferred_categories}")
                 
+                # FIX (10/04/2026): normalizar a uppercase para comparar.
+                # Los user_events construidos desde current_product_context (F-01)
+                # contienen collections de Shopify GraphQL con capitalización mixta
+                # (ej. 'Vestidos cortos'). El catálogo TF-IDF usa product_type en
+                # MAYUSCULAS (ej. 'VESTIDOS CORTOS'). Sin normalización, la comparación
+                # siempre falla y el sistema cae a PRIORIDAD 3 (diversificación aleatoria).
+                preferred_categories_upper = [cat.upper() for cat in preferred_categories]
+                logger.info(f"   Preferred categories (normalized): {preferred_categories_upper}")
+
                 # Generar recomendaciones de categorías preferidas
                 personalized_products = []
                 
-                for category in preferred_categories:
+                for category in preferred_categories_upper:
                     category_products = [
                         p for p in available_products
-                        if p.get("product_type") == category
+                        if p.get("product_type", "").upper() == category
                     ]
                     
                     if category_products:

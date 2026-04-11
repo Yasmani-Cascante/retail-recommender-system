@@ -178,16 +178,22 @@
  * Para estilizar SOLO el mensaje sin tocar el chip:
  *   .bubbleUser { font-size: 14px; }
  */
+ /* .suggestionChip {
+   border-radius: 8px;
+   padding: 3px;
+   background-color: #2b2b2b;
+   max-width: 78%;
+ } */
 .suggestionChipBadge {
   /* Alineacion: flex-end para pegarse al lado derecho igual que la burbuja
      del usuario. .rowUser usa justify-content flex-end para la fila, pero
      los hijos de .messageContent necesitan align-self para alinearse. */
-  align-self: flex-end;
-  margin-right: auto;
+  /* align-self: flex-end; */
+  /* margin-right: auto; */
   display: inline-flex;
   align-items: center;
   gap: 8px;
-
+  border: 1px solid #ffffff;
   /* Estilo visual: pastilla semitransparente oscura */
   background: #2b2b2b;
   /* border: 1px solid rgba(255, 255, 255, 0.15); */
@@ -202,15 +208,21 @@
   color: rgba(255, 255, 255, 0.75);
 
   width: fit-content;
-  max-width: 70%;
+  max-width: 78%;
   line-height: 1.5;
   /* white-space: nowrap; */
   overflow: hidden;
   text-overflow: ellipsis;
   /* opacity: 0.80; */
-  color: #aaaaaa;
+  color: #cecece;
 }
-
+.productsList {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* border: 1px solid rgba(0, 0, 0, 0.08); */
+}
 /* Cuando hay imagen: padding izquierdo reducido (la imagen da margen visual) */
 .suggestionChipBadge:has(.suggestionChipImg) {
   padding-left: 6px;
@@ -219,14 +231,13 @@
 /* Imagen circular del producto (disponible en "Ver similares" y "Preguntar") */
 .suggestionChipImg {
   /* Tamano INDEPENDIENTE del badge — cambia aqui sin afectar el texto del chip */
-  width: 42px;
+  width: 48px;
   height: 100%;
   border-radius: 6px;
   object-fit: cover;
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0);
-  opacity: 0.8;
-  ;
+  opacity: 0.9;
 }
 
 /* -- Label de recomendaciones */

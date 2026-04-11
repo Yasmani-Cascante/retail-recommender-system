@@ -149,6 +149,17 @@ class IntentPatterns:
                 #   'pagos'(+0.4) + 'metodos'(+0.4) + question_word 'son'(+0.3) = 1.0
                 # Safely scoped: only fires when paired with another payment keyword.
                 r"\b(métodos?|metodos?|method|methods|forma|formas|medio|medios)\b",
+                # FIX (09/04/2026): Marcas de tarjetas y terminos de financiamiento.
+                # Queries como "aceptan Mastercard", "aceptan Visa", "pago con Amex"
+                # no matcheaban ningun keyword — score 0.0, caia a TRANSACTIONAL.
+                # Riesgo 'visa': en un e-commerce de ropa el unico contexto relevante
+                # es el de metodos de pago. Para llegar a 0.7 necesita ademas un
+                # question_word (acepta/como/puede), lo que filtra naturalmente queries
+                # de viaje como "necesito visa" (no tienen question_word de pago).
+                r"\b(visa|mastercard|master\s*card|amex|american\s*express)\b",
+                # Terminos de financiamiento: 'plazos' es sinonimo de 'cuotas' en ES/CL.
+                # 'diferido' cubre pagos diferidos (MX). 'contra\s*entrega' es COD.
+                r"\b(plazos?|diferido|contra\s*entrega|cash\s*on\s*delivery|cod)\b",
             ],
             "question_words": [
                 r"\b(cómo|como|how)\b",
@@ -158,6 +169,9 @@ class IntentPatterns:
                 r"\b(puedo|puede|can)\b",
                 # Added: catches "Cuales son..." / "What are..." list-style questions.
                 r"\b(cuáles?|cuales?|son|are|what)\b",
+                # FIX (09/04/2026): 'pagan/cobran/manejan' como question_word captura
+                # queries como "pagan con Visa?" o "cobran con tarjeta?".
+                r"\b(pagan|cobran|manejan|usan|tienen|do\s+you\s+take)\b",
             ],
         },
 

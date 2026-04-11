@@ -10,14 +10,49 @@ interface ChatWidgetProps {
   config: WidgetConfig;
 }
 
-// Sugerencias iniciales inspiradas en el estilo Zalando.
-// Se muestran solo en la pantalla de bienvenida (sin mensajes del usuario aún).
-const SUGGESTION_CHIPS = [
-  'Muéstrame las tendencias de esta semana',
-  'Busco un look para una ocasión especial',
-  'Recomiéndame algo informal para el fin de semana',
-  'Ayúdame a elegir mi talla',
-];
+// Sugerencias iniciales que se muestran en la pantalla de bienvenida.
+// Indexadas por código de idioma ISO 639-1 (2 letras).
+// Cada chip está verificado contra el intent detector:
+//   ES: TRANSACTIONAL (mostrar +0.5), INFORMATIONAL policy_payment, etc.
+//   EN: TRANSACTIONAL (show +0.5), INFORMATIONAL, etc.
+// Se lee a través de getSuggestionChips(lang) más abajo.
+const SUGGESTION_CHIPS_BY_LANG: Record<string, string[]> = {
+  es: [
+    'Muéstrame los productos nuevos',
+    '¿Cuáles son sus métodos de pago?',
+    'Busco un vestido para una boda',
+    '¿Cómo funciona la devolución?',
+  ],
+  en: [
+    'Show me new arrivals',
+    'What payment methods do you accept?',
+    'I\'m looking for a wedding dress',
+    'How does the return policy work?',
+  ],
+  de: [
+    'Zeig mir die neuen Produkte',
+    'Welche Zahlungsmethoden akzeptieren Sie?',
+    'Ich suche ein Kleid für eine Hochzeit',
+    'Wie funktioniert die Rückgabe?',
+  ],
+  fr: [
+    'Montrez-moi les nouveautés',
+    'Quels modes de paiement acceptez-vous?',
+    'Je cherche une robe pour un mariage',
+    'Comment fonctionne le retour?',
+  ],
+};
+
+/** Devuelve los chips de sugerencia para un código de idioma.
+ *  Normaliza 'en-US' → 'en', etc. Fallback a español si no hay traducción. */
+function getSuggestionChips(lang: string): string[] {
+  const code = lang.split('-')[0].toLowerCase();
+  return SUGGESTION_CHIPS_BY_LANG[code] ?? SUGGESTION_CHIPS_BY_LANG['es'];
+}
+
+// Legado: SUGGESTION_CHIPS se mantiene como alias para el default en español
+// en caso de que algún otro módulo lo importe directamente.
+const SUGGESTION_CHIPS = SUGGESTION_CHIPS_BY_LANG['es'];
 
 /**
  * buildProductSuggestions — genera chips de sugerencia contextuales
@@ -29,43 +64,46 @@ const SUGGESTION_CHIPS = [
 function buildProductSuggestions(product: ActiveProductContext): string[] {
   const title = product.title.toLowerCase();
 
-  // Detectar categoría desde el título para sugerencias contextuales
+  // Detectar categoría desde el título para sugerencias contextuales.
+  // Cada sugerencia usa verbos/keywords que el intent detector clasifica
+  // correctamente: "muéstrame" y "busco" → TRANSACTIONAL; "talla", "devolución"
+  // y "métodos de pago" → INFORMATIONAL con score >= 0.7.
   if (title.includes('vestido') || title.includes('dress')) {
     return [
+      `Muéstrame vestidos similares a este`,
+      `¿Está disponible en otras tallas?`,
       `¿Qué accesorios combinan con este vestido?`,
-      `¿Tenéis este vestido en otros colores?`,
-      `¿Qué zapatos recomiendas para este look?`,
-      `Muéstrame vestidos similares`,
+      `Quiero algo para una boda`,
     ];
   }
   if (title.includes('camisa') || title.includes('shirt') || title.includes('blusa') || title.includes('top')) {
     return [
-      `¿Con qué pantalón combina esta prenda?`,
+      `Busco opciones similares a esta prenda`,
       `¿Está disponible en otras tallas?`,
-      `Muéstrame opciones similares`,
-      `¿Qué accesorios le quedan bien?`,
+      `¿Con qué pantalón combina esta prenda?`,
+      `¿Qué materiales usa esta prenda?`,
     ];
   }
   if (title.includes('zapato') || title.includes('bota') || title.includes('shoe') || title.includes('boot')) {
     return [
-      `¿Con qué outfits quedan bien?`,
-      `¿Qué talla me recomiendas?`,
       `Muéstrame zapatos similares`,
+      `¿Cómo sé mi talla de zapato?`,
+      `¿Con qué outfits quedan bien?`,
     ];
   }
   if (title.includes('aro') || title.includes('collar') || title.includes('pulsera') || title.includes('accesorio')) {
     return [
+      `Muéstrame accesorios similares`,
       `¿Con qué ropa combina mejor?`,
-      `¿Tenéis otros accesorios similares?`,
-      `Muéstrame el conjunto completo`,
+      `Busco un conjunto completo`,
     ];
   }
   // Sugerencias genéricas si no se reconoce la categoría
   return [
-    `Cuéntame más sobre este producto`,
-    `¿Está disponible en otras opciones?`,
     `Muéstrame productos similares`,
-    `¿Qué combina bien con esto?`,
+    `¿Cuál es la política de devoluciones?`,
+    `¿Cuáles son sus métodos de pago?`,
+    `Busco algo que combine con esto`,
   ];
 }
 
@@ -112,17 +150,100 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   // Determinar si hay conversación activa (el usuario ya envió al menos un mensaje)
   const hasUserMessages = state.messages.some(m => m.type === 'user');
 
+  // ── Idioma del navegador — fuente de verdad para el UI chrome ──────────────
+  // Usamos navigator.language (ej. 'en', 'en-US', 'de', 'fr') para determinar
+  // el idioma de los mensajes predefinidos, bienvenida y chips de sugerencia.
+  // Esta es la misma fuente que api.ts usa para el header Accept-Language,
+  // garantizando consistencia entre la UI y las peticiones al backend.
+  // Se normaliza con split('-')[0] para manejar variantes regionales (en-US → en).
+  const uiLang = (navigator.language || 'es').split('-')[0].toLowerCase();
+
   // ── Saludo personalizado ────────────────────────────────────────────────
   // Si hay nombre de cliente lo usamos. Si no, saludo genérico.
   // Solo se muestra cuando el chat está abierto y no hay mensajes de usuario.
   const greetingName = config.customerName?.trim() || '';
   const isLoggedIn = Boolean(config.customerId);
 
+  // ── Textos de UI localizados según el idioma del navegador ────────────────
+  // Todas las cadenas de texto visibles del UI chrome se definen aquí,
+  // indexadas por uiLang. Fallback implícito a español si el idioma no tiene
+  // traducción (gracias a ?? en getSuggestionChips y a los defaults inline).
+  const UI_TEXT: Record<string, Record<string, string>> = {
+    es: {
+      welcome:          greetingName ? `¡Hola, ${greetingName}! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?` : '👋 ¡Hola! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?',
+      welcomeTitle:     isLoggedIn && greetingName ? `¿Qué buscas hoy, ${greetingName}?` : '¿En qué puedo ayudarte?',
+      welcomeSubtitle:  'Pregúntame sobre moda, tallas, tendencias o te ayudo a encontrar tu próximo look.',
+      suggestions:      'Sugerencias',
+      betaNote:         'Estoy en beta, sigo aprendiendo.',
+      betaLink:         'Más información',
+      chatAbout:        'Hablemos sobre',
+      inputPlaceholder: activeProductContext ? `Pregunta sobre ${activeProductContext.title}...` : 'Escribe tu mensaje...',
+      error:            'Lo siento, ha ocurrido un error. Por favor intenta de nuevo.',
+      verifiedAccount:  'Cuenta verificada',
+    },
+    en: {
+      welcome:          greetingName ? `Hello, ${greetingName}! I'm your personal fashion assistant. What are you looking for today?` : '👋 Hello! I\'m your personal fashion assistant. What are you looking for today?',
+      welcomeTitle:     isLoggedIn && greetingName ? `What are you looking for today, ${greetingName}?` : 'How can I help you?',
+      welcomeSubtitle:  'Ask me about fashion, sizes, trends, or let me help you find your next look.',
+      suggestions:      'Suggestions',
+      betaNote:         'I\'m in beta, still learning.',
+      betaLink:         'More information',
+      chatAbout:        'Let\'s chat about',
+      inputPlaceholder: activeProductContext ? `Ask about ${activeProductContext.title}...` : 'Type your message...',
+      error:            'Sorry, an error occurred. Please try again.',
+      verifiedAccount:  'Verified account',
+    },
+    de: {
+      welcome:          greetingName ? `Hallo, ${greetingName}! Ich bin Ihr persönlicher Modeassistent. Was suchen Sie heute?` : '👋 Hallo! Ich bin Ihr persönlicher Modeassistent. Was suchen Sie heute?',
+      welcomeTitle:     isLoggedIn && greetingName ? `Was suchen Sie heute, ${greetingName}?` : 'Wie kann ich Ihnen helfen?',
+      welcomeSubtitle:  'Fragen Sie mich nach Mode, Größen, Trends oder ich helfe Ihnen, Ihren nächsten Look zu finden.',
+      suggestions:      'Vorschläge',
+      betaNote:         'Ich bin in der Beta-Phase, noch am Lernen.',
+      betaLink:         'Mehr Informationen',
+      chatAbout:        'Über dieses Produkt sprechen',
+      inputPlaceholder: activeProductContext ? `Frage über ${activeProductContext.title}...` : 'Nachricht eingeben...',
+      error:            'Entschuldigung, ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.',
+      verifiedAccount:  'Verifiziertes Konto',
+    },
+    fr: {
+      welcome:          greetingName ? `Bonjour, ${greetingName} ! Je suis votre assistant mode personnel. Que cherchez-vous aujourd'hui ?` : '👋 Bonjour ! Je suis votre assistant mode personnel. Que cherchez-vous aujourd\'hui ?',
+      welcomeTitle:     isLoggedIn && greetingName ? `Que cherchez-vous aujourd'hui, ${greetingName} ?` : 'Comment puis-je vous aider ?',
+      welcomeSubtitle:  'Posez-moi des questions sur la mode, les tailles, les tendances ou aidez-moi à trouver votre prochain look.',
+      suggestions:      'Suggestions',
+      betaNote:         'Je suis en bêta, j\'apprends encore.',
+      betaLink:         'Plus d\'informations',
+      chatAbout:        'Parlons de',
+      inputPlaceholder: activeProductContext ? `Question sur ${activeProductContext.title}...` : 'Écrivez votre message...',
+      error:            'Désolé, une erreur s\'est produite. Veuillez réessayer.',
+      verifiedAccount:  'Compte vérifié',
+    },
+  };
+
+  // Helper: obtiene un texto de UI con fallback a español.
+  const t = (key: string): string =>
+    (UI_TEXT[uiLang]?.[key] ?? UI_TEXT['es'][key]) || '';
+
   // ── Mensaje de bienvenida en el historial ──────────────────────────────
   useEffect(() => {
+    // El welcomeText ya es calculado por t() pero useEffect no tiene acceso
+    // al valor reactivo actualizado de uiLang. Recalculamos localmente para
+    // que el mensaje inicial se genere con el idioma correcto en el mount.
+    const langCode = (navigator.language || 'es').split('-')[0].toLowerCase();
     const welcomeText = greetingName
-      ? `¡Hola, ${greetingName}! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?`
-      : '👋 ¡Hola! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?';
+      ? (langCode === 'en'
+          ? `Hello, ${greetingName}! I'm your personal fashion assistant. What are you looking for today?`
+          : langCode === 'de'
+          ? `Hallo, ${greetingName}! Ich bin Ihr persönlicher Modeassistent. Was suchen Sie heute?`
+          : langCode === 'fr'
+          ? `Bonjour, ${greetingName} ! Je suis votre assistant mode personnel. Que cherchez-vous aujourd'hui ?`
+          : `¡Hola, ${greetingName}! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?`)
+      : (langCode === 'en'
+          ? "👋 Hello! I'm your personal fashion assistant. What are you looking for today?"
+          : langCode === 'de'
+          ? '👋 Hallo! Ich bin Ihr persönlicher Modeassistent. Was suchen Sie heute?'
+          : langCode === 'fr'
+          ? "👋 Bonjour ! Je suis votre assistant mode personnel. Que cherchez-vous aujourd'hui ?"
+          : '👋 ¡Hola! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?');
 
     const welcomeMessage: Message = {
       id: 'welcome',
@@ -184,7 +305,15 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       const errorMessage: Message = {
         id: `error_${Date.now()}`,
         type: 'error',
-        content: 'Lo siento, ha ocurrido un error. Por favor intenta de nuevo.',
+        // t() no está disponible en el callback (closure creado antes del render),
+        // por lo que usamos navigator.language directamente como en useEffect.
+        content: (() => {
+          const lc = (navigator.language || 'es').split('-')[0].toLowerCase();
+          if (lc === 'en') return 'Sorry, an error occurred. Please try again.';
+          if (lc === 'de') return 'Entschuldigung, ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.';
+          if (lc === 'fr') return "Désolé, une erreur s'est produite. Veuillez réessayer.";
+          return 'Lo siento, ha ocurrido un error. Por favor intenta de nuevo.';
+        })(),
         timestamp: Date.now(),
       };
       setState(prev => ({
@@ -386,7 +515,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
             <div className={styles.welcomeScreen}>
               {isLoggedIn && greetingName && (
                 <div className={styles.personalGreeting}>
-                  <span className={styles.personalGreetingHi}>Hola, {greetingName} 👋</span>
+                  <span className={styles.personalGreetingHi}>{greetingName} 👋</span>
                   <span className={styles.personalGreetingVerif}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"
                       viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -395,19 +524,17 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
                       <polyline points="9 12 11 14 15 10" />
                     </svg>
-                    Cuenta verificada
+                    {t('verifiedAccount')}
                   </span>
                 </div>
               )}
               <h2 className={styles.welcomeTitle}>
-                {isLoggedIn && greetingName
-                  ? `¿Qué buscas hoy, ${greetingName}?`
-                  : '¿En qué puedo ayudarte?'}
+                {t('welcomeTitle')}
               </h2>
               <p className={styles.welcomeSubtitle}>
-                Pregúntame sobre moda, tallas, tendencias o te ayudo a encontrar tu próximo look.
+                {t('welcomeSubtitle')}
               </p>
-              <div className={styles.suggestions} aria-label="Sugerencias">
+              <div className={styles.suggestions} aria-label={t('suggestions')}>
                 <span className={styles.suggestionsLabel}>
                   <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13"
                     viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -415,18 +542,18 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                     aria-hidden="true">
                     <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
                   </svg>
-                  Sugerencias
+                  {t('suggestions')}
                 </span>
-                {SUGGESTION_CHIPS.map((chip) => (
+                {getSuggestionChips(uiLang).map((chip) => (
                   <button key={chip} className={styles.chip} onClick={() => handleSuggestion(chip)}>
                     {chip}
                   </button>
                 ))}
               </div>
               <p className={styles.betaNote}>
-                Estoy en beta, sigo aprendiendo.{' '}
+                {t('betaNote')}{' '}
                 <a href="#" className={styles.betaLink} onClick={(e) => { e.preventDefault(); }}>
-                  Más información
+                  {t('betaLink')}
                 </a>
               </p>
             </div>
@@ -464,7 +591,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
 
                 {/* Info del producto */}
                 <div className={styles.contextChipInfo}>
-                  <span className={styles.contextChipLabel}>Hablemos sobre</span>
+                  <span className={styles.contextChipLabel}>{t('chatAbout')}</span>
                   <span className={styles.contextChipTitle}>{activeProductContext.title}</span>
                 </div>
 
@@ -475,12 +602,13 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                   aria-label="Quitar producto del contexto"
                   title="Volver al contexto general"
                 >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
-                    stroke="currentColor" strokeWidth="2.5"
-                    strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
+                {/* <svg xmlns="http://www.w3.org/2000/svg" width="20px" viewBox="0 0 24 24" 
+                    fill="currentColor" stroke="currentColor" strokeWidth="2" >
+                  <path fill-rule="evenodd" clip-rule="evenodd" d="M5.29289 5.29289C5.68342 4.90237 6.31658 4.90237 6.70711 5.29289L12 10.5858L17.2929 5.29289C17.6834 4.90237 18.3166 4.90237 18.7071 5.29289C19.0976 5.68342 19.0976 6.31658 18.7071 6.70711L13.4142 12L18.7071 17.2929C19.0976 17.6834 19.0976 18.3166 18.7071 18.7071C18.3166 19.0976 17.6834 19.0976 17.2929 18.7071L12 13.4142L6.70711 18.7071C6.31658 19.0976 5.68342 19.0976 5.29289 18.7071C4.90237 18.3166 4.90237 17.6834 5.29289 17.2929L10.5858 12L5.29289 6.70711C4.90237 6.31658 4.90237 5.68342 5.29289 5.29289Z" fill="#0F1729"/>
+                </svg> */}
+              <svg xmlns="http://www.w3.org/2000/svg" x="0px" y="0px" width="24px" height="24px" viewBox="0 0 72 72" fill="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M 19 15 C 17.977 15 16.951875 15.390875 16.171875 16.171875 C 14.609875 17.733875 14.609875 20.266125 16.171875 21.828125 L 30.34375 36 L 16.171875 50.171875 C 14.609875 51.733875 14.609875 54.266125 16.171875 55.828125 C 16.951875 56.608125 17.977 57 19 57 C 20.023 57 21.048125 56.609125 21.828125 55.828125 L 36 41.65625 L 50.171875 55.828125 C 51.731875 57.390125 54.267125 57.390125 55.828125 55.828125 C 57.391125 54.265125 57.391125 51.734875 55.828125 50.171875 L 41.65625 36 L 55.828125 21.828125 C 57.390125 20.266125 57.390125 17.733875 55.828125 16.171875 C 54.268125 14.610875 51.731875 14.609875 50.171875 16.171875 L 36 30.34375 L 21.828125 16.171875 C 21.048125 15.391875 20.023 15 19 15 z"></path>
+              </svg>
                 </button>
               </div>
             )}
@@ -489,7 +617,11 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                 Se muestran debajo del chip y desaparecen al enviar el mensaje.
                 El usuario puede usarlos o escribir su propio mensaje. */}
             {productSuggestions && (
-              <div className={styles.productSuggestions} aria-label="Sugerencias para este producto">
+              <div
+                className={`${styles.productSuggestions} ${isExpanded ? styles.h_marginCenter : ''}`}
+                // className={styles.productSuggestions}
+                // style={{ margin: isExpanded ? '0 auto' : '0' }}
+                aria-label="Sugerencias para este producto">
                 <span className={styles.productSuggestionsLabel}>
                   <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11"
                     viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -517,11 +649,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
             <MessageInput
               onSendMessage={handleSendMessage}
               disabled={state.isLoading}
-              placeholder={
-                activeProductContext
-                  ? `Pregunta sobre ${activeProductContext.title}...`
-                  : 'Escribe tu mensaje...'
-              }
+              placeholder={t('inputPlaceholder')}
             />
           </div>
         </div>

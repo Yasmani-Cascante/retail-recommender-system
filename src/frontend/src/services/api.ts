@@ -140,6 +140,9 @@ function normalizeRecommendation(raw: Record<string, unknown>): ProductRecommend
     price,
     currency:    String(src.currency ?? 'EUR'),
     category:    String(src.category ?? src.product_type ?? ''),
+    // FIX (10/04/2026): propagar vendor/marca desde el backend.
+    // El backend garantiza que siempre es un string (vacio si ausente).
+    vendor:      String(src.vendor ?? ''),
     score,
     image_url,
     url:         typeof src.url === 'string' && src.url ? src.url : undefined,

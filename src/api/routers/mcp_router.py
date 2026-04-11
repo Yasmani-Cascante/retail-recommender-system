@@ -287,6 +287,11 @@ def sanitize_rec_for_frontend(rec: Any) -> Dict[str, Any]:
         "price":       price,
         "currency":    str(rec.get("currency") or "EUR"),
         "category":    str(rec.get("category") or rec.get("product_type") or ""),
+        # FIX (10/04/2026): Incluir vendor/marca para mostrarla en ProductCard.
+        # Shopify almacena la marca en el campo 'vendor'. El catálogo TF-IDF
+        # y el MarketAdapter lo preservan sin transformación. Llega como string
+        # o puede estar ausente — defaultear a empty string para el frontend.
+        "vendor":      str(rec.get("vendor") or ""),
         "score":       score,
         "image_url":   image_url,
         "url":         product_url,
@@ -604,9 +609,22 @@ async def process_conversation(
             detected_language = validate_language(conversation.language)
             detection_method = "explicit_request_body"
         else:
-            # Auto-detectar desde Accept-Language header
-            detected_language = detect_language_from_request(request)
-            detection_method = "accept_language_header" if request.headers.get("Accept-Language") else "default"
+            # Auto-detectar: texto del mensaje (prioridad 1) > Accept-Language header (prioridad 2).
+            # FIX (09/04/2026): detect_language_from_request ahora acepta query_text.
+            # Sin esto, un usuario con navegador en-US que escribe en espanol recibe
+            # respuestas de Claude en ingles aunque el query sea 100% espanol.
+            from src.api.utils.language_detection import detect_language_from_text as _dlt
+            _text_lang = _dlt(conversation.query)
+            detected_language = detect_language_from_request(
+                request,
+                query_text=conversation.query,
+            )
+            if _text_lang is not None:
+                detection_method = "text_content"
+            elif request.headers.get("Accept-Language"):
+                detection_method = "accept_language_header"
+            else:
+                detection_method = "default"
         
         logger.info(
             f"MCP Conversation - Language: {detected_language} "

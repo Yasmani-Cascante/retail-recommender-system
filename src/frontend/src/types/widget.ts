@@ -52,6 +52,9 @@ export interface ProductRecommendation {
   // the backend through normalizeRecommendation() → ProductCard.formatPrice().
   currency: string;
   category: string;
+  // FIX (10/04/2026): vendor/marca — campo 'vendor' de Shopify.
+  // Puede estar vacío si el producto no tiene marca asignada.
+  vendor: string;
   score: number;
   image_url?: string;
   // FIX (27/03/2026): url field added so ProductCard can navigate to the product
