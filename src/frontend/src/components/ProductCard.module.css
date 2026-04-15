@@ -15,7 +15,7 @@
   transition: box-shadow 0.15s, transform 0.15s;
   text-decoration: none;
   color: inherit;
-  max-width: 320px;
+  width: 320px;
   display: flex;
   flex-direction: row;
   justify-content: space-between;
@@ -24,17 +24,45 @@
 .card:hover {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   transform: translateY(-1px);
-  /* border-color: #777777; */
+  border-color: #777777;
 }
 
 .card:active {
   transform: translateY(0);
 }
 
-/* Variante con barra de acciones — sin cambio visual extra, pero
-   permite animar la barra al hacer hover si se desea en el futuro */
+/* Variante con barra de acciones — la barra y botones aparecen al hacer hover */
 .cardWithActions {
-  /* reservado para overrides futuros */
+  position: relative;
+}
+.cardWithActions .actionBar {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+}
+.cardWithActions:hover .actionBar {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+.cardWithActions .actionBtn {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.cardWithActions:hover .actionBtn {
+  opacity: 1;
+  transform: translateY(0);
+}
+.cardWithActions:hover .actionBtn:nth-child(1) {
+  transition-delay: 0.08s;
+}
+.cardWithActions:hover .actionBtn:nth-child(2) {
+  transition-delay: 0.16s;
+}
+.cardWithActions:hover .actionBtn:nth-child(3) {
+  transition-delay: 0.24s;
 }
 
 /* ── Cuerpo principal: imagen + info ────────────────── */
@@ -44,7 +72,7 @@
   align-items: center;
   gap: 10px;
   /* padding: 10px; */
-  width: 74%;
+  width: 80%;
 }
 
 /* ── Imagen / placeholder ────────────────────────────── */

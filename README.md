@@ -571,7 +571,7 @@ Este proyecto está licenciado bajo la **Licencia MIT** - ver el archivo [LICENS
 
 ```bash
 # 1-liner para empezar
-git clone https://github.com/tu-usuario/retail-recommender-system.git && cd retail-recommender-system && python -m venv venv && .\venv\Scripts\activate && pip install -r requirements.txt pydantic-settings && cp .env.example .env && echo "✅ Sistema listo! Edita .env y ejecuta: python run.py"
+git clone https://github.com/tu-usuario/retail-recommender-system.git && cd retail-recommender-system && python -m venv venv && .\venv\Scripts\activate && pip install -r requirements.txt pydantic-settings && npm install -g @anthropic-ai/claude-code@latest && cp .env.example .env && echo "✅ Sistema listo! Edita .env y ejecuta: python run.py"
 ```
 
 ---

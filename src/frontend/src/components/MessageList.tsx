@@ -241,8 +241,9 @@ export function MessageList({ messages, isLoading, onChatAbout, onShowSimilar }:
                   : message.type === 'error'
                   ? styles.bubbleError
                   : styles.bubbleAssistant
-              }`}
-            >
+              }`}       
+              >
+               
               {message.type === 'user' || message.type === 'error' ? (
                 /*
                  * Mensajes de usuario: siempre mostrar el texto plano.

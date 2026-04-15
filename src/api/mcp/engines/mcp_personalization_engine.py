@@ -2483,6 +2483,111 @@ class MCPPersonalizationEngine:
                 "No menciones el upsell de forma forzada, solo si enriquece la respuesta.\n"
             )
 
+        # ── F-02: Contexto de tallas del cliente (11/04/2026) ────────────────────
+        # Se lee desde mcp_context.size_profile (SizeProfile o None).
+        # Solo se annade al prompt si el perfil existe, tiene datos suficientes
+        # (confidence >= 0.4) y hay variantes de producto disponibles para
+        # comparar. Sin estos dos datos, la sugerencia seria vaga y perdera
+        # confianza del usuario.
+        #
+        # Ejemplo de bloque generado (usuario con talla M en vestidos):
+        #   Perfil de tallas: el cliente suele pedir talla M en VESTIDOS
+        #   (basado en 4 pedidos, confianza: 75%).
+        #   Tallas disponibles del producto actual: XS, S, M, L.
+        #   Orienta la respuesta mencionando que la M le quedara bien,
+        #   sin hacer promesas absolutas.
+        size_profile = getattr(mcp_context, "size_profile", None)
+        if size_profile and size_profile.has_data() and product_ctx:
+            # Determinar la talla recomendada: buscar por categoria del producto
+            # actual primero, luego usar la talla global mas frecuente como fallback.
+            product_type_upper = (product_ctx.get("product_type") or "").upper().strip()
+
+            # Intentar mapear product_type a un grupo de categoria de tallas
+            # usando el mismo CATEGORY_GROUPS del servicio
+            SIZE_GROUP_MAP = {
+                "VESTIDOS LARGOS": "VESTIDOS", "VESTIDOS CORTOS": "VESTIDOS",
+                "VESTIDOS MIDIS": "VESTIDOS", "NOVIAS LARGOS": "VESTIDOS",
+                "NOVIAS CORTOS": "VESTIDOS", "NOVIAS MIDIS": "VESTIDOS",
+                "ENTERITOS LARGOS": "ENTERITOS", "ENTERITOS CORTOS": "ENTERITOS",
+                "TOPS": "TOPS", "BRALETTES": "TOPS",
+                "FALDAS": "FALDAS", "PANTALONES": "PANTALONES", "LEGGINGS": "PANTALONES",
+                "CONJUNTOS FALDAS": "CONJUNTOS", "CONJUNTOS PANTALONES": "CONJUNTOS",
+            }
+            size_group = SIZE_GROUP_MAP.get(product_type_upper, product_type_upper)
+
+            # Talla recomendada: usa best_size_for_category() que verifica
+            # confianza por categoria antes de recomendar.
+            # FIX (12/04/2026): antes usaba size_by_category.get() directamente,
+            # ignorando la confianza por categoria.
+            recommended_size = (
+                size_profile.best_size_for_category(size_group)
+                or size_profile.best_size_for_category(product_type_upper)
+                or (size_profile.most_common_size
+                    if size_profile.confidence >= 0.4  # mismo umbral que MIN_CONFIDENCE_THRESHOLD
+                    else None)
+            )
+            if recommended_size:
+                # Confianza de la categoria especifica (mas precisa que la global)
+                cat_confidence = (
+                    size_profile.confidence_by_category.get(size_group)
+                    or size_profile.confidence_by_category.get(product_type_upper)
+                    or size_profile.confidence
+                )
+                confidence_pct = int(cat_confidence * 100)
+                orders_n = size_profile.orders_analyzed
+                category_label = size_group or product_type_upper or "productos"
+
+                sizing_block = (
+                    f"\nPerfil de tallas del cliente: suele pedir talla "
+                    f"{recommended_size} en {category_label} "
+                    f"(basado en {orders_n} pedido(s), confianza: {confidence_pct}%).\n"
+                )
+                logger.warning(f"recommended_size_prompt: {sizing_block}")
+                # Si hay variantes de producto disponibles en product_ctx,
+                # anadir las opciones para que Claude pueda comparar.
+                # product_ctx no incluye las variantes en el dict actual (F-01
+                # solo guarda variants_count). Si en el futuro se annade la
+                # lista de variantes, se puede enriquecer este bloque.
+                # Por ahora, orientamos a Claude a confirmar la disponibilidad
+                # sin afirmar que la talla exacta esta en stock.
+                sizing_block += (
+                    f"Si la talla {recommended_size} esta disponible en este producto, "
+                    f"mencionalo con confianza. Si no esta disponible, sugiere la talla "
+                    f"mas cercana disponible sin hacer promesas absolutas.\n"
+                    f"Integra esta orientacion de forma natural, sin citar el numero "
+                    f"de pedidos ni el porcentaje de confianza explicitamente.\n"
+                )
+                prompt += sizing_block
+                logger.info(
+                    "F-02 sizing_context_added_to_prompt "
+                    "customer_size=%s category=%s confidence=%d orders=%d",
+                    recommended_size, category_label, confidence_pct, orders_n,
+                )
+        # ── Fin F-02 ─────────────────────────────────────────────────────────────────
+        logger.warning(
+            f"F-05 stock_alert_detected alert=%s handle=%s", product_ctx["stock_alert"], product_ctx.get("handle", "?")
+        )
+        # ── F-05: Stock Alert en el prompt de personalización (13/04/2026) ────────
+        if product_ctx and product_ctx.get("stock_alert"):
+            
+            try:
+                from src.api.core.kb_contextualizer import _build_stock_alert_block
+                _lang_key = (language or "es").split("-")[0].lower()
+                stock_alert_block = _build_stock_alert_block(
+                    product_context=product_ctx,
+                    language=_lang_key,
+                )
+                if stock_alert_block:
+                    prompt += stock_alert_block
+                    logger.info(
+                        "F-05 stock_alert_added_to_prompt alert=%s handle=%s",
+                        product_ctx["stock_alert"],
+                        product_ctx.get("handle", "?"),
+                    )
+            except Exception as _stock_e:
+                logger.warning("F-05 stock_alert_block_failed (graceful degradation): %s", _stock_e)
+        # ── Fin F-05 ─────────────────────────────────────────────────────────────
+
         prompt += (
             f"Historial conversacional (ultimos 3 turnos):\n{last_query}\n"
             f"Construir sobre la conversacion, manteniendo coherencia durante todo el flujo.\n"

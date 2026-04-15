@@ -168,6 +168,15 @@ redis_client = None  # Para backward compatibility
 product_cache = None  # Para backward compatibility
 # Knowledge base module-level aliases for backwards compatibility
 knowledge_base = None
+
+# ✅ STARTUP STATE TRACKING (For non-blocking Redis initialization)
+# Used by /health endpoint to respond immediately without blocking on Redis
+startup_complete = False  # True when lifespan startup phase completes
+redis_initialized = False  # True when Redis successfully validates
+redis_error = None  # Contains error message if Redis initialization fails
+redis_service_for_diagnostics = None  # Reference for /diagnostics/redis endpoint
+startup_complete_event = None  # Created in lifespan, signals when startup is done
+redis_connection_timeout_ms = int(os.getenv("REDIS_CONNECTION_TIMEOUT_MS", "5000"))  # Fail-fast timeout for Redis
 knowledge_base_v2 = None
 
 from src.api.core.config import get_settings
@@ -229,6 +238,94 @@ except ImportError as e:
     logger.warning(f"⚠️ MCP Personalization Engine not available: {e}")
 
 from src.api.routers.health_kb import router as health_kb_router
+
+# ============================================================================
+# ✅ CLOUD RUN FIX: Async helper for non-blocking Redis initialization
+# ============================================================================
+
+async def _initialize_redis_in_background():
+    """
+    Background task that validates Redis connection without blocking startup.
+    Updates global variables: redis_initialized, redis_error, redis_service_for_diagnostics
+    
+    Cloud Run needs /health to respond within 60s. This task runs in the background
+    so the server can listen on port 8080 immediately.
+    """
+    global redis_initialized, redis_error, redis_client, redis_service_for_diagnostics
+    
+    redis_initialized = False
+    redis_error = None
+    redis_service = None
+    
+    try:
+        logger.info("🔄 [BG] Redis initialization started in background...")
+        redis_connection_timeout = redis_connection_timeout_ms / 1000.0  # Convert ms to seconds
+        
+        # ✅ Create Redis service with fail-fast timeout
+        redis_service = await asyncio.wait_for(
+            ServiceFactory.get_redis_service(), 
+            timeout=redis_connection_timeout
+        )
+        
+        if redis_service:
+            logger.info("🔄 [BG] Validating Redis connection...")
+            
+            # ✅ Health check with timeout
+            health_result = await asyncio.wait_for(
+                redis_service.health_check(),
+                timeout=redis_connection_timeout
+            )
+            
+            logger.info(f"📊 [BG] Redis health check result: {health_result}")
+            
+            # ✅ Verify connection
+            if (health_result.get('status') == 'healthy' and 
+                health_result.get('connected') and 
+                health_result.get('last_test') == 'successful'):
+                
+                # ✅ Test with real operation
+                try:
+                    logger.info("🧪 [BG] Testing Redis with real operation...")
+                    await redis_service.set("startup_validation_bg", "success", ttl=30)
+                    test_value = await redis_service.get("startup_validation_bg")
+                    
+                    if test_value == "success":
+                        redis_initialized = True
+                        redis_service_for_diagnostics = redis_service
+                        
+                        # Extract client for legacy compatibility
+                        if hasattr(redis_service, '_client'):
+                            redis_client = redis_service._client
+                        
+                        logger.info("✅ [BG] REDIS FULLY VALIDATED - Background initialization complete")
+                    else:
+                        redis_error = "Redis operation test failed - Value mismatch"
+                        logger.error(f"❌ [BG] {redis_error}")
+                except Exception as op_test_error:
+                    redis_error = f"Redis operation test failed: {str(op_test_error)}"
+                    logger.error(f"❌ [BG] {redis_error}")
+            else:
+                redis_error = f"Redis health check failed - Status: {health_result.get('status')}"
+                logger.error(f"❌ [BG] {redis_error}")
+        else:
+            redis_error = "Redis service creation returned None"
+            logger.error(f"❌ [BG] {redis_error}")
+            
+    except asyncio.TimeoutError:
+        redis_error = f"Redis initialization timeout ({redis_connection_timeout_ms}ms exceeded)"
+        logger.warning(f"⚠️ [BG] {redis_error} - System will continue with fallback")
+        redis_initialized = False
+        
+    except Exception as e:
+        redis_error = str(e)
+        logger.warning(f"⚠️ [BG] Redis initialization failed: {redis_error} - System will continue with fallback")
+        redis_initialized = False
+    
+    # Final status summary
+    logger.info(f"📊 [BG] REDIS INITIALIZATION SUMMARY (background task):")
+    logger.info(f"   - Redis Initialized: {redis_initialized}")
+    logger.info(f"   - Redis Error: {redis_error}")
+
 # ============================================================================
 # 🚀 FASTAPI LIFESPAN CONTEXT MANAGER (MODERN PATTERN) - CÓDIGO COMPLETO PRESERVADO
 # ============================================================================
@@ -248,7 +345,12 @@ async def lifespan(app: FastAPI):
     """
     global settings, startup_manager, tfidf_recommender, retail_recommender
     global hybrid_recommender, redis_client, product_cache
+    global startup_complete, redis_initialized, redis_error, redis_service_for_diagnostics
+    global startup_complete_event
       
+    # ✅ CLOUD RUN FIX: Create event for startup completion signaling
+    startup_complete_event = asyncio.Event()
+    
     # ============================================================================
     # 🚀 STARTUP PHASE - CÓDIGO ORIGINAL COMPLETO PRESERVADO
     # ============================================================================
@@ -277,82 +379,10 @@ async def lifespan(app: FastAPI):
         
         logger.info("🔧 Initializing enterprise infrastructure services...")
         
-        # ✅ ENHANCED Redis initialization with EAGER connection validation
-        redis_initialized = False
-        redis_service = None
-        try:
-            logger.info("🔄 Attempting Redis service initialization with eager connection...")
-            redis_service = await asyncio.wait_for(
-                ServiceFactory.get_redis_service(), 
-                timeout=10.0  # Aumentado para dar tiempo a conexión
-            )
-            
-            if redis_service:
-                logger.info("🔄 Validating Redis connection before proceeding...")
-                
-                # ✅ CRITICAL: Validar conexión real antes de continuar
-                health_result = await asyncio.wait_for(
-                    redis_service.health_check(),
-                    timeout=8.0
-                )
-                
-                logger.info(f"📊 Redis health check result: {health_result}")
-                
-                # ✅ VERIFICATION: Confirmar que está realmente conectado
-                if (health_result.get('status') == 'healthy' and 
-                    health_result.get('connected') and 
-                    health_result.get('last_test') == 'successful'):
-                    
-                    # ✅ EXTRA VALIDATION: Test operación real
-                    try:
-                        logger.info("🧪 Testing Redis with real operation...")
-                        await redis_service.set("startup_validation", "success", ttl=30)
-                        test_value = await redis_service.get("startup_validation")
-                        
-                        if test_value == "success":
-                            redis_initialized = True
-                            logger.info("✅ REDIS FULLY VALIDATED - Connection confirmed with operation test")
-                        else:
-                            logger.error("❌ Redis operation test failed - Value mismatch")
-                            redis_initialized = False
-                    except Exception as op_test_error:
-                        logger.error(f"❌ Redis operation test failed: {op_test_error}")
-                        redis_initialized = False
-                else:
-                    logger.error(f"❌ Redis health check failed - Status: {health_result.get('status')}, Connected: {health_result.get('connected')}")
-                    redis_initialized = False
-            else:
-                logger.error("❌ Redis service creation returned None")
-                redis_initialized = False
-            
-            # ✅ COMPATIBILIDAD: Solo extraer redis_client si Redis está validado
-            if redis_initialized and hasattr(redis_service, '_client'):
-                redis_client = redis_service._client
-                logger.info("✅ Redis client extracted for legacy compatibility - VALIDATED CONNECTION")
-            else:
-                redis_client = None
-                logger.warning("⚠️ Redis client not available - legacy compatibility will use fallback")
-            
-        except asyncio.TimeoutError:
-            logger.error("❌ Redis initialization timeout - system will continue with fallback")
-            redis_initialized = False
-            redis_service = None
-            redis_client = None
-        except Exception as e:
-            logger.error(f"❌ Redis initialization failed: {e} - system will continue with fallback")
-            redis_initialized = False
-            redis_service = None
-            redis_client = None
-        
-        # ✅ ENHANCED: Log final Redis status for debugging
-        logger.info(f"📊 REDIS INITIALIZATION SUMMARY:")
-        logger.info(f"   - Redis Service Created: {redis_service is not None}")
-        logger.info(f"   - Redis Validated Connected: {redis_initialized}")
-        logger.info(f"   - Redis Client Available: {redis_client is not None}")
-        
-        # ✅ DECISION POINT: Only proceed with Redis-dependent components if validated
-        if not redis_initialized:
-            logger.warning("⚠️ IMPORTANT: Redis not available - ProductCache will run in fallback mode")
+        # ✅ CLOUD RUN FIX: Start Redis initialization in background (non-blocking)
+        # The server will listen on port 8080 immediately while Redis validates in background
+        redis_bg_task = asyncio.create_task(_initialize_redis_in_background())
+        logger.info("✅ Redis initialization started in background (non-blocking)")
         
         # ✅ Initialize Shopify integration (independent of Redis)
         shopify_client = None
@@ -1241,7 +1271,7 @@ async def lifespan(app: FastAPI):
                 kb_sync_service = ShopifyKBSyncService(
                     shopify_client=shopify_kb_client,
                     db_pool=app.state.db_pool,
-                    redis_service=redis_service
+                    redis_service=None  # ✅ CLOUD RUN FIX: Redis initializing in background, pass None
                 )
                 app.state.kb_sync_service = kb_sync_service
                 logger.info("✅ KB Sync Service initialized")
@@ -1250,7 +1280,7 @@ async def lifespan(app: FastAPI):
                 logger.info("🔄 Creating Knowledge Base v2...")
                 kb_v2 = create_shopify_knowledge_base(
                     db_pool=app.state.db_pool,
-                    redis_service=redis_service,
+                    redis_service=None,  # ✅ CLOUD RUN FIX: Redis initializing in background, pass None
                     shopify_client=shopify_kb_client,
                     cache_ttl_hours=settings.KB_CACHE_TTL_HOURS,
                     buffer_max_age_hours=settings.KB_BUFFER_MAX_AGE_HOURS,
@@ -1467,6 +1497,13 @@ async def lifespan(app: FastAPI):
         #     logger.error(f"❌ Emergency fallback failed: {emergency_error}")
             # Don't raise - let system start in minimal mode
     
+    # ✅ CLOUD RUN FIX: Mark startup as complete
+    # This allows /health endpoint to respond positively even while Redis is still connecting
+    startup_complete = True
+    startup_complete_event.set()  # Signal that startup has completed
+    logger.info("✅ STARTUP PHASE COMPLETE - Server is ready to accept requests on port 8080")
+    logger.info("   📌 Note: Redis initialization may still be running in background")
+    
     # ============================================================================
     # 🏃 YIELD - App runs here
     # ============================================================================
@@ -1642,18 +1679,38 @@ if OBSERVABILITY_MANAGER_AVAILABLE:
 
 @app.get("/health")
 async def enterprise_health_check():
-    """✅ ENTERPRISE: Comprehensive system health check"""
+    """✅ ENTERPRISE: Comprehensive system health check
+    
+    ✅ CLOUD RUN FIX: Returns 200 immediately when startup is complete,
+       even if Redis is still initializing in the background.
+       This prevents Cloud Run health checks from timing out.
+    """
     try:
+        # ✅ CLOUD RUN FIX: If startup phase is complete, return 200 immediately
+        # This satisfies Cloud Run's health check requirements without blocking for Redis
+        if startup_complete:
+            return {
+                "timestamp": time.time(),
+                "service": "enterprise_retail_recommender",
+                "version": "2.1.0-FIXED",
+                "status": "healthy",
+                "startup_phase": "complete",
+                "redis_status": "initializing" if not redis_initialized and redis_error is None else ("ready" if redis_initialized else "failed"),
+                "redis_error": redis_error,
+                "lifespan_pattern": "modern_contextmanager"
+            }
+        
+        # Fallback: If startup not yet complete, do comprehensive check
         health_report = await HealthCompositionRoot.comprehensive_health_check()
         
         return {
             "timestamp": time.time(),
             "service": "enterprise_retail_recommender",
-            "version": "2.1.0-FIXED",  # ✅ VERSION UPDATED
+            "version": "2.1.0-FIXED",
             "architecture": "enterprise",
             "health_report": health_report,
             "status": health_report.get("overall_status", "unknown"),
-            "lifespan_pattern": "modern_contextmanager"  # ✅ INDICATOR ADDED
+            "lifespan_pattern": "modern_contextmanager"
         }
     except Exception as e:
         logger.error(f"❌ Enterprise health check failed: {e}")
@@ -1661,7 +1718,7 @@ async def enterprise_health_check():
             "timestamp": time.time(),
             "service": "enterprise_retail_recommender",
             "version": "2.1.0-FIXED",
-            "status": "unhealthy",
+            "status": "unhealthy" if not startup_complete else "degraded",
             "error": str(e)
         }
 
@@ -1686,6 +1743,81 @@ async def enterprise_redis_health():
             "status": "unhealthy",
             "error": str(e)
         }
+
+# ============================================================================
+# ✅ CLOUD RUN FIX: New diagnostic endpoints for troubleshooting
+# ============================================================================
+
+@app.get("/status")
+async def system_status():
+    """✅ CLOUD RUN FIX: System startup and Redis status
+    
+    Returns current system state including:
+    - startup_complete: Whether the initial startup phase is done
+    - redis_initialized: Whether Redis successfully validated
+    - redis_error: Error message if Redis initialization failed
+    - uptime: How long the app has been running
+    """
+    uptime_seconds = time.time() - start_time
+    
+    return {
+        "timestamp": time.time(),
+        "service": "enterprise_retail_recommender",
+        "version": "2.1.0-FIXED",
+        "uptime_seconds": uptime_seconds,
+        "startup_phase": {
+            "startup_complete": startup_complete,
+            "milliseconds_to_startup": (startup_complete_event.is_set() if startup_complete_event else False) and "complete" or "in_progress"
+        },
+        "redis": {
+            "initialized": redis_initialized,
+            "error": redis_error,
+            "connection_timeout_ms": redis_connection_timeout_ms
+        },
+        "components": {
+            "settings_loaded": settings is not None,
+            "tfidf_recommender_loaded": tfidf_recommender is not None,
+            "retail_recommender_loaded": retail_recommender is not None,
+            "product_cache_available": product_cache is not None,
+            "startup_manager_ready": startup_manager is not None
+        }
+    }
+
+@app.get("/diagnostics/redis")
+async def redis_diagnostics():
+    """✅ CLOUD RUN FIX: Detailed Redis connection diagnostics
+    
+    Provides troubleshooting information about Redis connection status,
+    including current background task status and error details.
+    """
+    diagnostics = {
+        "timestamp": time.time(),
+        "service": "enterprise_retail_recommender",
+        "version": "2.1.0-FIXED",
+        "redis": {
+            "initialized": redis_initialized,
+            "error": redis_error,
+            "connection_timeout_ms": redis_connection_timeout_ms,
+            "redis_host": os.getenv("REDIS_HOST", "not_configured"),
+            "redis_port": os.getenv("REDIS_PORT", "not_configured"),
+            "redis_ssl": os.getenv("REDIS_SSL", "false"),
+            "use_redis_cache": os.getenv("USE_REDIS_CACHE", "false"),
+        }
+    }
+    
+    # Try to get additional Redis health info if service exists
+    if redis_service_for_diagnostics:
+        try:
+            redis_health = await redis_service_for_diagnostics.health_check()
+            diagnostics["redis"]["health_check"] = redis_health
+        except Exception as e:
+            diagnostics["redis"]["health_check_error"] = str(e)
+    
+    # Fallback if service hasn't been created yet
+    else:
+        diagnostics["redis"]["service_status"] = "not_yet_initialized" if redis_error is None else "failed"
+    
+    return diagnostics
 
 # ============================================================================
 # 📈 ENTERPRISE API ENDPOINTS - CÓDIGO ORIGINAL PRESERVADO

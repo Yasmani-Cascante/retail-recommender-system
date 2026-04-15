@@ -1,10 +1,13 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { ChatBubble } from './ChatBubble';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { ConversationAPI } from '../services/api';
 import type { WidgetConfig, Message, ConversationState, ActiveProductContext, ProductRecommendation } from '../types/widget';
 import styles from './ChatWidget.module.css';
+import stylesmessage from './MessageList.module.css';
+
+import { AiBubble } from './AiBubble';
 
 interface ChatWidgetProps {
   config: WidgetConfig;
@@ -19,12 +22,14 @@ interface ChatWidgetProps {
 const SUGGESTION_CHIPS_BY_LANG: Record<string, string[]> = {
   es: [
     'Muéstrame los productos nuevos',
+    // 'Muéstrame los productos más populares',
+    'Recomiéndame un vestido para una boda',
     '¿Cuáles son sus métodos de pago?',
-    'Busco un vestido para una boda',
-    '¿Cómo funciona la devolución?',
+    '¿Cómo funciona las devoluciónes?',
   ],
   en: [
-    'Show me new arrivals',
+    'Show me the new arrivals',
+    'Show me the most popular products',
     'What payment methods do you accept?',
     'I\'m looking for a wedding dress',
     'How does the return policy work?',
@@ -49,10 +54,6 @@ function getSuggestionChips(lang: string): string[] {
   const code = lang.split('-')[0].toLowerCase();
   return SUGGESTION_CHIPS_BY_LANG[code] ?? SUGGESTION_CHIPS_BY_LANG['es'];
 }
-
-// Legado: SUGGESTION_CHIPS se mantiene como alias para el default en español
-// en caso de que algún otro módulo lo importe directamente.
-const SUGGESTION_CHIPS = SUGGESTION_CHIPS_BY_LANG['es'];
 
 /**
  * buildProductSuggestions — genera chips de sugerencia contextuales
@@ -100,9 +101,12 @@ function buildProductSuggestions(product: ActiveProductContext): string[] {
   }
   // Sugerencias genéricas si no se reconoce la categoría
   return [
+    // `¿Cuál es la política de devoluciones?`,
+    // `¿Cuáles son sus métodos de pago?`,
+    `Tienen este artículo en stock?`,
+    // `¿Está disponible en mi talla?`, // me interesa ver esta respuesta
+    `¿Qué tallas tienen?`,
     `Muéstrame productos similares`,
-    `¿Cuál es la política de devoluciones?`,
-    `¿Cuáles son sus métodos de pago?`,
     `Busco algo que combine con esto`,
   ];
 }
@@ -120,6 +124,137 @@ function extractHandleFromUrl(url: string | undefined, fallbackId: string): stri
   if (!url) return fallbackId;
   const match = url.match(/\/products\/([^/?#]+)/);
   return match ? match[1] : fallbackId;
+}
+
+function isProductPage(pathname: string): boolean {
+  const lower = pathname.toLowerCase();
+  return lower.includes('/products/') || lower.includes('/product/');
+}
+
+function getProductHandleFromPath(pathname: string): string | undefined {
+  const match = pathname.match(/\/products\/([^/?#]+)/);
+  return match ? match[1] : undefined;
+}
+
+function getProductPageTitle(): string | undefined {
+  // 1. Try Open Graph meta tags (most reliable)
+  const ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content')
+    || document.querySelector('meta[name="twitter:title"]')?.getAttribute('content');
+  if (ogTitle?.trim()) return ogTitle.trim();
+
+  // 2. Try JSON-LD structured data
+  try {
+    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of Array.from(jsonLdScripts)) {
+      const data = JSON.parse(script.textContent || '');
+      if (data['@type'] === 'Product' && data.name) {
+        return String(data.name).trim();
+      }
+    }
+  } catch {
+    // Ignore JSON parsing errors
+  }
+
+  // 3. Try common Shopify product title selectors
+  const titleSelectors = [
+    '.product-title',
+    '.product__title',
+    '.product-single__title',
+    '.product-title h1',
+    '.product__title h1',
+    'h1.product-title',
+    'h1.product__title',
+    'h1',
+    '[data-product-title]'
+  ];
+
+  for (const selector of titleSelectors) {
+    const element = document.querySelector(selector);
+    if (element?.textContent?.trim()) {
+      return element.textContent.trim();
+    }
+  }
+
+  // 4. Try document.title as fallback
+  const title = document.title?.trim();
+  if (!title) return undefined;
+
+  const separators = [' | ', ' - ', ' — '];
+  for (const separator of separators) {
+    if (title.includes(separator)) {
+      return title.split(separator)[0].trim();
+    }
+  }
+  return title;
+}
+
+function getProductPageImageUrl(): string | undefined {
+  // 1. Try Open Graph meta tags
+  const ogImage = document.querySelector('meta[property="og:image"]')?.getAttribute('content')
+    || document.querySelector('meta[name="twitter:image"]')?.getAttribute('content');
+  if (ogImage?.trim()) return ogImage.trim();
+
+  // 2. Try JSON-LD structured data
+  try {
+    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of Array.from(jsonLdScripts)) {
+      const data = JSON.parse(script.textContent || '');
+      if (data['@type'] === 'Product' && data.image) {
+        if (Array.isArray(data.image)) {
+          return String(data.image[0]).trim();
+        }
+        return String(data.image).trim();
+      }
+    }
+  } catch {
+    // Ignore JSON parsing errors
+  }
+
+  // 3. Try common Shopify product image selectors
+  const imageSelectors = [
+    '.product-image img',
+    '.product__image img',
+    '.product-gallery img',
+    '.product-photos img',
+    '.product-single__photo img',
+    '[data-product-image] img',
+    '.product-image',
+    '.product__image'
+  ];
+
+  for (const selector of imageSelectors) {
+    const img = document.querySelector(selector) as HTMLImageElement;
+    if (img?.src?.trim()) {
+      return img.src.trim();
+    }
+  }
+
+  // 4. Try window.product global (some Shopify themes expose this)
+  try {
+    if ((window as any).product?.featured_image?.src) {
+      return (window as any).product.featured_image.src;
+    }
+    if ((window as any).product?.images?.[0]?.src) {
+      return (window as any).product.images[0].src;
+    }
+  } catch {
+    // Ignore global access errors
+  }
+
+  return undefined;
+}
+
+function buildProductContextFromPage(): ActiveProductContext | null {
+  if (!isProductPage(window.location.pathname)) return null;
+  const handle = getProductHandleFromPath(window.location.pathname);
+  if (!handle) return null;
+
+  return {
+    id: handle,
+    title: getProductPageTitle() ?? 'este producto',
+    image_url: getProductPageImageUrl(),
+    handle,
+  };
 }
 
 export function ChatWidget({ config }: ChatWidgetProps) {
@@ -144,6 +279,12 @@ export function ChatWidget({ config }: ChatWidgetProps) {
    *         los mensajes enviados usarán este handle como product_id
    */
   const [activeProductContext, setActiveProductContext] = useState<ActiveProductContext | null>(null);
+  const [autoProductContextFilled, setAutoProductContextFilled] = useState(false);
+
+  // Header scroll behavior — hide/show on scroll (solo cuando no está expandido)
+  const [isHeaderHidden, setIsHeaderHidden] = useState(false);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const lastScrollY = useRef(0);
 
   const [api] = useState(() => new ConversationAPI(config));
 
@@ -255,6 +396,55 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     setState(prev => ({ ...prev, messages: [welcomeMessage] }));
   }, [greetingName]);
 
+  useEffect(() => {
+    if (!isOpen || activeProductContext || autoProductContextFilled) return;
+    const pageContext = buildProductContextFromPage();
+    if (!pageContext) return;
+
+    setActiveProductContext(pageContext);
+    setAutoProductContextFilled(true);
+  }, [isOpen, activeProductContext, autoProductContextFilled]);
+
+  // Header scroll behavior — hide/show on scroll (solo cuando no está expandido)
+  useEffect(() => {
+    if (!isOpen || isExpanded) {
+      setIsHeaderHidden(false);
+      return;
+    }
+
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      const currentScrollY = container.scrollTop;
+      const scrollDelta = currentScrollY - lastScrollY.current;
+
+      // Solo ocultar header si hay scroll suficiente (evitar flickering)
+      if (Math.abs(scrollDelta) < 5) return;
+
+      // Scroll hacia abajo → ocultar header
+      if (scrollDelta > 0 && !isHeaderHidden) {
+        setIsHeaderHidden(true);
+      }
+      // Scroll hacia arriba → mostrar header
+      else if (scrollDelta < 0 && isHeaderHidden) {
+        setIsHeaderHidden(false);
+      }
+
+      lastScrollY.current = currentScrollY;
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [isOpen, isExpanded, isHeaderHidden]);
+
+  // Reset header visibility cuando se expande/colapsa
+  useEffect(() => {
+    if (isExpanded) {
+      setIsHeaderHidden(false);
+    }
+  }, [isExpanded]);
+
   /**
    * handleSendMessage — envía un mensaje al backend.
    *
@@ -272,13 +462,16 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   ) => {
     const productHandle = explicitProductHandle ?? activeProductContext?.handle ?? undefined;
 
+    // Crear chip automáticamente si hay contexto activo pero no se proporcionó uno
+    const finalChip = chip || (activeProductContext ? { label: activeProductContext.title, image_url: activeProductContext.image_url } : undefined);
+
     const userMessage: Message = {
       id: `user_${Date.now()}`,
       type: 'user',
       content: messageText,
       timestamp: Date.now(),
       // Guardar el chip que originó este mensaje (si viene de uno)
-      suggestionChip: chip,
+      suggestionChip: finalChip,
     };
 
     setState(prev => ({
@@ -344,6 +537,14 @@ export function ChatWidget({ config }: ChatWidgetProps) {
    * Son siempre distintos, por lo que la burbuja siempre muestra el mensaje.
    */
   const handleSuggestion = useCallback((text: string) => {
+    if (activeProductContext)
+    {
+      console.log('context title',activeProductContext.title);
+    }
+    if (text) {
+      console.log('text', text);
+      
+    }
     const chip = activeProductContext
       ? { label: activeProductContext.title, image_url: activeProductContext.image_url }
       : undefined;
@@ -445,7 +646,10 @@ export function ChatWidget({ config }: ChatWidgetProps) {
           <div className={styles.float_form_wrapper} />
 
           {/* ── Header ──────────────────────────────────────────────── */}
-          <div className={styles.header}>
+          <div
+            className={`${styles.header} ${isHeaderHidden && !isExpanded ? styles.headerHidden : ''}`}
+          >
+            
             <div className={styles.headerLeft}>
               <div className={styles.headerAvatar} aria-hidden="true">
                 {/* Icono del asistente — mismo SVG que el ChatBubble */}
@@ -508,73 +712,105 @@ export function ChatWidget({ config }: ChatWidgetProps) {
             </div>
           </div>
 
-          {/* ── Pantalla de bienvenida (estilo Zalando) ──────────────
-              Se muestra solo cuando no hay mensajes de usuario todavía.
-              Incluye el saludo con nombre si el usuario está logueado.   */}
-          {!hasUserMessages && (
-            <div className={styles.welcomeScreen}>
-              {isLoggedIn && greetingName && (
-                <div className={styles.personalGreeting}>
-                  <span className={styles.personalGreetingHi}>{greetingName} 👋</span>
-                  <span className={styles.personalGreetingVerif}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"
-                      viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                      strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                      aria-hidden="true">
-                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                      <polyline points="9 12 11 14 15 10" />
-                    </svg>
-                    {t('verifiedAccount')}
-                  </span>
-                </div>
-              )}
-              <h2 className={styles.welcomeTitle}>
-                {t('welcomeTitle')}
-              </h2>
-              <p className={styles.welcomeSubtitle}>
-                {t('welcomeSubtitle')}
-              </p>
-              <div className={styles.suggestions} aria-label={t('suggestions')}>
-                <span className={styles.suggestionsLabel}>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13"
-                    viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                    aria-hidden="true">
-                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-                  </svg>
-                  {t('suggestions')}
-                </span>
-                {getSuggestionChips(uiLang).map((chip) => (
-                  <button key={chip} className={styles.chip} onClick={() => handleSuggestion(chip)}>
-                    {chip}
-                  </button>
-                ))}
-              </div>
-              <p className={styles.betaNote}>
-                {t('betaNote')}{' '}
-                <a href="#" className={styles.betaLink} onClick={(e) => { e.preventDefault(); }}>
-                  {t('betaLink')}
-                </a>
-              </p>
-            </div>
-          )}
+          {/* ── Contenedor con scroll para mensajes ────────────────────── */}
+          <div
+            ref={messagesContainerRef}
+            className={styles.messagesContainer}
+            // className={`${styles.messagesContainer} ${isHeaderHidden && !isExpanded ? styles.moveMessagesContainer : ''}`}
 
-          {/* ── Lista de mensajes — visible cuando hay conversación ── */}
-          {hasUserMessages && (
-            <MessageList
-              messages={state.messages}
-              isLoading={state.isLoading}
-              onChatAbout={handleChatAbout}
-              onShowSimilar={handleShowSimilar}
-            />
-          )}
+          >
+            {/* ── Pantalla de bienvenida (estilo Zalando) ──────────────
+                Se muestra solo cuando no hay mensajes de usuario todavía.
+                Incluye el saludo con nombre si el usuario está logueado.   */}
+            {!hasUserMessages && (
+              <div className={`${styles.welcomeScreen} ${isExpanded ? styles.h_centerBottom : ''}`}
+              >
+              {/* <div className={styles.welcomeScreen}> */}
+                {isLoggedIn && greetingName && (
+                  <div className={styles.personalGreeting}>
+                    <span className={styles.personalGreetingHi}>{greetingName} 👋</span>
+                    <span className={styles.personalGreetingVerif}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"
+                        viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                        aria-hidden="true">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                        <polyline points="9 12 11 14 15 10" />
+                      </svg>
+                      {t('verifiedAccount')}
+                    </span>
+                  </div>
+                )}
+                <h2 className={styles.welcomeTitle}>
+                  {t('welcomeTitle')}
+                </h2>
+                <p className={styles.welcomeSubtitle}>
+                  {t('welcomeSubtitle')}
+                </p>
+
+                {/* <div className={styles.aiBubbleWrapper}> */}
+                <div className={`${styles.h_hidden} ${isExpanded ? styles.aiBubbleWrapper : ''}`}
+                >
+                  <AiBubble 
+                  size={280} 
+                  blur={55}
+                  />
+                </div>
+                <div className={`${styles.h_hidden} ${isExpanded ? styles.aiBubbleWrapper : ''}`}
+                  style={{marginTop: '40px'}}
+                >
+                  <AiBubble 
+                  size={200} 
+                  blur={0}
+                  />
+                </div>
+                <div className={styles.suggestions} aria-label={t('suggestions')}>
+                  <span className={styles.suggestionsLabel}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13"
+                      viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                      aria-hidden="true">
+                      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                    </svg>
+                    {t('suggestions')}
+                  </span>
+                  <div className={styles.welcomeSuggestionsWrapper}>
+                    {getSuggestionChips(uiLang).map((chip) => (
+                        <button key={chip} className={`${styles.welcomeSuggestionChip} ${stylesmessage.bubbleAssistant}`} onClick={() => handleSuggestion(chip)}>
+                          {chip}
+                        </button>
+                      ))}
+                    </div>
+                </div>
+                <p className={styles.betaNote}>
+                  {t('betaNote')}{' '}
+                  <a href="#" className={styles.betaLink} onClick={(e) => { e.preventDefault(); }}>
+                    {t('betaLink')}
+                  </a>
+                </p>
+              </div>
+            )}
+
+            {/* ── Lista de mensajes — visible cuando hay conversación ── */}
+            {hasUserMessages && (
+              <MessageList
+                messages={state.messages}
+                isLoading={state.isLoading}
+                onChatAbout={handleChatAbout}
+                onShowSimilar={handleShowSimilar}
+              />
+            )}
+          </div>
 
           {/* ── Zona inferior: chip de contexto + sugerencias + input ── */}
-          <div className={styles.bottomZone} data-chat-input>
-
+          <div className={styles.bottomZone}
+            data-chat-input>
             {/* ── Chip de contexto activo — patrón "Let's chat about this item" ──
                 Se muestra cuando el usuario ha seleccionado un producto con 💬.
                 Incluye imagen en miniatura, título truncado y botón × para cancelar. */}
+            {<span className={styles.contextChipWrapper} 
+              style={{ borderTop: activeProductContext ? '1px solid rgba(0, 0, 0, 0.1)' : 'none', display: activeProductContext ? 'flex' : 'none' }}
+              aria-hidden="true">
             {activeProductContext && (
               <div className={styles.contextChip} role="status" aria-live="polite">
                 {/* Miniatura del producto */}
@@ -644,10 +880,13 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                 </div>
               </div>
             )}
+          </span>}
 
             {/* ── Input de texto ── */}
             <MessageInput
-              onSendMessage={handleSendMessage}
+              // onSendMessage={() => handleSendMessage(activeProductContext ? activeProductContext.title : '')}
+              onSendMessage={(messageText) => handleSendMessage(messageText)}
+              
               disabled={state.isLoading}
               placeholder={t('inputPlaceholder')}
             />

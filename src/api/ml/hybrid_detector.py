@@ -247,9 +247,32 @@ class HybridIntentDetector:
             # Distincion:
             #   fallback default -> confidence == 0.5 Y matched_patterns == []
             #   patron real      -> confidence >= 0.5 Y matched_patterns != []
+            #
+            # FIX (12/04/2026): El GUARD tiene una excepcion para verbos genericos.
+            # Verbos como 'necesito', 'quiero', 'want', 'need' son keywords TRANSACCIONALES
+            # pero son extremadamente genericos — aparecen en queries que claramente son
+            # informacionales ('necesito saber mi talla', 'quiero entender el envio').
+            # Cuando el rule-based matchea SOLO un verbo generico (confidence==0.5,
+            # matched_patterns contiene exactamente uno de estos verbos), y el ML
+            # tiene alta confianza en INFORMATIONAL (>= 0.75), es seguro permitir el override.
+            # Sin esta excepcion, el GUARD bloquea el ML y queries validas van a productos.
+            _GENERIC_TRANSACTIONAL_VERBS = {
+                'necesito', 'quiero', 'need', 'want', 'me interesa'
+            }
+            _is_only_generic_verb = (
+                rule_result.matched_patterns
+                and len(rule_result.matched_patterns) == 1
+                and any(
+                    verb in rule_result.matched_patterns[0].lower()
+                    for verb in _GENERIC_TRANSACTIONAL_VERBS
+                )
+                and rule_confidence == 0.5  # confidence minima = solo un patron matcheado
+            )
+
             is_rule_based_transactional = (
                 str(rule_result.primary_intent).upper() in ('TRANSACTIONAL', 'INTENTTYPE.TRANSACTIONAL')
                 and rule_result.matched_patterns  # lista no vacia = patron real matcheado
+                and not _is_only_generic_verb  # excepcion: verbo generico + ML alta confianza
             )
             ml_wants_informational = ml_prediction.intent.upper() == 'INFORMATIONAL'
 
@@ -313,12 +336,50 @@ class HybridIntentDetector:
                 # ML confirmó el intent → mantener sub_intent original
                 ml_sub_intent = rule_result.sub_intent
             
+            # FIX (12/04/2026): Cuando ML y rule-based coinciden en el MISMO intent,
+            # usar la confianza MAS ALTA de ambos, no la del ML.
+            #
+            # PROBLEMA ORIGINAL: El ML ejecuta porque rule_confidence (0.70) < threshold (0.80).
+            # El ML confirma INFORMATIONAL pero con confianza 0.514.
+            # El codigo retornaba confidence=0.514 (ML), que luego cae bajo el threshold
+            # del handler (0.70) y se clasifica como TRANSACTIONAL. Resultado incorrecto.
+            #
+            # RAZONAMIENTO: El ML fue llamado como "desempate" para queries ambiguas.
+            # Si ambos sistemas coinciden en el intent, la evidencia combinada deberia
+            # aumentar la confianza, no reducirla. Usar max() es la decision correcta:
+            #   - Rule-based: 0.70 (patron real matcheado)
+            #   - ML: 0.514 (clasificador estadistico confirma)
+            #   - max(0.70, 0.514) = 0.70 → pasa el threshold 0.70 correctamente
+            #
+            # Si ML dice DISTINTO intent al rule-based, no aplica max() —
+            # en ese caso el ML esta haciendo un override real, y su confianza
+            # debe usarse tal cual para que el handler decida.
+            intents_agree = (ml_intent_lowercase == rule_result.primary_intent.lower())
+            final_confidence = (
+                max(rule_confidence, ml_prediction.confidence)
+                if intents_agree
+                else ml_prediction.confidence
+            )
+            final_reasoning = (
+                f"ML confirmed rule-based ({ml_intent_lowercase}, "
+                f"max confidence: rule={rule_confidence:.2f} ml={ml_prediction.confidence:.2f})"
+                if intents_agree
+                else f"ML classification (rule-based: {rule_confidence:.2f})"
+            )
+
+            if intents_agree and ml_prediction.confidence < rule_confidence:
+                logger.info(
+                    f"ML confirmed same intent ({ml_intent_lowercase}), "
+                    f"keeping rule-based confidence {rule_confidence:.2f} "
+                    f"over ML confidence {ml_prediction.confidence:.2f}"
+                )
+
             # Usar intent ML con sub_intent compatible
             return HybridIntentResult(
                 primary_intent=ml_intent_lowercase,  # ✅ FIXED: lowercase
                 sub_intent=ml_sub_intent,  # ✅ FIXED: compatible con primary_intent
-                confidence=ml_prediction.confidence,
-                reasoning=f"ML classification (rule-based: {rule_confidence:.2f})",
+                confidence=final_confidence,  # ✅ FIX: max cuando coinciden
+                reasoning=final_reasoning,
                 matched_patterns=rule_result.matched_patterns,
                 product_context=rule_result.product_context,
                 method_used="ml_fallback",

@@ -50,7 +50,6 @@ export function ChatBubble({
           />
         </g>
       </svg>
-
       {/* Badge de mensajes no leídos */}
       {hasUnreadMessages && (
         <span className={styles.badge} aria-hidden="true" />

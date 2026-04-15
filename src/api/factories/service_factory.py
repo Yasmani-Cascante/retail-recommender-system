@@ -101,6 +101,10 @@ class ServiceFactory:
     _customer_profile_service = None
     _customer_profile_lock: Optional[asyncio.Lock] = None
 
+    # F-02: SizeProfileService singleton
+    _size_profile_service = None
+    _size_profile_lock: Optional[asyncio.Lock] = None
+
     # ✅ FASE 1: Recommender singletons
     _tfidf_recommender: Optional['TFIDFRecommender'] = None
     _retail_recommender: Optional['RetailAPIRecommender'] = None
@@ -1514,6 +1518,13 @@ class ServiceFactory:
             cls._product_context_lock = asyncio.Lock()
         return cls._product_context_lock
 
+    @classmethod
+    def _get_size_profile_lock(cls) -> asyncio.Lock:
+        """Lazy-init del lock async para SizeProfileService singleton (F-02)."""
+        if cls._size_profile_lock is None:
+            cls._size_profile_lock = asyncio.Lock()
+        return cls._size_profile_lock
+
     # ── F-01: ProductContextService ─────────────────────────────────────────
 
     @classmethod
@@ -1646,6 +1657,79 @@ class ServiceFactory:
                         return None
 
         return cls._customer_profile_service
+# ── F-02: SizeProfileService ────────────────────────────────────────────────
+
+    @classmethod
+    async def get_size_profile_service(cls):
+        """
+        Retorna el singleton de SizeProfileService (F-02).
+
+        SizeProfileService hace fetch lazy del historial de ordenes del cliente
+        (Shopify /orders.json?customer_id=...) y extrae las tallas compradas
+        agrupadas por categoria de producto. El perfil se cachea en Redis 24h.
+
+        Inyecta el TFIDFRecommender como product_type_index para resolver
+        la categoria de cada producto en la orden sin llamadas adicionales
+        a Shopify (mismo patron que CustomerProfileService).
+
+        Returns:
+            SizeProfileService instance, o None si no disponible.
+        """
+        if cls._size_profile_service is not None:
+            return cls._size_profile_service
+
+        lock = cls._get_size_profile_lock()
+        async with lock:
+            # Double-check dentro del lock
+            if cls._size_profile_service is not None:
+                return cls._size_profile_service
+
+            try:
+                from src.api.mcp_services.size_profile.service import SizeProfileService
+
+                shopify_client = get_shopify_client()
+                if not shopify_client:
+                    logger.warning(
+                        "F-02 SizeProfileService: Shopify client not available, "
+                        "service will not be created."
+                    )
+                    return None
+
+                redis_service = await cls.get_redis_service()
+
+                # Construir product_type_index desde el TF-IDF singleton.
+                # Mismo patron que CustomerProfileService: lookup O(1) en memoria.
+                # Si el TF-IDF no esta cargado aun, el indice queda vacio y
+                # SizeProfileService hace fallback a "GENERAL" como categoria.
+                product_type_index: dict = {}
+                tfidf = cls._tfidf_recommender
+                if tfidf and hasattr(tfidf, "product_data") and tfidf.product_data:
+                    for p in tfidf.product_data:
+                        pid = str(p.get("id", ""))
+                        ptype = (p.get("product_type") or "").strip()
+                        if pid and ptype:
+                            product_type_index[pid] = ptype
+
+                cls._size_profile_service = SizeProfileService(
+                    shopify_client=shopify_client,
+                    redis_service=redis_service,
+                    product_type_index=product_type_index,
+                )
+
+                logger.info(
+                    "F-02 SizeProfileService singleton created OK "
+                    f"(product_type_index_size={len(product_type_index)}, "
+                    f"redis_available={redis_service is not None})"
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"F-02 SizeProfileService creation failed: {e}",
+                    exc_info=True,
+                )
+                return None
+
+        return cls._size_profile_service
 # ============================================================================
 # 🔧 CONVENIENCE FUNCTIONS - Backward Compatibility
 # ============================================================================
@@ -1705,3 +1789,7 @@ async def get_product_context_service():
 async def get_customer_profile_service():
     """Convenience function for CustomerProfileService (F-04)"""
     return await ServiceFactory.get_customer_profile_service()
+
+async def get_size_profile_service():
+    """Convenience function for SizeProfileService (F-02)"""
+    return await ServiceFactory.get_size_profile_service()

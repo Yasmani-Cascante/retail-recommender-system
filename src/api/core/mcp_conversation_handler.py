@@ -247,6 +247,58 @@ async def get_mcp_conversation_recommendations(
                         f"(graceful degradation): {_pce}"
                     )
             # ── Fin F-01 ──────────────────────────────────────────────────────────
+
+            # ── F-02: Lazy fetch del perfil de tallas del cliente (11/04/2026) ────
+            # Solo activo cuando hay customer_id (usuario logueado) Y hay producto
+            # actual (validated_product_id presente). Sin producto actual no hay
+            # variantes que comparar, por lo que el perfil de tallas no tiene
+            # utilidad inmediata.
+            #
+            # Flujo:
+            #   cache hit  (~1ms)    -> SizeProfile desde Redis (TTL 24h)
+            #   cache miss (~600ms)  -> GET /orders.json?customer_id=... (ultimo 10 ordenes)
+            #                          Extrae tallas de variant.selected_options
+            #                          Guarda en Redis
+            #   fallo / sin datos    -> None (degradacion graceful, chat sigue OK)
+            #
+            # El perfil se guarda en mcp_context.size_profile.
+            # MCPPersonalizationEngine lo usa en _build_sizing_context() para
+            # enriquecer el prompt cuando el intent es product_sizing.
+            if customer_id and validated_product_id:
+                try:
+                    from src.api.factories.service_factory import ServiceFactory
+                    _sps = await ServiceFactory.get_size_profile_service()
+                    if _sps:
+                        _size_profile = await _sps.get_size_profile(str(customer_id))
+                        if _size_profile and _size_profile.has_data():
+                            mcp_context.size_profile = _size_profile
+                            # Construir resumen de confidencias por categoria para el log
+                            conf_summary = {
+                                cat: f"{size}({int(_size_profile.confidence_by_category.get(cat, 0)*100)}%)"
+                                for cat, size in _size_profile.size_by_category.items()
+                            }
+                            logger.info(
+                                f"F-02 size_profile_injected "
+                                f"customer_id={customer_id} "
+                                f"most_common_size={_size_profile.most_common_size} "
+                                f"confidence_global={_size_profile.confidence:.2f} "
+                                f"orders_analyzed={_size_profile.orders_analyzed} "
+                                f"by_category={conf_summary}"
+                            )
+                        else:
+                            logger.info(
+                                f"F-02 size_profile_empty_or_insufficient "
+                                f"customer_id={customer_id}"
+                            )
+                    else:
+                        logger.info(
+                            "F-02 SizeProfileService not available (graceful degradation)"
+                        )
+                except Exception as _spe:
+                    logger.warning(
+                        f"F-02 size profile fetch failed (graceful degradation): {_spe}"
+                    )
+            # ── Fin F-02 ──────────────────────────────────────────────────────────
         except Exception as e:
             logger.error(f"❌ Error creating MCP context: {e}")
 
@@ -456,14 +508,60 @@ async def get_mcp_conversation_recommendations(
                                 has_specific_entities,
                                 generate_contextual_answer,
                             )
-
                             # Decide whether the query needs contextualisation
                             needs_contextualisation = has_specific_entities(
                                 query=conversation_query,
                                 sub_intent=intent_result.sub_intent,
                             )
 
-                            if needs_contextualisation:
+                            # F-05 (14/04/2026 — REVISADO): Forzar contextualizacion para
+                            # TODA query product_availability cuando hay product_context.
+                            #
+                            # RACIONAL DEL CAMBIO:
+                            # La version anterior condicionaba a stock_alert != None,
+                            # lo que causaba experiencia inconsistente:
+                            #   - romper-olivia (stock=critical) → respuesta conversacional
+                            #   - midi-vestido-emma (stock=None) → documento KB estatico
+                            #
+                            # El problema: el nivel de stock modifica el CONTENIDO de la
+                            # respuesta, no si el usuario merece una respuesta conversacional.
+                            # Un usuario preguntando "¿está disponible?" SIEMPRE merece
+                            # una respuesta directa, sea cual sea el nivel de stock:
+                            #   - stock=critical → "Solo quedan 1-2 tallas S y M"
+                            #   - stock=low      → "Quedan pocas unidades en talla L"
+                            #   - stock=None     → "Sí, está disponible en tallas XS, S, M, L"
+                            #   - stock agotado  → "Lamentablemente está agotado, te muestro
+                            #                      opciones similares"
+                            #
+                            # NUEVO COMPORTAMIENTO:
+                            #   Si sub_intent == "product_availability" Y hay product_context
+                            #   → needs_contextualisation = True (siempre)
+                            #   → generate_contextual_answer() recibe product_context
+                            #   → _build_stock_alert_block() inyecta la alerta si hay
+                            #   → _build_availability_context_block() (nuevo) añade info
+                            #     de variantes disponibles si no hay alerta de stock
+                            #
+                            # Degradacion graceful:
+                            #   Si current_product_context es None (usuario no en pagina
+                            #   de producto), la condicion es False y se devuelve el
+                            #   documento KB sin cambios (sin regresion).
+                            _pctx_for_f05 = getattr(mcp_context, "current_product_context", None)
+                            if (
+                                not needs_contextualisation
+                                and intent_result.sub_intent == "product_availability"
+                                and _pctx_for_f05  # usuario en pagina de producto
+                            ):
+                                needs_contextualisation = True
+                                _stock_alert = _pctx_for_f05.get("stock_alert")
+                                _handle = _pctx_for_f05.get("handle", "?")
+                                logger.info(
+                                    "F-05 forcing contextualisation for product_availability "
+                                    "(stock_alert=%s handle=%s)",
+                                    _stock_alert or "none",
+                                    _handle,
+                                )
+
+                            if needs_contextualisation or intent_result.sub_intent == "product_sizing":
                                 logger.info(
                                     "🎯 Query has specific entities — contextualising KB answer via Claude "
                                     "(sub_intent=%s, query='%s')",
@@ -484,6 +582,9 @@ async def get_mcp_conversation_recommendations(
                                     sub_intent=intent_result.sub_intent,
                                     language=language,
                                     anthropic_client=anthropic_client_for_kb,
+                                    # contexto nuevo — ambos pueden ser None (degradación graceful):
+                                    size_profile=getattr(mcp_context, "size_profile", None),
+                                    product_context=getattr(mcp_context, "current_product_context", None),
                                 )
 
                                 if contextual_answer:

@@ -781,31 +781,48 @@ class ShopifyIntegration:
         # Útil para el prompt: "disponible en 4 tallas/opciones".
         variants_count = len(product.get("variants", []))
 
-        # ── Paso 2: Obtener colecciones del producto via GraphQL ───────────
-        # Por qué GraphQL en lugar del enfoque REST previo:
+        # ── Paso 2: Obtener colecciones E inventario del producto via GraphQL ──────
         #
-        # El enfoque anterior (collects.json + N fetches de títulos) fallaba
-        # silenciosamente para smart collections: el código intentaba
-        # /custom_collections/{id}.json y si retornaba 404, intentaba
-        # /smart_collections/{id}.json. Si ambos fallaban por cualquier motivo,
-        # la lista quedaba vacía sin log de error visible — exactamente lo
-        # observado: colecciones presentes en Shopify Admin, collections=[] en logs.
+        # F-05 (13/04/2026): Query extendida para incluir variantes e inventario.
         #
-        # Solución: una sola query GraphQL que retorna títulos directamente,
-        # sin distinguir entre custom y smart collections:
+        # Query anterior (solo colecciones):
+        #   GetProductCollections — 1 campo: collections(first: 5)
         #
-        #   product(id: gid://shopify/Product/{id}) {
-        #     collections(first: 5) { nodes { title } }
-        #   }
+        # Query nueva (colecciones + inventario) — mismo número de fetches HTTP:
+        #   GetProductContextEnriched — 2 campos:
+        #     collections(first: 5) → igual que antes
+        #     variants(first: 20) → NUEVO: inventoryQuantity + availableForSale
         #
-        # Usa el mismo cliente GraphQL ya establecido para precios.
+        # Por qué GraphQL y no REST /variants.json:
+        #   - REST requiere un fetch separado (2 HTTP calls → 3).
+        #   - GraphQL combina colecciones + inventario en una sola llamada.
+        #   - El scope read_inventory (verificado activo) da acceso a inventoryQuantity.
+        #   - availableForSale cubre inventory_policy="continue" (permite vender sin stock).
+        #
+        # Degradación graceful:
+        #   Si la query falla, variant_inventory={} y stock_alert=None.
+        #   El chat continúa sin alerta. Cero errores visibles al usuario.
         collections: list = []
+        variant_inventory: dict = {}   # F-05: {"S": 2, "M": 0, "L": 8}
+        stock_alert = None              # F-05: None | "low" | "critical"
+
         if product_id:
+            # F-05: query ampliada para incluir variantes con inventario.
+            # Mantenemos GetProductContextEnriched para distinguirla de la original
+            # en logs de Shopify si en algun momento necesitamos debuggear la query.
             gql_query = """
-              query GetProductCollections($id: ID!) {
+              query GetProductContextEnriched($id: ID!) {
                 product(id: $id) {
                   collections(first: 5) {
                     nodes { title }
+                  }
+                  variants(first: 20) {
+                    nodes {
+                      title
+                      availableForSale
+                      inventoryQuantity
+                      selectedOptions { name value }
+                    }
                   }
                 }
               }
@@ -830,58 +847,270 @@ class ShopifyIntegration:
                 if "errors" in gql_data:
                     logging.warning(
                         f"[get_product_context_by_handle] "
-                        f"GraphQL errors for collections product_id={product_id}: "
+                        f"GraphQL errors product_id={product_id}: "
                         f"{[e.get('message') for e in gql_data['errors']]}"
                     )
                 else:
-                    nodes = (
-                        gql_data.get("data", {})
-                        .get("product", {})
-                        .get("collections", {})
-                        .get("nodes", [])
-                    )
+                    product_node = gql_data.get("data", {}).get("product", {})
+
+                    # — Colecciones (sin cambios respecto al comportamiento anterior) —
                     collections = [
                         node["title"]
-                        for node in nodes
+                        for node in product_node.get("collections", {}).get("nodes", [])
                         if node.get("title")
                     ]
+
+                    # — F-05: Inventario por variante —
+                    # Iterar los nodos de variantes y extraer el nombre de talla
+                    # y la cantidad disponible.
+                    variants_nodes = product_node.get("variants", {}).get("nodes", [])
+                    variant_inventory = _build_variant_inventory_map(variants_nodes)
+
+                    # Determinar nivel de alerta a partir del inventario calculado.
+                    # _calculate_stock_alert_level() devuelve None si todo tiene
+                    # stock normal, "low" si alguna variante tiene 3-5 uds.,
+                    # o "critical" si alguna tiene 1-2 uds.
+                    stock_alert = _calculate_stock_alert_level(variant_inventory)
+
+                    # F-05 / F-06 (13/04/2026): stock_status es la descripcion completa
+                    # del inventario en cuatro valores discretos. Necesario para responder
+                    # preguntas de disponibilidad cuando stock_alert=None (stock normal
+                    # o agotado), donde la alerta no se activa pero hay que decir algo.
+                    #
+                    # Valores: "no_data", "out_of_stock", "low", "critical", "available"
+                    # Ver _calculate_stock_status() para la especificacion completa.
+                    stock_status = _calculate_stock_status(variant_inventory)
+
                     logging.info(
                         f"[get_product_context_by_handle] "
-                        f"Collections resolved via GraphQL "
-                        f"product_id={product_id}: {collections}"
+                        f"Collections+inventory resolved via GraphQL "
+                        f"product_id={product_id}: collections={collections} "
+                        f"variant_inventory={variant_inventory} stock_alert={stock_alert} "
+                        f"stock_status={stock_status}"
                     )
 
             except Exception as coll_err:
-                # Las colecciones son enriquecimiento, no datos criticos.
-                # Si GraphQL falla, el upsell sigue funcionando con
-                # product_type y tags como contexto alternativo.
+                # Colecciones e inventario son enriquecimiento, no datos criticos.
+                # Si GraphQL falla, el chat sigue con product_type y tags como
+                # contexto de upsell y sin alerta de stock.
                 logging.warning(
                     f"[get_product_context_by_handle] "
-                    f"Collections GraphQL failed for product_id={product_id} "
+                    f"Collections+inventory GraphQL failed for product_id={product_id} "
                     f"(non-critical, continuing without): {coll_err}"
                 )
 
-        # ── Paso 3: Construir y retornar el dict normalizado ──────────────
+        # ── Paso 3: Construir y retornar el dict normalizado ──────────────────
         # Estructura canónica que MCPPersonalizationEngine espera en
         # mcp_context.current_product_context.
+        #
+        # F-05 (13/04/2026): Añadidos variant_inventory, stock_alert e
+        # inventory_fetched_at. Los tres campos son opcionales para el resto del
+        # sistema: si variant_inventory={} y stock_alert=None, el comportamiento
+        # es exactamente el mismo que antes de F-05.
+        import time as _time
         context = {
-            "id":             str(product_id) if product_id else "",
-            "handle":         handle,
-            "title":          product.get("title", ""),
-            "product_type":   product.get("product_type", ""),
-            "tags":           tags,
-            "collections":    collections,
-            "vendor":         product.get("vendor", ""),
-            "variants_count": variants_count,
+            "id":                     str(product_id) if product_id else "",
+            "handle":                 handle,
+            "title":                  product.get("title", ""),
+            "product_type":           product.get("product_type", ""),
+            "tags":                   tags,
+            "collections":            collections,
+            "vendor":                 product.get("vendor", ""),
+            "variants_count":         variants_count,
+            # F-05: campos de inventario — vacíos/None si GraphQL falló
+            "variant_inventory":      variant_inventory,
+            "stock_alert":            stock_alert,
+            "inventory_fetched_at":   _time.time(),
         }
 
         logging.info(
             f"[get_product_context_by_handle] OK: "
             f"handle='{handle}' id={context['id']} "
             f"type='{context['product_type']}' "
-            f"tags={tags[:3]} collections={collections}"
+            f"tags={tags[:3]} collections={collections} "
+            f"stock_alert={stock_alert} inventory_variants={list(variant_inventory.keys())}"
         )
         return context
+
+
+# ==========================================================================
+# F-05: HELPER FUNCTIONS PARA INVENTARIO Y ALERTAS DE STOCK
+# ==========================================================================
+#
+# Estas funciones viven a nivel de módulo (no como métodos de clase) para que
+# puedan ser importadas directamente por kb_contextualizer.py y
+# mcp_personalization_engine.py sin necesitar una instancia de ShopifyIntegration.
+#
+# Uso:
+#   from src.api.integrations.shopify_client import _calculate_stock_alert_level
+
+
+def _extract_size_from_variant_title(title: str) -> str:
+    """
+    Extrae el nombre de talla/opción del título de una variante de Shopify.
+
+    Shopify genera títulos de variante concatenando los valores de las opciones
+    con " / ". Ejemplos comunes en tiendas de moda:
+      "M / Negro"       → "M"
+      "37 / Beige"      → "37"
+      "Único"           → "UNICO"
+      "S"               → "S"
+      "XL / Azul / Seda" → "XL"
+
+    Si el título no contiene " / ", se asume que es la talla directamente.
+    Casos especiales: "Default Title" (Shopify usa esto para productos sin variantes
+    configuradas) se retorna como "" para ser ignorado por el caller.
+
+    Args:
+        title: Título de la variante tal como viene de la GraphQL API.
+
+    Returns:
+        Talla en mayúsculas o "" si no se puede determinar.
+    """
+    if not title:
+        return ""
+
+    # Shopify concatena opciones con " / "; la primera posición suele ser la talla.
+    part = title.split(" / ")[0].strip().upper()
+
+    # Shopify genera "DEFAULT TITLE" cuando el producto no tiene opciones (ej. un libro).
+    # En ese caso no hay talla que extraer.
+    if part == "DEFAULT TITLE":
+        return ""
+
+    return part
+
+
+def _build_variant_inventory_map(variants_nodes: list[dict]) -> dict[str, int]:
+    """
+    Construye el mapa {talla: qty} a partir de nodos GraphQL de variantes.
+
+    Regla importante para F-05:
+    - Si Shopify devuelve `inventoryQuantity=0`, eso es un dato valido y debe
+      preservarse para distinguir "agotado" de "sin datos".
+    - Si `inventoryQuantity is None` y `availableForSale=False`, NO asumimos 0;
+      en ese caso no hay senal confiable de inventario.
+    - Si `availableForSale=True`, incluimos la variante aunque qty sea 0 o None
+      para cubrir `inventory_policy="continue"`.
+    """
+    variant_inventory: dict[str, int] = {}
+
+    for v_node in variants_nodes:
+        size_key = _extract_size_from_variant_title(v_node.get("title", ""))
+        if not size_key:
+            continue
+
+        qty_raw = v_node.get("inventoryQuantity")
+        available = bool(v_node.get("availableForSale", False))
+
+        # inventoryQuantity=0 es informacion real de Shopify y no debe perderse.
+        has_inventory_signal = qty_raw is not None
+        if not has_inventory_signal and not available:
+            continue
+
+        qty = int(qty_raw or 0)
+        variant_inventory[size_key] = qty
+
+    return variant_inventory
+
+
+# Umbrales de stock. Se definen a nivel de módulo para que los consumidores
+# (kb_contextualizer, personalization_engine) puedan importarlos si los necesitan.
+_LOW_STOCK_THRESHOLD = 5      # 1–5 unidades → alerta "low"
+_CRITICAL_STOCK_THRESHOLD = 2  # 1–2 unidades → alerta "critical"
+
+
+def _calculate_stock_alert_level(variant_inventory: dict) -> Optional[str]:
+    """
+    Determina el nivel de alerta de stock basado en el inventario por variante.
+
+    Se evalua el mínimo de stock entre las variantes QUE TIENEN EXISTENCIAS
+    (> 0). Esto hace que la alerta refleje la variante con menos inventario
+    disponible, que es la que genera urgencia real para el comprador.
+
+    No genera alerta cuando:
+      - variant_inventory está vacío (no hay datos de inventario).
+      - Todas las variantes tienen stock 0 (producto agotado — es un estado
+        diferente que se comunica de otra forma en el chat).
+      - El stock mínimo supera _LOW_STOCK_THRESHOLD (no hay urgencia).
+
+    Args:
+        variant_inventory: Dict {talla: cantidad}, ej. {"XS": 12, "S": 2, "M": 0}.
+
+    Returns:
+        None       → sin alerta (stock normal o sin datos).
+        "low"      → al menos una variante tiene 3–5 unidades.
+        "critical" → al menos una variante tiene 1–2 unidades.
+    """
+    if not variant_inventory:
+        return None
+
+    # Considerar solo variantes con stock positivo para el cálculo.
+    # Una cantidad 0 significa "agotado en esa talla", que es distinto
+    # de "quedan pocas unidades".
+    in_stock_quantities = [qty for qty in variant_inventory.values() if qty > 0]
+
+    if not in_stock_quantities:
+        # Todas las variantes están en 0 (producto completamente agotado).
+        # No es una alerta de stock bajo — es stock cero. Sin alerta.
+        return None
+
+    min_qty = min(in_stock_quantities)
+
+    if min_qty <= _CRITICAL_STOCK_THRESHOLD:
+        return "critical"  # 1–2 unidades — urgencia máxima
+    if min_qty <= _LOW_STOCK_THRESHOLD:
+        return "low"       # 3–5 unidades — urgencia moderada
+    return None            # Stock normal, sin alerta
+
+
+def _calculate_stock_status(variant_inventory: dict) -> str:
+    """
+    Calcula el estado de stock global del producto en cuatro valores discretos.
+
+    Esta funcion complementa _calculate_stock_alert_level(): mientras que esa
+    funcion solo detecta URGENCIA (None/low/critical), esta funcion describe
+    el ESTADO completo del inventario, necesario para responder preguntas de
+    disponibilidad en todos los casos.
+
+    Valores retornados:
+        "no_data"      → variant_inventory esta vacio: GraphQL no devolvio
+                          datos de inventario (ej. producto sin variantes con
+                          opciones configuradas). Claude debe responder de
+                          forma generica sin afirmar ni negar disponibilidad.
+        "out_of_stock" → Todas las variantes tienen qty=0 y availableForSale=False.
+                          El producto esta completamente agotado.
+        "low"          → Al menos una variante tiene stock 1-5 (alerta baja).
+        "critical"     → Al menos una variante tiene stock 1-2 (alerta critica).
+        "available"    → Stock normal (min_qty > 5). Sin urgencia, pero disponible.
+
+    La distincion entre "no_data" y "out_of_stock" es importante:
+    - "no_data": el sistema no sabe (no presumas agotado ni disponible)
+    - "out_of_stock": el sistema SABE que esta agotado (dato confirmado de Shopify)
+
+    Args:
+        variant_inventory: Dict {talla: cantidad} (puede estar vacio si GraphQL fallo).
+
+    Returns:
+        str: uno de "no_data", "out_of_stock", "low", "critical", "available".
+    """
+    if not variant_inventory:
+        # Sin datos de inventario — no podemos afirmar nada
+        return "no_data"
+
+    in_stock_quantities = [qty for qty in variant_inventory.values() if qty > 0]
+
+    if not in_stock_quantities:
+        # Todas las variantes con qty=0: producto completamente agotado
+        return "out_of_stock"
+
+    min_qty = min(in_stock_quantities)
+
+    if min_qty <= _CRITICAL_STOCK_THRESHOLD:
+        return "critical"
+    if min_qty <= _LOW_STOCK_THRESHOLD:
+        return "low"
+    return "available"
 
 
 # ==========================================================================

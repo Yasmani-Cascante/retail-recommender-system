@@ -106,6 +106,8 @@ class IntentPatterns:
             "negative_context": [
                 r"\b(no (me )?(queda|gusta|sirve))\b",
                 r"\b(mal(o)?|defectuoso|roto|damaged)\b",
+                r"\b(est[aá]|est[aá]n|estan|is\s+it|still)\b(?=.*\b(disponible|available)\b)",
+                r"\b(sigue|todav[ií]a|todavia)\b(?=.*\b(disponible|available)\b)",
             ],
         },
 
@@ -235,11 +237,17 @@ class IntentPatterns:
         #    de tallas que no aparezcan en availability (ver comentarios abajo).
         InformationalSubIntent.PRODUCT_SIZING: {
             "keywords": [
-                r"\b(talla|tallas|size|sizes|sizing|medida|medidas|número)\b",
+                # FIX (12/04/2026): Separado en dos patrones para que 'talla' y 'medidas'
+                # puedan sumar +0.4 cada uno de forma independiente.
+                # ANTES: r"\b(talla|...|medida|medidas|...)\b" -> ambas palabras = 1 match = +0.4
+                # AHORA: dos patrones separados -> hasta +0.8 cuando ambas aparecen.
+                # Esto resuelve queries como "¿Me puedes dar las medidas de la talla M?"
+                # donde tanto 'medidas' como 'talla' son señales independientes de sizing.
+                r"\b(talla|tallas|size|sizes|sizing|talle|talles)\b",   # nomenclatura de talla
+                r"\b(medida|medidas|measurement|measurements|número|numero)\b",  # mediciones
                 r"\b(chico|mediano|grande|pequeño|small|medium|large|xl|xxl|xs)\b",
                 r"\b(guía.*de.*tallas|size.*guide|sizing.*chart|tabla.*de.*tallas)\b",
                 r"\b(corre|queda|fit|fits|ajuste|ajusta)\b",
-                # ✅ NUEVO: keywords que indican necesidad de guía de tallas
                 r"\b(mido|mide|medida.*corporal|body.*measurement)\b",
                 r"\b(centímetros?|cms?|inches?|pulgadas?)\b",
             ],
@@ -251,8 +259,38 @@ class IntentPatterns:
                 # El patrón anterior no tenía esto → perdía contra PRODUCT_AVAILABILITY
                 r"\b(qué.*tallas.*tienen|what.*sizes.*do|do.*they.*have.*sizes?)\b",
                 r"\b(tienen|they.*have|do.*you.*have)\b",  # Genérico pero en contexto de tallas
+                # ✅ FIX (12/04/2026): Capturar queries personales de recomendación de talla.
+                #
+                # PROBLEMA: Queries como "Que talla me recomiendas?", "recomiendame una talla",
+                # "¿Cómo sé mi talla?", "¿Está disponible en otras tallas?" y "cual es mi talla?"
+                # solo matchean el keyword `talla` (+0.4) sin ningún question_word.
+                # Score final = 0.4 < umbral 0.7 → cae a TRANSACTIONAL (fallback).
+                #
+                # SOLUCIÓN: question_words que capturan:
+                #   A) Pronombres personales + verbo → "me recomiendas", "me quedo",
+                #      "me pido", "soy (talla X)", "sé (mi talla)"
+                #   B) Verbo recomendar con sufijo pronominal → "recomiéndame", "recomiendame"
+                #   C) Adjetivo "disponible" → "¿está disponible en mi talla?"
+                #   D) Verbo ser/identificar en 1P → "cual es mi talla", "cual soy"
+                #
+                # RIESGO DE FALSE POSITIVES: bajo. Estos patrones solo dan +0.3 bonus;
+                # para llegar a 0.7 siempre se necesita un keyword de talla (+0.4).
+                # "recomiéndame un vestido" (sin keyword de talla) no sería afectado.
+                r"\b(me\s+recom[ie][eé]ndas?|recom[ie][eé]nd[ao]me|recommend\s+me)\b",  # recomiéndame/recomiendame
+                r"\b(mi\s+talla|talla\s+me|me\s+queda|me\s+quedo|me\s+pido|soy\s+talla|my\s+size)\b",  # mi talla / soy talla
+                r"\b(cómo\s+sé|como\s+se|cómo\s+me|como\s+me|how\s+do\s+i)\b",  # como sé mi talla / how do I know
+                r"\b(disponible.*talla|talla.*disponible|available.*size|size.*available)\b",  # disponible en mi talla
+                r"\b(cual\s+es\s+mi|cuál\s+es\s+mi|which\s+is\s+my|what\s+is\s+my)\b",  # cual es mi talla
+                r"\b(me\s+recomiend|should\s+i\s+order|should\s+i\s+get)\b",  # me recomiend... / should I order
             ],
         },
+        # ✅ CHANGELOG 12/04/2026: Ampliados question_words de PRODUCT_SIZING para cubrir:
+        #   - "Que talla me recomiendas?" → ahora matchea via `me recomiendas`
+        #   - "¿Cómo sé mi talla?" → ahora matchea via `cómo sé`
+        #   - "¿Está disponible en otras tallas?" → ahora matchea via `disponible.*talla`
+        #   - "cual es mi talla?" → ahora matchea via `cual es mi`
+        #   - "recomiendame una talla" → ahora matchea via `recoméndame`
+        #   Todos los chips del frontend de talla + queries naturales de clientes cubiertos.
 
         # ── Product Info: Care ───────────────────────────────────
         InformationalSubIntent.PRODUCT_CARE: {
@@ -284,7 +322,11 @@ class IntentPatterns:
             "question_words": [
                 # ✅ FIX: "hay/have/tiene" son question_words (bonus +0.3) no keywords.
                 #    Así solo suman si YA hay un keyword de disponibilidad.
-                r"\b(hay|have|tiene|there.*is)\b",
+                r"\b(hay|have|tiene|tienen|there.*is)\b",
+                r"\b(est[aá]|est[aá]n|estan|is\s+it|still)\b(?=.*\b(disponible|available)\b)",
+                r"\b(queda|quedan|left)\b(?=.*\b(stock|disponible|available)\b)",
+                r"\b(sigue|todav[ií]a|todavia)\b(?=.*\b(disponible|available)\b)",
+                r"\b((lo\s+)?tiene(n)?\s+en\s+stock|hay\s+stock|en\s+stock|in\s+stock|do\s+you\s+have\s+it)\b",
                 r"\b(cuándo|cuando|when)\b",
             ],
         },
@@ -387,8 +429,17 @@ class IntentPatterns:
         r"\?\s*$",      # Question mark at end
         r"\b(cómo|como|cuál|cual|cuáles|cuales|qué|que|cuándo|cuando|cuánto|cuántos|cuanto|dónde|donde|por qué|porque)\b",
         r"\b(how|what|which|when|where|why|who)\b",
-        r"\b(puedo|puede|pueden|can|may|could)\b",
+        r"\b(puedo|puedes|puede|pueden|can|may|could)\b",  # FIX (12/04/2026): 'puedes' añadido — faltaba la 2ª persona singular
         r"\b(acepta|aceptan|accept|accepts)\b",
+        # FIX (12/04/2026): 'saber' como indicador de pregunta informacional.
+        # Cubre queries como 'Necesito saber mi talla', 'quiero saber el precio',
+        # 'necesito saber si tienen envío'. Sin este fix, estas queries no pasan el
+        # gate is_question=True y caen al path TRANSACTIONAL (que solo evalua keywords).
+        # Riesgo de false positives: bajo — 'saber' sin contexto informacional no activa
+        # ningún keyword de sub-intent, por lo que no produce falsos INFORMATIONAL.
+        r"\b(saber|averiguar|conocer|entender|find\s+out|know)\b",
+        r"\b(est[aá]\s+disponible|est[aá]n\s+disponibles|estan\s+disponibles|sigue\s+disponible|still\s+available)\b",
+        r"\b((lo\s+)?tiene(n)?\s+en\s+stock|hay\s+stock|in\s+stock)\b",
     ]
 
 
