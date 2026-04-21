@@ -143,9 +143,10 @@ interface MessageListProps {
    * Envía automáticamente una petición de productos similares (Sabor 2).
    */
   onShowSimilar?: (product: import('../types/widget').ProductRecommendation) => void;
+  isExpanded?: boolean;
 }
 
-export function MessageList({ messages, isLoading, onChatAbout, onShowSimilar }: MessageListProps) {
+export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onShowSimilar }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [expandedKbId, setExpandedKbId] = useState<string | null>(null);
 
@@ -212,7 +213,6 @@ export function MessageList({ messages, isLoading, onChatAbout, onShowSimilar }:
             {message.type === 'user' && message.suggestionChip && (
               <div className={styles.suggestionChip}>
                 <div className={styles.suggestionChipBadge}>
-                  {/* Imagen circular del producto ("Ver similares" / "Preguntar") */}
                   {message.suggestionChip.image_url && (
                     <img
                       src={message.suggestionChip.image_url}
@@ -222,7 +222,7 @@ export function MessageList({ messages, isLoading, onChatAbout, onShowSimilar }:
                       onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
                     />
                   )}
-                  <h4>{message.suggestionChip.label}</h4>
+                  <p>{message.suggestionChip.label}</p>
                 </div>
               </div>
             )}
@@ -329,8 +329,8 @@ export function MessageList({ messages, isLoading, onChatAbout, onShowSimilar }:
             {message.recommendations && message.recommendations.length > 0 && (
               <div>
                 <span className={styles.recoLabel}>Recomendado para ti</span>
-                  <div className={styles.productsList}>
-                    {message.recommendations.slice(0, 3).map((product) => (
+                  <div className={`${styles.productsList} ${isExpanded ? styles.productsListExpanded : ''}`}>
+                    {message.recommendations.slice(0, 8).map((product) => (
                       <ProductCard
                         key={product.id}
                         product={product}

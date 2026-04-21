@@ -35,8 +35,22 @@ _ES_PATTERNS = [
     re.compile(r"\b(quiero|busco|necesito|tengo|hola|gracias|por\s+favor)\b", re.IGNORECASE),
     re.compile(r"\b(los|las|del|una|esto|ese|esa|ellos|ellas|nosotros)\b", re.IGNORECASE),
     re.compile(r"\b(que|como|cuando|donde|porque|para|desde|hasta|sobre)\b", re.IGNORECASE),
-    # Common retail-domain Spanish words
-    re.compile(r"\b(talla|tallas|precio|envio|devolucion|pago|tienda|ropa|vestido|camisa)\b", re.IGNORECASE),
+    # Common retail-domain Spanish words (plurals added: vestidos?, camisas?, etc.)
+    re.compile(r"\b(talla|tallas|precio|env[i\u00ed]o|devolucion|pago|tienda|ropa|vestidos?|camisas?|pantalones?|faldas?)\b", re.IGNORECASE),
+    # Spanish imperative+pronoun verbs — exclusive to ES ('recomiendame', 'muestrame')
+    re.compile(r"\b(recomien[dh]a?me|muestrame|d\u00e9jame|cu\u00e9ntame|ayudame|a\u00fcdame|busqueme)\b", re.IGNORECASE),
+    # Spanish adjectives for clothing — exclusive to ES in this context
+    re.compile(r"\b(cortos?|largos?|medios?|midi|elegantes?|casuales?|similares?)\b", re.IGNORECASE),
+    # FIX (19/04/2026 — BUG-LANG-KB): Short Spanish queries were scoring 0 or 1 (<threshold 2)
+    # causing fallback to Accept-Language header (often 'en' for Swiss/international users).
+    # Examples that failed:
+    #   'aceptan Paypal?' → ES=0, EN=0 → None → Accept-Language='en' → English KB response
+    #   'Lo tiene en stock?' → ES=1 (tiene), EN=0 → None (below threshold 2) → English response
+    # Fix: add action verbs (3P plural) typical of short Spanish e-commerce queries,
+    # and the pronoun 'lo' which is unambiguous in Spanish but absent in English.
+    re.compile(r"\b(aceptan?|acepta|tienen|toman|cobran|pagan|mandan|hacen|ofrecen|venden|env\u00edan)\b", re.IGNORECASE),
+    re.compile(r"\b(lo|le)\b", re.IGNORECASE),   # 'lo tiene', 'le pregunto' — extremely rare in English
+    re.compile(r"\b(stock|disponible|disponibles|agotado|agotada)\b", re.IGNORECASE),  # retail terms ES/EN shared but context resolves
 ]
 
 # English indicators -- unique English words and patterns.
@@ -107,19 +121,45 @@ def detect_language_from_text(
             if pattern.search(text):
                 scores["en"] += 1
 
-    # Find best candidate that clears the threshold
+    # FIX (19/04/2026 — BUG-LANG-KB): Asymmetric threshold.
+    # Old logic: require score >= 2 for BOTH languages (strict symmetric threshold).
+    # Problem: short queries like 'aceptan Paypal?' score ES=1, EN=0 -> None -> falls
+    # to Accept-Language header (often 'en' for Swiss users) -> wrong language.
+    #
+    # New logic:
+    #   - If score_winner >= 2: high confidence, return winner (strict mode)
+    #   - If score_winner >= 1 AND loser == 0: no competing signal, return winner (lax mode)
+    #   - If score_winner == 1 AND loser >= 1: tied/ambiguous, return None
+    #   - If both == 0: undetermined, return None
+    # This correctly handles 'aceptan Paypal?' (ES=1, EN=0) -> 'es'
+    # and 'Lo tiene en stock?' (ES=2, EN=0) -> 'es'.
+    # Risk of false positives: low -- the 'lo/le' pattern and action verbs are
+    # unambiguous in the e-commerce domain; a single EN-only signal still wins.
     best_lang = None
-    best_score = _MIN_SCORE_THRESHOLD - 1  # must beat threshold to win
+    best_score = 0
 
     for lang, score in scores.items():
         if score > best_score:
             best_score = score
             best_lang = lang
         elif score == best_score and best_lang is not None:
-            # Tie -- cannot determine
-            best_lang = None
+            best_lang = None  # tie -- cannot determine
 
-    return best_lang
+    if best_lang is None or best_score == 0:
+        return None
+
+    # Check other language score
+    other_score = scores["en"] if best_lang == "es" else scores["es"]
+
+    if best_score >= 2:
+        # High confidence: winner clear (handles tied case above)
+        return best_lang
+    elif best_score == 1 and other_score == 0:
+        # Low confidence but uncontested: accept
+        return best_lang
+    else:
+        # best_score == 1 and other_score >= 1: ambiguous
+        return None
 
 
 def detect_language_from_request(

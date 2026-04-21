@@ -66,3 +66,6 @@ aiofiles>=23.0.0  # Async file operations
 # Referencia: src/api/services/shopify_kb_sync.py → _html_to_markdown()
 markdownify>=0.12.1
 beautifulsoup4>=4.12.0
+
+# --- Liquid AI integration (agregado Fase A/B) ---
+openai>=1.50.0

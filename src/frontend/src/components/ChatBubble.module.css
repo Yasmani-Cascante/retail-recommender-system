@@ -11,7 +11,7 @@
 .bubble {
   /* Posición fija al viewport — no al contenedor padre */
   position: fixed;
-  bottom: 6vh;
+  bottom: 12vh;
   right: 0px;
   z-index: 2147483647; /* Máximo posible — por encima de cualquier elemento de Shopify */
 

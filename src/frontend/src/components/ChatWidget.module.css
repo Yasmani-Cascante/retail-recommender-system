@@ -13,13 +13,14 @@
 }
 .h_centerBottom {
  justify-content: end !important;
-  padding-bottom: 140px !important;
+ height: calc(100% - 200px) !important;;
+ /* padding-bottom: 140px !important; */
 }
 
 .aiBubbleWrapper {
   display: flex;
   position: absolute;
-  top: 120px; 
+  top: 80px; 
   justify-content: center;
   align-items: center;
   /* width: 200px;
@@ -33,7 +34,7 @@
 }
 
 @keyframes showBubble {
-  from { opacity: 0; transform: translateY(20px); }
+  from { opacity: 0; transform: translateY(25px); }
   to   { opacity: 1; transform: translateY(0); }
 }
  /* @keyframes chipsShow {
@@ -45,10 +46,10 @@
    ═══════════════════════════════════════════════════════════════ */
 .panel {
   position: fixed;
-  bottom: 6vh;
+  bottom: 8vh;
   right: 20px;
   width: 420px;
-  height: 800px;
+  height: 850px;
   background: #f8f7f5;
   border-radius: 6px;
   border: 1px solid rgba(0, 0, 0, 0.5);
@@ -77,11 +78,13 @@
 /* Inspirado en el asistente de Zalando: ocupa casi toda la pantalla   */
 /* dejando un margen decorativo. En móvil ya es full-screen por defecto.*/
 .panelExpanded {
-  /* width: calc(70vw - 48px); */
-  width: 1440px;
-  height: calc(100vh - 48px);
-  bottom: 24px;
-  right: 24px;
+  /* width: calc(100vw - 12px); */
+  width: 99vw;
+  /* width: 1440px; */
+  height: calc(100vh - 125px);
+  margin: 0 auto;
+  bottom: 12px;
+  right: 6px;
   border-radius: 12px;
   /* Sombra más pronunciada en modo expandido */
   box-shadow:
@@ -103,13 +106,14 @@
   pointer-events: none;
 }
 
-/* ── Responsive: móvil ocupa casi toda la pantalla ──────────── */
+/* ── Responsive: móvil pantalla completa ──────────── */
 @media (max-width: 480px) {
   .panel {
-    width: calc(100vw - 24px);
-    height: calc(100vh - 100px);
-    right: 12px;
-    bottom: 80px;
+    width: 100vw;
+    height: 100vh;
+    right: 0;
+    bottom: 0;
+    border-radius: 0;
   }
   .panelExpanded {
     width: 100vw;
@@ -121,6 +125,28 @@
   /* En móvil el botón de expandir no tiene mucho sentido: ocultarlo */
   .expandBtn {
     display: none !important;
+  }
+  /* Welcome screen en móvil ajustado */
+  .welcomeScreen {
+    padding: 24px 16px 16px;
+    height: 100%;
+  }
+  .welcomeTitle {
+    font-size: 20px;
+  }
+  .suggestions {
+    max-width: 100%;
+  }
+  .welcomeSuggestionChip {
+    padding: 10px 14px;
+    font-size: 13px;
+  }
+  /* Zona inferior en móvil */
+  .bottomZone {
+    padding: 8px;
+  }
+  .contextChipWrapper {
+    bottom: 80px;
   }
 }
 
@@ -230,6 +256,50 @@
   color: #fff;
 }
 
+/* ── Header en modo expandido ──────────────────────────────── */
+.panelExpanded .header {
+  background: transparent;
+  box-shadow: none;
+}
+
+.panelExpanded .headerName {
+  color: #1c1c1c;
+}
+
+.panelExpanded .headerStatus {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.panelExpanded .headerStatus::before {
+  background: #4ade80;
+}
+
+.panelExpanded .headerAvatar svg {
+  color: #1c1c1c;
+}
+
+/* Botones más grandes en modo expandido */
+.panelExpanded .expandBtn,
+.panelExpanded .closeBtn {
+  width: 36px;
+  height: 36px;
+  background: rgba(0, 0, 0, 0.08);
+  color: rgba(0, 0, 0, 0.75);
+}
+
+.panelExpanded .expandBtn:hover,
+.panelExpanded .closeBtn:hover {
+  background: rgba(0, 0, 0, 0.15);
+  color: #1c1c1c;
+}
+
+/* Iconos más grandes en modo expandido */
+.panelExpanded .expandBtn svg,
+.panelExpanded .closeBtn svg {
+  width: 20px;
+  height: 20px;
+}
+
 /* ── Header oculto (scroll hacia abajo) ──────────────────────── */
 .headerHidden {
   transform: translateY(-95%);
@@ -250,6 +320,7 @@
   overflow-x: hidden;
   /* Scroll suave */
   scroll-behavior: smooth;
+  /* Si comentamos estas propiedades Flex el header se oculta */
   display: flex;
   justify-content: center;
 }
@@ -269,7 +340,8 @@
   gap: 0;
   /* Scroll suave */
   scroll-behavior: smooth;
-  height: calc(100% - 160px);
+  height: calc(100% - 155px);
+  /* height: 100%; */
 }
 
 /* ── Saludo personalizado (solo usuarios logueados) ──────────── */
@@ -318,7 +390,7 @@
   color: #6b7280;
   text-align: center;
   line-height: 1.5;
-  margin: 0 0 52px;
+  margin: 0 0 34px;
   max-width: 300px;
 }
 
@@ -362,10 +434,10 @@
   /* border-color: transparent; */
 }
 .welcomeSuggestionChip:hover {
-  background: #f8f7f5;
-  border-color: rgba(0, 0, 0, 0.18);
-  /* border-color: #777777; */
-  transform: translateY(-1px);
+  /* background: #f8f7f5; */
+  /* border-color: rgba(0, 0, 0, 0.18); */
+  border-color: #777777;
+  transform: translateY(-0.75px);
   /* box-shadow:rgba(59, 59, 59, 0.288) 0px 4px 4px -2px; */
 
   /* box-shadow: 0 3px 8px rgba(0,0,0,0.08); */
@@ -453,8 +525,8 @@
 
 .contextChipWrapper {
 /* background: rebeccapurple; */
-position: absolute;
-bottom: 94px;
+position: absolute; 
+bottom: 98px;
 width: 100%;
 padding: 10px 0;
 display: flex;

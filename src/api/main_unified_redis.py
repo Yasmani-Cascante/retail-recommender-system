@@ -245,86 +245,96 @@ from src.api.routers.health_kb import router as health_kb_router
 
 async def _initialize_redis_in_background():
     """
-    Background task that validates Redis connection without blocking startup.
-    Updates global variables: redis_initialized, redis_error, redis_service_for_diagnostics
-    
-    Cloud Run needs /health to respond within 60s. This task runs in the background
-    so the server can listen on port 8080 immediately.
+    Background task que valida la conexion Redis sin bloquear el startup.
+    Actualiza variables globales: redis_initialized, redis_error, redis_service_for_diagnostics
+
+    DISENO (17/04/2026):
+    ServiceFactory.get_redis_service() ya hace su propia conexion y sincronizacion
+    (force_connection_sync). NO llamar health_check() a continuacion porque:
+
+      1. health_check() compite con ProductCache.health_check() -- ambos se lanzan
+         con 3ms de diferencia y comparten el mismo pool de conexiones Redis.
+         Con Redis Cloud (free tier / latencia variable), el segundo ping frecuentemente
+         excede el timeout de 1000ms, produciendo un FALSO NEGATIVO: Redis esta
+         conectado pero se reporta como 'degraded'. redis_initialized=False.
+
+      2. ServiceFactory ya garantizo la conexion antes de retornar. Podemos
+         confiar en redis_service._connected para saber el estado real.
+
+    Si ServiceFactory retorna un servicio con _connected=True, marcamos
+    redis_initialized=True sin llamadas adicionales a Redis.
     """
     global redis_initialized, redis_error, redis_client, redis_service_for_diagnostics
-    
+
     redis_initialized = False
     redis_error = None
     redis_service = None
-    
+
     try:
-        logger.info("🔄 [BG] Redis initialization started in background...")
-        redis_connection_timeout = redis_connection_timeout_ms / 1000.0  # Convert ms to seconds
-        
-        # ✅ Create Redis service with fail-fast timeout
+        logger.info("[BG] Redis initialization started in background...")
+        redis_connection_timeout = redis_connection_timeout_ms / 1000.0
+
         redis_service = await asyncio.wait_for(
-            ServiceFactory.get_redis_service(), 
+            ServiceFactory.get_redis_service(),
             timeout=redis_connection_timeout
         )
-        
-        if redis_service:
-            logger.info("🔄 [BG] Validating Redis connection...")
-            
-            # ✅ Health check with timeout
-            health_result = await asyncio.wait_for(
-                redis_service.health_check(),
-                timeout=redis_connection_timeout
-            )
-            
-            logger.info(f"📊 [BG] Redis health check result: {health_result}")
-            
-            # ✅ Verify connection
-            if (health_result.get('status') == 'healthy' and 
-                health_result.get('connected') and 
-                health_result.get('last_test') == 'successful'):
-                
-                # ✅ Test with real operation
-                try:
-                    logger.info("🧪 [BG] Testing Redis with real operation...")
-                    await redis_service.set("startup_validation_bg", "success", ttl=30)
-                    test_value = await redis_service.get("startup_validation_bg")
-                    
-                    if test_value == "success":
-                        redis_initialized = True
-                        redis_service_for_diagnostics = redis_service
-                        
-                        # Extract client for legacy compatibility
-                        if hasattr(redis_service, '_client'):
-                            redis_client = redis_service._client
-                        
-                        logger.info("✅ [BG] REDIS FULLY VALIDATED - Background initialization complete")
-                    else:
-                        redis_error = "Redis operation test failed - Value mismatch"
-                        logger.error(f"❌ [BG] {redis_error}")
-                except Exception as op_test_error:
-                    redis_error = f"Redis operation test failed: {str(op_test_error)}"
-                    logger.error(f"❌ [BG] {redis_error}")
-            else:
-                redis_error = f"Redis health check failed - Status: {health_result.get('status')}"
-                logger.error(f"❌ [BG] {redis_error}")
-        else:
+
+        if not redis_service:
             redis_error = "Redis service creation returned None"
-            logger.error(f"❌ [BG] {redis_error}")
-            
+            logger.error("[BG] %s", redis_error)
+            return
+
+        # RUTA RAPIDA: ServiceFactory ya hizo force_connection_sync.
+        # redis_service._connected=True = ping exitoso confirmado.
+        # No llamamos health_check() para evitar la carrera con
+        # ProductCache.health_check() que arranca ~3ms despues.
+        if getattr(redis_service, '_connected', False):
+            redis_initialized = True
+            redis_service_for_diagnostics = redis_service
+            if hasattr(redis_service, '_client'):
+                redis_client = redis_service._client
+            logger.info(
+                "[BG] Redis validated via ServiceFactory sync "
+                "(skipping redundant health_check to avoid race with ProductCache)"
+            )
+        else:
+            # _connected=False: ServiceFactory no sincronizo.
+            # Smoke test ligero (set/get), no health_check().
+            logger.info("[BG] ServiceFactory did not sync - attempting direct smoke test...")
+            try:
+                await asyncio.wait_for(
+                    redis_service.set("startup_bg_ping", "1", ttl=30),
+                    timeout=3.0
+                )
+                val = await asyncio.wait_for(
+                    redis_service.get("startup_bg_ping"),
+                    timeout=3.0
+                )
+                if val:
+                    redis_initialized = True
+                    redis_service_for_diagnostics = redis_service
+                    if hasattr(redis_service, '_client'):
+                        redis_client = redis_service._client
+                    logger.info("[BG] Redis smoke test passed")
+                else:
+                    redis_error = "Redis smoke test - set/get returned None"
+                    logger.error("[BG] %s", redis_error)
+            except Exception as smoke_e:
+                redis_error = f"Redis smoke test failed: {smoke_e}"
+                logger.warning("[BG] %s", redis_error)
+
     except asyncio.TimeoutError:
         redis_error = f"Redis initialization timeout ({redis_connection_timeout_ms}ms exceeded)"
-        logger.warning(f"⚠️ [BG] {redis_error} - System will continue with fallback")
+        logger.warning("[BG] %s - System will continue with fallback", redis_error)
         redis_initialized = False
-        
+
     except Exception as e:
         redis_error = str(e)
-        logger.warning(f"⚠️ [BG] Redis initialization failed: {redis_error} - System will continue with fallback")
+        logger.warning("[BG] Redis initialization failed: %s - fallback", redis_error)
         redis_initialized = False
-    
-    # Final status summary
-    logger.info(f"📊 [BG] REDIS INITIALIZATION SUMMARY (background task):")
-    logger.info(f"   - Redis Initialized: {redis_initialized}")
-    logger.info(f"   - Redis Error: {redis_error}")
+
+    logger.info("[BG] REDIS INIT SUMMARY: initialized=%s error=%s",
+                redis_initialized, redis_error)
 
 # ============================================================================
 # 🚀 FASTAPI LIFESPAN CONTEXT MANAGER (MODERN PATTERN) - CÓDIGO COMPLETO PRESERVADO
@@ -662,10 +672,34 @@ async def lifespan(app: FastAPI):
                 )
 
         # -- Lanzar como background task (no bloqueante) -----------------------
-        if (tfidf_recommender and
-                getattr(tfidf_recommender, 'loaded', False) and
-                tfidf_recommender.product_data and
-                shopify_client):
+        #
+        # DESACTIVADO (21/04/2026) — lazy pricing es suficiente
+        # ──────────────────────────────────────────────────────────────────────
+        # RACIONAL:
+        #   Este batch consulta TODOS los productos al arranque (~3-8 min, 3062
+        #   productos x 4 mercados). El objetivo era pre-poblar market_prices en
+        #   RAM para que _enrich_recommendations_lazy() no tuviese que consultar
+        #   Shopify en el primer request de cada producto.
+        #
+        # POR QUÉ SE DESACTIVA:
+        #   _enrich_recommendations_lazy() (mcp_personalization_engine.py) ya cubre
+        #   el mismo caso: en cada turno, consulta Shopify para los ~8 productos
+        #   recomendados que aún no tienen market_prices (~200-300 ms, solapado con
+        #   el resto del pipeline). Tras el primer request, esos productos quedan
+        #   enriquecidos en RAM y los requests siguientes no pagan el overhead.
+        #
+        # ARQUITECTURA A MEDIANO PLAZO (trabajo futuro, aún no implementado):
+        #   Suscribir webhook products/update de Shopify → invalidar market_prices
+        #   en RAM cuando un precio cambia. Con ese webhook activo, lazy pricing
+        #   mantiene los datos frescos sin batch de startup. El batch (PASO 4.5)
+        #   puede eliminarse completamente.
+        #
+        # PARA REACTIVAR:
+        #   Cambiar `if False` → `if (tfidf_recommender and ...)` y descomentar
+        #   el bloque. El código de _enrich_catalog_with_shopify_prices() sigue
+        #   siendo válido y está documentado arriba.
+        # ──────────────────────────────────────────────────────────────────────
+        if False:  # DESACTIVADO — ver comentario arriba
             asyncio.create_task(
                 _enrich_catalog_with_shopify_prices(
                     catalog=tfidf_recommender.product_data,
@@ -677,6 +711,12 @@ async def lifespan(app: FastAPI):
                 "✅ PASO 4.5: Enriquecimiento Shopify lanzado en segundo plano. "
                 "Startup continua sin bloquear. market_prices se inyectaran "
                 "automaticamente en ~3-4 min mientras el sistema ya sirve requests."
+            )
+        else:
+            logger.info(
+                "ℹ️  PASO 4.5: Desactivado — lazy pricing activo en "
+                "_enrich_recommendations_lazy() (mcp_personalization_engine.py). "
+                "Webhook products/update pendiente para completar la arquitectura."
             )
 
         # ============================================================================
@@ -863,62 +903,79 @@ async def lifespan(app: FastAPI):
                 "El reranking F-01 activará el boost de colección una vez completado."
             )
 
+        # ====================================================================
+        # PASO 4.8: ESPERAR REDIS CON TIMEOUT ACOTADO (antes de ProductCache)
+        # ====================================================================
+        # Por que este await es necesario aqui:
+        #
+        #   En PASO 5 creamos ProductCache con local_catalog=tfidf_recommender.
+        #   ServiceFactory.get_product_cache_singleton() necesita el RedisService
+        #   singleton que el BG task esta inicializando.
+        #
+        #   Sin este await, PASO 5 se ejecuta con redis_initialized=False y
+        #   la condicion anterior lo saltaba. ServiceFactory luego creaba el
+        #   singleton en PASO 6 (HybridRecommender auto-wiring) SIN local_catalog.
+        #
+        #   Con este await (max 8s), Redis conecta en ~1.5s, redis_initialized=True,
+        #   y PASO 5 puede crear ProductCache con Redis + local_catalog.
+        #
+        #   asyncio.shield() protege el BG task de ser cancelado si el outer
+        #   timeout dispara. El task continua corriendo aunque este await expira.
+        logger.info("Waiting for Redis BG init (max 8s) before ProductCache...")
+        try:
+            await asyncio.wait_for(asyncio.shield(redis_bg_task), timeout=8.0)
+            logger.info("Redis BG init completed. redis_initialized=%s", redis_initialized)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Redis not ready after 8s -- ProductCache will use local_catalog only. "
+                "redis_initialized=%s", redis_initialized
+            )
+        # (redis_bg_task sigue corriendo en segundo plano si no termino)
+
         # ============================================================================
-        # 🎯 PASO 5: CREAR PRODUCT CACHE CON DEPENDENCY INJECTION CORREGIDA (OPCIÓN B)
+        # PASO 5: CREAR PRODUCT CACHE CON DEPENDENCY INJECTION CORREGIDA
         # ============================================================================
         
         logger.info("🗄️ Creating ProductCache via ServiceFactory with local_catalog injection...")
         
         product_cache = None
         try:
-            if redis_initialized and redis_service:
-                # ✅ OPCIÓN B: Usar ServiceFactory para crear ProductCache singleton
-                # Esto garantiza que TODAS las partes del sistema usen la MISMA instancia
-                logger.info("🔧 Creating ProductCache singleton via ServiceFactory with TF-IDF catalog...")
-                
-                # ✅ CRITICAL: Pasar tfidf_recommender como local_catalog
-                product_cache = await ServiceFactory.get_product_cache_singleton(
-                    local_catalog=tfidf_recommender  # ✅ DEPENDENCY INJECTION FIX (OPCIÓN B)
-                )
-                
-                logger.info("✅ ProductCache singleton created via ServiceFactory with CORRECTED dependency injection")
-                logger.info(f"ProductCache ID: {id(product_cache)}")
-                logger.info(f"Has local_catalog: {hasattr(product_cache, 'local_catalog')}")
-                logger.info(f"local_catalog is None: {product_cache.local_catalog is None}")
-                
-                # ✅ VERIFICACIÓN: Confirmar que local_catalog tiene datos
-                if product_cache.local_catalog:
-                    if hasattr(product_cache.local_catalog, 'loaded'):
-                        logger.info(f"  → local_catalog.loaded: {product_cache.local_catalog.loaded}")
-                    if hasattr(product_cache.local_catalog, 'product_data'):
-                        product_count = len(product_cache.local_catalog.product_data) if product_cache.local_catalog.product_data else 0
-                        logger.info(f"  → local_catalog.product_data: {product_count} products")
-                        if product_count > 0:
-                            logger.info("✅ OPCIÓN B SUCCESSFUL: ProductCache has access to trained catalog!")
-                            # logger.warning(f"✅ Producto (ejemplo): {product_cache.local_catalog.product_data[0]}")
-                            # producto = product_cache.local_catalog.product_data[0]
-                            # shop_url=os.environ.get("SHOPIFY_SHOP_URL", "")
-                            # logger.warning(f" Producto page url: https://{shop_url}/products/{producto['handle']}")
+            # FIX (17/04/2026): Crear ProductCache SIEMPRE con local_catalog.
+            # Antes: la condicion 'if redis_initialized and redis_service' saltaba
+            # la creacion si Redis tardaba, y ServiceFactory luego la creaba SIN
+            # local_catalog en el auto-wiring del HybridRecommender (PASO 6).
+            # Ahora: siempre llamamos get_product_cache_singleton con local_catalog.
+            # Si Redis no esta disponible, ProductCache funciona en modo degradado
+            # (usa solo local_catalog). Si Redis esta disponible (lo estara en ~1.5s
+            # gracias al PASO 4.8), ProductCache tiene Redis + local_catalog.
+            logger.info("Creating ProductCache singleton via ServiceFactory with TF-IDF catalog...")
+            product_cache = await ServiceFactory.get_product_cache_singleton(
+                local_catalog=tfidf_recommender  # SIEMPRE inyectar local_catalog
+            )
+            logger.info("ProductCache singleton created (redis_initialized=%s)", redis_initialized)
+            logger.info("  has_local_catalog: %s",
+                        product_cache.local_catalog is not None if product_cache else False)
 
-                        else:
-                            logger.warning("⚠️ local_catalog.product_data is empty")
-                else:
-                    logger.error("❌ OPCIÓN B FAILED: product_cache.local_catalog is None")
-                
-                # ✅ Verificar configuración del cache
+            if product_cache and product_cache.local_catalog:
+                if hasattr(product_cache.local_catalog, 'product_data'):
+                    product_count = len(product_cache.local_catalog.product_data or [])
+                    if product_count > 0:
+                        logger.info("ProductCache: local_catalog has %d products", product_count)
+                    else:
+                        logger.warning("ProductCache: local_catalog.product_data is empty")
+            elif product_cache:
+                logger.error("ProductCache: local_catalog is None -- injection failed")
+
+            if product_cache:
                 cache_stats = product_cache.get_stats()
-                logger.info(f"📊 ProductCache initial stats: {cache_stats}")
-                
-                # ✅ Iniciar background tasks si está configurado
+                logger.info("ProductCache initial stats: %s", cache_stats)
+
                 if settings.cache_enable_background_tasks:
                     try:
                         await product_cache.start_background_tasks()
-                        logger.info("🔄 ProductCache background tasks iniciadas")
+                        logger.info("ProductCache background tasks started")
                     except Exception as bg_error:
-                        logger.warning(f"⚠️ ProductCache background tasks error: {bg_error}")
-                        
-            else:
-                logger.warning("⚠️ ProductCache creation skipped - Redis not available")
+                        logger.warning("ProductCache background tasks error: %s", bg_error)
                 
         except Exception as cache_error:
             logger.error(f"❌ Error creating ProductCache via ServiceFactory: {cache_error}")
@@ -1267,32 +1324,37 @@ async def lifespan(app: FastAPI):
                 logger.info("✅ Shopify KB Client initialized")
                 
                 # 3. Create KB Sync Service
-                logger.info("🔄 Creating KB Sync Service...")
+                logger.info("Creating KB Sync Service...")
+                # FIX (17/04/2026): Pasar redis_service_for_diagnostics en lugar de None.
+                # En este punto (PASO 10.5) Redis ya conecto en PASO 4.8.
+                # redis_service_for_diagnostics es el singleton validado por ServiceFactory.
+                # Pasarlo permite que ShopifyKBSyncService y ShopifyKnowledgeBase
+                # usen Redis para cache (Layer 1), eliminando los errores
+                # kb_cache_get_error / kb_cache_store_error por NoneType.
+                _kb_redis = redis_service_for_diagnostics  # None si Redis no conecto (graceful)
                 kb_sync_service = ShopifyKBSyncService(
                     shopify_client=shopify_kb_client,
                     db_pool=app.state.db_pool,
-                    redis_service=None  # ✅ CLOUD RUN FIX: Redis initializing in background, pass None
+                    redis_service=_kb_redis  # real service or None (defensive guards in kb_v2)
                 )
                 app.state.kb_sync_service = kb_sync_service
-                logger.info("✅ KB Sync Service initialized")
+                logger.info("KB Sync Service initialized (redis=%s)", _kb_redis is not None)
                 
                 # 4. Create Knowledge Base v2
-                logger.info("🔄 Creating Knowledge Base v2...")
+                logger.info("Creating Knowledge Base v2...")
                 kb_v2 = create_shopify_knowledge_base(
                     db_pool=app.state.db_pool,
-                    redis_service=None,  # ✅ CLOUD RUN FIX: Redis initializing in background, pass None
+                    redis_service=_kb_redis,  # real service or None (defensive guards in kb_v2)
                     shopify_client=shopify_kb_client,
                     cache_ttl_hours=settings.KB_CACHE_TTL_HOURS,
                     buffer_max_age_hours=settings.KB_BUFFER_MAX_AGE_HOURS,
                     enable_fallback=settings.KB_ENABLE_FALLBACK
                 )
+                logger.info("Knowledge Base v2 initialized (redis=%s)", _kb_redis is not None)
                 app.state.knowledge_base_v2 = kb_v2
-                # ✅ ALIAS: También asignar como knowledge_base para compatibilidad con routers
-                app.state.knowledge_base = kb_v2
-                # Module-level aliases for legacy imports (e.g., modules referencing src.api.main_unified_redis.knowledge_base)
-                knowledge_base_v2 = kb_v2
-                knowledge_base = kb_v2
-                logger.info("✅ Knowledge Base v2 initialized with triple-layer cache")
+                app.state.knowledge_base = kb_v2  # alias para compatibilidad con routers
+                knowledge_base_v2 = kb_v2  # module-level alias
+                knowledge_base = kb_v2     # module-level alias
                 
                 # 5. Start Background Sync Job (optional)
                 if settings.KB_ENABLE_BACKGROUND_SYNC:

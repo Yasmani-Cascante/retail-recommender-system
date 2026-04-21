@@ -55,6 +55,7 @@ Date: 25/03/2026
 import re
 import asyncio
 import logging
+import os
 import time
 from typing import Optional, Dict, Any, TYPE_CHECKING
 
@@ -63,6 +64,9 @@ if TYPE_CHECKING:
     # SizeProfile vive en mcp_services; importarla aqui en runtime crearia un
     # ciclo: mcp_services → core → mcp_services. TYPE_CHECKING = False en runtime.
     from src.api.mcp_services.size_profile.service import SizeProfile
+
+from src.api.core.llm_client import UnifiedLLMClient
+from src.api.core.claude_config import LFM_KB_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -712,6 +716,87 @@ def _build_availability_context_block(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# FIX (21/04/2026): MATERIAL CONTEXT BLOCK BUILDER
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _build_material_context_block(
+    product_context: Dict[str, Any],
+    language: str = "es",
+) -> str:
+    """
+    Construye un bloque de contexto de material para el prompt de Claude.
+
+    Se activa cuando el sub_intent es 'product_material' y hay product_context
+    disponible (usuario en pagina de producto). Inyecta información relevante
+    del producto (tipo, tags, titulo) para que Claude pueda responder con
+    detalles especificos sobre el material de este producto en particular.
+
+    Design notes:
+      - Usa tags del producto (que suelen incluir material: "algodon", "seda")
+      - Incluye el tipo de producto para contexto (ej. "VESTIDOS", "TOPS")
+      - El bloque es informativo, no reemplaza el documento KB.
+      - Degradacion graceful: si no hay tags utiles, solo muestra el titulo.
+
+    Args:
+        product_context: Dict con 'title', 'product_type', 'tags', etc.
+        language:        "es" o "en".
+
+    Returns:
+        Bloque de texto para incrustar en el prompt, o "" si no hay info util.
+    """
+    if not product_context:
+        return ""
+
+    product_title = product_context.get("title", "este producto")
+    product_type = product_context.get("product_type", "")
+    tags = product_context.get("tags", []) or []
+
+    # Filtrar tags relevantes para materiales (case-insensitive)
+    material_keywords = {
+        "algodon", "cotton", "seda", "silk", "lino", "linen",
+        "viscosa", "viscose", "polyester", "poliester", "poliéster",
+        "lyocell", "tencel", "modal", "lana", "wool", "cachemira",
+        "cashmere", "sintetico", "sintético", "synthetic", "cuero",
+        "leather", "denim", "mezclilla", "nylon", "licra", "lycra",
+        "spandex", "elastano", "elastano", "rayon", "acetato",
+    }
+    relevant_tags = [
+        tag for tag in tags
+        if any(kw.lower() in tag.lower() for kw in material_keywords)
+    ]
+
+    if language == "es":
+        block_lines = ["\n--- CONTEXTO DEL PRODUCTO ---"]
+        block_lines.append(f"Producto: {product_title[:60]}")
+        if product_type:
+            block_lines.append(f"Tipo: {product_type}")
+        if relevant_tags:
+            block_lines.append(f"Tags relacionados con material: {', '.join(relevant_tags[:5])}")
+        block_lines.append(
+            "Responde específicamente sobre el material/composición de este producto "
+            "basándote en el documento. Si el documento no menciona materiales específicos "
+            "para este tipo de producto, indícalo claramente."
+        )
+        block_lines.append("--- Fin contexto ---\n")
+    else:
+        block_lines = ["\n--- PRODUCT CONTEXT ---"]
+        block_lines.append(f"Product: {product_title[:60]}")
+        if product_type:
+            block_lines.append(f"Type: {product_type}")
+        if relevant_tags:
+            block_lines.append(f"Material-related tags: {', '.join(relevant_tags[:5])}")
+        block_lines.append(
+            "Answer specifically about the material/composition of this product "
+            "based on the document. If the document does not mention specific materials "
+            "for this product type, state so clearly."
+        )
+        block_lines.append("--- End context ---\n")
+
+    return "\n".join(block_lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # PUBLIC API — Specificity Check
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -846,15 +931,58 @@ async def generate_contextual_answer(
         logger.warning("⚠️ KB Contextualizer: Could not read claude_config, using Haiku defaults: %s", cfg_e)
         model_name = "claude-3-haiku-20240307"
         max_tokens = 250
+    
+    # FIX (19/04/2026): Para product_sizing, aumentar max_tokens para que LFM/Haiku
+    # pueda presentar la tabla de medidas completa en lugar de truncarla.
+    if sub_intent == "product_sizing":
+        max_tokens = min(model_config.max_tokens, 500)  # hasta 500 para tablas de tallas
 
     # System prompt — short, role-focused, language-locked
     # Kept under ~80 tokens to minimise time-to-first-token.
-    system_prompt = (
-        f"You are a helpful customer support assistant for an e-commerce fashion store. "
-        f"You answer customer questions ONLY using the policy document provided. "
-        f"Reply in {response_language}. Be concise: 2–3 sentences maximum. "
-        f"If the document does not contain the specific information asked, say so clearly and briefly."
-    )
+    # FIX (19/04/2026 — BUG-SIZING-KB): For product_sizing, relaxed the "2-3 sentences" constraint.
+    # The KB sizing document contains measurement tables and specific size data.
+    # LFM2.5-1.2B was generating vague summaries ("Follow the guide") because the
+    # conciseness instruction prevented it from presenting the actual table content.
+    # product_sizing needs a longer, more detailed response to be useful.
+
+    # ── Solución B (UX): Instrucción para mencionar producto en respuestas ─────
+    # Cuando hay product_context (usuario en página de producto), instruir al modelo
+    # a mencionar el nombre del producto para que el usuario sepa que la respuesta
+    # es específica a ese item.
+    product_mention_instruction = ""
+    if product_context and product_context.get("title"):
+        product_mention_instruction = (
+            f"IMPORTANT: The customer is asking about the product '{product_context['title']}'. "
+            f"ALWAYS mention this product name at the start of your answer so they know "
+            f"you're responding about this specific item. "
+        )
+        logger.info(
+            "Solución B: Adding product mention instruction for KB contextualization "
+            "(product='%s', sub_intent='%s')",
+            product_context['title'],
+            sub_intent
+        )
+    # ── Fin Solución B ────────────────────────────────────────────────────────
+
+    if sub_intent == "product_sizing":
+        system_prompt = (
+            f"You are a helpful customer support assistant for an e-commerce fashion store. "
+            f"You help customers find their correct size using the sizing guide provided. "
+            f"Reply in {response_language}. "
+            f"{product_mention_instruction}"
+            f"If the document contains a size chart or measurements, PRESENT THE ACTUAL DATA "
+            f"(sizes, measurements in cm) so the customer can directly find their size. "
+            f"Be specific and practical: tell the customer exactly how to measure and which size to pick. "
+            f"You may use up to 5 sentences or a short list if needed to present the sizing information clearly."
+        )
+    else:
+        system_prompt = (
+            f"You are a helpful customer support assistant for an e-commerce fashion store. "
+            f"You answer customer questions ONLY using the policy document provided. "
+            f"Reply in {response_language}. Be concise: 2–3 sentences maximum. "
+            f"{product_mention_instruction}"
+            f"If the document does not contain the specific information asked, say so clearly and briefly."
+        )
 
     # Build optional sizing context block if size_profile and product_context are provided
     sizing_context = ""
@@ -921,14 +1049,72 @@ async def generate_contextual_answer(
             language=lang_key,
         )
 
+    # FIX (21/04/2026): Contexto específico de material para product_material.
+    # Inyecta información del producto actual (tags, tipo) para que Claude pueda
+    # responder con detalles específicos sobre el material de este producto.
+    material_context = ""
+    if sub_intent == "product_material" and product_context:
+        material_context = _build_material_context_block(
+            product_context=product_context,
+            language=lang_key,
+        )
+
+    # ── Solución B (UX): Nota sobre el contexto del producto ─────────────────
+    # Agregar contexto explícito sobre el producto que el usuario está viendo
+    product_context_note = ""
+    if product_context and product_context.get("title"):
+        product_context_note = (
+            f"\nNote: The customer is viewing the product '{product_context['title']}'. "
+            f"Your answer should specifically address this product.\n\n"
+        )
+    # ── Fin Solución B ───────────────────────────────────────────────────────
+
     user_prompt = (
         f"{sizing_context}"
         f"{stock_alert_context}"        # F-05: urgencia de stock bajo/critico
         f"{availability_context}"        # F-05: disponibilidad normal/agotado
+        f"{material_context}"            # FIX: contexto de material del producto
         f"Policy document:\n\"\"\"\n{kb_document}\n\"\"\"\n\n"
+        f"{product_context_note}"
         f"Customer question: {query}\n\n"
         f"Answer the customer's specific question based only on the document above."
     )
+
+    # ── RUTA LFM — Fase B (activa si LFM_KB_ENABLED=true) ──────────────────
+    # Lee la variable directamente de os.environ — nunca via lru_cache.
+    # Razón: lru_cache congela el valor al momento del import; en Cloud Run
+    # el secret llega después del import y el flag quedaría siempre False.
+    # Patrón idéntico al usado en mcp_personalization_engine.py (21/03/2026).
+    _lfm_kb_enabled = os.environ.get('LFM_KB_ENABLED', 'false').lower() == 'true'
+    if _lfm_kb_enabled:
+        try:
+            # Se crea una instancia de UnifiedLLMClient en cada llamada.
+            # Esto es deliberado: el client es un objeto ligero (AsyncOpenAI wrapper).
+            # La alternativa (singleton de módulo) requeriría manejo de estado
+            # y complicaría el rollback. El overhead es ~0.1ms, negligible.
+            _lfm_kb_client = UnifiedLLMClient(
+                provider=LFM_KB_CONFIG['provider'],
+                model=LFM_KB_CONFIG['model'],
+                max_tokens=min(LFM_KB_CONFIG['max_tokens'], 250),  # misma cota que Haiku
+                temperature=LFM_KB_CONFIG['temperature'],
+            )
+            resp = await asyncio.wait_for(
+                _lfm_kb_client.complete(system_prompt, user_prompt),
+                timeout=5.0,  # LFM2.5-1.2B es más lento que Haiku; 5s da margen
+            )
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.info(
+                "✅ KB Contextualizer (LFM): answer in %.0fms (%d chars) model=%s sub_intent=%s",
+                elapsed_ms, len(resp.content), resp.model, sub_intent,
+            )
+            return resp.content
+        except Exception as lfm_e:
+            # Cualquier fallo de LFM (timeout, API error, etc.) cae aquí.
+            # El sistema continúa hacia Claude Haiku sin interrumpir al usuario.
+            logger.warning(
+                "⚠️ KB Contextualizer: LFM call failed, falling back to Claude Haiku: %s", lfm_e
+            )
+            # La ejecución continúa hacia el bloque Claude a continuación
 
     logger.info(
         "🤖 KB Contextualizer: calling %s for sub_intent=%s, lang=%s",

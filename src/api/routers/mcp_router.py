@@ -319,7 +319,13 @@ class ConversationRequest(BaseModel):
     market_id: str = "default"
     language: Optional[str] = None  # ISO language code, e.g., 'en', 'es'
     product_id: Optional[str] = None
-    n_recommendations: int = 5
+    # FIX (20/04/2026): Incrementado de 5 a 8.
+    # El frontend hacía .slice(0,3) sobre los 5 productos recibidos — mostraba solo 3.
+    # Ahora pedimos 8 al backend y el frontend muestra los 8, maximizando la
+    # diversidad sin impacto significativo en latencia (~+200ms sobre los 6.5s actuales;
+    # el cuello de botella es Claude/LFM, no el número de productos).
+    # Los 8 IDs se guardan en Redis para diversificación multi-turno (F-07).
+    n_recommendations: int = 8
     # FIX (23/03/2026): El widget envía widget_context con page_url, page_type, etc.
     # Sin este campo, Pydantic lo descartaba — ahora se recibe correctamente.
     widget_context: Optional[Dict[str, Any]] = None

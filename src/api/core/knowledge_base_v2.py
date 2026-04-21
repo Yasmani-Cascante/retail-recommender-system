@@ -495,6 +495,12 @@ class ShopifyKnowledgeBase:
         category: Optional[str]
     ) -> Optional[KBAnswer]:
         """Get KB answer from Redis cache."""
+        # Guard: Redis not available (None passed at init or not yet connected).
+        # This is expected during startup race or degraded mode.
+        # Return None silently to fall through to PostgreSQL buffer (Layer 2).
+        if self.redis is None:
+            return None
+
         cache_key = self._build_cache_key(sub_intent, language, category)
         
         try:
@@ -525,6 +531,11 @@ class ShopifyKnowledgeBase:
         answer: KBAnswer
     ) -> None:
         """Store KB answer in Redis cache."""
+        # Guard: Redis not available -- skip silently.
+        # Layer 2 (PostgreSQL) will still be used on the next request.
+        if self.redis is None:
+            return
+
         cache_key = self._build_cache_key(sub_intent, language, category)
         
         try:

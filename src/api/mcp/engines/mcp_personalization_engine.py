@@ -49,6 +49,10 @@ from src.api.mcp.models.mcp_models import (
     ProductMCP,
     IntentType
 )
+# Liquid AI integration
+import os
+from src.api.core.llm_client import UnifiedLLMClient, LLMResponse
+from src.api.core.claude_config import LFM_MCP_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +119,20 @@ class MCPPersonalizationEngine:
         """
         # 🚀 REFACTORIZADO: Configuración centralizada Claude
         self.claude_config = get_claude_config_service()
+
+        # Leer flag directamente de env (no via lru_cache — lección aprendida 21/03)
+        self._lfm_mcp_enabled = os.environ.get('LFM_MCP_ENABLED', 'false').lower() == 'true'
+        if self._lfm_mcp_enabled:
+            self._lfm_client = UnifiedLLMClient(
+                provider=LFM_MCP_CONFIG['provider'],
+                model=LFM_MCP_CONFIG['model'],
+                max_tokens=LFM_MCP_CONFIG['max_tokens'],
+                temperature=LFM_MCP_CONFIG['temperature'],
+            )
+            logger.info('LFM MCP personalisation enabled: model=%s', LFM_MCP_CONFIG['model'])
+        else:
+            self._lfm_client = None
+            logger.info('LFM MCP personalisation disabled — using Claude')
         
         # ✅ ENTERPRISE: Support both service and client approaches
         self.redis_service = redis_service
@@ -170,7 +188,8 @@ class MCPPersonalizationEngine:
         self,
         mcp_context: MCPConversationContext,
         recommendations: List[Dict],
-        strategy: PersonalizationStrategy = None  # ✅ CAMBIO: None permite auto-detección
+        strategy: PersonalizationStrategy = None,  # ✅ CAMBIO: None permite auto-detección
+        detected_language: Optional[str] = None,   # FIX (19/04/2026): idioma ya detectado por router
     ) -> Dict[str, Any]:
         """
         Genera respuesta altamente personalizada usando estrategia especificada o auto-detectada.
@@ -179,6 +198,10 @@ class MCPPersonalizationEngine:
             mcp_context: Contexto conversacional MCP
             recommendations: Recomendaciones base a personalizar
             strategy: Estrategia de personalización a usar (None = auto-detección)
+            detected_language: Idioma ya detectado por el router (None = re-detectar desde query).
+                Cuando se provee, evita que el engine re-detecte el idioma con _detect_user_language(),
+                que tiene una lista de keywords limitada y falla con contracciones (i'm, can't)
+                y queries cortas sin artículos.
             
         Returns:
             Dict con respuesta personalizada, recomendaciones adaptadas y metadata
@@ -248,7 +271,8 @@ class MCPPersonalizationEngine:
             # FIX (27/03/2026): _generate_claude_personalized_response ahora devuelve
             # siempre un str puro, nunca un dict. No llamar .get() sobre el resultado.
             conversational_response = await self._generate_claude_personalized_response(
-                personalization_context, personalized_result
+                personalization_context, personalized_result,
+                detected_language=detected_language,  # FIX (19/04/2026): propagar idioma del router
             )
             
             # 5. Actualizar perfil con nuevos insights
@@ -297,7 +321,11 @@ class MCPPersonalizationEngine:
             return response
             
         except Exception as e:
-            logger.error(f"Error generating personalized response: {e}")
+            logger.error(
+                "Error generating personalized response: %s",
+                e,
+                exc_info=True,  # FIX (18/04/2026): traceback completo en GCP Logs
+            )
             # ✅ SAFE FALLBACK: Ensure we always return a valid response
             if strategy is None:
                 strategy = PersonalizationStrategy.HYBRID
@@ -1277,79 +1305,168 @@ class MCPPersonalizationEngine:
     async def _generate_claude_personalized_response(
         self,
         context: PersonalizationContext,
-        personalization_result: Dict[str, Any]
+        personalization_result: Dict[str, Any],
+        detected_language: Optional[str] = None,  # FIX (19/04/2026): idioma del router
     ) -> str:
-        """
-        Genera respuesta conversacional personalizada usando Claude.
+        """   
+        Liquid Integration (16/04/2026):
+        Genera respuesta personalizada usando Claude o LFM2-24B según feature flag.
+        La lógica de prompt (system + user) no cambia — solo el cliente que lo ejecuta.
 
         FIX (27/03/2026): Este método ahora siempre devuelve un str puro, nunca un dict.
 
-        ANTES: El método devolvía un dict como:
-          {"response": "...", "tone_adaptation": "standard", "cultural_context": {}, ...}
-        Ese dict era asignado a response["personalized_response"] en
-        generate_personalized_response(), que luego lo ponía en final_response["ai_response"]
-        como dict.  El handler lo pasaba al router como ai_response, y el router llamaba
-        str() sobre él — produciendo repr de Python con comillas simples visible en el chat.
-
-        FIX: Se extrae el string aquí antes de devolver para que los callers siempre
-        reciban un str limpio independientemente de lo que devuelva la API de Claude.
-
-        FIX (22/03/2026): Leer modelo y max_tokens desde claude_config.
-        Antes estaban hardcodeados como model="claude-sonnet-4-20250514" y
-        max_tokens=800, ignorando completamente CLAUDE_MODEL_TIER y
-        CLAUDE_MAX_TOKENS de Secret Manager. Ahora se leen desde la configuracion
-        centralizada, igual que el warmup en main_unified_redis.py PASO 8.5.
-
-        FIX (22/03/2026): Prompt reducido de ~1800 tokens a ~400 tokens.
-        sleep reducido a 0.05s (50ms) — suficiente para que la SDK libere el
-        descriptor de socket del intento fallido, sin consumir el presupuesto.
+        FIX (19/04/2026 — BUG-LANG-MCP): Usar detected_language cuando está disponible
+        en lugar de re-detectar con _detect_user_language(). El detector interno usaba
+        tokenización simple que no manejaba contracciones inglesas ("i'm" ≠ "i") y
+        tenía muy pocos keywords. Ahora:
+          1. Si detected_language viene del router (resultado de detect_language_from_text
+             con regex robustos) → usarlo directamente.
+          2. Si no viene (llamadas legacy sin el parámetro) → usar _detect_user_language()
+             como fallback de compatibilidad hacia atrás.
 
         Returns:
             str: El texto plano de respuesta para la burbuja de chat.
         """
-        try:
-            # Detectar el idioma real del usuario a partir de su query.
-            # RAZONAMIENTO:
-            #   market_config.language es el idioma GEOGRAFICO del mercado
-            #   ("de" para CH, "en" para US), NO el idioma en que el usuario
-            #   esta escribiendo. Un suizo puede escribir en espanol, frances
-            #   o italiano. Usar market_config.language como instruccion de
-            #   idioma a Claude provoca que Claude responda en aleman cuando
-            #   el usuario escribe en espanol (bug confirmado en produccion).
-            #
-            #   La solucion correcta es detectar el idioma de la query del
-            #   usuario y usar ESE idioma en el prompt. Si el usuario escribe
-            #   en espanol, Claude responde en espanol. Si escribe en aleman,
-            #   Claude responde en aleman. Siempre respeta al usuario.
-            #
-            # IMPLEMENTACION:
-            #   _detect_user_language() usa heuristicas de caracteres unicode
-            #   y palabras clave frecuentes. Sin dependencias externas, costo
-            #   cero, latencia cero (<1ms). Cubre es/de/fr/it/en/pt correctamente
-            #   para los mercados activos (CL, CH, MX, ES).
-            #   Fallback: si la query es muy corta o ambigua, usa "es" (mercado
-            #   principal AI-Shoppings).
-            user_query_for_lang = (
-                context.mcp_context.current_query
+        # FIX (18/04/2026): Las dos llamadas de prompt-building estaban FUERA de
+        # cualquier try/except. Cuando _build_advanced_personalization_prompt lanza
+        # 'NoneType' object is not subscriptable, la excepcion escapaba hasta el
+        # outer except de generate_personalized_response() y se logaba como:
+        #   "Error generating personalized response: 'NoneType' object is not subscriptable"
+        # (sin "Claude" en el mensaje — evidencia del punto de escape confirmado por logs).
+        # CAUSA: la funcion _build_advanced_personalization_prompt accede a algun
+        # campo None con subscript ([]) — la linea exacta quedara expuesta en el
+        # traceback que ahora se logara con exc_info=True.
+        # Fix: envolver en try/except con prompts de fallback seguros para no
+        # interrumpir el flujo. El traceback expondrá la raíz del crash.
+        # FIX (18/04/2026) — LAZY RESOLUTION ANTES DE CUALQUIER PROMPT:
+        # La llamada a _enrich_recommendations_lazy() estaba dentro del bloque
+        # de la ruta Claude (mas abajo), lo que provocaba que la ruta LFM
+        # construyera el prompt con CLP_RATES y retornara SIN enriquecer:
+        #
+        #   1. _build_advanced_personalization_prompt()  ← CLP_RATES warnings aqui
+        #   2. LFM: return resp.content                 ← sale antes del enriquecimiento
+        #   3. await _enrich_recommendations_lazy()     ← nunca se ejecuta con LFM
+        #
+        # Fix: mover el await AQUI, antes de construir ningun prompt.
+        # Tanto LFM como Claude recibiran precios Shopify en el prompt.
+        # La logica de fallback de _enrich_recommendations_lazy() garantiza
+        # que si Shopify no esta disponible, el metodo retorna silenciosamente
+        # y _format_price_for_market() usa CLP_RATES como ultimo recurso.
+        _market_id_for_enrich = (
+            context.mcp_context.current_market_id
+            if hasattr(context.mcp_context, 'current_market_id')
+            else "CL"
+        )
+        await self._enrich_recommendations_lazy(
+            recommendations=personalization_result.get("recommendations", []),
+            market_id=_market_id_for_enrich,
+        )
+
+        # FIX (20/04/2026 — BUG-LANG-LFM): Calcular user_language ANTES de los builders
+        # para que TANTO la ruta LFM como la ruta Claude usen el idioma correcto.
+        #
+        # Antes: user_language se calculaba DENTRO del bloque try: de la ruta Claude,
+        # que solo se ejecuta si LFM no está activo. Con LFM_MCP_ENABLED=true, los builders
+        # se llamaban sin user_language y usaban market_config.language (ej. 'de' para CH,
+        # 'es' para CL) en lugar del idioma real del usuario.
+        #
+        # Solución: determinar user_language aquí, antes del try/except de builders.
+        # Prioridad:
+        #   1. detected_language del router (patrones regex robustos, maneja contracciones)
+        #   2. _detect_user_language() desde la query actual (fallback legacy)
+        if detected_language:
+            _pre_user_language = detected_language
+            logger.info(
+                "[lang] LFM path: using router-detected language='%s'",
+                _pre_user_language,
+            )
+        else:
+            _query_for_pre_lang = (
+                getattr(context.mcp_context, 'current_query', None)
                 or (context.mcp_context.turns[-1].user_query if context.mcp_context.turns else "")
                 or ""
             )
-            user_language = self._detect_user_language(user_query_for_lang)
-            logging.info(f"Detected user language: '{user_language}' for query: '{user_query_for_lang}'")
-
-            # Construir prompt de personalización avanzado
-            # Enriquecer los productos del turno con precios frescos de Shopify
-            # si aun no tienen market_prices (resolucion lazy).
-            # Se ejecuta ANTES de los builders para que _format_price_for_market
-            # encuentre market_prices y use Prioridad 1 (precio exacto de Shopify)
-            # en lugar del fallback CLP_RATES.
-            # Tiempo: ~200-300ms, dentro del presupuesto de espera de Claude (~1.2s).
-            await self._enrich_recommendations_lazy(
-                recommendations=personalization_result.get("recommendations", []),
-                market_id=context.mcp_context.current_market_id
-                    if hasattr(context.mcp_context, 'current_market_id')
-                    else "CL"
+            _pre_user_language = self._detect_user_language(_query_for_pre_lang)
+            logger.info(
+                "[lang] LFM path: re-detected language='%s' for query='%s' (legacy fallback)",
+                _pre_user_language, _query_for_pre_lang[:50],
             )
+
+        try:
+            system_prompt = self._build_personalized_system_prompt(
+                context, user_language=_pre_user_language
+            )
+            user_prompt = self._build_advanced_personalization_prompt(
+                context, personalization_result, user_language=_pre_user_language
+            )
+        except Exception as _prompt_build_err:
+            logger.error(
+                "prompt_build_error: %s — falling back to safe defaults",
+                _prompt_build_err,
+                exc_info=True,  # EXPONE traceback completo con linea exacta del crash
+            )
+            # Prompts de emergencia: suficientes para que LFM o Claude generen
+            # una respuesta util sin bloquear el flujo completo.
+            market_id = getattr(context.mcp_context, 'current_market_id', 'CL')
+            current_query = (
+                getattr(context.mcp_context, 'current_query', None)
+                or "productos de moda"
+            )
+            recs_safe = (personalization_result or {}).get("recommendations", [])
+            rec_titles = ", ".join(
+                r.get("title", "producto") for r in recs_safe[:3]
+            ) or "productos disponibles"
+            system_prompt = (
+                f"Eres un asistente de moda util. Responde brevemente al mercado {market_id}."
+            )
+            user_prompt = (
+                f"El usuario busca: {current_query}\n"
+                f"Productos sugeridos: {rec_titles}\n"
+                "Recomienda de forma breve y personalizada."
+            )
+
+        # ── RUTA LFM (si flag activo) ──────────────────────────────────────────
+        if self._lfm_mcp_enabled and self._lfm_client:
+            try:
+                resp = await asyncio.wait_for(
+                    self._lfm_client.complete(system_prompt, user_prompt),
+                    timeout=8.0  # LFM-24B puede ser más lento que Haiku en primer request
+                )
+                logger.info('LFM MCP response: model=%s in=%d out=%d',
+                        resp.model, resp.input_tokens, resp.output_tokens)
+                return resp.content
+            except Exception as e:
+                # Fallback automático a Claude si LFM falla
+                logger.warning('LFM MCP call failed, falling back to Claude: %s', e)
+                # La ejecución continúa hacia la ruta Claude a continuación
+
+        # ── RUTA CLAUDE (default o fallback) ─────────────────────────────────
+        model_config = self.claude_config.get_model_config()
+        try:
+            # Determinar el idioma de la query del usuario.
+            #
+            # FIX (19/04/2026 — BUG-LANG-MCP): Prioridad:
+            #   1. detected_language del router (detect_language_from_text con regex robustos)
+            #      → más fiable: maneja contracciones, usa patrones lookahead/lookbehind.
+            #   2. _detect_user_language() local (fallback legacy)
+            #      → menos fiable: lista de keywords limitada, tokenizador simple.
+            #
+            # Ejemplo de bug sin este fix:
+            #   Query: "I'm looking for elegant dresses"
+            #   _detect_user_language(): tokens=["i'm", "looking", "for"] → EN=0 → "es" ❌
+            #   detect_language_from_text(): "looking" y "for" regex → EN=2 → "en" ✅
+            if detected_language:
+                user_language = detected_language
+                logger.info("[lang] Using router-detected language='%s' (skipping re-detection)", user_language)
+            else:
+                user_query_for_lang = (
+                    context.mcp_context.current_query
+                    or (context.mcp_context.turns[-1].user_query if context.mcp_context.turns else "")
+                    or ""
+                )
+                user_language = self._detect_user_language(user_query_for_lang)
+                logger.info("[lang] Re-detected language='%s' for query='%s' (legacy fallback)",
+                            user_language, user_query_for_lang[:50])
 
             personalization_prompt = self._build_advanced_personalization_prompt(
                 context, personalization_result, user_language=user_language
@@ -2564,11 +2681,16 @@ class MCPPersonalizationEngine:
                     recommended_size, category_label, confidence_pct, orders_n,
                 )
         # ── Fin F-02 ─────────────────────────────────────────────────────────────────
-        logger.warning(
-            f"F-05 stock_alert_detected alert=%s handle=%s", product_ctx["stock_alert"], product_ctx.get("handle", "?")
-        )
         # ── F-05: Stock Alert en el prompt de personalización (13/04/2026) ────────
+        # FIX (18/04/2026): El logger.warning anterior estaba FUERA del guard
+        # 'if product_ctx', causando TypeError cuando product_ctx es None
+        # (usuario en búsqueda general, no en PDP). Movido al interior.
         if product_ctx and product_ctx.get("stock_alert"):
+            logger.warning(
+                "F-05 stock_alert_detected alert=%s handle=%s",
+                product_ctx["stock_alert"],
+                product_ctx.get("handle", "?"),
+            )
             
             try:
                 from src.api.core.kb_contextualizer import _build_stock_alert_block
@@ -2587,6 +2709,20 @@ class MCPPersonalizationEngine:
             except Exception as _stock_e:
                 logger.warning("F-05 stock_alert_block_failed (graceful degradation): %s", _stock_e)
         # ── Fin F-05 ─────────────────────────────────────────────────────────────
+
+        # ── Solución B (UX): Mencionar producto en respuestas contextuales ───────
+        # Cuando el usuario está en una página de producto y hace preguntas sobre
+        # tallas, stock o material, el asistente debe mencionar el nombre del
+        # producto para que el usuario sepa que la respuesta es específica a ese item.
+        # Esto evita mostrar chips visuales adicionales manteniendo claridad.
+        if product_ctx:
+            prompt += (
+                f"\nIMPORTANTE: El usuario está viendo el producto '{product_ctx['title']}'. "
+                f"Cuando respondas sobre tallas, disponibilidad, material o características, "
+                f"menciona el nombre del producto al inicio para que el usuario sepa que "
+                f"estás hablando de este item específico. Ejemplo: 'El {product_ctx['title']}...'\n"
+            )
+        # ── Fin Solución B ───────────────────────────────────────────────────────
 
         prompt += (
             f"Historial conversacional (ultimos 3 turnos):\n{last_query}\n"

@@ -59,18 +59,21 @@ function getSuggestionChips(lang: string): string[] {
  * buildProductSuggestions — genera chips de sugerencia contextuales
  * al producto seleccionado, igual que Zalando.
  *
- * Las sugerencias varían según la categoría del producto para ser
- * más relevantes. Si no hay categoría reconocible, se usan sugerencias genéricas.
+ * FIX (20/04/2026): Añadido parámetro `lang` para soporte bilingüe.
+ * Antes los chips estaban hardcodeados en español, ignorando el idioma
+ * del navegador. Ahora se seleccionan chips ES o EN según `uiLang`.
  */
-function buildProductSuggestions(product: ActiveProductContext): string[] {
+function buildProductSuggestions(product: ActiveProductContext, lang: string): string[] {
   const title = product.title.toLowerCase();
+  const isEN = lang.split('-')[0].toLowerCase() === 'en';
 
-  // Detectar categoría desde el título para sugerencias contextuales.
-  // Cada sugerencia usa verbos/keywords que el intent detector clasifica
-  // correctamente: "muéstrame" y "busco" → TRANSACTIONAL; "talla", "devolución"
-  // y "métodos de pago" → INFORMATIONAL con score >= 0.7.
   if (title.includes('vestido') || title.includes('dress')) {
-    return [
+    return isEN ? [
+      `Show me similar dresses`,
+      `Is it available in other sizes?`,
+      `What accessories go with this dress?`,
+      `I want something for a wedding`,
+    ] : [
       `Muéstrame vestidos similares a este`,
       `¿Está disponible en otras tallas?`,
       `¿Qué accesorios combinan con este vestido?`,
@@ -78,7 +81,12 @@ function buildProductSuggestions(product: ActiveProductContext): string[] {
     ];
   }
   if (title.includes('camisa') || title.includes('shirt') || title.includes('blusa') || title.includes('top')) {
-    return [
+    return isEN ? [
+      `Show me similar tops`,
+      `Is it available in other sizes?`,
+      `What bottoms go with this?`,
+      `What material is this?`,
+    ] : [
       `Busco opciones similares a esta prenda`,
       `¿Está disponible en otras tallas?`,
       `¿Con qué pantalón combina esta prenda?`,
@@ -86,25 +94,35 @@ function buildProductSuggestions(product: ActiveProductContext): string[] {
     ];
   }
   if (title.includes('zapato') || title.includes('bota') || title.includes('shoe') || title.includes('boot')) {
-    return [
+    return isEN ? [
+      `Show me similar shoes`,
+      `How do I find my shoe size?`,
+      `What outfits go with these?`,
+    ] : [
       `Muéstrame zapatos similares`,
       `¿Cómo sé mi talla de zapato?`,
       `¿Con qué outfits quedan bien?`,
     ];
   }
   if (title.includes('aro') || title.includes('collar') || title.includes('pulsera') || title.includes('accesorio')) {
-    return [
+    return isEN ? [
+      `Show me similar accessories`,
+      `What outfits go best with this?`,
+      `I'm looking for a complete outfit`,
+    ] : [
       `Muéstrame accesorios similares`,
       `¿Con qué ropa combina mejor?`,
       `Busco un conjunto completo`,
     ];
   }
-  // Sugerencias genéricas si no se reconoce la categoría
-  return [
-    // `¿Cuál es la política de devoluciones?`,
-    // `¿Cuáles son sus métodos de pago?`,
+  // Generic fallback
+  return isEN ? [
+    `Is this item in stock?`,
+    `What sizes do you have?`,
+    `Show me similar products`,
+    `Show me something that goes with this`,
+  ] : [
     `Tienen este artículo en stock?`,
-    // `¿Está disponible en mi talla?`, // me interesa ver esta respuesta
     `¿Qué tallas tienen?`,
     `Muéstrame productos similares`,
     `Busco algo que combine con esto`,
@@ -268,7 +286,21 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   // isOpen: el panel flotante está visible
   const [isOpen, setIsOpen] = useState(false);
   // isExpanded: modo pantalla completa (inspirado en Zalando)
-  const [isExpanded, setIsExpanded] = useState(false);
+  // En móvil siempre iniciamos expandido para pantalla completa
+  const [isExpanded, setIsExpanded] = useState(() => window.innerWidth <= 480);
+
+  // Detectar cambios de tamaño de pantalla para ajustar isExpanded en móvil
+  useEffect(() => {
+    const handleResize = () => {
+      const isMobile = window.innerWidth <= 480;
+      // Si es móvil y el chat está abierto, forzar modo expandido
+      if (isMobile && isOpen) {
+        setIsExpanded(true);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [isOpen]);
 
   /**
    * activeProductContext — producto seleccionado por el usuario para contextualizar
@@ -280,6 +312,18 @@ export function ChatWidget({ config }: ChatWidgetProps) {
    */
   const [activeProductContext, setActiveProductContext] = useState<ActiveProductContext | null>(null);
   const [autoProductContextFilled, setAutoProductContextFilled] = useState(false);
+
+  /**
+   * pageProductContext — producto de la página actual (URL).
+   *
+   * Se extrae una sola vez al abrir el chat y NO se limpia al enviar mensajes.
+   * Sirve para mostrar siempre en el placeholder que los mensajes están
+   * vinculados al producto que el usuario está viendo.
+   *
+   * A diferencia de activeProductContext, este es persistente durante toda
+   * la sesión del chat y proporciona contexto implícito al usuario.
+   */
+  const [pageProductContext, setPageProductContext] = useState<ActiveProductContext | null>(null);
 
   // Header scroll behavior — hide/show on scroll (solo cuando no está expandido)
   const [isHeaderHidden, setIsHeaderHidden] = useState(false);
@@ -314,11 +358,13 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       welcome:          greetingName ? `¡Hola, ${greetingName}! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?` : '👋 ¡Hola! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?',
       welcomeTitle:     isLoggedIn && greetingName ? `¿Qué buscas hoy, ${greetingName}?` : '¿En qué puedo ayudarte?',
       welcomeSubtitle:  'Pregúntame sobre moda, tallas, tendencias o te ayudo a encontrar tu próximo look.',
-      suggestions:      'Sugerencias',
+      suggestions:      'Ideas',
       betaNote:         'Estoy en beta, sigo aprendiendo.',
       betaLink:         'Más información',
       chatAbout:        'Hablemos sobre',
-      inputPlaceholder: activeProductContext ? `Pregunta sobre ${activeProductContext.title}...` : 'Escribe tu mensaje...',
+      // Solución A: Siempre mostrar el producto de la URL en el placeholder
+      // para que el usuario sepa que sus mensajes están vinculados al producto actual
+      inputPlaceholder: pageProductContext ? `Pregunta sobre ${pageProductContext.title}...` : 'Escribe tu mensaje...',
       error:            'Lo siento, ha ocurrido un error. Por favor intenta de nuevo.',
       verifiedAccount:  'Cuenta verificada',
     },
@@ -326,11 +372,12 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       welcome:          greetingName ? `Hello, ${greetingName}! I'm your personal fashion assistant. What are you looking for today?` : '👋 Hello! I\'m your personal fashion assistant. What are you looking for today?',
       welcomeTitle:     isLoggedIn && greetingName ? `What are you looking for today, ${greetingName}?` : 'How can I help you?',
       welcomeSubtitle:  'Ask me about fashion, sizes, trends, or let me help you find your next look.',
-      suggestions:      'Suggestions',
+      suggestions:      'Ideas',
       betaNote:         'I\'m in beta, still learning.',
       betaLink:         'More information',
       chatAbout:        'Let\'s chat about',
-      inputPlaceholder: activeProductContext ? `Ask about ${activeProductContext.title}...` : 'Type your message...',
+      // Solución A: Always show the current page product in the placeholder
+      inputPlaceholder: pageProductContext ? `Ask about ${pageProductContext.title}...` : 'Type your message...',
       error:            'Sorry, an error occurred. Please try again.',
       verifiedAccount:  'Verified account',
     },
@@ -338,11 +385,12 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       welcome:          greetingName ? `Hallo, ${greetingName}! Ich bin Ihr persönlicher Modeassistent. Was suchen Sie heute?` : '👋 Hallo! Ich bin Ihr persönlicher Modeassistent. Was suchen Sie heute?',
       welcomeTitle:     isLoggedIn && greetingName ? `Was suchen Sie heute, ${greetingName}?` : 'Wie kann ich Ihnen helfen?',
       welcomeSubtitle:  'Fragen Sie mich nach Mode, Größen, Trends oder ich helfe Ihnen, Ihren nächsten Look zu finden.',
-      suggestions:      'Vorschläge',
+      suggestions:      'Ideen',
       betaNote:         'Ich bin in der Beta-Phase, noch am Lernen.',
       betaLink:         'Mehr Informationen',
       chatAbout:        'Über dieses Produkt sprechen',
-      inputPlaceholder: activeProductContext ? `Frage über ${activeProductContext.title}...` : 'Nachricht eingeben...',
+      // Lösung A: Immer das aktuelle Seitenprodukt im Placeholder anzeigen
+      inputPlaceholder: pageProductContext ? `Frage über ${pageProductContext.title}...` : 'Nachricht eingeben...',
       error:            'Entschuldigung, ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.',
       verifiedAccount:  'Verifiziertes Konto',
     },
@@ -350,11 +398,12 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       welcome:          greetingName ? `Bonjour, ${greetingName} ! Je suis votre assistant mode personnel. Que cherchez-vous aujourd'hui ?` : '👋 Bonjour ! Je suis votre assistant mode personnel. Que cherchez-vous aujourd\'hui ?',
       welcomeTitle:     isLoggedIn && greetingName ? `Que cherchez-vous aujourd'hui, ${greetingName} ?` : 'Comment puis-je vous aider ?',
       welcomeSubtitle:  'Posez-moi des questions sur la mode, les tailles, les tendances ou aidez-moi à trouver votre prochain look.',
-      suggestions:      'Suggestions',
+      suggestions:      'Idées',
       betaNote:         'Je suis en bêta, j\'apprends encore.',
       betaLink:         'Plus d\'informations',
       chatAbout:        'Parlons de',
-      inputPlaceholder: activeProductContext ? `Question sur ${activeProductContext.title}...` : 'Écrivez votre message...',
+      // Solution A: Toujours afficher le produit de la page actuelle dans le placeholder
+      inputPlaceholder: pageProductContext ? `Question sur ${pageProductContext.title}...` : 'Écrivez votre message...',
       error:            'Désolé, une erreur s\'est produite. Veuillez réessayer.',
       verifiedAccount:  'Compte vérifié',
     },
@@ -405,6 +454,15 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     setAutoProductContextFilled(true);
   }, [isOpen, activeProductContext, autoProductContextFilled]);
 
+  // Inicializar pageProductContext cuando se abre el chat (solo una vez)
+  useEffect(() => {
+    if (!isOpen || pageProductContext) return;
+    const pageContext = buildProductContextFromPage();
+    if (pageContext) {
+      setPageProductContext(pageContext);
+    }
+  }, [isOpen, pageProductContext]);
+
   // Header scroll behavior — hide/show on scroll (solo cuando no está expandido)
   useEffect(() => {
     if (!isOpen || isExpanded) {
@@ -448,22 +506,28 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   /**
    * handleSendMessage — envía un mensaje al backend.
    *
-   * Acepta `chip` (texto visual para la burbuja) y `productHandle` (override
-   * explícito del handle del producto). Cuando viene de "Ver similares", el
-   * handle se pasa directamente para evitar la race condition de useState:
-   * React no garantiza que setActiveProductContext sea visible en el mismo
-   * tick, por lo que activeProductContext?.handle puede ser null si se
-   * llama inmediatamente después de setActiveProductContext.
+   * Acepta:
+   *   - `chip`: chip visual explícito (sugerencias contextuales de producto)
+   *   - `productHandle`: override explícito del handle del producto
+   *   - `shouldAutoGenerateChip`: si true y no hay chip explícito, auto-genera desde activeProductContext
+   *
+   * Casos de uso:
+   *   - Sugerencias de bienvenida: handleSendMessage(text) → sin chip
+   *   - Sugerencias contextuales: handleSendMessage(text, chip) → con chip explícito
+   *   - Mensajes manuales: handleSendMessage(text, undefined, undefined, true) → auto-genera si hay contexto
    */
   const handleSendMessage = useCallback(async (
     messageText: string,
     chip?: { label: string; image_url?: string },
     explicitProductHandle?: string,
+    shouldAutoGenerateChip: boolean = false,
   ) => {
     const productHandle = explicitProductHandle ?? activeProductContext?.handle ?? undefined;
 
-    // Crear chip automáticamente si hay contexto activo pero no se proporcionó uno
-    const finalChip = chip || (activeProductContext ? { label: activeProductContext.title, image_url: activeProductContext.image_url } : undefined);
+    // Auto-generar chip solo si se solicita explícitamente y no hay uno provisto
+    const finalChip = chip || (shouldAutoGenerateChip && activeProductContext
+      ? { label: activeProductContext.title, image_url: activeProductContext.image_url }
+      : undefined);
 
     const userMessage: Message = {
       id: `user_${Date.now()}`,
@@ -522,11 +586,11 @@ export function ChatWidget({ config }: ChatWidgetProps) {
    *
    * Dos casos:
    *
-   * A) Sugerencias de bienvenida (sin activeProductContext):
+   * A) Sugerencias de bienvenida (isWelcomeSuggestion = true):
    *    El usuario selecciona "Muéstrame tendencias", etc.
    *    → Sin chip visual. Solo se muestra el mensaje con el texto.
    *
-   * B) Sugerencias contextuales de "Preguntar" (con activeProductContext):
+   * B) Sugerencias contextuales de "Preguntar" (isWelcomeSuggestion = false):
    *    El usuario selecciona "¿Qué accesorios combinan?" etc.
    *    → Chip visual con imagen + TÍTULO DEL PRODUCTO (no el texto de la query).
    *    → Mensaje con el texto de la query (visible en la burbuja).
@@ -536,16 +600,10 @@ export function ChatWidget({ config }: ChatWidgetProps) {
    *   content     = la PREGUNTA del usuario sobre ese producto
    * Son siempre distintos, por lo que la burbuja siempre muestra el mensaje.
    */
-  const handleSuggestion = useCallback((text: string) => {
-    if (activeProductContext)
-    {
-      console.log('context title',activeProductContext.title);
-    }
-    if (text) {
-      console.log('text', text);
-      
-    }
-    const chip = activeProductContext
+  const handleSuggestion = useCallback((text: string, isWelcomeSuggestion: boolean = false) => {
+    // Si es sugerencia de bienvenida, NO generar chip
+    // Si es sugerencia contextual y hay activeProductContext, generar chip
+    const chip = !isWelcomeSuggestion && activeProductContext
       ? { label: activeProductContext.title, image_url: activeProductContext.image_url }
       : undefined;
     handleSendMessage(text, chip);
@@ -613,13 +671,20 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   }, []);
 
   const handleToggle = useCallback(() => {
-    setIsOpen(prev => !prev);
+    const willOpen = !isOpen;
+    setIsOpen(willOpen);
+    // En móvil, al abrir el chat activar modo expandido automáticamente
+    if (willOpen && window.innerWidth <= 480) {
+      setIsExpanded(true);
+    }
     setState(prev => ({ ...prev, isMinimized: false }));
-  }, []);
+  }, [isOpen]);
 
   const handleClose = useCallback(() => {
     setIsOpen(false);
-    setIsExpanded(false);
+    // En móvil mantener expanded true para la próxima apertura
+    // En desktop resetear a false
+    setIsExpanded(window.innerWidth > 480 ? false : true);
     setState(prev => ({ ...prev, isMinimized: false }));
   }, []);
 
@@ -629,7 +694,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
 
   // Sugerencias para el producto activo (solo cuando hay chip activo)
   const productSuggestions = activeProductContext
-    ? buildProductSuggestions(activeProductContext)
+    ? buildProductSuggestions(activeProductContext, uiLang)
     : null;
 
   return (
@@ -753,7 +818,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                 >
                   <AiBubble 
                   size={280} 
-                  blur={55}
+                  blur={60}
                   />
                 </div>
                 <div className={`${styles.h_hidden} ${isExpanded ? styles.aiBubbleWrapper : ''}`}
@@ -770,13 +835,16 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                       viewBox="0 0 24 24" fill="none" stroke="currentColor"
                       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
                       aria-hidden="true">
-                      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                      <path d="M9 18h6" />
+                      <path d="M10 22h4" />
+                      <path d="M12 2v1" />
+                      <path d="M12 7a5 5 0 0 1 5 5c0 2.5-2 4.5-3 6h-4c-1-1.5-3-3.5-3-6a5 5 0 0 1 5-5Z" />
                     </svg>
                     {t('suggestions')}
                   </span>
                   <div className={styles.welcomeSuggestionsWrapper}>
                     {getSuggestionChips(uiLang).map((chip) => (
-                        <button key={chip} className={`${styles.welcomeSuggestionChip} ${stylesmessage.bubbleAssistant}`} onClick={() => handleSuggestion(chip)}>
+                        <button key={chip} className={`${styles.welcomeSuggestionChip} ${stylesmessage.bubbleAssistant}`} onClick={() => handleSuggestion(chip, true)}>
                           {chip}
                         </button>
                       ))}
@@ -796,6 +864,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
               <MessageList
                 messages={state.messages}
                 isLoading={state.isLoading}
+                isExpanded={isExpanded}
                 onChatAbout={handleChatAbout}
                 onShowSimilar={handleShowSimilar}
               />
@@ -863,16 +932,19 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                     viewBox="0 0 24 24" fill="none" stroke="currentColor"
                     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
                     aria-hidden="true">
-                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                    <path d="M9 18h6" />
+                    <path d="M10 22h4" />
+                    <path d="M12 2v1" />
+                    <path d="M12 7a5 5 0 0 1 5 5c0 2.5-2 4.5-3 6h-4c-1-1.5-3-3.5-3-6a5 5 0 0 1 5-5Z" />
                   </svg>
-                  Sugerencias
+                  {t('suggestions')}
                 </span>
                 <div className={styles.productSuggestionsRow}>
                   {productSuggestions.map((chip) => (
                     <button
                       key={chip}
                       className={styles.productSuggestionChip}
-                      onClick={() => handleSuggestion(chip)}
+                      onClick={() => handleSuggestion(chip, false)}
                     >
                       {chip}
                     </button>
@@ -885,7 +957,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
             {/* ── Input de texto ── */}
             <MessageInput
               // onSendMessage={() => handleSendMessage(activeProductContext ? activeProductContext.title : '')}
-              onSendMessage={(messageText) => handleSendMessage(messageText)}
+              onSendMessage={(messageText) => handleSendMessage(messageText, undefined, undefined, true)}
               
               disabled={state.isLoading}
               placeholder={t('inputPlaceholder')}

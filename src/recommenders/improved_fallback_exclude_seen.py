@@ -1464,66 +1464,82 @@ class ImprovedFallbackStrategies:
                 category_counts = {}
                 for cat in user_categories:
                     category_counts[cat] = category_counts.get(cat, 0) + 1
-                
+
                 # Ordenar por frecuencia (más interactuadas primero)
                 sorted_categories = sorted(
                     category_counts.items(),
                     key=lambda x: x[1],
                     reverse=True
                 )
-                
+
                 # Tomar top 3 categorías preferidas
                 preferred_categories = [cat for cat, count in sorted_categories[:3]]
-                
                 logger.info(f"   Preferred categories: {preferred_categories}")
-                
-                # FIX (10/04/2026): normalizar a uppercase para comparar.
-                # Los user_events construidos desde current_product_context (F-01)
-                # contienen collections de Shopify GraphQL con capitalización mixta
-                # (ej. 'Vestidos cortos'). El catálogo TF-IDF usa product_type en
-                # MAYUSCULAS (ej. 'VESTIDOS CORTOS'). Sin normalización, la comparación
-                # siempre falla y el sistema cae a PRIORIDAD 3 (diversificación aleatoria).
+
+                # FIX (10/04/2026): normalizar a uppercase para comparar con product_type
                 preferred_categories_upper = [cat.upper() for cat in preferred_categories]
                 logger.info(f"   Preferred categories (normalized): {preferred_categories_upper}")
 
+                # Cuantas categorias tienen productos reales (para calcular sample_size)
+                # FIX (21/04/2026 — BUG-NREC-3): antes sample_size=min(3,...) hardcodeado.
+                # Si solo 1 categoria matchea, 3 << n=8. Ahora usamos ceil(n/n_cats_reales).
+                n_cats_with_products = len([
+                    c for c in preferred_categories_upper
+                    if any(p.get("product_type", "").upper() == c for p in available_products)
+                ])
+
                 # Generar recomendaciones de categorías preferidas
                 personalized_products = []
-                
+
                 for category in preferred_categories_upper:
                     category_products = [
                         p for p in available_products
                         if p.get("product_type", "").upper() == category
                     ]
-                    
+
                     if category_products:
-                        # Sample aleatorio de esta categoría
-                        sample_size = min(3, len(category_products))
+                        # Ceil division: garantiza que la suma cubra n cuando hay pocas categorias
+                        per_cat = max(1, -(-n // max(n_cats_with_products, 1)))
+                        sample_size = min(per_cat, len(category_products))
                         sampled = random.sample(category_products, sample_size)
                         personalized_products.extend(sampled)
-                
+
                 # Si tenemos productos personalizados
                 if personalized_products:
-                    # Limitar a n productos
+                    # Limitar a n primero
                     personalized_products = personalized_products[:n]
-                    
+
+                    # FIX (21/04/2026 — BUG-NREC-3 cont.): Top-up garantizado.
+                    # Si las categorias preferidas tienen pocos productos tras exclusiones,
+                    # rellenar con cualquier disponible para siempre retornar n.
+                    if len(personalized_products) < n:
+                        needed = n - len(personalized_products)
+                        used_ids = {str(p.get("id", "")) for p in personalized_products}
+                        remaining = [
+                            p for p in available_products
+                            if str(p.get("id", "")) not in used_ids
+                        ]
+                        if remaining:
+                            extra = random.sample(remaining, min(needed, len(remaining)))
+                            personalized_products.extend(extra)
+                            logger.info(
+                                f"   Top-up P2: added {len(extra)} products from other"
+                                f" categories (needed {needed}, pool={len(remaining)})"
+                            )
+
                     # Agregar scores
                     recommendations = []
                     for i, product in enumerate(personalized_products):
-                        # Score decreciente: 0.9 → 0.5
-                        score = 0.9 - (i * 0.4 / n)
-
+                        score = 0.9 - (i * 0.4 / max(len(personalized_products), 1))
                         recommendations.append({
                             **product,
-                            # FIX (27/03/2026): mismo razonamiento que Prioridad 1.
-                            # safe_extract_price() sube variants[0].price al nivel
-                            # raiz si product["price"] es None (catalogo TF-IDF crudo).
                             "price": safe_extract_price(product),
                             "score": score,
                             "recommendation_type": "personalized_fallback",
-                            "based_on_categories": preferred_categories
+                            "based_on_categories": preferred_categories,
                         })
-                    
-                    logger.info(f"✅ Generated {len(recommendations)} personalized recommendations")
+
+                    logger.info(f"\u2705 Generated {len(recommendations)} personalized recommendations")
                     return recommendations
         
         # ═══════════════════════════════════════════════════════════════════════════
@@ -1614,14 +1630,19 @@ class ImprovedFallbackStrategies:
         logger.info(f"Smart fallback exclusions: {len(interacted_products)} from interactions + {len(exclude_products or set())} from context = {len(combined_exclude)} total")
         
         # ✨ PRIORIZAR: Si hay query con categoría, usar personalized_fallback que ahora la detecta
+        # FIX (21/04/2026 — BUG-NREC-1): combined_exclude NO se pasaba a get_personalized_fallback
+        # cuando había user_query. Resultado: los 16 productos ya mostrados en turnos anteriores
+        # no se excluían, y el sistema podía devolver duplicados O, al filtrar internamente
+        # con un pool reducido por el bug #3, devolver menos de n.
         if user_query:
             logger.info(f"🎯 Using query-aware personalized fallback with query: '{user_query[:50]}...'")
             return await ImprovedFallbackStrategies.get_personalized_fallback(
-                user_id, 
-                products, 
-                user_events, 
+                user_id,
+                products,
+                user_events,
                 n,
-                user_query=user_query  # ✨ Pasar query
+                exclude_products=combined_exclude,  # FIX: pasar exclusiones reales
+                user_query=user_query,
             )
         
         # Si tenemos eventos del usuario pero no query, usar recomendaciones personalizadas

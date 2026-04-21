@@ -86,6 +86,39 @@ class ClaudeModelConfig:
             "top_p":       self.top_p,
         }
 
+# ─── LFM Model Configs (OpenRouter) ──────────────────────────────────── |
+# Estos configs siguen el mismo patrón que ClaudeModelConfig |
+# pero los usa UnifiedLLMClient, no el Anthropic SDK directamente. |
+
+LFM_MCP_CONFIG = {
+'provider': 'openrouter', 
+'model': 'liquid/lfm-2-24b-a2b', 
+'max_tokens': 300, 
+'temperature': 0.7, 
+'description': 'LFM2-24B MoE — MCP personalization replacement' 
+}
+
+LFM_KB_CONFIG = {
+    'provider': 'openrouter',
+    # liquid/lfm-2.5-1.2b-instruct:free — modelo correcto para KB (16/04/2026)
+    #
+    # POR QUE instruct Y NO thinking:
+    # Los modelos ':thinking' en OpenRouter ponen su output en message.reasoning
+    # y devuelven message.content = None cuando no generan respuesta directa.
+    # Eso causa 'NoneType has no len()' en el logger de kb_contextualizer.py.
+    #
+    # El KB Contextualizer necesita una respuesta directa en 2-3 frases (RAG simple).
+    # 'instruct' es el variant correcto para esto: instruction-following, respuesta
+    # directa en content, sin overhead de reasoning tokens.
+    #
+    # 'thinking' seria util si necesitaramos razonamiento complejo multi-paso.
+    # Para KB lookup, es overkill y ademas rompe el contrato de la API.
+    'model': 'liquid/lfm-2.5-1.2b-instruct:free',
+    'max_tokens': 250,
+    'temperature': 0.3,
+    'description': 'LFM2.5-1.2B-Instruct — KB contextualisation (direct response, free tier)',
+}
+
 
 class ClaudeConfigurationService:
     """

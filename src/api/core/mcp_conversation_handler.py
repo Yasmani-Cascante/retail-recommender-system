@@ -46,7 +46,7 @@ async def get_mcp_conversation_recommendations(
     validated_product_id: Optional[str],
     conversation_query: str,
     market_id: str,
-    n_recommendations: int = 5,
+    n_recommendations: int = 8,  # FIX (20/04/2026): 5 → 8 para consistencia con router
     session_id: Optional[str] = None,
     language: Optional[str] = "es",  # Idioma para KB y personalizacion
     customer_id: Optional[str] = None,  # F-04: ID del cliente Shopify logueado
@@ -561,6 +561,30 @@ async def get_mcp_conversation_recommendations(
                                     _handle,
                                 )
 
+                            # FIX (21/04/2026): Forzar contextualizacion para product_material
+                            # cuando hay product_context. Similar a F-05 para availability.
+                            #
+                            # PROBLEMA: Queries como "¿De qué material está hecho?" no tienen
+                            # entidades especificas ("algodon", "seda", etc.), por lo que
+                            # has_specific_entities() devuelve False y se devuelve el
+                            # documento KB completo sin procesar.
+                            #
+                            # SOLUCION: Cuando hay product_context (usuario en pagina de
+                            # producto), forzar contextualizacion para dar respuestas
+                            # personalizadas sobre el material del producto actual.
+                            if (
+                                not needs_contextualisation
+                                and intent_result.sub_intent == "product_material"
+                                and _pctx_for_f05  # usuario en pagina de producto
+                            ):
+                                needs_contextualisation = True
+                                _handle = _pctx_for_f05.get("handle", "?")
+                                logger.info(
+                                    "F-MATERIAL forcing contextualisation for product_material "
+                                    "(handle=%s)",
+                                    _handle,
+                                )
+
                             if needs_contextualisation or intent_result.sub_intent == "product_sizing":
                                 logger.info(
                                     "🎯 Query has specific entities — contextualising KB answer via Claude "
@@ -617,7 +641,18 @@ async def get_mcp_conversation_recommendations(
                                 #               whether contextualisation happened.
                                 "answer": final_answer,
                                 "ai_response": final_answer,
-                                **({"kb_document": kb_answer.answer} if needs_contextualisation else {}),
+        
+                                # FIX (20/04/2026): Include kb_document for product_sizing even
+                                # when needs_contextualisation=False (no named entities found).
+                                # The sizing KB document contains the size chart; the frontend
+                                # needs it to render the "Ver guía completa de tallas" button.
+                                 # **({"kb_document": kb_answer.answer} if needs_contextualisation else {}),
+                                **({
+                                    "kb_document": kb_answer.answer
+                                } if (
+                                    needs_contextualisation
+                                    or intent_result.sub_intent == "product_sizing"
+                                ) else {}),
                                 "recommendations": [],  # NO products for informational queries
                                 "metadata": {
                                     "intent_detection": {
@@ -1297,7 +1332,17 @@ async def get_mcp_conversation_recommendations(
                     personalization_result = await asyncio.wait_for(
                         mcp_engine.generate_personalized_response(
                             mcp_context=mcp_context,
-                            recommendations=base_recommendations
+                            recommendations=base_recommendations,
+                            # FIX (19/04/2026 — BUG-LANG-MCP):
+                            # El engine re-detectaba idioma desde la query con _detect_user_language(),
+                            # que usa una lista de keywords limitada. Tokens como "i'm" (contraccion)
+                            # no matchean el keyword "i" → score EN=0 → default "es".
+                            # Ejemplo: "I'm looking for elegant dresses" → detectado como ES → respuesta en español.
+                            #
+                            # El router ya detecta correctamente con detect_language_from_text()
+                            # que usa patrones regex mas robustos. Pasando el idioma aqui,
+                            # el engine usa el resultado del router en lugar de re-detectar.
+                            detected_language=language,
                         ),
                         timeout=12.0  # ← aumentado de 8.0s (21/03/2026): los logs muestran
                                        # que Claude API tarda ~7.5s incluso con Haiku en condiciones

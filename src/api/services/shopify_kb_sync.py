@@ -1492,11 +1492,22 @@ class ShopifyKBSyncService:
     ) -> None:
         """
         Invalidate Redis cache for specific KB content.
-        
+
         Cache key format: "kb:{sub_intent}:{language}:{category or 'general'}"
         """
+        # Defensive check: Redis service might be None if initialization failed
+        if self.redis is None:
+            logger.warning(
+                "cache_invalidation_skipped",
+                reason="redis_service_not_available",
+                sub_intent=sub_intent,
+                language=language,
+                category=category or 'general'
+            )
+            return
+
         cache_key = f"kb:{sub_intent}:{language}:{category or 'general'}"
-        
+
         success = await self.redis.delete(cache_key)
         if success:
             # ✅ H1: Structured debug logging

@@ -359,7 +359,12 @@ class ServiceFactory:
                     
                     if shopify is None:
                         raise RuntimeError("ShopifyKBClient initialization failed - check .env credentials")
-                    
+
+                    # Defensive check: ensure redis is never None
+                    if redis is None:
+                        logger.warning("⚠️ Redis service is None, creating mock fallback for KB sync")
+                        redis = cls._create_mock_redis_service()
+
                     cls._kb_sync_service = ShopifyKBSyncService(
                         shopify_client=shopify,
                         db_pool=db_pool,
@@ -478,6 +483,11 @@ class ServiceFactory:
                         cls._record_circuit_failure()
                         cls._redis_service = await cls._create_fallback_redis_service()
         
+        # Final safety check: should never be None at this point
+        if cls._redis_service is None:
+            logger.error("❌ Redis service is None after initialization, creating mock fallback")
+            cls._redis_service = cls._create_mock_redis_service()
+
         return cls._redis_service
     
     @classmethod

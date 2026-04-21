@@ -13,6 +13,7 @@
   gap: 12px;
   scroll-behavior: smooth;
   max-width: 780px;
+  margin: 0 auto;
   /* margin: 0 auto;
   height: calc(100% - 120px); */
 }
@@ -222,11 +223,23 @@
 .productsList {
   margin-top: 6px;
   display: flex;
-  gap: 6px;
+  gap: 14px;
   /* flex-direction: column; */
   flex-direction: row;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: hidden;
+  overflow-x: scroll;
+  overflow-x: scroll;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none; 
+  /* padding-left: 2px; */
   /* border: 1px solid rgba(0, 0, 0, 0.08); */
+}
+
+.productsListExpanded {
+  flex-wrap: wrap;
 }
 /* Cuando hay imagen: padding izquierdo reducido (la imagen da margen visual) */
 .suggestionChipBadge:has(.suggestionChipImg) {

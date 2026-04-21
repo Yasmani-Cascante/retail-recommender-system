@@ -282,6 +282,12 @@ class IntentPatterns:
                 r"\b(disponible.*talla|talla.*disponible|available.*size|size.*available)\b",  # disponible en mi talla
                 r"\b(cual\s+es\s+mi|cuál\s+es\s+mi|which\s+is\s+my|what\s+is\s+my)\b",  # cual es mi talla
                 r"\b(me\s+recomiend|should\s+i\s+order|should\s+i\s+get)\b",  # me recomiend... / should I order
+                # FIX (19/04/2026): queries informales EN que preguntan por asistencia con la talla.
+                # "Can you help me choose my size?" → keywords: 'size'(+0.4); question_words: 'help'(+0.3)
+                # Necesitaba 'help' como question_word para llegar a 0.7.
+                r"\b(help|ayuda|ayudar|assist|guide)\b",  # 'help me choose', 'ayudame', 'guide me'
+                r"\b(choose|elegir|elegirla|seleccionar|escoger|pick)\b",  # 'help me choose my size'
+                r"\b(can\s+you|could\s+you|puedes|podr[ií]as)\b",  # 'can you help' en contexto de tallas
             ],
         },
         # ✅ CHANGELOG 12/04/2026: Ampliados question_words de PRODUCT_SIZING para cubrir:
