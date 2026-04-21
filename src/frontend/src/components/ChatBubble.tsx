@@ -1,5 +1,4 @@
-import { MessageCircle } from 'lucide-react';
-import { clsx } from 'clsx';
+import styles from './ChatBubble.module.css';
 
 interface ChatBubbleProps {
   isOpen: boolean;
@@ -10,52 +9,51 @@ interface ChatBubbleProps {
   className?: string;
 }
 
-export function ChatBubble({ 
-  isOpen, 
-  isMinimized, 
-  hasUnreadMessages, 
+export function ChatBubble({
+  isOpen,
+  isMinimized,
+  hasUnreadMessages,
   onToggle,
-  className 
 }: ChatBubbleProps) {
-  // If chat is open and minimized, show minimize button
-  if (isOpen && isMinimized) {
-    return (
-      <div className={clsx(
-        'rr-fixed rr-bottom-4 rr-right-4 rr-bg-primary-600 rr-text-white rr-rounded-full rr-p-3 rr-shadow-lg rr-cursor-pointer rr-z-50 rr-transition-all rr-duration-300 hover:rr-bg-primary-700',
-        className
-      )}>
-        <button
-          onClick={onToggle}
-          className="rr-flex rr-items-center rr-justify-center rr-w-6 rr-h-6"
-          title="Expand chat"
-        >
-          <MessageCircle size={20} />
-        </button>
-      </div>
-    );
-  }
+  // Si el chat está abierto y no minimizado → no mostrar burbuja
+  if (isOpen && !isMinimized) return null;
 
-  // If chat is open and not minimized, don't show the bubble (the minimize button is in the chat header)
-  if (isOpen && !isMinimized) {
-    return null;
-  }
-
-  // Default state: chat is closed, show main chat bubble
   return (
-    <div className={clsx(
-      'rr-fixed rr-bottom-4 rr-right-4 rr-bg-primary-600 rr-text-white rr-rounded-full rr-p-4 rr-shadow-lg rr-cursor-pointer rr-z-50 rr-transition-all rr-duration-300 hover:rr-bg-primary-700 hover:rr-scale-110',
-      className
-    )}>
-      <button
-        onClick={onToggle}
-        className="rr-flex rr-items-center rr-justify-center rr-relative"
-        title="Open chat"
+    <button
+      onClick={onToggle}
+      className={styles.bubble}
+      title={isOpen ? 'Expandir chat' : 'Abrir asistente de moda'}
+      aria-label="Abrir asistente de moda"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        width="24"
+        height="24"
+        fill="none"
       >
-        <MessageCircle size={24} />
-        {hasUnreadMessages && (
-          <div className="rr-absolute -rr-top-1 -rr-right-1 rr-w-3 rr-h-3 rr-bg-red-500 rr-rounded-full rr-animate-pulse"></div>
-        )}
-      </button>
-    </div>
+        <g clipPath="url(#clip0_990_39490)">
+          <path
+            d="M13.4733 5H21V18.2102L16.14 22V18.2102H6V12.2941"
+            stroke="currentColor"
+            strokeWidth="2.03704"
+            strokeMiterlimit="10"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M10 5.00002C7.74328 5.00002 6.00049 3.25689 6.00049 1C6.00049 3.25689 4.25672 5.00021 2 5.00021C4.25672 5.00021 5.9997 6.74311 5.9997 9C5.9997 6.74311 7.74328 5.00002 10 5.00002Z"
+            stroke="currentColor"
+            strokeWidth="2.03704"
+            strokeLinejoin="round"
+            style={{ transitionProperty: 'transform', transitionDuration: '0.3s', transform: 'scale(1.0)' }}
+          />
+        </g>
+      </svg>
+      {/* Badge de mensajes no leídos */}
+      {hasUnreadMessages && (
+        <span className={styles.badge} aria-hidden="true" />
+      )}
+    </button>
   );
 }

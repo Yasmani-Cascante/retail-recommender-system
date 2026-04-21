@@ -247,12 +247,41 @@ async def execute_mcp_operations_parallel(
     """
     tasks = []
     
+    # ────────────────────────────────────────────────────────────────────────
+    # TIMEOUTS DEL PARALLEL PROCESSOR (20/03/2026)
+    # ────────────────────────────────────────────────────────────────────────
+    # Contexto: estos timeouts son INDEPENDIENTES del asyncio.wait_for(8.0s)
+    # que envuelve generate_personalized_response en mcp_conversation_handler.
+    # Son dos capas distintas:
+    #   1. ParallelTask.timeout: controla cuánto puede durar cada función
+    #      wrapper (get_base_recommendations, prepare_mcp_engine, etc.)
+    #   2. wait_for(8.0s): controla cuánto puede durar la llamada real a Claude
+    #      dentro de generate_personalized_response.
+    #
+    # El error "MCP personalization timeout" ocurría porque:
+    #   a) mcp_recommendations timeout=3.0s mataba get_base_recommendations()
+    #      antes de que terminara, devolviendo base_recommendations=[]
+    #   b) Sin base_recommendations, nunca se llegaba al wait_for(8.0s)
+    #   c) O bien: personalization timeout=4.0s mataba prepare_mcp_engine()
+    #      devolviendo mcp_engine=None, con el mismo resultado
+    #
+    # Valores actuales calibrados para Cloud Run con startup activo:
+    #   - mcp_recommendations (get_base_recommendations): 10s
+    #     Incluye diversificación via ImprovedFallbackStrategies que puede
+    #     iterar sobre miles de productos.
+    #   - personalization (prepare_mcp_engine): 5s
+    #     Solo obtiene el singleton — debería ser rápido, pero puede
+    #     inicializarlo por primera vez si no existe aún.
+    #   - market_context: 3s — lectura de adapter, operación ligera.
+    #   - intent_analysis: 2s — procesamiento de texto, operación ligera.
+    # ────────────────────────────────────────────────────────────────────────
+
     if mcp_call:
         tasks.append(ParallelTask(
             name="mcp_recommendations",
             func=mcp_call,
-            timeout=3.0,
-            priority=1,  # Alta prioridad
+            timeout=10.0,  # ← aumentado de 3.0s: cubre diversificación + hybrid recommender
+            priority=1,
             required=True
         ))
     
@@ -260,17 +289,17 @@ async def execute_mcp_operations_parallel(
         tasks.append(ParallelTask(
             name="personalization",
             func=personalization_call,
-            timeout=4.0,
-            priority=2,  # Media prioridad
-            required=False  # No crítica
+            timeout=5.0,   # ← aumentado de 4.0s: cubre inicialización del singleton si es necesario
+            priority=2,
+            required=False
         ))
     
     if market_context_call:
         tasks.append(ParallelTask(
             name="market_context",
             func=market_context_call,
-            timeout=2.0,
-            priority=1,  # Alta prioridad
+            timeout=3.0,   # sin cambio: operación ligera
+            priority=1,
             required=True
         ))
     
@@ -278,8 +307,8 @@ async def execute_mcp_operations_parallel(
         tasks.append(ParallelTask(
             name="intent_analysis",
             func=intent_analysis_call,
-            timeout=1.5,
-            priority=3,  # Baja prioridad
+            timeout=2.0,   # sin cambio: procesamiento de texto
+            priority=3,
             required=False
         ))
     

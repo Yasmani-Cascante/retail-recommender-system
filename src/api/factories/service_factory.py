@@ -17,6 +17,8 @@ import logging
 from typing import Optional, TYPE_CHECKING
 import asyncio
 
+import asyncpg
+
 # Core services
 from src.api.core.redis_service import get_redis_service, RedisService
 from src.api.core.store import get_shopify_client
@@ -50,6 +52,9 @@ except ImportError:
 # Business services  
 from src.api.inventory.inventory_service import InventoryService
 from src.api.inventory.availability_checker import create_availability_checker
+
+from src.api.core.knowledge_base_v2 import ShopifyKnowledgeBase
+from src.api.services.shopify_kb_sync import ShopifyKBSyncService
 
 
 
@@ -88,6 +93,18 @@ class ServiceFactory:
 
     _conversation_state_manager = None
 
+    # F-01: ProductContextService singleton
+    _product_context_service = None
+    _product_context_lock: Optional[asyncio.Lock] = None
+
+    # F-04: CustomerProfileService singleton
+    _customer_profile_service = None
+    _customer_profile_lock: Optional[asyncio.Lock] = None
+
+    # F-02: SizeProfileService singleton
+    _size_profile_service = None
+    _size_profile_lock: Optional[asyncio.Lock] = None
+
     # ✅ FASE 1: Recommender singletons
     _tfidf_recommender: Optional['TFIDFRecommender'] = None
     _retail_recommender: Optional['RetailAPIRecommender'] = None
@@ -106,11 +123,23 @@ class ServiceFactory:
     _market_manager_lock: Optional[asyncio.Lock] = None
     _market_cache_lock: Optional[asyncio.Lock] = None
     _state_manager_lock: Optional[asyncio.Lock] = None
+    # Locks for Knowledge Base and DB pool
+    _knowledge_base_lock: Optional[asyncio.Lock] = None
+    _kb_sync_lock: Optional[asyncio.Lock] = None
+    _db_pool_lock: Optional[asyncio.Lock] = None
     _redis_circuit_breaker = {
         "failures": 0,
         "last_failure": 0,
         "circuit_open": False
     }
+    # Singletons KB
+    _knowledge_base: Optional['ShopifyKnowledgeBase'] = None
+    _kb_sync_service: Optional['ShopifyKBSyncService'] = None
+    _db_pool: Optional['asyncpg.Pool'] = None
+
+    # ── F-04: CustomerProfileService ──────────────────────────────────────
+    _customer_profile_service = None
+    _customer_profile_lock: Optional[asyncio.Lock] = None
     
     @classmethod
     def _get_redis_lock(cls):
@@ -190,6 +219,167 @@ class ServiceFactory:
         return cls._state_manager_lock
     
     @classmethod
+    def _get_knowledge_base_lock(cls):
+        if cls._knowledge_base_lock is None:
+            cls._knowledge_base_lock = asyncio.Lock()
+        return cls._knowledge_base_lock
+
+
+    @classmethod
+    def _get_kb_sync_lock(cls):
+        if cls._kb_sync_lock is None:
+            cls._kb_sync_lock = asyncio.Lock()
+        return cls._kb_sync_lock
+
+
+    @classmethod
+    def _get_db_pool_lock(cls):
+        if cls._db_pool_lock is None:
+            cls._db_pool_lock = asyncio.Lock()
+        return cls._db_pool_lock
+
+    @classmethod
+    async def get_db_pool(cls) -> 'asyncpg.Pool':
+        """Get PostgreSQL connection pool singleton.
+
+        CRITICAL — por qué usamos os.environ con fallback a settings:
+        Pydantic-settings resuelve variables en orden: class defaults →
+        env_file (.env) → os.environ. En Cloud Run, las variables se
+        inyectan como variables de sistema (os.environ). Sin embargo, en
+        ciertas combinaciones de env_file='.env' + case_sensitive, si el
+        archivo .env no existe en el contenedor, Pydantic puede no leer
+        os.environ correctamente y retornar el default de la clase
+        (e.g. db_host='localhost').
+
+        os.environ.get('DB_HOST') or settings.db_host garantiza:
+          1. Prioridad absoluta a variables de sistema / Cloud Run
+          2. Fallback a settings si la env var no está definida
+          3. Comportamiento idéntico al pool creado en main_unified_redis.py
+        """
+        lock = cls._get_db_pool_lock()
+        
+        async with lock:
+            if cls._db_pool is None:
+                logger.info("Initializing PostgreSQL connection pool (ServiceFactory)...")
+                
+                try:
+                    import os
+                    import asyncpg
+                    from src.api.core.config import get_settings
+                        
+                    settings = get_settings()
+
+                    # Leer credenciales con prioridad a os.environ (garantía Cloud Run)
+                    db_host     = os.environ.get("DB_HOST")     or settings.db_host
+                    db_port     = int(os.environ.get("DB_PORT", str(settings.db_port)))
+                    db_user     = os.environ.get("DB_USER")     or settings.db_user
+                    db_password = os.environ.get("DB_PASSWORD") or settings.db_password
+                    db_name     = os.environ.get("DB_NAME")     or settings.db_name
+
+                    # SSL: requerido en producción (Neon), desactivado en local.
+                    db_ssl_env  = os.environ.get("DB_SSL", "").lower()
+                    db_ssl      = db_ssl_env in ("true", "1", "yes") if db_ssl_env else settings.db_ssl
+                    ssl_param   = "require" if db_ssl else None
+
+                    # Log para diagnóstico — confirma qué valores se usaron
+                    logger.info(
+                        f"🔒 ServiceFactory DB pool: host={db_host}, port={db_port}, "
+                        f"db={db_name}, ssl={'require' if db_ssl else 'disabled'}"
+                    )
+
+                    cls._db_pool = await asyncpg.create_pool(
+                        host=db_host,
+                        port=db_port,
+                        user=db_user,
+                        password=db_password,
+                        database=db_name,
+                        ssl=ssl_param,
+                        min_size=5,
+                        max_size=20,
+                        command_timeout=30
+                    )
+                    
+                    logger.info(f"✅ PostgreSQL pool initialized via ServiceFactory (ssl={'require' if db_ssl else 'disabled'})")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to create DB pool: {e}")
+                    raise
+            
+            return cls._db_pool
+
+
+    @classmethod
+    async def get_knowledge_base(cls) -> 'ShopifyKnowledgeBase':
+        """Get ShopifyKnowledgeBase singleton."""
+        lock = cls._get_knowledge_base_lock()
+        
+        async with lock:
+            if cls._knowledge_base is None:
+                logger.info("Initializing ShopifyKnowledgeBase...")
+                
+                try:
+                    from src.api.core.knowledge_base_v2 import ShopifyKnowledgeBase
+                    
+                    db_pool = await cls.get_db_pool()
+                    redis = await cls.get_redis_service()
+                    shopify = get_shopify_client()
+                    
+                    cls._knowledge_base = ShopifyKnowledgeBase(
+                        db=db_pool,
+                        redis=redis,
+                        shopify=shopify,
+                        enable_fallback=True
+                    )
+                    
+                    logger.info("✅ ShopifyKnowledgeBase initialized")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to create ShopifyKnowledgeBase: {e}")
+                    raise
+            
+            return cls._knowledge_base
+
+
+    @classmethod
+    async def get_kb_sync_service(cls) -> 'ShopifyKBSyncService':
+        """Get ShopifyKBSyncService singleton."""
+        lock = cls._get_kb_sync_lock()
+        
+        async with lock:
+            if cls._kb_sync_service is None:
+                logger.info("Initializing ShopifyKBSyncService...")
+                
+                try:
+                    from src.api.services.shopify_kb_sync import ShopifyKBSyncService
+                    from src.api.core.store import get_shopify_kb_client  # ✅ CAMBIO: Import correcto
+                    
+                    db_pool = await cls.get_db_pool()
+                    redis = await cls.get_redis_service()
+                    shopify = get_shopify_kb_client()  # ✅ CAMBIO: Usar KB client
+                    
+                    if shopify is None:
+                        raise RuntimeError("ShopifyKBClient initialization failed - check .env credentials")
+
+                    # Defensive check: ensure redis is never None
+                    if redis is None:
+                        logger.warning("⚠️ Redis service is None, creating mock fallback for KB sync")
+                        redis = cls._create_mock_redis_service()
+
+                    cls._kb_sync_service = ShopifyKBSyncService(
+                        shopify_client=shopify,
+                        db_pool=db_pool,
+                        redis_service=redis
+                    )
+                    
+                    logger.info("✅ ShopifyKBSyncService initialized")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to create ShopifyKBSyncService: {e}")
+                    raise
+            
+            return cls._kb_sync_service
+        
+    @classmethod
     async def get_redis_service(cls) -> RedisService:
         """
         ✅ REDIS SINGLETON FIX - Thread-safe async singleton
@@ -217,11 +407,13 @@ class ServiceFactory:
                         # ✅ FIX 5: Timeout optimizado con Solución 3
                         if REDIS_OPTIMIZATION_AVAILABLE:
                             optimized_config = get_optimized_config_for_service_factory()
-                            timeout = optimized_config.get('socket_connect_timeout', 1.5)
+                            # timeout = optimized_config.get('socket_connect_timeout', 1.5)
+                            # ✅ CAMBIO: Usar timeout más largo para full connection flow
+                            timeout = optimized_config.get('socket_timeout', 1.0)  # ← CAMBIAR de 'socket_connect_timeout' a 'socket_timeout'
                             logger.info(f"🔧 Using optimized Redis timeout: {timeout}s")
                         else:
-                            timeout = 3.0
-                            
+                            # timeout = 3.0
+                            timeout = 1.5  # ← CAMBIAR de 3.0 a 1.5s (suficiente para Redis Cloud)
                         redis_service = await asyncio.wait_for(
                             get_redis_service(),
                             timeout=timeout
@@ -249,7 +441,9 @@ class ServiceFactory:
                         
                         # ✅ CRITICAL FIX: Single fast retry con state synchronization
                         try:
-                            retry_timeout = timeout * 0.8 if REDIS_OPTIMIZATION_AVAILABLE else 2.0
+                            # retry_timeout = timeout * 0.8 if REDIS_OPTIMIZATION_AVAILABLE else 2.0
+                            # ✅ CAMBIO: Aumentar multiplier para dar más tiempo en retry
+                            retry_timeout = timeout * 1.5 if REDIS_OPTIMIZATION_AVAILABLE else 1.5  # ← CAMBIAR de 0.8 a 1.5
                             logger.info(f"🔄 Fast retry with timeout: {retry_timeout}s")
                             
                             # ✅ FIX: Get existing instance and force reconnection
@@ -289,6 +483,11 @@ class ServiceFactory:
                         cls._record_circuit_failure()
                         cls._redis_service = await cls._create_fallback_redis_service()
         
+        # Final safety check: should never be None at this point
+        if cls._redis_service is None:
+            logger.error("❌ Redis service is None after initialization, creating mock fallback")
+            cls._redis_service = cls._create_mock_redis_service()
+
         return cls._redis_service
     
     @classmethod
@@ -415,6 +614,53 @@ class ServiceFactory:
             logger.info("✅ InventoryService singleton initialized")
         return cls._inventory_service
     
+    # ── F-04: CustomerProfileService ──────────────────────────────────────
+
+    @classmethod
+    def _get_customer_profile_lock(cls) -> asyncio.Lock:
+        """Lazy-init del lock async para CustomerProfileService singleton."""
+        if cls._customer_profile_lock is None:
+            cls._customer_profile_lock = asyncio.Lock()
+        return cls._customer_profile_lock
+
+    @classmethod
+    async def get_customer_profile_service(cls):
+        """Singleton de CustomerProfileService (F-04 — Personalizacion por historial).
+
+        Inyecta RedisService y ShopifyClient. Ambas dependencias son opcionales:
+        si no estan disponibles el servicio retorna None para todos los perfiles
+        (degradacion graceful — el chat sigue funcionando sin personalizacion).
+        """
+        if cls._customer_profile_service is not None:
+            return cls._customer_profile_service
+
+        async with cls._get_customer_profile_lock():
+            # Double-check dentro del lock
+            if cls._customer_profile_service is not None:
+                return cls._customer_profile_service
+
+            from src.api.mcp_services.customer.service import CustomerProfileService
+
+            redis_service = None
+            shopify_client = None
+
+            try:
+                redis_service = await cls.get_redis_service()
+            except Exception as e:
+                logger.warning(f"CustomerProfileService: Redis unavailable — {e}")
+
+            try:
+                shopify_client = get_shopify_client()
+            except Exception as e:
+                logger.warning(f"CustomerProfileService: ShopifyClient unavailable — {e}")
+
+            cls._customer_profile_service = CustomerProfileService(
+                redis_service=redis_service,
+                shopify_client=shopify_client,
+            )
+            logger.info("✅ CustomerProfileService singleton initialized (F-04)")
+            return cls._customer_profile_service
+
     @classmethod
     async def create_product_cache(cls, local_catalog=None) -> ProductCache:
         """
@@ -1033,24 +1279,103 @@ class ServiceFactory:
 
     @classmethod
     async def get_mcp_recommender(cls):
-        """Get MCP recommender singleton with dependencies"""
+        """Get MCP recommender singleton with dependencies.
+        
+        CRÍTICO: Se debe pasar anthropic_client al constructor.
+        Sin él, self.claude = None y todas las llamadas a Claude
+        fallan con 'NoneType has no attribute messages'.
+        """
         if cls._mcp_recommender is None:
             mcp_lock = cls._get_mcp_lock()
             async with mcp_lock:
                 if cls._mcp_recommender is None:
                     try:
-                        # Get dependencies
+                        import os
+                        from anthropic import AsyncAnthropic
+                        from src.api.mcp.engines.mcp_personalization_engine import MCPPersonalizationEngine
+
+                        # Obtener dependencias
                         redis_service = await cls.get_redis_service()
                         conversation_manager = await cls.get_conversation_manager()
-                        
-                        # ✅ LAZY IMPORT: Avoid circular import
-                        from src.api.mcp.engines.mcp_personalization_engine import MCPPersonalizationEngine
-                        
+
+                        # Crear cliente Anthropic warm — se reutiliza en todas las requests.
+                        # Este es el cliente que MCPPersonalizationEngine usa en self.claude.
+                        #
+                        # HTTP/2 DESACTIVADO (http2=False):
+                        # AsyncAnthropic usa HTTP/2 por defecto. En Cloud Run, las conexiones
+                        # HTTP/2 salientes son más propensas a fallar con "Connection error"
+                        # cuando el NAT de GCP cierra el estado TCP tras períodos de inactividad.
+                        # HTTP/1.1 con keep-alive es más resiliente en este entorno.
+                        #
+                        # TIMEOUT EXPLÍCITO:
+                        # httpx.Timeout configura connect=10s (establecer la conexión TCP/TLS)
+                        # y read=25s (leer la respuesta). Sin esto, la SDK usa defaults que
+                        # pueden ser demasiado generosos o no respetarse en todos los paths.
+                        import httpx
+                        # Strip whitespace/newlines defensively — Secret Manager puede
+                        # inyectar la clave con \r\n al final si fue creada desde
+                        # Windows o con un editor que añade newline al guardar.
+                        # httpx lanza LocalProtocolError si el header contiene \r\n.
+                        anthropic_api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip() or None
+                        if not anthropic_api_key:
+                            logger.error("❌ ANTHROPIC_API_KEY not set — MCPPersonalizationEngine will have claude=None")
+                        else:
+                            logger.info(f"✅ ANTHROPIC_API_KEY loaded (length={len(anthropic_api_key)}, ends_with_newline=False)")
+                        # anthropic_client = AsyncAnthropic(api_key=anthropic_api_key) if anthropic_api_key else None
+                        # ────────────────────────────────────────────────────────────────
+                        # CONFIGURACIÓN HTTPX PARA CLOUD RUN (18/03/2026)
+                        # ────────────────────────────────────────────────────────────────
+                        #
+                        # PROBLEMA RAIZ del timeout MCP (~3.3s):
+                        # AsyncAnthropic crea conexiones TCP lazy. En Cloud Run, el
+                        # NAT de GCP cierra estados TCP salientes inactivos. El warm-up
+                        # del PASO 8.5 establece la conexión, pero si la primera request
+                        # real llega >keepalive_expiry segundos después, httpx descarta
+                        # la conexión del pool y el siguiente intento hace un nuevo
+                        # TCP connect que tarda ~1.5s y falla en Cloud Run.
+                        #
+                        # SOLUCIÓN PARTE A — keepalive_expiry=300s:
+                        # El startup completo tarda ~90s. Las primeras requests pueden
+                        # llegar 30-120s después. 300s da margen suficiente para que
+                        # la conexión warm del PASO 8.5 siga viva cuando llegue la
+                        # primera request real. La tarea keep-alive periódica del
+                        # lifespan (PASO 8.6) renueva la conexión cada 90s indefinidamente.
+                        #
+                        # max_retries=0: el SDK no reintenta solo; el loop de
+                        # _generate_claude_personalized_response ya maneja reintentos
+                        # con sleep(50ms) entre intentos.
+                        # ────────────────────────────────────────────────────────────────
+                        anthropic_client = AsyncAnthropic(
+                            api_key=anthropic_api_key,
+                            max_retries=0,        # fallo rápido: el loop interno maneja reintentos
+                            http_client=httpx.AsyncClient(
+                                http2=False,      # HTTP/1.1: más resiliente en Cloud Run NAT
+                                timeout=httpx.Timeout(
+                                    connect=10.0,  # tiempo máx para establecer TCP/TLS
+                                    read=25.0,     # tiempo máx para leer respuesta de Claude
+                                    write=10.0,
+                                    pool=5.0
+                                ),
+                                limits=httpx.Limits(
+                                    max_keepalive_connections=5,
+                                    max_connections=10,
+                                    # 300s: cubre startup (~90s) + margen hasta primera request.
+                                    # La tarea keep-alive periódica (PASO 8.6 en lifespan)
+                                    # renueva la conexión cada 90s y mantiene el pool activo
+                                    # indefinidamente mientras el servidor esté vivo.
+                                    keepalive_expiry=300.0  # ← FIX: 120s → 300s
+                                )
+                            )
+                        ) if anthropic_api_key else None
+
                         cls._mcp_recommender = MCPPersonalizationEngine(
                             redis_service=redis_service,
-                            conversation_manager=conversation_manager
+                            conversation_manager=conversation_manager,
+                            anthropic_client=anthropic_client,  # ← CRÍTICO: evita self.claude = None
+                            shopify_client=get_shopify_client(),  # Para resolucion lazy de precios por turno
                         )
-                        logger.info("✅ MCPPersonalizationEngine singleton initialized successfully")
+                        logger.info("✅ MCPPersonalizationEngine singleton initialized (claude=%s, http2=False)",
+                                    "ready" if anthropic_client else "None — calls will fail")
                     except Exception as e:
                         logger.error(f"❌ Failed to initialize MCPPersonalizationEngine: {e}")
                         raise
@@ -1193,6 +1518,228 @@ class ServiceFactory:
                         return None
         
         return cls._conversation_state_manager
+
+    # ── Lock helpers para F-01 y F-04 ──────────────────────────────────────
+
+    @classmethod
+    def _get_product_context_lock(cls) -> asyncio.Lock:
+        """Lazy-init del lock async para ProductContextService singleton."""
+        if cls._product_context_lock is None:
+            cls._product_context_lock = asyncio.Lock()
+        return cls._product_context_lock
+
+    @classmethod
+    def _get_size_profile_lock(cls) -> asyncio.Lock:
+        """Lazy-init del lock async para SizeProfileService singleton (F-02)."""
+        if cls._size_profile_lock is None:
+            cls._size_profile_lock = asyncio.Lock()
+        return cls._size_profile_lock
+
+    # ── F-01: ProductContextService ─────────────────────────────────────────
+
+    @classmethod
+    async def get_product_context_service(cls):
+        """
+        Retorna el singleton de ProductContextService (F-01).
+
+        Sigue el mismo patron que get_conversation_state_manager():
+        - Double-checked locking con asyncio.Lock para thread safety.
+        - Importa ProductContextService en runtime para evitar imports
+          circulares en nivel de modulo.
+        - Degradacion graceful: retorna None si Shopify o Redis no
+          estan disponibles. El bloque F-01 en el handler lo maneja.
+
+        Returns:
+            ProductContextService instance, o None si no disponible.
+        """
+        # logging.info(f"ServiceFactory: Requesting ProductContextService singleton... {cls._product_context_service}")
+        if cls._product_context_service is None:
+            lock = cls._get_product_context_lock()
+            async with lock:
+                if cls._product_context_service is None:
+                    try:
+                        from src.api.mcp_services.product_context.service import ProductContextService
+
+                        shopify_client = get_shopify_client()
+                        redis_service = await cls.get_redis_service()
+
+                        if not shopify_client:
+                            logger.warning(
+                                "F-01 ProductContextService: Shopify client not "
+                                "available, service will not be created."
+                            )
+                            return None
+
+                        if not redis_service:
+                            logger.warning(
+                                "F-01 ProductContextService: Redis not available, "
+                                "service will be created without cache."
+                            )
+                            # Aun asi creamos el servicio — funcionara sin cache,
+                            # haciendo fetch directo a Shopify en cada request.
+                            # ProductContextService maneja la ausencia de Redis
+                            # con degradacion graceful en get_product_context().
+
+                        cls._product_context_service = ProductContextService(
+                            shopify_client=shopify_client,
+                            redis_service=redis_service,
+                        )
+                        logger.info(
+                            "F-01 ProductContextService singleton created OK"
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            f"F-01 ProductContextService creation failed: {e}",
+                            exc_info=True,
+                        )
+                        return None
+
+        return cls._product_context_service
+
+    # ── F-04: CustomerProfileService ────────────────────────────────────────
+
+    @classmethod
+    async def get_customer_profile_service(cls):
+        """
+        Retorna el singleton de CustomerProfileService (F-04).
+
+        CustomerProfileService hace fetch lazy del perfil de cliente
+        (LTV tier, categorias preferidas) usando la Shopify REST API
+        y cacheando en Redis 24h.
+
+        Inyecta el TFIDFRecommender como product_catalog para que
+        _derive_preferences() pueda resolver product_type via lookup
+        O(1) en el catalogo en memoria, resolviendo el bug de
+        preferred_categories=[] causado por la ausencia de product_type
+        en los line_items de ordenes REST de Shopify.
+
+        Returns:
+            CustomerProfileService instance, o None si no disponible.
+        """
+        if cls._customer_profile_service is None:
+            lock = cls._get_customer_profile_lock()
+            async with lock:
+                if cls._customer_profile_service is None:
+                    try:
+                        from src.api.mcp_services.customer.service import CustomerProfileService
+
+                        shopify_client = get_shopify_client()
+                        redis_service = await cls.get_redis_service()
+
+                        if not shopify_client:
+                            logger.warning(
+                                "F-04 CustomerProfileService: Shopify client not "
+                                "available, service will not be created."
+                            )
+                            return None
+
+                        # Inyectar el catalogo TF-IDF como product_catalog.
+                        # _tfidf_recommender es el singleton cargado en PASO 4
+                        # del lifespan (antes del yield) — siempre disponible
+                        # cuando llega el primer request.
+                        # Si por alguna razon no esta cargado aun (ej. tests),
+                        # product_catalog=None activa el fallback graceful
+                        # en CustomerProfileService.__init__().
+                        product_catalog = cls._tfidf_recommender
+
+                        cls._customer_profile_service = CustomerProfileService(
+                            shopify_client=shopify_client,
+                            redis_service=redis_service,
+                            product_catalog=product_catalog,
+                        )
+
+                        # Log diagnostico: confirma cuantos productos se indexaron.
+                        # En produccion se espera: product_type_index_size=N (N > 0).
+                        # Si es 0, el TF-IDF no estaba cargado al crear el singleton.
+                        index_size = len(cls._customer_profile_service._product_type_index)
+                        logger.info(
+                            "F-04 CustomerProfileService singleton created OK "
+                            f"(product_type_index_size={index_size}, "
+                            f"catalog_injected={product_catalog is not None})"
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            f"F-04 CustomerProfileService creation failed: {e}",
+                            exc_info=True,
+                        )
+                        return None
+
+        return cls._customer_profile_service
+# ── F-02: SizeProfileService ────────────────────────────────────────────────
+
+    @classmethod
+    async def get_size_profile_service(cls):
+        """
+        Retorna el singleton de SizeProfileService (F-02).
+
+        SizeProfileService hace fetch lazy del historial de ordenes del cliente
+        (Shopify /orders.json?customer_id=...) y extrae las tallas compradas
+        agrupadas por categoria de producto. El perfil se cachea en Redis 24h.
+
+        Inyecta el TFIDFRecommender como product_type_index para resolver
+        la categoria de cada producto en la orden sin llamadas adicionales
+        a Shopify (mismo patron que CustomerProfileService).
+
+        Returns:
+            SizeProfileService instance, o None si no disponible.
+        """
+        if cls._size_profile_service is not None:
+            return cls._size_profile_service
+
+        lock = cls._get_size_profile_lock()
+        async with lock:
+            # Double-check dentro del lock
+            if cls._size_profile_service is not None:
+                return cls._size_profile_service
+
+            try:
+                from src.api.mcp_services.size_profile.service import SizeProfileService
+
+                shopify_client = get_shopify_client()
+                if not shopify_client:
+                    logger.warning(
+                        "F-02 SizeProfileService: Shopify client not available, "
+                        "service will not be created."
+                    )
+                    return None
+
+                redis_service = await cls.get_redis_service()
+
+                # Construir product_type_index desde el TF-IDF singleton.
+                # Mismo patron que CustomerProfileService: lookup O(1) en memoria.
+                # Si el TF-IDF no esta cargado aun, el indice queda vacio y
+                # SizeProfileService hace fallback a "GENERAL" como categoria.
+                product_type_index: dict = {}
+                tfidf = cls._tfidf_recommender
+                if tfidf and hasattr(tfidf, "product_data") and tfidf.product_data:
+                    for p in tfidf.product_data:
+                        pid = str(p.get("id", ""))
+                        ptype = (p.get("product_type") or "").strip()
+                        if pid and ptype:
+                            product_type_index[pid] = ptype
+
+                cls._size_profile_service = SizeProfileService(
+                    shopify_client=shopify_client,
+                    redis_service=redis_service,
+                    product_type_index=product_type_index,
+                )
+
+                logger.info(
+                    "F-02 SizeProfileService singleton created OK "
+                    f"(product_type_index_size={len(product_type_index)}, "
+                    f"redis_available={redis_service is not None})"
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"F-02 SizeProfileService creation failed: {e}",
+                    exc_info=True,
+                )
+                return None
+
+        return cls._size_profile_service
 # ============================================================================
 # 🔧 CONVENIENCE FUNCTIONS - Backward Compatibility
 # ============================================================================
@@ -1244,3 +1791,15 @@ async def get_market_cache_service():
 async def get_conversation_state_manager_service():
     """Convenience function for Conversation State Manager"""
     return await ServiceFactory.get_conversation_state_manager()
+
+async def get_product_context_service():
+    """Convenience function for ProductContextService (F-01)"""
+    return await ServiceFactory.get_product_context_service()
+
+async def get_customer_profile_service():
+    """Convenience function for CustomerProfileService (F-04)"""
+    return await ServiceFactory.get_customer_profile_service()
+
+async def get_size_profile_service():
+    """Convenience function for SizeProfileService (F-02)"""
+    return await ServiceFactory.get_size_profile_service()

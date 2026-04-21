@@ -1,0 +1,257 @@
+"""
+Test de Diagnóstico - KB Edge Cases
+====================================
+
+Este script ejecuta paso a paso lo que hace el test para identificar
+dónde está fallando exactamente.
+"""
+
+import asyncio
+import asyncpg
+from unittest.mock import AsyncMock
+from contextlib import asynccontextmanager
+
+
+async def diagnose():
+    """Ejecutar diagnóstico paso a paso"""
+    
+    print("=" * 70)
+    print("DIAGNÓSTICO - KB Edge Cases")
+    print("=" * 70)
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 1: Conectar a la base de datos
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[PASO 1] Conectando a PostgreSQL...")
+    
+    try:
+        conn = await asyncpg.connect(
+            host="localhost",
+            port=5432,
+            user="postgres",
+            password="admin",
+            database="retail_recommender_test"
+        )
+        print("✅ Conexión exitosa")
+    except Exception as e:
+        print(f"❌ Error conectando: {e}")
+        return
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 2: Limpiar tabla kb_contents
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[PASO 2] Limpiando tabla kb_contents...")
+    
+    try:
+        await conn.execute("DELETE FROM kb_contents WHERE shopify_page_id = 12345")
+        print("✅ Tabla limpiada")
+    except Exception as e:
+        print(f"❌ Error limpiando: {e}")
+        await conn.close()
+        return
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 3: Verificar nombre de tabla
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[PASO 3] Verificando nombre de tabla...")
+    
+    try:
+        # Intentar con kb_contents
+        result = await conn.fetchval("SELECT COUNT(*) FROM kb_contents")
+        print(f"✅ Tabla 'kb_contents' existe (registros: {result})")
+        table_name = "kb_contents"
+    except Exception as e1:
+        print(f"⚠️ Tabla 'kb_contents' no encontrada: {e1}")
+        try:
+            # Intentar con kb_contents (plural)
+            result = await conn.fetchval("SELECT COUNT(*) FROM kb_contents")
+            print(f"✅ Tabla 'kb_contents' existe (registros: {result})")
+            table_name = "kb_contents"
+        except Exception as e2:
+            print(f"❌ Ninguna tabla KB encontrada: {e2}")
+            await conn.close()
+            return
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 4: Insertar registro de prueba
+    # ══════════════════════════════════════════════════════════════════
+    print(f"\n[PASO 4] Insertando registro en {table_name}...")
+    
+    try:
+        query = f"""
+            INSERT INTO {table_name} (
+                sub_intent, language, category, title, content, 
+                shopify_page_id, last_synced
+            ) VALUES (
+                'policy_return', 'es', 'general', 
+                'Política de Devoluciones',
+                'Contenido en español...',
+                12345, NOW()
+            )
+        """
+        await conn.execute(query)
+        print("✅ Registro insertado")
+    except Exception as e:
+        print(f"❌ Error insertando: {e}")
+        await conn.close()
+        return
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 5: Verificar que el registro existe
+    # ══════════════════════════════════════════════════════════════════
+    print(f"\n[PASO 5] Verificando registro en {table_name}...")
+    
+    try:
+        query = f"""
+            SELECT sub_intent, language, category, title, content
+            FROM {table_name}
+            WHERE sub_intent = 'policy_return' 
+              AND language = 'es'
+              AND COALESCE(category, 'general') = 'general'
+        """
+        row = await conn.fetchrow(query)
+        
+        if row:
+            print("✅ Registro encontrado:")
+            print(f"   - sub_intent: {row['sub_intent']}")
+            print(f"   - language: {row['language']}")
+            print(f"   - category: {row['category']}")
+            print(f"   - title: {row['title']}")
+            print(f"   - content: {row['content'][:50]}...")
+        else:
+            print("❌ Registro NO encontrado")
+    except Exception as e:
+        print(f"❌ Error verificando: {e}")
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 6: Crear mock de db_pool correcto
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[PASO 6] Creando mock de db_pool...")
+    
+    @asynccontextmanager
+    async def mock_acquire():
+        yield conn
+    
+    db_pool = AsyncMock()
+    db_pool.acquire = mock_acquire
+    print("✅ Mock de db_pool creado")
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 7: Crear mock de Redis
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[PASO 7] Creando mock de Redis...")
+    
+    redis_mock = AsyncMock()
+    redis_mock.get = AsyncMock(return_value=None)  # Cache miss
+    redis_mock.set = AsyncMock()
+    print("✅ Mock de Redis creado")
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 8: Importar ShopifyKnowledgeBase
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[PASO 8] Importando ShopifyKnowledgeBase...")
+    
+    try:
+        from src.api.core.knowledge_base_v2 import ShopifyKnowledgeBase
+        print("✅ ShopifyKnowledgeBase importado")
+    except Exception as e:
+        print(f"❌ Error importando: {e}")
+        await conn.close()
+        return
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 9: Crear instancia de KB
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[PASO 9] Creando instancia de ShopifyKnowledgeBase...")
+    
+    try:
+        kb = ShopifyKnowledgeBase(
+            db_pool=db_pool,
+            redis_service=redis_mock,
+            shopify_client=None,
+            enable_fallback=True
+        )
+        print("✅ KB creado exitosamente")
+    except Exception as e:
+        print(f"❌ Error creando KB: {e}")
+        import traceback
+        traceback.print_exc()
+        await conn.close()
+        return
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 10: Ejecutar query con language='es' (debe funcionar)
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[PASO 10] Ejecutando query con language='es'...")
+    
+    try:
+        result_es = await kb.get_answer(
+            sub_intent="policy_return",
+            language="es",
+            category="general"
+        )
+        
+        if result_es:
+            print("✅ Query ES exitoso")
+            print(f"   - answer: {result_es.answer[:50]}...")
+        else:
+            print("❌ Query ES retornó None")
+    except Exception as e:
+        print(f"❌ Error en query ES: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 11: Ejecutar query con language='fr' (fallback a ES)
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[PASO 11] Ejecutando query con language='fr' (fallback a ES)...")
+    
+    try:
+        result_fr = await kb.get_answer(
+            sub_intent="policy_return",
+            language="fr",
+            category="general"
+        )
+        
+        if result_fr:
+            print("✅ Query FR con fallback exitoso")
+            print(f"   - answer: {result_fr.answer[:50]}...")
+        else:
+            print("❌ Query FR retornó None (ESTE ES EL PROBLEMA)")
+            print("\n🔍 ANÁLISIS:")
+            print("   El sistema NO está haciendo fallback a ES cuando FR no existe")
+            print("   Posibles causas:")
+            print("   1. enable_fallback=True pero fallback_kb no está configurado")
+            print("   2. La lógica de fallback está buscando 'fr' en DB (no existe)")
+            print("   3. El método get_answer() no tiene lógica de language fallback")
+    except Exception as e:
+        print(f"❌ Error en query FR: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # ══════════════════════════════════════════════════════════════════
+    # PASO 12: Verificar si existe fallback_kb
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[PASO 12] Verificando fallback_kb...")
+    
+    if hasattr(kb, 'fallback_kb') and kb.fallback_kb:
+        print(f"✅ fallback_kb existe: {type(kb.fallback_kb)}")
+    else:
+        print("❌ fallback_kb es None o no existe")
+        print("   Esto significa que enable_fallback=True pero no hay KB de fallback")
+    
+    # ══════════════════════════════════════════════════════════════════
+    # LIMPIEZA
+    # ══════════════════════════════════════════════════════════════════
+    print("\n[LIMPIEZA] Limpiando...")
+    await conn.execute(f"DELETE FROM {table_name} WHERE shopify_page_id = 12345")
+    await conn.close()
+    print("✅ Conexión cerrada")
+    
+    print("\n" + "=" * 70)
+    print("DIAGNÓSTICO COMPLETADO")
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    asyncio.run(diagnose())

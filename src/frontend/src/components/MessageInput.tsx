@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send } from 'lucide-react';
+import styles from './MessageInput.module.css';
 
 interface MessageInputProps {
   onSendMessage: (message: string) => void;
@@ -7,17 +7,16 @@ interface MessageInputProps {
   placeholder?: string;
 }
 
-export function MessageInput({ 
-  onSendMessage, 
-  disabled = false, 
-  placeholder = "Ask me anything about products..." 
+export function MessageInput({
+  onSendMessage,
+  disabled = false,
+  placeholder = 'Escribe tu consulta...',
 }: MessageInputProps) {
   const [message, setMessage] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent | React.MouseEvent) => {
     e.preventDefault();
-    
     if (message.trim() && !disabled) {
       onSendMessage(message.trim());
       setMessage('');
@@ -27,40 +26,57 @@ export function MessageInput({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSubmit(e);
+      handleSubmit(e as any);
     }
   };
 
-  // Auto-resize textarea
+  // Auto-resize del textarea
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 100)}px`;
     }
   }, [message]);
 
+  const canSend = message.trim().length > 0 && !disabled;
+
   return (
-    <form onSubmit={handleSubmit} className="rr-border-t rr-border-gray-200 rr-p-4">
-      <div className="rr-flex rr-items-end rr-space-x-2">
+    <div className={styles.inputArea}>
+      <div className={styles.inputRow}>
         <textarea
           ref={textareaRef}
           value={message}
-          onChange={(e) => setMessage(e.target.value)}
+          onChange={e => setMessage(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="rr-flex-1 rr-resize-none rr-border rr-border-gray-300 rr-rounded-lg rr-px-3 rr-py-2 rr-text-sm focus:rr-outline-none focus:rr-ring-2 focus:rr-ring-primary-500 focus:rr-border-transparent disabled:rr-bg-gray-100 disabled:rr-cursor-not-allowed rr-max-h-32"
+          className={styles.textarea}
+          aria-label="Escribe un mensaje"
         />
-        
+
         <button
-          type="submit"
-          disabled={!message.trim() || disabled}
-          className="rr-bg-primary-600 rr-text-white rr-p-2 rr-rounded-lg disabled:rr-bg-gray-300 disabled:rr-cursor-not-allowed hover:rr-bg-primary-700 rr-transition-colors"
+          type="button"
+          onClick={handleSubmit}
+          disabled={!canSend}
+          className={`${styles.sendBtn} ${
+            canSend ? styles.sendBtnActive : styles.sendBtnDisabled
+          }`}
+          aria-label="Enviar mensaje"
         >
-          <Send size={16} />
+          {/* SVG inline — sin dependencia de lucide en runtime Shopify */}
+          <svg
+            width="16" height="16" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor"
+            strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+          >
+            <path d="m22 2-7 20-4-9-9-4Z"/>
+            <path d="M22 2 11 13"/>
+          </svg>
         </button>
       </div>
-    </form>
+
+      <p className={styles.footer}>AI-Shoppings · Asistente de moda</p>
+    </div>
   );
 }

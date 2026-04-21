@@ -13,6 +13,20 @@ import json
 import tempfile
 import traceback
 
+# ════════════════════════════════════════════════════════════════════════
+# M2: PROMETHEUS METRICS INTEGRATION
+# ════════════════════════════════════════════════════════════════════════
+try:
+    from src.api.core.prometheus_metrics import (
+        google_retail_calls_total,
+        google_retail_duration_seconds
+    )
+    PROMETHEUS_AVAILABLE = True
+    logging.info("✅ M2: Prometheus metrics loaded for Google Retail API")
+except ImportError:
+    PROMETHEUS_AVAILABLE = False
+    logging.debug("Prometheus metrics not available for Google Retail API")
+
 # Importar el gestor de catálogos (si existe)
 try:
     from src.api.core.catalog_manager_ import CatalogManager
@@ -856,6 +870,9 @@ class RetailAPIRecommender:
         Returns:
             Dict: Resultado de la importación
         """
+        # ✅ M2: Start timing
+        start_time = time.time()
+        
         try:
             # NUEVO: Asegurar que las ramas del catálogo están correctamente configuradas
             if self.catalog_manager:
@@ -975,7 +992,21 @@ class RetailAPIRecommender:
                     
                 except Exception as e:
                     logging.error(f"Error al importar lote {i+1}: {str(e)}")
-            
+                    
+            # ✅ M2: Track success in Prometheus
+            if PROMETHEUS_AVAILABLE:
+                duration = time.time() - start_time
+                try:
+                    google_retail_calls_total.labels(
+                        method="import_products",
+                        status="success"
+                    ).inc()
+                    google_retail_duration_seconds.labels(
+                        method="import_products"
+                    ).observe(duration)
+                except Exception as prom_error:
+                    logging.debug(f"prometheus_metric_error: {prom_error}")
+
             return {
                 "status": "success" if success_count > 0 else "partial_error",
                 "products_imported": success_count,
@@ -987,6 +1018,21 @@ class RetailAPIRecommender:
             
         except Exception as e:
             logging.error(f"Error general en import_catalog: {str(e)}")
+
+            # ✅ M2: Track error in Prometheus
+            if PROMETHEUS_AVAILABLE:
+                duration = time.time() - start_time
+                try:
+                    google_retail_calls_total.labels(
+                        method="import_products",
+                        status="error"
+                    ).inc()
+                    google_retail_duration_seconds.labels(
+                        method="import_products"
+                    ).observe(duration)
+                except Exception as prom_error:
+                    logging.debug(f"prometheus_metric_error: {prom_error}")
+                    
             return {
                 "status": "error",
                 "error": str(e)
@@ -1009,6 +1055,10 @@ class RetailAPIRecommender:
         Returns:
             List[Dict]: Lista de productos recomendados
         """
+
+        # ✅ M2: Start timing
+        start_time = time.time()
+
         try:
             # Verificar parámetros de configuración
             if not self.project_number or not self.location or not self.catalog or not self.serving_config_id:
@@ -1084,6 +1134,20 @@ class RetailAPIRecommender:
                 if results:
                     logging.info(f"[DEBUG] 🎉 ÉXITO: {len(results)} recomendaciones procesadas para user_id={user_id}, product_id={product_id}")
                     
+                    # ✅ M2: Track successful call in Prometheus
+                    if PROMETHEUS_AVAILABLE:
+                        duration = time.time() - start_time
+                        try:
+                            google_retail_calls_total.labels(
+                                method="predict",
+                                status="success"
+                            ).inc()
+                            google_retail_duration_seconds.labels(
+                                method="predict"
+                            ).observe(duration)
+                        except Exception as prom_error:
+                            logging.debug(f"prometheus_metric_error: {prom_error}")
+                    
                     # Log de las primeras recomendaciones para diagnóstico
                     for i, rec in enumerate(results[:3]):
                         logging.info(f"[DEBUG] Retail API Rec {i+1}: ID={rec.get('id')}, Título={rec.get('title', '')[:30]}..., Score={rec.get('score', 0)}")
@@ -1100,6 +1164,20 @@ class RetailAPIRecommender:
                 
             except Exception as api_error:
                 logging.error(f"[DEBUG] ❌ ERROR en API de Google Retail: {str(api_error)}")
+                # ✅ M2: Track error in Prometheus
+                if PROMETHEUS_AVAILABLE:
+                    duration = time.time() - start_time
+                    try:
+                        google_retail_calls_total.labels(
+                            method="predict",
+                            status="error"
+                        ).inc()
+                        google_retail_duration_seconds.labels(
+                            method="predict"
+                        ).observe(duration)
+                    except Exception as prom_error:
+                        logging.debug(f"prometheus_metric_error: {prom_error}")
+                        
                 logging.error(f"[DEBUG] Tipo de error: {type(api_error).__name__}")
                 
                 if hasattr(api_error, 'details'):
@@ -1130,6 +1208,9 @@ class RetailAPIRecommender:
         purchase_amount: Optional[float] = None,
         currency_code: Optional[str] = None
     ):
+        # ✅ M2: Start timing
+        start_time = time.time()
+
         try:
             # Validar el tipo de evento
             valid_event_types = [
@@ -1261,6 +1342,20 @@ class RetailAPIRecommender:
                 "event_type": event_type,
                 "recommendation_tracked": recommendation_id is not None
             }
+
+            # ✅ M2: Track success in Prometheus
+            if PROMETHEUS_AVAILABLE:
+                duration = time.time() - start_time
+                try:
+                    google_retail_calls_total.labels(
+                        method="write_user_event",
+                        status="success"
+                    ).inc()
+                    google_retail_duration_seconds.labels(
+                        method="write_user_event"
+                    ).observe(duration)
+                except Exception as prom_error:
+                    logging.debug(f"prometheus_metric_error: {prom_error}")
             
             # Añadir información de moneda si es un evento de compra
             if event_type == "purchase-complete":
@@ -1272,6 +1367,21 @@ class RetailAPIRecommender:
             
         except Exception as e:
             logging.error(f"Error recording user event: {str(e)}")
+
+            # ✅ M2: Track error in Prometheus
+            if PROMETHEUS_AVAILABLE:
+                duration = time.time() - start_time
+                try:
+                    google_retail_calls_total.labels(
+                        method="write_user_event",
+                        status="error"
+                    ).inc()
+                    google_retail_duration_seconds.labels(
+                        method="write_user_event"
+                    ).observe(duration)
+                except Exception as prom_error:
+                    logging.debug(f"prometheus_metric_error: {prom_error}")
+
             return {
                 "status": "error",
                 "error": str(e)

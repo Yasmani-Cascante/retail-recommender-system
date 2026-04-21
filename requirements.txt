@@ -18,6 +18,8 @@ google-cloud-retail==1.25.1
 google-cloud-storage==2.19.0
 google-cloud-core==2.4.1
 google-api-core>=2.15.0
+# M3: Push de métricas Prometheus a GCP Cloud Monitoring (exporter activo en Cloud Run)
+google-cloud-monitoring>=2.0.0
 
 # === INTEGRACION CON SHOPIFY ===
 # shopify-python-api==1.0.1
@@ -28,9 +30,12 @@ redis==4.6.0  # Incluye soporte asincrono en redis.asyncio
 # aioredis>=2.0.1  # Cliente asincrono para Redis
 cachetools>=5.0.0  # Para MCPClientEnhanced local caching
 
+# === DATABASE (PostgreSQL) ===
+asyncpg>=0.29.0  # PostgreSQL async driver para Shopify KB
+
 # === UTILIDADES ===
 tqdm==4.67.0
-requests==2.32.0
+requests==2.32.2
 jinja2==3.1.5
 httpx>=0.24.0  # Para MCPClient async HTTP calls and CLAUDE/ANTHROPIC
 
@@ -56,3 +61,31 @@ langdetect>=1.0.9  # Para deteccion de idioma
 
 # === DEPENDENDIAS PARA PRUEBAS ===
 aiohttp>=3.9.0
+
+# === LOGGING ===
+structlog>=24.1.0
+python-json-logger>=2.0.0
+
+
+prometheus-client==0.19.0
+prometheus-fastapi-instrumentator==6.1.0
+
+# === ALEMBIC MIGRATIONS (M5) ===
+# Alembic: Framework de versionado y ejecución de migraciones de schema DB.
+# SQLAlchemy: Requerido por Alembic como abstracción de conexión.
+#   NOTA: No usamos SQLAlchemy ORM en la aplicación (seguimos con asyncpg directo).
+#   SQLAlchemy se usa ÚNICAMENTE para que Alembic pueda gestionar conexiones
+#   y el tracking de versiones (tabla alembic_version).
+#   Compatible con migración futura a Cloud SQL (solo cambia DB_HOST).
+alembic>=1.13.0
+sqlalchemy>=2.0.35
+
+# === HTML → MARKDOWN (L1) ===
+# markdownify: Convierte HTML de Shopify a Markdown limpio para la Knowledge Base.
+#   Reemplaza el parser regex manual (_html_to_markdown) con una librería robusta
+#   que preserva estructura semántica: tablas, listas, links, headings.
+#   BeautifulSoup4 es una dependencia transitiva de markdownify (ya puede estar
+#   instalada vía otros paquetes; se lista explícitamente para claridad).
+# Referencia: src/api/services/shopify_kb_sync.py → _html_to_markdown()
+markdownify>=0.12.1
+beautifulsoup4>=4.12.0

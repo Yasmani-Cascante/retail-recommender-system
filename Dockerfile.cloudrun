@@ -1,0 +1,78 @@
+# ============================================================================
+# DOCKERFILE PARA CLOUD RUN - RETAIL RECOMMENDER v2.1.0
+# ============================================================================
+FROM python:3.9-slim
+
+# Metadata
+LABEL maintainer="Retail Recommender Team"
+LABEL version="2.1.0"
+LABEL description="Enterprise Retail Recommendation System"
+
+# Establecer directorio de trabajo
+WORKDIR /app
+
+# ============================================================================
+# FASE 1: DEPENDENCIAS DEL SISTEMA
+# ============================================================================
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================================================
+# FASE 2: DEPENDENCIAS DE PYTHON
+# ============================================================================
+# Copiar requirements
+COPY requirements.cloudrun.txt requirements.txt
+# COPY requirements.cloudrun.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# ============================================================================
+# FASE 3: CÓDIGO DE LA APLICACIÓN
+# ============================================================================
+COPY src/ /app/src/
+COPY data/ /app/data/
+# FIX (22/03/2026): Copiar el widget compilado al contenedor.
+# Sin esta línea, static/widget/widget.umd.cjs no llega a Cloud Run
+# y FastAPI no puede servirlo en /static/widget/.
+COPY static/ /app/static/
+# FIX (23/03/2026): Copiar modelos ML de intent detection.
+# MLIntentClassifier carga model.pkl y vectorizer.pkl desde
+# Path("models/intent_classifier") relativo a WORKDIR /app.
+# Sin esta línea, ML_INTENT_ENABLED=true falla silenciosamente
+# y el sistema degrada a rule-based sin error visible.
+# Tamaño total: ~131 KB (model.pkl 24KB + vectorizer.pkl 107KB).
+COPY models/ /app/models/
+
+# ============================================================================
+# FASE 4: CONFIGURACIÓN DE RUNTIME
+# ============================================================================
+# Crear directorios necesarios
+RUN mkdir -p /app/logs /app/data
+
+# Variables de entorno para producción
+ENV PYTHONUNBUFFERED=1
+ENV ENVIRONMENT=production
+ENV PORT=8080
+
+# ============================================================================
+# FASE 5: HEALTH CHECK
+# ============================================================================
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# ============================================================================
+# FASE 6: USUARIO NO-ROOT (SEGURIDAD)
+# ============================================================================
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+# ============================================================================
+# FASE 7: COMANDO DE INICIO
+# ============================================================================
+# ✅ CRITICAL: Usar PORT env var, no hardcodear
+CMD ["sh", "-c", "exec uvicorn src.api.main_unified_redis:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1 --timeout-keep-alive 300 --log-level info"]

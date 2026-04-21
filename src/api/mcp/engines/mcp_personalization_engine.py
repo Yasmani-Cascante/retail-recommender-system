@@ -49,6 +49,10 @@ from src.api.mcp.models.mcp_models import (
     ProductMCP,
     IntentType
 )
+# Liquid AI integration
+import os
+from src.api.core.llm_client import UnifiedLLMClient, LLMResponse
+from src.api.core.claude_config import LFM_MCP_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +103,8 @@ class MCPPersonalizationEngine:
         conversation_manager: OptimizedConversationAIManager = None,
         state_manager: MCPConversationStateManager = None,
         profile_ttl: int = 7 * 24 * 3600,  # 7 days
-        enable_ml_predictions: bool = True
+        enable_ml_predictions: bool = True,
+        shopify_client=None,  # Inyeccion para resolucion lazy de precios
     ):
         """
         Inicializa el motor de personalización.
@@ -114,10 +119,27 @@ class MCPPersonalizationEngine:
         """
         # 🚀 REFACTORIZADO: Configuración centralizada Claude
         self.claude_config = get_claude_config_service()
+
+        # Leer flag directamente de env (no via lru_cache — lección aprendida 21/03)
+        self._lfm_mcp_enabled = os.environ.get('LFM_MCP_ENABLED', 'false').lower() == 'true'
+        if self._lfm_mcp_enabled:
+            self._lfm_client = UnifiedLLMClient(
+                provider=LFM_MCP_CONFIG['provider'],
+                model=LFM_MCP_CONFIG['model'],
+                max_tokens=LFM_MCP_CONFIG['max_tokens'],
+                temperature=LFM_MCP_CONFIG['temperature'],
+            )
+            logger.info('LFM MCP personalisation enabled: model=%s', LFM_MCP_CONFIG['model'])
+        else:
+            self._lfm_client = None
+            logger.info('LFM MCP personalisation disabled — using Claude')
         
         # ✅ ENTERPRISE: Support both service and client approaches
         self.redis_service = redis_service
         self.redis = redis_client  # Legacy compatibility
+        # Cliente Shopify para resolucion lazy de precios por turno.
+        # Opcional: si es None, _format_price_for_market() usa CLP_RATES fallback.
+        self.shopify_client = shopify_client
         
         # ✅ DEFENSIVE: Log Redis status for debugging
         if self.redis_service:
@@ -166,7 +188,8 @@ class MCPPersonalizationEngine:
         self,
         mcp_context: MCPConversationContext,
         recommendations: List[Dict],
-        strategy: PersonalizationStrategy = None  # ✅ CAMBIO: None permite auto-detección
+        strategy: PersonalizationStrategy = None,  # ✅ CAMBIO: None permite auto-detección
+        detected_language: Optional[str] = None,   # FIX (19/04/2026): idioma ya detectado por router
     ) -> Dict[str, Any]:
         """
         Genera respuesta altamente personalizada usando estrategia especificada o auto-detectada.
@@ -175,9 +198,19 @@ class MCPPersonalizationEngine:
             mcp_context: Contexto conversacional MCP
             recommendations: Recomendaciones base a personalizar
             strategy: Estrategia de personalización a usar (None = auto-detección)
+            detected_language: Idioma ya detectado por el router (None = re-detectar desde query).
+                Cuando se provee, evita que el engine re-detecte el idioma con _detect_user_language(),
+                que tiene una lista de keywords limitada y falla con contracciones (i'm, can't)
+                y queries cortas sin artículos.
             
         Returns:
             Dict con respuesta personalizada, recomendaciones adaptadas y metadata
+
+        FIX (27/03/2026): conversational_response es ahora siempre un str puro
+        (devuelto por _generate_claude_personalized_response tras el refactor).
+        El dict de respuesta lo usa directamente como "personalized_response" — sin
+        envolturas de dict.  conversation_enhancement usa safe defaults porque la
+        versión string no lleva esas claves.
         """
         start_time = time.time()
         
@@ -235,8 +268,11 @@ class MCPPersonalizationEngine:
             )
             
             # 4. Generar respuesta conversacional personalizada con Claude
+            # FIX (27/03/2026): _generate_claude_personalized_response ahora devuelve
+            # siempre un str puro, nunca un dict. No llamar .get() sobre el resultado.
             conversational_response = await self._generate_claude_personalized_response(
-                personalization_context, personalized_result
+                personalization_context, personalized_result,
+                detected_language=detected_language,  # FIX (19/04/2026): propagar idioma del router
             )
             
             # 5. Actualizar perfil con nuevos insights
@@ -251,8 +287,10 @@ class MCPPersonalizationEngine:
             )
             
             # 7. Construir respuesta final
+            # conversational_response es un str puro — conversation_enhancement usa defaults
+            # seguros porque ya no hay dict con esas claves que extraer.
             response = {
-                "personalized_response": conversational_response,
+                "personalized_response": conversational_response,  # str
                 "personalized_recommendations": personalized_result["recommendations"],
                 "personalization_metadata": {
                     "strategy_used": strategy.value,
@@ -263,11 +301,13 @@ class MCPPersonalizationEngine:
                     "market_optimization": personalized_result.get("market_optimization", {}),
                     "processing_time_ms": processing_time
                 },
+                # conversation_enhancement preserved for API consumers that expect it,
+                # but populated with safe defaults since the response is now a string.
                 "conversation_enhancement": {
-                    "tone_adaptation": conversational_response.get("tone_adaptation", "standard"),
-                    "cultural_context": conversational_response.get("cultural_context", {}),
-                    "personalization_elements": conversational_response.get("personalization_elements", []),
-                    "engagement_hooks": conversational_response.get("engagement_hooks", [])
+                    "tone_adaptation": "standard",
+                    "cultural_context": {},
+                    "personalization_elements": [],
+                    "engagement_hooks": []
                 }
             }
             
@@ -281,7 +321,11 @@ class MCPPersonalizationEngine:
             return response
             
         except Exception as e:
-            logger.error(f"Error generating personalized response: {e}")
+            logger.error(
+                "Error generating personalized response: %s",
+                e,
+                exc_info=True,  # FIX (18/04/2026): traceback completo en GCP Logs
+            )
             # ✅ SAFE FALLBACK: Ensure we always return a valid response
             if strategy is None:
                 strategy = PersonalizationStrategy.HYBRID
@@ -517,30 +561,66 @@ class MCPPersonalizationEngine:
     
     def _get_market_strategy_weights(self, market_id: str) -> Dict[str, float]:
         """
-        Obtiene pesos de estrategia específicos por mercado.
+        Obtiene pesos de estrategia especificos por mercado.
+
+        Cada mercado activo en Shopify Admin tiene una entrada aqui con pesos
+        que reflejan las caracteristicas culturales de sus clientes.
+
+        MERCADOS ACTIVOS (confirmados Shopify Admin 28/03/2026):
+          CL  Chile          -> CLP  (mercado primario)
+          CH  Switzerland    -> CHF
+          MX  Mexico         -> MXN
+          ES  International  -> EUR  (27 regiones, representante europeo)
+
+        REGLA: Cuando se anade un nuevo mercado en Shopify Admin, anadir
+        una entrada aqui Y en _load_market_configurations().
+        El fallback (todos en 1.0) aplica si el market_id no esta listado.
         """
-        # Pesos por mercado basados en características culturales
+        # Tabla unica — todos los mercados activos declarados juntos.
+        # v2.2.0 (28/03/2026): Refactorizado de dict inicial + asignaciones
+        # separadas a un unico dict consolidado. Comportamiento identico,
+        # pero mas facil de mantener cuando se anaden mercados futuros.
         market_weights = {
-            "US": {
-                "behavioral": 1.2,  # Los usuarios US valoran personalización por comportamiento
-                "cultural": 0.8,
-                "contextual": 1.1,
-                "predictive": 1.0
-            },
-            "ES": {
+            # -- Latinoamerica --------------------------------------------------
+            "CL": {
                 "behavioral": 1.0,
-                "cultural": 1.3,    # Mayor peso cultural en mercados europeos
-                "contextual": 1.0,
+                "cultural": 1.2,   # Fuerte identidad cultural chilena
+                "contextual": 1.1,  # Fiestas patrias, ocasiones sociales importantes
                 "predictive": 0.9
             },
             "MX": {
                 "behavioral": 1.0,
                 "cultural": 1.2,
-                "contextual": 1.2,   # Contexto familiar y social importante
+                "contextual": 1.2,  # Contexto familiar y social muy relevante
                 "predictive": 0.8
-            }
+            },
+            # -- Europa --------------------------------------------------------
+            "CH": {
+                # Suiza: mercado premium y cosmopolita (4 idiomas oficiales).
+                # Clientes valoran calidad y contexto de uso sobre identidad nacional.
+                "behavioral": 1.1,  # Historial de compra relevante en mercado premium
+                "cultural": 1.1,   # Menos dependiente de identidad nacional
+                "contextual": 1.2,  # Regalo/lujo: el contexto de uso es clave
+                "predictive": 1.0
+            },
+            "ES": {
+                # Internacional/Europa: representante de 27 regiones.
+                # Mayor peso cultural que en mercados anglosajones.
+                "behavioral": 1.0,
+                "cultural": 1.3,   # Mayor peso cultural en mercados europeos
+                "contextual": 1.0,
+                "predictive": 0.9
+            },
+            # -- Anglosajones --------------------------------------------------
+            "US": {
+                "behavioral": 1.2,  # Usuarios US valoran personalizacion por comportamiento
+                "cultural": 0.8,
+                "contextual": 1.1,
+                "predictive": 1.0
+            },
         }
-        
+
+        # Fallback: mercado no listado -> pesos neutros (todos 1.0)
         return market_weights.get(market_id, {
             "behavioral": 1.0,
             "cultural": 1.0,
@@ -569,7 +649,7 @@ class MCPPersonalizationEngine:
         Args:
             strategy: Estrategia seleccionada
             user_id: ID del usuario
-            query: Query original del usuario
+            user_query: Query original del usuario
             score: Score de la estrategia seleccionada
             all_scores: Scores de todas las estrategias evaluadas
         """
@@ -601,18 +681,35 @@ class MCPPersonalizationEngine:
                 }
             }
             
+            # ✅ ENTERPRISE FIX (17/03/2026): Usar redis_service si está disponible,
+            # fallback a redis (legacy). self.redis es None cuando el engine fue
+            # creado via ServiceFactory.get_mcp_recommender() porque ese método
+            # inyecta redis_service=redis_service, redis_client=None (default).
+            # El bug causaba: "Error recording personalization analytics:
+            # 'NoneType' object has no attribute 'set'"
+            redis_client = self.redis_service or self.redis
+            if not redis_client:
+                logger.warning("Redis not available - skipping strategy effectiveness tracking")
+                return
+
             # Almacenar en Redis con TTL de 30 días para análisis
             effectiveness_key = f"strategy_effectiveness:{strategy.value}:{user_id}:{selection_id}"
-            await self.redis.setex(
+            await redis_client.set(
                 effectiveness_key,
-                30 * 24 * 3600,  # 30 días
-                json.dumps(tracking_data)
+                json.dumps(tracking_data),
+                ttl=30 * 24 * 3600  # 30 días; RedisService usa ttl= (no ex=)
             )
-            
-            # Mantener contador agregado por estrategia
+
+            # Mantener contador agregado por estrategia.
+            # RedisService no expone incr/expire nativos — simulamos con get/set.
             strategy_counter_key = f"strategy_usage_counter:{strategy.value}"
-            await self.redis.incr(strategy_counter_key)
-            await self.redis.expire(strategy_counter_key, 90 * 24 * 3600)  # 90 días
+            current_count_raw = await redis_client.get(strategy_counter_key)
+            current_count = int(current_count_raw) if current_count_raw else 0
+            await redis_client.set(
+                strategy_counter_key,
+                str(current_count + 1),
+                ttl=90 * 24 * 3600  # 90 días
+            )
             
             logger.debug(
                 f"Strategy effectiveness tracked: {strategy.value} "
@@ -691,21 +788,34 @@ class MCPPersonalizationEngine:
         Analiza el performance de una estrategia específica.
         """
         try:
+            # ✅ ENTERPRISE FIX (17/03/2026): Usar redis_service si está disponible,
+            # fallback a redis (legacy). Método de dashboard — no en path crítico,
+            # pero debe ser consistente con el patrón enterprise.
+            redis_client = self.redis_service or self.redis
+            if not redis_client:
+                return {
+                    "strategy": strategy.value,
+                    "usage_count": 0,
+                    "recent_selections": 0,
+                    "avg_score": 0.0,
+                    "error": "Redis not available"
+                }
+
             # Obtener contador de uso
             strategy_counter_key = f"strategy_usage_counter:{strategy.value}"
-            usage_count = await self.redis.get(strategy_counter_key)
+            usage_count = await redis_client.get(strategy_counter_key)
             usage_count = int(usage_count) if usage_count else 0
-            
+
             # Buscar datos de efectividad recientes
             effectiveness_pattern = f"strategy_effectiveness:{strategy.value}:*"
-            effectiveness_keys = await self.redis.keys(effectiveness_pattern)
-            
+            effectiveness_keys = await redis_client.keys(effectiveness_pattern)
+
             recent_data = []
             total_score = 0.0
             competition_scores = []
-            
+
             for key in effectiveness_keys[:50]:  # Limitar a últimas 50 para performance
-                data = await self.redis.get(key)
+                data = await redis_client.get(key)
                 if data:
                     try:
                         effectiveness_data = json.loads(data)
@@ -894,13 +1004,19 @@ class MCPPersonalizationEngine:
                 )
             }
             
-            # Cachear análisis para uso futuro
+            # ✅ ENTERPRISE FIX (17/03/2026): Usar redis_service si está disponible,
+            # fallback a redis (legacy). self.redis es None cuando el engine fue
+            # creado via ServiceFactory.
             cache_key = f"{self.INSIGHTS_PREFIX}:{user_id}:{market_id}:journey_analysis"
-            await self.redis.set(
-                cache_key,
-                json.dumps(journey_analysis),
-                ex=24 * 3600  # Cache por 24 horas
-            )
+            redis_client_journey = self.redis_service or self.redis
+            if redis_client_journey:
+                await redis_client_journey.set(
+                    cache_key,
+                    json.dumps(journey_analysis),
+                    ttl=24 * 3600  # Cache por 24 horas; RedisService usa ttl= (no ex=)
+                )
+            else:
+                logger.warning("Redis not available - journey analysis not cached")
             
             logger.info(f"Completed user journey analysis for {user_id} in market {market_id}")
             return journey_analysis
@@ -1189,29 +1305,206 @@ class MCPPersonalizationEngine:
     async def _generate_claude_personalized_response(
         self,
         context: PersonalizationContext,
-        personalization_result: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Genera respuesta conversacional personalizada usando Claude."""
-        try:
-            # Construir prompt de personalización avanzado
-            personalization_prompt = self._build_advanced_personalization_prompt(
-                context, personalization_result
+        personalization_result: Dict[str, Any],
+        detected_language: Optional[str] = None,  # FIX (19/04/2026): idioma del router
+    ) -> str:
+        """   
+        Liquid Integration (16/04/2026):
+        Genera respuesta personalizada usando Claude o LFM2-24B según feature flag.
+        La lógica de prompt (system + user) no cambia — solo el cliente que lo ejecuta.
+
+        FIX (27/03/2026): Este método ahora siempre devuelve un str puro, nunca un dict.
+
+        FIX (19/04/2026 — BUG-LANG-MCP): Usar detected_language cuando está disponible
+        en lugar de re-detectar con _detect_user_language(). El detector interno usaba
+        tokenización simple que no manejaba contracciones inglesas ("i'm" ≠ "i") y
+        tenía muy pocos keywords. Ahora:
+          1. Si detected_language viene del router (resultado de detect_language_from_text
+             con regex robustos) → usarlo directamente.
+          2. Si no viene (llamadas legacy sin el parámetro) → usar _detect_user_language()
+             como fallback de compatibilidad hacia atrás.
+
+        Returns:
+            str: El texto plano de respuesta para la burbuja de chat.
+        """
+        # FIX (18/04/2026): Las dos llamadas de prompt-building estaban FUERA de
+        # cualquier try/except. Cuando _build_advanced_personalization_prompt lanza
+        # 'NoneType' object is not subscriptable, la excepcion escapaba hasta el
+        # outer except de generate_personalized_response() y se logaba como:
+        #   "Error generating personalized response: 'NoneType' object is not subscriptable"
+        # (sin "Claude" en el mensaje — evidencia del punto de escape confirmado por logs).
+        # CAUSA: la funcion _build_advanced_personalization_prompt accede a algun
+        # campo None con subscript ([]) — la linea exacta quedara expuesta en el
+        # traceback que ahora se logara con exc_info=True.
+        # Fix: envolver en try/except con prompts de fallback seguros para no
+        # interrumpir el flujo. El traceback expondrá la raíz del crash.
+        # FIX (18/04/2026) — LAZY RESOLUTION ANTES DE CUALQUIER PROMPT:
+        # La llamada a _enrich_recommendations_lazy() estaba dentro del bloque
+        # de la ruta Claude (mas abajo), lo que provocaba que la ruta LFM
+        # construyera el prompt con CLP_RATES y retornara SIN enriquecer:
+        #
+        #   1. _build_advanced_personalization_prompt()  ← CLP_RATES warnings aqui
+        #   2. LFM: return resp.content                 ← sale antes del enriquecimiento
+        #   3. await _enrich_recommendations_lazy()     ← nunca se ejecuta con LFM
+        #
+        # Fix: mover el await AQUI, antes de construir ningun prompt.
+        # Tanto LFM como Claude recibiran precios Shopify en el prompt.
+        # La logica de fallback de _enrich_recommendations_lazy() garantiza
+        # que si Shopify no esta disponible, el metodo retorna silenciosamente
+        # y _format_price_for_market() usa CLP_RATES como ultimo recurso.
+        _market_id_for_enrich = (
+            context.mcp_context.current_market_id
+            if hasattr(context.mcp_context, 'current_market_id')
+            else "CL"
+        )
+        await self._enrich_recommendations_lazy(
+            recommendations=personalization_result.get("recommendations", []),
+            market_id=_market_id_for_enrich,
+        )
+
+        # FIX (20/04/2026 — BUG-LANG-LFM): Calcular user_language ANTES de los builders
+        # para que TANTO la ruta LFM como la ruta Claude usen el idioma correcto.
+        #
+        # Antes: user_language se calculaba DENTRO del bloque try: de la ruta Claude,
+        # que solo se ejecuta si LFM no está activo. Con LFM_MCP_ENABLED=true, los builders
+        # se llamaban sin user_language y usaban market_config.language (ej. 'de' para CH,
+        # 'es' para CL) en lugar del idioma real del usuario.
+        #
+        # Solución: determinar user_language aquí, antes del try/except de builders.
+        # Prioridad:
+        #   1. detected_language del router (patrones regex robustos, maneja contracciones)
+        #   2. _detect_user_language() desde la query actual (fallback legacy)
+        if detected_language:
+            _pre_user_language = detected_language
+            logger.info(
+                "[lang] LFM path: using router-detected language='%s'",
+                _pre_user_language,
             )
-            
-            # ✅ ROBUST CLAUDE CALL: Handle timeouts and retries
+        else:
+            _query_for_pre_lang = (
+                getattr(context.mcp_context, 'current_query', None)
+                or (context.mcp_context.turns[-1].user_query if context.mcp_context.turns else "")
+                or ""
+            )
+            _pre_user_language = self._detect_user_language(_query_for_pre_lang)
+            logger.info(
+                "[lang] LFM path: re-detected language='%s' for query='%s' (legacy fallback)",
+                _pre_user_language, _query_for_pre_lang[:50],
+            )
+
+        try:
+            system_prompt = self._build_personalized_system_prompt(
+                context, user_language=_pre_user_language
+            )
+            user_prompt = self._build_advanced_personalization_prompt(
+                context, personalization_result, user_language=_pre_user_language
+            )
+        except Exception as _prompt_build_err:
+            logger.error(
+                "prompt_build_error: %s — falling back to safe defaults",
+                _prompt_build_err,
+                exc_info=True,  # EXPONE traceback completo con linea exacta del crash
+            )
+            # Prompts de emergencia: suficientes para que LFM o Claude generen
+            # una respuesta util sin bloquear el flujo completo.
+            market_id = getattr(context.mcp_context, 'current_market_id', 'CL')
+            current_query = (
+                getattr(context.mcp_context, 'current_query', None)
+                or "productos de moda"
+            )
+            recs_safe = (personalization_result or {}).get("recommendations", [])
+            rec_titles = ", ".join(
+                r.get("title", "producto") for r in recs_safe[:3]
+            ) or "productos disponibles"
+            system_prompt = (
+                f"Eres un asistente de moda util. Responde brevemente al mercado {market_id}."
+            )
+            user_prompt = (
+                f"El usuario busca: {current_query}\n"
+                f"Productos sugeridos: {rec_titles}\n"
+                "Recomienda de forma breve y personalizada."
+            )
+
+        # ── RUTA LFM (si flag activo) ──────────────────────────────────────────
+        if self._lfm_mcp_enabled and self._lfm_client:
+            try:
+                resp = await asyncio.wait_for(
+                    self._lfm_client.complete(system_prompt, user_prompt),
+                    timeout=8.0  # LFM-24B puede ser más lento que Haiku en primer request
+                )
+                logger.info('LFM MCP response: model=%s in=%d out=%d',
+                        resp.model, resp.input_tokens, resp.output_tokens)
+                return resp.content
+            except Exception as e:
+                # Fallback automático a Claude si LFM falla
+                logger.warning('LFM MCP call failed, falling back to Claude: %s', e)
+                # La ejecución continúa hacia la ruta Claude a continuación
+
+        # ── RUTA CLAUDE (default o fallback) ─────────────────────────────────
+        model_config = self.claude_config.get_model_config()
+        try:
+            # Determinar el idioma de la query del usuario.
+            #
+            # FIX (19/04/2026 — BUG-LANG-MCP): Prioridad:
+            #   1. detected_language del router (detect_language_from_text con regex robustos)
+            #      → más fiable: maneja contracciones, usa patrones lookahead/lookbehind.
+            #   2. _detect_user_language() local (fallback legacy)
+            #      → menos fiable: lista de keywords limitada, tokenizador simple.
+            #
+            # Ejemplo de bug sin este fix:
+            #   Query: "I'm looking for elegant dresses"
+            #   _detect_user_language(): tokens=["i'm", "looking", "for"] → EN=0 → "es" ❌
+            #   detect_language_from_text(): "looking" y "for" regex → EN=2 → "en" ✅
+            if detected_language:
+                user_language = detected_language
+                logger.info("[lang] Using router-detected language='%s' (skipping re-detection)", user_language)
+            else:
+                user_query_for_lang = (
+                    context.mcp_context.current_query
+                    or (context.mcp_context.turns[-1].user_query if context.mcp_context.turns else "")
+                    or ""
+                )
+                user_language = self._detect_user_language(user_query_for_lang)
+                logger.info("[lang] Re-detected language='%s' for query='%s' (legacy fallback)",
+                            user_language, user_query_for_lang[:50])
+
+            personalization_prompt = self._build_advanced_personalization_prompt(
+                context, personalization_result, user_language=user_language
+            )
+
+            # CLAUDE CALL con retry controlado por presupuesto de tiempo.
+            #
+            # DISEÑO DELIBERADO:
+            # El handler externo (mcp_conversation_handler.py) envuelve esta función
+            # con asyncio.wait_for(timeout=3.0). El retry loop interno debe respetar
+            # ese presupuesto. El timeout=15 interno nunca se alcanza — el externo
+            # cancela antes.
+            #
+            # PROBLEMA PREVIO:
+            # asyncio.sleep(1) entre intentos consumía ~1s del presupuesto de 3.0s,
+            # dejando <0.8s para el reintento. Claude Sonnet necesita ~1.5-2.5s →
+            # el reintento siempre llegaba tarde y el handler lanzaba TimeoutError.
+            #
+            # FIX APLICADO:
+            # sleep reducido a 0.05s (50ms) — suficiente para que la SDK libere el
+            # descriptor de socket del intento fallido, sin consumir el presupuesto.
+            # El intento 2 tiene ahora ~1.7s disponibles para completarse.
+            model_config = self.claude_config.get_model_config()
+
             max_retries = 2
-            timeout = 15  # seconds
+            timeout = 15  # interno; el externo (8.0s) lo cancela primero en prod
+            response_text = "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
             
             for attempt in range(max_retries + 1):
                 try:
-                    # Llamada a Claude con configuración optimizada
+                    # Llamada a Claude usando configuracion centralizada (no hardcoded)
                     claude_response = await asyncio.wait_for(
                         self.claude.messages.create(
-                            model="claude-sonnet-4-20250514",
-                            system=self._build_personalized_system_prompt(context),
+                            model=model_config.model_name,      # <- lee CLAUDE_MODEL_TIER (Haiku)
+                            system=self._build_personalized_system_prompt(context, user_language=user_language),
                             messages=[{"role": "user", "content": personalization_prompt}],
-                            max_tokens=800,
-                            temperature=0.8
+                            max_tokens=model_config.max_tokens,  # <- lee CLAUDE_MAX_TOKENS (200)
+                            temperature=model_config.temperature  # <- consistente con claude_config
                         ),
                         timeout=timeout
                     )
@@ -1221,58 +1514,50 @@ class MCPPersonalizationEngine:
                     
                 except asyncio.TimeoutError:
                     logger.warning(f"Claude API timeout on attempt {attempt + 1}/{max_retries + 1}")
-                    if attempt == max_retries:
-                        # Final fallback
-                        response_text = "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
-                        logger.error("Claude API timeout - using fallback response")
-                    else:
-                        await asyncio.sleep(1)  # Wait before retry
-                        continue
+                    if attempt < max_retries:
+                        await asyncio.sleep(0.05)  # ← FIX: 1s→50ms; libera socket sin consumir presupuesto
                         
                 except Exception as api_error:
                     logger.warning(f"Claude API error on attempt {attempt + 1}: {api_error}")
-                    if attempt == max_retries:
-                        response_text = "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
-                        logger.error(f"Claude API failed after {max_retries + 1} attempts - using fallback")
-                    else:
-                        await asyncio.sleep(1)
-                        continue
+                    if attempt < max_retries:
+                        await asyncio.sleep(0.05)  # ← FIX: 1s→50ms; mismo razonamiento
             
-            # Parsejar respuesta estructurada si es posible
-            try:
-                if response_text.strip().startswith('{'):
-                    structured_response = json.loads(response_text)
-                else:
-                    structured_response = {
-                        "response": response_text,
-                        "tone_adaptation": "standard",
-                        "cultural_context": {},
-                        "personalization_elements": [],
-                        "engagement_hooks": []
-                    }
-            except json.JSONDecodeError:
-                structured_response = {
-                    "response": response_text,
-                    "tone_adaptation": "standard",
-                    "cultural_context": {},
-                    "personalization_elements": [],
-                    "engagement_hooks": []
-                }
-            
-            return structured_response
-            
+            # FIX (27/03/2026): Extraer el string de texto plano de la respuesta.
+            # Claude fue instruido a responder sin JSON ("Respuesta directa sin JSON"),
+            # pero ocasionalmente devuelve un objeto JSON de todos modos. Si lo hace,
+            # extraemos el texto de la clave "response"/"answer"/"content"/"text".
+            # En ambos casos devolvemos un str puro — nunca un dict.
+            raw = response_text.strip()
+            if raw.startswith('{'):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        extracted = (
+                            parsed.get("response")
+                            or parsed.get("answer")
+                            or parsed.get("text")
+                            or parsed.get("content")
+                            or raw  # último recurso: texto crudo
+                        )
+                        response_text = str(extracted) if not isinstance(extracted, str) else extracted
+                except json.JSONDecodeError:
+                    pass  # response_text ya es el string de Claude, mantenerlo
+
+            logger.info(f"✅ Claude personalized response ready ({len(response_text)} chars)")
+            return response_text
+
         except Exception as e:
             logger.error(f"Error generating Claude personalized response: {e}")
-            return {
-                "response": "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?",
-                "tone_adaptation": "standard",
-                "cultural_context": {},
-                "personalization_elements": [],
-                "engagement_hooks": []
-            }
+            return "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
     
     def _load_market_configurations(self) -> Dict[str, MarketConfig]:
-        """Carga configuraciones de mercado."""
+        """Carga configuraciones de mercado.
+
+        FIX (27/03/2026 — BUG-CLP-02): Añadido mercado 'CL' (Chile, CLP).
+        Sin esta entrada, mcp_context.current_market_id='CL' caía en el
+        fallback a 'US', haciendo que market_config.currency='USD' y
+        market_config.language='en' en el prompt de Claude.
+        """
         # Esta función cargaría desde base de datos o configuración
         # Por ahora, configuraciones predefinidas
         return {
@@ -1308,7 +1593,37 @@ class MCPPersonalizationEngine:
                 localization={"cultural_preferences": {"communication_style": "warm"}},
                 tax_rate=0.16,
                 shipping_config={"free_shipping_threshold": 800.0}
-            )
+            ),
+            # FIX v2.1.0 (27/03/2026): Mercado primario de AI-Shoppings.
+            # Precio en CLP. Sin conversion interna (el MarketAdapter ya lo
+            # normaliza en la FASE 5 del pipeline antes de llegar aqui).
+            "CL": MarketConfig(
+                id="CL",
+                name="Chile",
+                currency="CLP",
+                language="es",
+                timezone="America/Santiago",
+                scoring_weights={"price": 0.4, "brand": 0.3, "reviews": 0.3},
+                localization={"cultural_preferences": {"communication_style": "calido"}},
+                tax_rate=0.19,                              # IVA Chile 19%
+                shipping_config={"free_shipping_threshold": 50000.0}  # ~50 USD en CLP
+            ),
+            # v2.2.0 (28/03/2026): Switzerland confirmado en Shopify Admin.
+            # Sin esta entrada, market_id="CH" caia al fallback "US" en
+            # _build_personalization_context() -> Claude respondia en ingles con USD.
+            # Idioma: aleman (mayoritario en Suiza). Tono: preciso y directo.
+            # communication_style="preciso" refleja la cultura suiza de concision.
+            "CH": MarketConfig(
+                id="CH",
+                name="Switzerland",
+                currency="CHF",
+                language="de",
+                timezone="Europe/Zurich",
+                scoring_weights={"price": 0.3, "brand": 0.4, "reviews": 0.3},
+                localization={"cultural_preferences": {"communication_style": "preciso"}},
+                tax_rate=0.077,                             # IVA Suiza 7.7%
+                shipping_config={"free_shipping_threshold": 100.0}  # CHF 100 envio gratis
+            ),
         }
     
     async def _get_or_create_personalization_profile(
@@ -1507,98 +1822,980 @@ class MCPPersonalizationEngine:
         except Exception as e:
             logger.error(f"Error updating personalization profile: {e}")
     
+    def _format_price_for_market(
+        self,
+        rec: Dict[str, Any],
+        market_id: str,
+        market_currency: str
+    ) -> str:
+        """Formatea el precio de un producto para el mercado indicado.
+
+        Fuente de precio unica (Opcion A, 28/03/2026).
+        Reemplaza las dos funciones locales identicas que existian en
+        _build_advanced_personalization_prompt y _build_personalized_user_prompt.
+
+        Prioridad de lectura:
+          1. market_prices[market_id]  <- Opcion A: precio Shopify autorizado
+          2. market_prices['CL']       <- fallback al precio nativo CLP
+          3. Conversion manual con CLP_RATES <- ultimo recurso (deuda tecnica)
+
+        Cuando se activa la Prioridad 3, emite un WARNING para facilitar la
+        deteccion de productos sin market_prices en produccion.
+
+        Args:
+            rec:             Diccionario del producto (con o sin 'market_prices')
+            market_id:       Codigo de mercado, ej. 'CL', 'CH', 'MX', 'ES'
+            market_currency: Moneda destino del mercado, ej. 'CHF', 'CLP', 'EUR'
+
+        Returns:
+            String formateado, ej. 'CHF 110.36' o 'CLP 160,000'
+        """
+        market_prices = rec.get("market_prices") or {}
+
+        # Prioridad 1: precio Shopify para este mercado exacto
+        if market_id in market_prices:
+            price_data = market_prices[market_id]
+            price = price_data.get("price", 0)
+            currency = price_data.get("currency", market_currency)
+
+        # Prioridad 2: precio nativo CLP de Shopify (como referencia)
+        elif "CL" in market_prices:
+            price_data = market_prices["CL"]
+            price = price_data.get("price", 0)
+            currency = price_data.get("currency", "CLP")
+
+        # Prioridad 3 (LAZY RESOLUTION): precio obtenido en tiempo real desde Shopify.
+        # Este campo es inyectado por _fetch_and_inject_prices() justo antes de
+        # construir el prompt de Claude, en paralelo con la llamada a Claude.
+        # No tiene coste de latencia porque corre concurrentemente con Claude (~1.2s).
+        # Se activa cuando el producto no paso por el enriquecimiento batch del startup
+        # (por ejemplo, primeros 9 minutos despues de un restart) pero si por el
+        # pre-fetch lazy de este turno.
+        elif rec.get("_lazy_prices") and market_id in rec["_lazy_prices"]:
+            price_data = rec["_lazy_prices"][market_id]
+            price = price_data.get("price", 0)
+            currency = price_data.get("currency", market_currency)
+
+        # Prioridad 4: conversion manual hardcodeada (fallback de ultimo recurso)
+        # Solo activa para productos sin market_prices Y sin lazy prices.
+        # TASAS CORRECTAS (28/03/2026): CHF=0.00089 (no EUR=0.00096)
+        # Verificacion: 124.000 CLP * 0.00089 = 110.36 CHF (coincide con ProductCard)
+        else:
+            # ALERTA: market_prices no disponible para este producto.
+            # Causa tipica: pickle del TF-IDF cargado antes del deploy de Opcion A,
+            # o producto insertado sin pasar por get_products_with_shopify_prices().
+            # Este WARNING es la unica forma de detectarlo silenciosamente en produccion.
+            logger.warning(
+                "[OpcionA-fallback] product '%s' sin market_prices para mercado %s. "
+                "Usando CLP_RATES hardcodeado. Verificar que el producto paso por "
+                "get_products_with_shopify_prices() en el ultimo startup.",
+                rec.get("id", "?"), market_id
+            )
+            CLP_RATES = {
+                "CLP": 1.0, "CHF": 0.00089, "EUR": 0.00096,
+                "USD": 0.00104, "MXN": 0.018, "COP": 4.1
+            }
+            try:
+                raw_float = float(rec.get("price") or 0)
+            except (TypeError, ValueError):
+                raw_float = 0.0
+            rate = CLP_RATES.get(market_currency, 1.0)
+            price = raw_float * rate
+            currency = market_currency
+
+        try:
+            price_float = float(price)
+        except (TypeError, ValueError):
+            price_float = 0.0
+
+        # CLP/COP sin decimales; CHF/EUR/USD/MXN con 2 decimales
+        if currency in ("CLP", "COP"):
+            return f"{currency} {price_float:,.0f}"
+        else:
+            return f"{currency} {price_float:,.2f}"
+
+    async def _fetch_and_inject_prices(
+        self,
+        recommendations: list,
+        context: "PersonalizationContext"
+    ) -> None:
+        """
+        Pre-fetch lazy de precios para los N productos recomendados.
+
+        Consulta Shopify Admin GraphQL con una unica query que incluye
+        un alias por cada (producto, mercado). Se ejecuta en paralelo
+        con la llamada a Claude para que el overhead neto sea cero.
+
+        Solo consulta los productos que NO tienen market_prices en RAM
+        (es decir, que no pasaron por el enriquecimiento batch del startup).
+        Los resultados se inyectan en rec["_lazy_prices"] para que
+        _format_price_for_market() los use como Prioridad 3.
+
+        Args:
+            recommendations: Lista de dicts de productos recomendados.
+            context:         PersonalizationContext con market_config.
+        """
+        import requests as _req_lib
+        import re as _re
+        import os
+        # Filtrar solo los productos que aun no tienen precios de Shopify.
+        # Si el batch de startup ya los enriquecio, no hay nada que hacer.
+        products_needing_prices = [
+            rec for rec in recommendations
+            if not rec.get("market_prices")
+        ]
+        if not products_needing_prices:
+            logger.debug("[lazy-price] Todos los productos ya tienen market_prices. Skip.")
+            return
+
+        ACTIVE_MARKETS = [
+            {"market_id": "CL", "country_code": "CL"},
+            {"market_id": "CH", "country_code": "CH"},
+            {"market_id": "MX", "country_code": "MX"},
+            {"market_id": "ES", "country_code": "ES"},
+        ]
+
+        # Construir URL y headers de Shopify GraphQL.
+        shop_url = os.environ.get("SHOPIFY_SHOP_URL", "").rstrip("/")
+        shop_host = shop_url.replace("https://", "").replace("http://", "")
+        gql_url = f"https://{shop_host}/admin/api/2025-01/graphql.json"
+        gql_headers = {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
+        }
+
+        # Construir query con alias p{idx}_{market_id} por cada (producto, mercado).
+        # Con 5 productos x 4 mercados = 20 aliases — muy por debajo del limite
+        # de Shopify (1000 puntos de complexity). Sin riesgo de throttling.
+        alias_fragments = []
+        for idx, rec in enumerate(products_needing_prices):
+            pid = str(rec.get("id", ""))
+            gid = f"gid://shopify/Product/{pid}"
+            for market in ACTIVE_MARKETS:
+                alias_fragments.append(
+                    f'p{idx}_{market["market_id"]}: product(id: "{gid}") {{\n'
+                    f'  contextualPricing(context: {{country: {market["country_code"]}}}) {{\n'
+                    f'    priceRange {{ minVariantPrice {{ amount currencyCode }} }}\n'
+                    f'  }}\n'
+                    f'}}'
+                )
+
+        bulk_query = (
+            "query GetLazyPrices {\n"
+            + "\n".join(alias_fragments)
+            + "\n}"
+        )
+
+        try:
+            # asyncio.to_thread: la libreria requests es sincrona.
+            # Se ejecuta en el thread pool sin bloquear el event loop,
+            # permitiendo que Claude trabaje concurrentemente.
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _req_lib.post, gql_url,
+                    json={"query": bulk_query},
+                    headers=gql_headers,
+                    timeout=10  # presupuesto conservador: Claude tarda 1.2s
+                ),
+                timeout=11  # asyncio timeout ligeramente mayor que el de requests
+            )
+            response.raise_for_status()
+            resp_data = response.json()
+
+            if "errors" in resp_data:
+                logger.warning(
+                    "[lazy-price] GraphQL errors: %s",
+                    [e.get("message") for e in resp_data["errors"]]
+                )
+                return  # Fallback a CLP_RATES — sin crash
+
+            graph_data = resp_data.get("data", {})
+
+            # Inyectar precios en rec["_lazy_prices"] por producto.
+            # Escritura atomica por producto — segura con el Python GIL.
+            for idx, rec in enumerate(products_needing_prices):
+                lazy_prices = {}
+                for market in ACTIVE_MARKETS:
+                    mid = market["market_id"]
+                    node = graph_data.get(f"p{idx}_{mid}")
+                    if not node:
+                        continue
+                    min_price = (
+                        node.get("contextualPricing", {})
+                        .get("priceRange", {})
+                        .get("minVariantPrice", {})
+                    )
+                    try:
+                        amt = float(min_price.get("amount", "0"))
+                    except (TypeError, ValueError):
+                        amt = 0.0
+                    cur = min_price.get("currencyCode", "")
+                    if amt > 0 and cur:
+                        lazy_prices[mid] = {"price": amt, "currency": cur}
+
+                if lazy_prices:
+                    rec["_lazy_prices"] = lazy_prices
+
+            n_enriched = sum(1 for r in products_needing_prices if r.get("_lazy_prices"))
+            logger.info(
+                "⚡ [lazy-price] Pre-fetch completado: %d/%d productos con precios Shopify "
+                "(%d mercados cada uno)",
+                n_enriched, len(products_needing_prices), len(ACTIVE_MARKETS)
+            )
+
+        except asyncio.TimeoutError:
+            # Timeout: Claude ya respondio y los precios no llegaron.
+            # _format_price_for_market() usara CLP_RATES como fallback.
+            # Sin impacto en la respuesta al usuario — solo en la precision del precio.
+            logger.warning(
+                "[lazy-price] Timeout (10s) pre-fetching prices. "
+                "Falling back to CLP_RATES for this turn."
+            )
+        except Exception as e:
+            # Error de red u otro: fallback silencioso a CLP_RATES.
+            logger.warning("[lazy-price] Error pre-fetching prices: %s", e)
+
+    async def _enrich_recommendations_lazy(
+        self,
+        recommendations: List[Dict],
+        market_id: str
+    ) -> None:
+        """
+        Enriquece con precios de Shopify los productos de este turno que
+        aun no tienen market_prices, via una unica query GraphQL.
+
+        Se llama ANTES de construir el prompt para Claude, dentro de
+        _generate_claude_personalized_response() que ya es async.
+        Como Claude tarda ~1.2s y esta query tarda ~200-300ms, el overhead
+        neto en la latencia del usuario es cercano a cero.
+
+        Estrategia de prioridades (igual que _format_price_for_market):
+          1. Si el producto ya tiene market_prices en RAM (enriquecido en
+             startup o en un turno anterior) → no se toca, cero trabajo.
+          2. Si no tiene market_prices → consulta Shopify para ese producto
+             y lo inyecta en memoria.
+          3. Si Shopify falla → silencio, _format_price_for_market usara
+             CLP_RATES como ultimo recurso.
+
+        Args:
+            recommendations: Lista de productos del turno (3-5 tipicamente).
+            market_id:        Mercado actual (ej. "CH"). Se usa para logging.
+        """
+        if not self.shopify_client or not recommendations:
+            return
+
+        # Identificar cuales productos necesitan enriquecimiento.
+        # Un producto necesita enriquecimiento si no tiene market_prices
+        # o si le falta el mercado actual — ambos casos se resuelven con
+        # una sola query que devuelve los 4 mercados de una vez.
+        products_to_enrich = [
+            rec for rec in recommendations
+            if not rec.get("market_prices")
+        ]
+
+        if not products_to_enrich:
+            # Todos los productos ya tienen market_prices (enriquecidos en startup)
+            logger.debug(
+                "[lazy-price] Todos los productos ya tienen market_prices — "
+                "sin query a Shopify necesaria."
+            )
+            return
+
+        product_ids = [
+            str(rec.get("id", ""))
+            for rec in products_to_enrich
+            if rec.get("id")
+        ]
+
+        if not product_ids:
+            return
+
+        logger.info(
+            "[lazy-price] Consultando Shopify para %d producto(s) sin market_prices "
+            "(mercado actual: %s)...",
+            len(product_ids), market_id
+        )
+
+        t0 = __import__("time").time()
+
+        # Una sola query GraphQL con todos los productos y los 4 mercados.
+        price_map = await self.shopify_client.get_prices_for_products(product_ids)
+
+        elapsed_ms = (__import__("time").time() - t0) * 1000
+
+        if not price_map:
+            logger.warning(
+                "[lazy-price] Shopify no devolvio precios — "
+                "_format_price_for_market usara CLP_RATES fallback."
+            )
+            return
+
+        # Inyectar market_prices en los objetos en memoria.
+        # Los builders sincrónicos (_build_advanced_personalization_prompt,
+        # _build_personalized_user_prompt) encontraran market_prices en el
+        # campo y usaran Prioridad 1 de _format_price_for_market.
+        enriched_count = 0
+        for rec in products_to_enrich:
+            pid = str(rec.get("id", ""))
+            if pid in price_map and price_map[pid]:
+                rec["market_prices"] = price_map[pid]
+                enriched_count += 1
+
+        logger.info(
+            "[lazy-price] %d/%d productos enriquecidos con precios Shopify en %.0fms.",
+            enriched_count, len(product_ids), elapsed_ms
+        )
+
+    def _detect_user_language(self, text: str) -> str:
+        """Detecta el idioma del texto del usuario usando heuristicas de caracteres.
+
+        Objetivo: determinar en que idioma responder, no clasificacion academica.
+        Cubre los idiomas relevantes para los mercados activos:
+          CL / MX / ES -> espanol
+          CH            -> aleman, frances, italiano (segun lo que escriba el usuario)
+          Internacional -> ingles, portugues
+
+        Tecnica: caracteres unicode diacriticos + palabras de alta frecuencia.
+        Sin dependencias externas, latencia < 1ms, determinista.
+
+        Args:
+            text: Query del usuario (puede ser corta, ej. "cinturones")
+
+        Returns:
+            Codigo de idioma BCP-47 de 2 letras: "es", "de", "fr", "it", "en", "pt".
+            Default "es" si el texto es muy corto o ambiguo (mercado principal).
+        """
+        if not text or len(text.strip()) < 3:
+            # Texto demasiado corto para detectar — fallback al espanol
+            # (mercado principal AI-Shoppings: CL, MX, ES)
+            return "es"
+
+        text_lower = text.lower().strip()
+
+        # --- Palabras funcionales de alta frecuencia por idioma ---
+        # Usamos articulos, preposiciones y pronombres porque aparecen incluso
+        # en queries cortas ("muestrame los vestidos", "zeige mir Kleider").
+        # No usamos palabras de contenido (varían por dominio).
+        LANG_KEYWORDS = {
+            "es": [
+                "el", "la", "los", "las", "un", "una", "de", "del",
+                "en", "con", "para", "por", "que", "es", "son",
+                "me", "mi", "te", "se", "hay", "mas", "como",
+                "muestrame", "quiero", "busco", "necesito", "tienes",
+                "puedes", "tiene", "donde", "cuando", "precio",
+                "aceptan", "envio", "talla", "color",
+            ],
+            "de": [
+                "der", "die", "das", "ein", "eine", "ist", "sind",
+                "ich", "mir", "mich", "du", "sie", "wir", "ihr",
+                "mit", "von", "fur", "bei", "auf", "zeig", "zeige",
+                "bitte", "haben", "suche", "preis", "grosse", "farbe",
+                "welche", "gibt", "wie", "was", "wo",
+            ],
+            "fr": [
+                "le", "la", "les", "un", "une", "des", "du",
+                "je", "tu", "il", "elle", "nous", "vous",
+                "est", "sont", "avec", "pour", "sur", "dans",
+                "montrez", "montrer", "cherche", "prix", "taille",
+                "quoi", "quel", "quelle", "avez",
+            ],
+            "it": [
+                "il", "la", "lo", "gli", "le", "un", "una",
+                "di", "del", "della", "da", "per", "con",
+                "sono", "ho", "hai", "vorrei", "cercando",
+                "prezzo", "taglia", "colore", "dove", "quando",
+                "mostrami", "mostra",
+            ],
+            "pt": [
+                "o", "a", "os", "as", "um", "uma",
+                "de", "do", "da", "em", "com", "para", "por",
+                "eu", "voce", "ele", "ela", "nos",
+                "tem", "sao", "esta", "preciso", "quero",
+                "mostrar", "preco", "tamanho", "cor",
+            ],
+            "en": [
+                "the", "a", "an", "is", "are", "was", "were",
+                "i", "you", "he", "she", "we", "they",
+                "have", "has", "do", "does", "show", "me",
+                "price", "size", "color", "where", "when", "how",
+                "what", "which", "can", "please", "want",
+            ],
+        }
+
+        # Tokenizar (dividir por espacios y signos de puntuacion comunes)
+        import re
+        tokens = set(re.split(r'[\s,.:;!?\u00bf\u00a1]+', text_lower))
+        tokens.discard("")  # eliminar tokens vacios
+
+        # Contar coincidencias por idioma
+        scores = {}
+        for lang, keywords in LANG_KEYWORDS.items():
+            scores[lang] = sum(1 for kw in keywords if kw in tokens)
+
+        best_lang = max(scores, key=scores.get)
+        best_score = scores[best_lang]
+
+        # Si ningun idioma tiene coincidencias claras (query de una sola palabra
+        # sin articulos, ej. "cinturones"), usamos espanol como fallback.
+        if best_score == 0:
+            return "es"
+
+        # Desempate: si espanol y otro idioma empatan, preferimos espanol
+        # (mercado principal). Esto evita falsos positivos en palabras
+        # compartidas entre idiomas romanicos.
+        if best_score == scores.get("es", 0) and best_lang != "es":
+            return "es"
+
+        return best_lang
+
+
+    def _build_tier_upsell_instruction(
+            self,
+            customer_profile: Optional[Dict],
+            product_ctx: Optional[Dict],
+            ref_price_clp: float,
+            preferred_categories: List[str],
+            market_currency: str,
+        ) -> str:
+            """
+            Genera instruccion de upsell especifica cruzando LTV tier x rango de precio.
+
+            Retorna string vacio si:
+            - No hay customer_profile (usuario anonimo) -> sin cambio en el prompt
+            - No hay product_ctx (no esta en una PDP)  -> sin cambio en el prompt
+
+            Bandas de precio CLP:
+            bajo:   < 60.000 CLP  (~60 USD)
+            medio:  60.000 - 120.000 CLP
+            alto:   > 120.000 CLP
+
+            Matriz tier x precio:
+            new   + bajo   -> add-on pequeno + incentivo envio gratis
+            new   + medio  -> complemento mismo rango, popular
+            new   + alto   -> reforzar calidad, cerrar primera compra
+            returning + bajo  -> cross-sell categoria adyacente
+            returning + medio -> alternativa mejor misma coleccion
+            returning + alto  -> alternativa premium o version especial
+            loyal + bajo   -> cross-sell categoria inexplorada
+            loyal + medio  -> item que completa el look del estilo habitual
+            loyal + alto   -> item de coleccion que combina con sus preferidas
+            vip   + bajo   -> add-on exclusivo o edicion limitada
+            vip   + medio  -> version premium del mismo producto
+            vip   + alto   -> novedad exclusiva, pre-order, o pieza especial
+
+            Args:
+                customer_profile:      Dict con ltv_tier, preferred_categories, etc.
+                product_ctx:           Dict con title, product_type, collections, tags.
+                ref_price_clp:         Precio de referencia en CLP (del primer recomendado).
+                preferred_categories:  Categorias preferidas del cliente (max 3).
+                market_currency:       Moneda del mercado activo (ej. "CLP", "CHF").
+
+            Returns:
+                str: Instruccion para Claude (vacia si no aplica).
+            """
+            if not customer_profile or not product_ctx:
+                return ""
+
+            ltv_tier = customer_profile.get("ltv_tier", "new")
+
+            # Clasificar rango de precio en CLP
+            if ref_price_clp < 60_000:
+                price_range = "bajo"
+            elif ref_price_clp <= 120_000:
+                price_range = "medio"
+            else:
+                price_range = "alto"
+
+            # Datos del producto actual para personalizar la instruccion
+            product_name = product_ctx.get("title", "este producto")[:50]
+            product_type = product_ctx.get("product_type", "")
+            collections  = product_ctx.get("collections", [])
+            collection_str = collections[0] if collections else ""
+            cats_str = ", ".join(preferred_categories[:2]) if preferred_categories else ""
+
+            # Matriz de instrucciones (12 combinaciones tier x precio)
+            INSTRUCTIONS = {
+                ("new", "bajo"): (
+                    f"Cliente nuevo. El producto actual ({product_name}) es accesible. "
+                    f"Sugiere un complemento pequeno (accesorios, basicos) que sume valor "
+                    f"sin aumentar mucho el ticket. "
+                    f"Menciona sutilmente si hay umbral de envio gratis cerca."
+                ),
+                ("new", "medio"): (
+                    f"Cliente nuevo explorando {product_type or 'la tienda'}. "
+                    f"Presenta el producto con confianza como eleccion popular. "
+                    f"Si hay un complemento natural de la misma coleccion, menciónalo brevemente."
+                ),
+                ("new", "alto"): (
+                    f"Cliente nuevo considerando un producto premium ({product_name}). "
+                    f"Refuerza la calidad y el valor. No presiones con upsell: "
+                    f"el objetivo es cerrar esta primera compra con confianza."
+                ),
+                ("returning", "bajo"): (
+                    f"Cliente recurrente que conoce la tienda. "
+                    + (f"Afinidad con: {cats_str}. " if cats_str else "")
+                    + f"Sugiere explorar una categoria adyacente que aun no ha probado, "
+                    f"a precio similar o menor."
+                ),
+                ("returning", "medio"): (
+                    f"Cliente recurrente viendo {product_name}. "
+                    + (f"Coleccion: {collection_str}. " if collection_str else "")
+                    + f"Menciona si hay una alternativa de mayor valor en la misma coleccion."
+                ),
+                ("returning", "alto"): (
+                    f"Cliente recurrente considerando producto premium. "
+                    f"Puede mencionar que ya conoce la calidad de la marca. "
+                    f"Sugiere alternativa premium o version especial si existe."
+                ),
+                ("loyal", "bajo"): (
+                    f"Cliente fiel con historial en {cats_str or 'la tienda'}. "
+                    f"Este producto es ideal para sugerir cross-sell "
+                    f"hacia una categoria que aun no ha explorado."
+                ),
+                ("loyal", "medio"): (
+                    f"Cliente fiel viendo {product_name}. "
+                    + (f"Estilo habitual: {cats_str}. " if cats_str else "")
+                    + f"Sugiere el item que completa el look coherente con su estilo. "
+                    f"Tono cercano, como recomendacion personal."
+                ),
+                ("loyal", "alto"): (
+                    f"Cliente fiel eligiendo pieza premium. "
+                    + (f"Coleccion favorita: {collection_str}. " if collection_str else "")
+                    + f"Sugiere item complementario de la misma coleccion que encaje "
+                    f"con sus preferencias."
+                ),
+                ("vip", "bajo"): (
+                    f"Cliente VIP viendo producto de entrada. "
+                    f"Sugiere si existe version exclusiva, edicion limitada o add-on premium "
+                    f"que eleve la experiencia. Tono exclusivo, no generico."
+                ),
+                ("vip", "medio"): (
+                    f"Cliente VIP viendo {product_name}. "
+                    f"Presenta la version premium o de mayor valor de este producto si existe. "
+                    f"Trato exclusivo: este cliente valora lo mejor de cada coleccion."
+                ),
+                ("vip", "alto"): (
+                    f"Cliente VIP eligiendo pieza de alto valor. "
+                    + (f"Coleccion: {collection_str}. " if collection_str else "")
+                    + f"Sugiere novedad exclusiva, pre-order o pieza especial. "
+                    f"Tono de asesor personal de moda, no de vendedor."
+                ),
+            }
+
+            key = (ltv_tier, price_range)
+            instruction = INSTRUCTIONS.get(key, "")
+
+            if not instruction:
+                # Tier desconocido — no modificar el prompt
+                return ""
+
+            logger.info(
+                "tier_upsell_instruction_built ltv_tier=%s price_range=%s price_clp=%.0f currency=%s",
+                ltv_tier, price_range, ref_price_clp, market_currency,
+            )
+
+            return (
+                f"\nPerfil cliente ({ltv_tier.upper()}, producto {price_range} en {market_currency}):\n"
+                f"{instruction}\n"
+                f"Integra esta orientacion de forma natural en la respuesta, "
+                f"sin mencionar el perfil explicitamente.\n"
+            )
+
     def _build_advanced_personalization_prompt(
         self,
         context: PersonalizationContext,
-        personalization_result: Dict[str, Any]
+        personalization_result: Dict[str, Any],
+        user_language: str = ""
     ) -> str:
-        """Construye prompt avanzado de personalización para Claude."""
+        """Construye prompt de personalizacion para Claude.
+
+        FIX (22/03/2026): Prompt reducido de ~1800 tokens a ~400 tokens.
+        El prompt original incluia historial completo serializado como JSON,
+        diccionarios de preferencias vacios, sensibilidad de precio,
+        indicadores de urgencia vacios y 6 instrucciones detalladas que
+        duplicaban el system prompt. Con Haiku eso generaba ~3-4s solo de
+        prefill. El prompt reducido mantiene la informacion util (mercado,
+        idioma, tono, productos) y elimina el ruido.
+        """
         mcp_context = context.mcp_context
-        profile = context.personalization_profile
         market_config = context.market_config
-        
-        # Obtener las mejores recomendaciones
+
+        # Solo las 3 mejores recomendaciones con datos minimos.
+        #
+        # OPCION A (28/03/2026): Precio para el prompt de Claude.
+        #
+        # Los productos ahora llevan un campo market_prices poblado por
+        # ShopifyIntegration.get_products_with_shopify_prices() durante el
+        # startup. Estructura:
+        #   product["market_prices"] = {
+        #     "CL": {"price": 160000.0, "currency": "CLP"},
+        #     "CH": {"price": 159.0,    "currency": "CHF"},
+        #     "MX": {"price": 3200.0,   "currency": "MXN"},
+        #     "US": {"price": 166.4,    "currency": "USD"}
+        #   }
+        #
+        # Prioridad de lectura:
+        #   1. market_prices[market_id]  <- Opcion A: precio Shopify autorizado
+        #   2. market_prices["CL"]       <- fallback al precio nativo CLP
+        #   3. Conversion manual hardcodeada <- ultimo recurso (deuda tecnica)
+        #
+        # El precio que Claude menciona coincidira exactamente con el que
+        # muestra ProductCard porque ambos vienen de la misma fuente Shopify.
+        # REFACTOR (29/03/2026): Funcion local _get_price_for_prompt eliminada.
+        # Usar self._format_price_for_market() que centraliza la logica de las
+        # 3 prioridades y el WARNING del fallback. Ver docstring del metodo.
+
+        # market_id del contexto actual (ej. "CL", "CH", "MX", "US")
+        current_market_id = mcp_context.current_market_id if hasattr(mcp_context, 'current_market_id') else "CL"
+
         top_recs = personalization_result["recommendations"][:3]
+        recs_summary = ", ".join(
+            f"{rec.get('title', 'Producto')[:40]} "
+            f"({self._format_price_for_market(rec, current_market_id, market_config.currency)})"
+            for rec in top_recs
+        ) or "productos seleccionados para ti"
+
+        # Ultima query del usuario (contexto conversacional minimo)
+        # last_query = (
+        #     mcp_context.turns[-1].user_query[:80]
+        #     if mcp_context.turns
+        #     else "busqueda general"
+        # )
+        if mcp_context.turns:
+            # F-07 (Opcion A): Historial estructurado de los ultimos 3 turns.
+            # Sustituye la concatenacion plana anterior que perdia la estructura
+            # temporal y las respuestas del asistente.
+            #
+            # Cada linea le indica a Claude:
+            #   - En que turno estamos (contexto de progresion)
+            #   - Que pidio el usuario (query real, no minuscula)
+            #   - Que productos ya se mostraron (para no repetirlos ni ignorarlos)
+            #
+            # Los titulos de productos se truncan a 35 chars para mantener el
+            # prompt compacto. Si un turn no tiene recomendaciones (ej. saludo
+            # o respuesta informacional) simplemente no se listan productos.
+            #
+            # Nota: ai_response NO se incluye porque:
+            #   1. Puede ser largo y consumir tokens innecesarios con Haiku
+            #   2. Los titulos de productos ya capturan el contexto relevante
+            #   3. La Opcion B (multi-turn nativo de Claude) es el lugar correcto
+            #      para pasar ai_response cuando se implemente en el futuro.
+            history_lines = []
+            for turn in mcp_context.turns[-3:]:
+                # Obtener titulos de productos recomendados en este turno.
+                # recommendations_provided guarda product_ids (strings numericos).
+                # Para el historial del prompt usamos los IDs directamente porque
+                # no tenemos acceso al catalogo desde este metodo; el contexto
+                # "te mostré 3 productos" ya es util para Claude aunque no tenga
+                # los titulos completos. Si en el futuro se quiere enriquecer con
+                # titulos, se puede hacer un lookup en tfidf_recommender.product_data.
+                rec_ids = turn.recommendations_provided
+                if rec_ids:
+                    # Mostrar hasta 3 IDs para mantener el prompt compacto
+                    sample = rec_ids[:3]
+                    rec_str = f"{len(rec_ids)} producto(s) mostrado(s)"
+                else:
+                    rec_str = "sin productos (respuesta informacional)"
+
+                history_lines.append(
+                    f"  Turno {turn.turn_number}: '{turn.user_query}' → {rec_str}"
+                )
+
+            last_query = "\n".join(history_lines)
+        else:
+            last_query = "(primera consulta del usuario)"
+            logger.warning("No conversation turns found in context; using default query text.")
         
-        prompt = f"""Como experto en personalización de e-commerce, genera una respuesta conversacional altamente personalizada.
+        tone = market_config.localization.get(
+            "cultural_preferences", {}
+        ).get("communication_style", "profesional")
 
-CONTEXTO DEL USUARIO:
-- ID: {profile.user_id}
-- Mercado: {market_config.name} ({market_config.currency})
-- Estilo conversacional detectado: {profile.conversation_style}
-- Propensión de compra: {profile.purchase_propensity:.2f}
-- Momentum conversacional: {context.conversation_momentum:.2f}
+        # FIX (31/03/2026 - BUG-LANG-01): Usar idioma del usuario, no del mercado.
+        # market_config.language es el idioma geografico ("de" para CH).
+        # user_language es el idioma real de la query del usuario.
+        # Si no se propaga user_language (llamadas legacy), fallback al geografico.
+        language = user_language if user_language else market_config.language
 
-HISTORIAL CONVERSACIONAL RECIENTE:
-{json.dumps([turn.user_query for turn in mcp_context.turns[-3:]], indent=2)}
+        # ── F-04: Contexto de perfil de cliente ──────────────────────────────
+        # Se lee desde mcp_context.customer_profile (Dict o None).
+        # Si es None (usuario anonimo) no se añade nada al prompt — sin impacto
+        # en tokens ni en comportamiento para sesiones no identificadas.
+        customer_profile = getattr(mcp_context, "customer_profile", None)
+        product_ctx      = getattr(mcp_context, "current_product_context", None)
+        top_recs         = personalization_result["recommendations"][:3]
 
-PREFERENCIAS DEL USUARIO:
-- Categorías de interés: {dict(list(profile.category_affinities.items())[:5])}
-- Sensibilidad al precio: {profile.price_sensitivity_curve}
-- Indicadores de urgencia: {context.urgency_indicators}
+        # Extraer precio de referencia del turno actual (Opcion A):
+        # usamos el precio CLP del primer recomendado como proxy del rango
+        # de precio del producto que el usuario esta viendo.
+        ref_price_clp = 0.0
+        if top_recs:
+            first_rec = top_recs[0]
+            mp = first_rec.get("market_prices") or {}
+            if "CL" in mp:
+                try:
+                    ref_price_clp = float(mp["CL"].get("price", 0))
+                except (TypeError, ValueError):
+                    ref_price_clp = 0.0
+            elif first_rec.get("price"):
+                try:
+                    ref_price_clp = float(first_rec["price"])
+                except (TypeError, ValueError):
+                    ref_price_clp = 0.0
 
-RECOMENDACIONES PERSONALIZADAS:
-{json.dumps([{"título": rec.get("title", ""), "precio": rec.get("price", 0), "score": rec.get("hybrid_score", 0)} for rec in top_recs], indent=2)}
+        # Instruccion de upsell cruzada: tier + rango de precio + categorias preferidas.
+        # Retorna string vacio si no hay perfil de cliente, preservando el
+        # comportamiento actual para usuarios anonimos (sin cambios en el prompt).
+        tier_upsell_instruction = self._build_tier_upsell_instruction(
+            customer_profile=customer_profile,
+            product_ctx=product_ctx,
+            ref_price_clp=ref_price_clp,
+            preferred_categories=(
+                customer_profile.get("preferred_categories", []) if customer_profile else []
+            ),
+            market_currency=market_config.currency,
+        )
 
-ADAPTACIÓN CULTURAL REQUERIDA:
-- Idioma: {market_config.language}
-- Estilo comunicación: {market_config.localization.get("cultural_preferences", {}).get("communication_style", "standard")}
-- Moneda local: {market_config.currency}
+         # ── F-01: Contexto del producto actual (upsell contextual) ─────────────────
+         # Construir lineas descriptivas del producto actual para el prompt
+        upsell_context_line = ""
+        if product_ctx:
+            ctx_parts = [f"Producto actual: {product_ctx['title']}"]
+            if product_ctx.get("product_type"):
+                ctx_parts.append(f"Categor\u00eda: {product_ctx['product_type']}")
+            if product_ctx.get("collections"):
+                ctx_parts.append(f"Colecci\u00f3n: {', '.join(product_ctx['collections'][:2])}")
+            if product_ctx.get("tags"):
+                ctx_parts.append(f"Atributos: {', '.join(product_ctx['tags'][:5])}")
+            if product_ctx.get("variants_count", 0) > 1:
+                ctx_parts.append(f"Variantes disponibles: {product_ctx['variants_count']}")
+            upsell_context_line = "\n".join(ctx_parts)
+            logger.info(
+                "F-01 upsell tier_instruction_active=%s ltv_tier=%s price_clp=%.0f",
+                bool(tier_upsell_instruction),
+                customer_profile.get("ltv_tier", "anon") if customer_profile else "anon",
+                ref_price_clp,
+            )
 
-INSTRUCCIONES DE PERSONALIZACIÓN:
-1. Responde en {market_config.language} con tono {market_config.localization.get("cultural_preferences", {}).get("communication_style", "profesional")}
-2. Menciona específicamente por qué cada recomendación es relevante para ESTE usuario
-3. Incluye precios en {market_config.currency} de manera natural
-4. Considera el momentum conversacional ({context.conversation_momentum:.2f}) para ajustar urgencia
-5. Si hay indicadores de urgencia, incluye elementos de persuasión apropiados
-6. Personaliza basado en su estilo conversacional: {profile.conversation_style}
+        # Build prompt con instruccion cruzada tier x producto
+        # Si tier_upsell_instruction esta disponible (cliente identificado viendo un
+        # producto), se usa en lugar de la instruccion generica de upsell.
+        # Si no hay perfil ni producto, el prompt funciona igual que antes.
+        prompt = (
+            f"Como experto en personalizacion de e-commerce, genera una respuesta "
+            f"conversacional personalizada.\n"
+            f"Responde en {language} con tono {tone} en 2 o 3 oraciones maximo.\n"
+            f"No inicies con frases como 'Basandome en tu busqueda...'\n"
+            f"Especialidad: Personalizacion comportamental\n"
+        )
 
-FORMATO DE RESPUESTA JSON:
-{{
-  "response": "Respuesta conversacional personalizada (máximo 200 palabras)",
-  "tone_adaptation": "Tono usado (warm/professional/direct/formal)",
-  "cultural_context": {{"elementos_culturales": ["elemento1", "elemento2"]}},
-  "personalization_elements": ["elemento personalizado 1", "elemento personalizado 2"],
-  "engagement_hooks": ["gancho de engagement 1", "gancho de engagement 2"]
-}}
+        if tier_upsell_instruction:
+            # Instruccion especifica tier x producto (cliente identificado)
+            prompt += tier_upsell_instruction
+        elif upsell_context_line:
+            # Sin perfil de cliente: instruccion generica de upsell
+            prompt += (
+                f"\nContexto del producto que el usuario esta viendo:\n{upsell_context_line}\n"
+                "Si es natural en la conversacion, sugiere complementos o alternativas "
+                "de mayor valor de la misma coleccion o categoria. "
+                "No menciones el upsell de forma forzada, solo si enriquece la respuesta.\n"
+            )
 
-Genera la respuesta personalizada:"""
-        
+        # ── F-02: Contexto de tallas del cliente (11/04/2026) ────────────────────
+        # Se lee desde mcp_context.size_profile (SizeProfile o None).
+        # Solo se annade al prompt si el perfil existe, tiene datos suficientes
+        # (confidence >= 0.4) y hay variantes de producto disponibles para
+        # comparar. Sin estos dos datos, la sugerencia seria vaga y perdera
+        # confianza del usuario.
+        #
+        # Ejemplo de bloque generado (usuario con talla M en vestidos):
+        #   Perfil de tallas: el cliente suele pedir talla M en VESTIDOS
+        #   (basado en 4 pedidos, confianza: 75%).
+        #   Tallas disponibles del producto actual: XS, S, M, L.
+        #   Orienta la respuesta mencionando que la M le quedara bien,
+        #   sin hacer promesas absolutas.
+        size_profile = getattr(mcp_context, "size_profile", None)
+        if size_profile and size_profile.has_data() and product_ctx:
+            # Determinar la talla recomendada: buscar por categoria del producto
+            # actual primero, luego usar la talla global mas frecuente como fallback.
+            product_type_upper = (product_ctx.get("product_type") or "").upper().strip()
+
+            # Intentar mapear product_type a un grupo de categoria de tallas
+            # usando el mismo CATEGORY_GROUPS del servicio
+            SIZE_GROUP_MAP = {
+                "VESTIDOS LARGOS": "VESTIDOS", "VESTIDOS CORTOS": "VESTIDOS",
+                "VESTIDOS MIDIS": "VESTIDOS", "NOVIAS LARGOS": "VESTIDOS",
+                "NOVIAS CORTOS": "VESTIDOS", "NOVIAS MIDIS": "VESTIDOS",
+                "ENTERITOS LARGOS": "ENTERITOS", "ENTERITOS CORTOS": "ENTERITOS",
+                "TOPS": "TOPS", "BRALETTES": "TOPS",
+                "FALDAS": "FALDAS", "PANTALONES": "PANTALONES", "LEGGINGS": "PANTALONES",
+                "CONJUNTOS FALDAS": "CONJUNTOS", "CONJUNTOS PANTALONES": "CONJUNTOS",
+            }
+            size_group = SIZE_GROUP_MAP.get(product_type_upper, product_type_upper)
+
+            # Talla recomendada: usa best_size_for_category() que verifica
+            # confianza por categoria antes de recomendar.
+            # FIX (12/04/2026): antes usaba size_by_category.get() directamente,
+            # ignorando la confianza por categoria.
+            recommended_size = (
+                size_profile.best_size_for_category(size_group)
+                or size_profile.best_size_for_category(product_type_upper)
+                or (size_profile.most_common_size
+                    if size_profile.confidence >= 0.4  # mismo umbral que MIN_CONFIDENCE_THRESHOLD
+                    else None)
+            )
+            if recommended_size:
+                # Confianza de la categoria especifica (mas precisa que la global)
+                cat_confidence = (
+                    size_profile.confidence_by_category.get(size_group)
+                    or size_profile.confidence_by_category.get(product_type_upper)
+                    or size_profile.confidence
+                )
+                confidence_pct = int(cat_confidence * 100)
+                orders_n = size_profile.orders_analyzed
+                category_label = size_group or product_type_upper or "productos"
+
+                sizing_block = (
+                    f"\nPerfil de tallas del cliente: suele pedir talla "
+                    f"{recommended_size} en {category_label} "
+                    f"(basado en {orders_n} pedido(s), confianza: {confidence_pct}%).\n"
+                )
+                logger.warning(f"recommended_size_prompt: {sizing_block}")
+                # Si hay variantes de producto disponibles en product_ctx,
+                # anadir las opciones para que Claude pueda comparar.
+                # product_ctx no incluye las variantes en el dict actual (F-01
+                # solo guarda variants_count). Si en el futuro se annade la
+                # lista de variantes, se puede enriquecer este bloque.
+                # Por ahora, orientamos a Claude a confirmar la disponibilidad
+                # sin afirmar que la talla exacta esta en stock.
+                sizing_block += (
+                    f"Si la talla {recommended_size} esta disponible en este producto, "
+                    f"mencionalo con confianza. Si no esta disponible, sugiere la talla "
+                    f"mas cercana disponible sin hacer promesas absolutas.\n"
+                    f"Integra esta orientacion de forma natural, sin citar el numero "
+                    f"de pedidos ni el porcentaje de confianza explicitamente.\n"
+                )
+                prompt += sizing_block
+                logger.info(
+                    "F-02 sizing_context_added_to_prompt "
+                    "customer_size=%s category=%s confidence=%d orders=%d",
+                    recommended_size, category_label, confidence_pct, orders_n,
+                )
+        # ── Fin F-02 ─────────────────────────────────────────────────────────────────
+        # ── F-05: Stock Alert en el prompt de personalización (13/04/2026) ────────
+        # FIX (18/04/2026): El logger.warning anterior estaba FUERA del guard
+        # 'if product_ctx', causando TypeError cuando product_ctx es None
+        # (usuario en búsqueda general, no en PDP). Movido al interior.
+        if product_ctx and product_ctx.get("stock_alert"):
+            logger.warning(
+                "F-05 stock_alert_detected alert=%s handle=%s",
+                product_ctx["stock_alert"],
+                product_ctx.get("handle", "?"),
+            )
+            
+            try:
+                from src.api.core.kb_contextualizer import _build_stock_alert_block
+                _lang_key = (language or "es").split("-")[0].lower()
+                stock_alert_block = _build_stock_alert_block(
+                    product_context=product_ctx,
+                    language=_lang_key,
+                )
+                if stock_alert_block:
+                    prompt += stock_alert_block
+                    logger.info(
+                        "F-05 stock_alert_added_to_prompt alert=%s handle=%s",
+                        product_ctx["stock_alert"],
+                        product_ctx.get("handle", "?"),
+                    )
+            except Exception as _stock_e:
+                logger.warning("F-05 stock_alert_block_failed (graceful degradation): %s", _stock_e)
+        # ── Fin F-05 ─────────────────────────────────────────────────────────────
+
+        # ── Solución B (UX): Mencionar producto en respuestas contextuales ───────
+        # Cuando el usuario está en una página de producto y hace preguntas sobre
+        # tallas, stock o material, el asistente debe mencionar el nombre del
+        # producto para que el usuario sepa que la respuesta es específica a ese item.
+        # Esto evita mostrar chips visuales adicionales manteniendo claridad.
+        if product_ctx:
+            prompt += (
+                f"\nIMPORTANTE: El usuario está viendo el producto '{product_ctx['title']}'. "
+                f"Cuando respondas sobre tallas, disponibilidad, material o características, "
+                f"menciona el nombre del producto al inicio para que el usuario sepa que "
+                f"estás hablando de este item específico. Ejemplo: 'El {product_ctx['title']}...'\n"
+            )
+        # ── Fin Solución B ───────────────────────────────────────────────────────
+
+        prompt += (
+            f"Historial conversacional (ultimos 3 turnos):\n{last_query}\n"
+            f"Construir sobre la conversacion, manteniendo coherencia durante todo el flujo.\n"
+            f"Moneda: {market_config.currency}\n"
+            f"Productos recomendados: {recs_summary}\n\n"
+            f"- Por que estos productos son ideales para su busqueda.\n"
+            f"- Destaca el producto mas relevante con su precio.\n"
+            f"Respuesta directa sin JSON:"
+        )
+
         return prompt
     
-    def _build_personalized_system_prompt(self, context: PersonalizationContext) -> str:
-        """Construye system prompt personalizado para Claude."""
+    def _build_personalized_system_prompt(
+        self,
+        context: PersonalizationContext,
+        user_language: str = ""
+    ) -> str:
+        """Construye system prompt para Claude.
+
+        FIX (22/03/2026): Reducido de ~400 tokens a ~60 tokens.
+        El system prompt original duplicaba instrucciones ya presentes en el
+        user prompt (idioma, tono, mercado) y listaba 'capacidades' que Claude
+        no necesita conocer para generar 2-3 oraciones de recomendacion.
+
+        FIX (31/03/2026 — BUG-LANG-01): Idioma del sistema prompt.
+        ANTES: se usaba market_config.language ("de" para CH) como instruccion
+        de idioma a Claude. Claude obedecia y respondia en aleman aunque el
+        usuario escribiera en espanol.
+        AHORA: se usa user_language, detectado desde la query del usuario por
+        _detect_user_language(). Si el usuario escribe en espanol, Claude
+        responde en espanol. La instruccion es explicita y en primera posicion
+        del system prompt para maximizar su peso en la respuesta de Claude.
+
+        NOTA: Existe tambien _build_personalized_system_prompt en el path secundario
+        (segunda version de _generate_claude_personalized_response que usa
+        config.to_anthropic_params()) con un system prompt mas completo que incluye
+        el estilo de conversacion del usuario. Ambas versiones son validas y se usan
+        en diferentes paths de llamada.
+        """
         market_config = context.market_config
-        profile = context.personalization_profile
-        
-        return f"""Eres un asistente de compras AI experto en personalización para el mercado {market_config.name}.
+        tone = market_config.localization.get(
+            "cultural_preferences", {}
+        ).get("communication_style", "profesional")
 
-ESPECIALIZACIÓN:
-- Experto en e-commerce para {market_config.name}
-- Dominio cultural de {market_config.localization.get("cultural_preferences", {})}
-- Especialista en personalización comportamental
-- Optimizado para conversiones en {market_config.currency}
+        # Determinar el idioma a usar:
+        #   1. user_language detectado de la query del usuario (fuente primaria)
+        #   2. market_config.language como fallback si user_language esta vacio
+        # La instruccion va en PRIMERA LINEA del system prompt para maximizar
+        # su peso — Claude da mas prioridad a instrucciones al inicio del prompt.
+        effective_language = user_language if user_language else market_config.language
 
-PERSONALIDAD ADAPTADA:
-- Estilo: {market_config.localization.get("cultural_preferences", {}).get("communication_style", "profesional")}
-- Idioma nativo: {market_config.language}
-- Conocimiento local: {market_config.name} específico
-- Sensibilidad cultural: Máxima para {market_config.id}
+        # return (
+        #     f"Responde siempre en {effective_language}. "
+        #     f"Eres un asistente de compras para {market_config.name} con tono {tone}. "
+        #     f"Respuestas cortas y directas, maximo 3 oraciones."
+        # )
+        return (
+            # f"Eres un asistente de compras AI experto en personalización para el mercado {market_config.name} "
+            f"Eres un asistente de compras AI experto en:"
+            f"- marketing de moda, "
+            f"- estilismo/imagen personal, "
+            f"- diseño de moda. "
+            f"Responde siempre en {effective_language} con tono {tone}. "
+            # f"Especialidades: marketing de moda, estilismo/imagen personal, diseño de moda.\n"
+            # f"Usa elementos culturales apropiados para {market_config.id}.\n"
 
-CAPACIDADES DE PERSONALIZACIÓN:
-- Análisis de comportamiento de usuario en tiempo real
-- Adaptación cultural automática por mercado
-- Recomendaciones contextualizadas por intención
-- Optimización de conversión por usuario específico
 
-DIRECTRICES DE RESPUESTA:
-- Siempre personaliza basado en el perfil único del usuario
-- Adapta precios y disponibilidad al mercado local
-- Usa elementos culturales apropiados para {market_config.id}
-- Mantén consistencia con el estilo conversacional del usuario
-- Optimiza para conversión considerando propensión de compra del usuario
+            # f"Dominio cultural: {market_config.localization.get("cultural_preferences", {})}.\n"
+            f"Tu objetivo es crear experiencias conversacionales que se sientan únicas para cada usuario, optimizando para conversión y satisfacción.\n"
 
-Tu objetivo es crear experiencias conversacionales que se sientan únicas para cada usuario en su mercado específico."""
+            f"Respuestas cortas y directas, 2 oraciones, maximo 3."       
+        )
     
     # === MÉTODOS DE ANÁLISIS Y CÁLCULO ===
     
@@ -1962,9 +3159,9 @@ Tu objetivo es crear experiencias conversacionales que se sientan únicas para c
                 purchase_indicators += 0.1
             
             # Actualizar propensión (promedio móvil)
-            current_propensity = profile.purchase_propensity
-            new_propensity = (current_propensity * 0.7) + (purchase_indicators * 0.3)
-            profile.purchase_propensity = min(new_propensity, 1.0)
+            profile.purchase_propensity = min(
+                (profile.purchase_propensity * 0.7) + (purchase_indicators * 0.3), 1.0
+            )
             
         except Exception as e:
             logger.error(f"Error updating purchase propensity: {e}")
@@ -2082,12 +3279,21 @@ Tu objetivo es crear experiencias conversacionales que se sientan únicas para c
                 "timestamp": time.time()
             }
             
+            # ✅ ENTERPRISE FIX (17/03/2026): Usar redis_service si está disponible,
+            # fallback a redis (legacy). self.redis es None cuando el engine fue
+            # creado via ServiceFactory — causa el error del log:
+            # "Error recording personalization analytics: 'NoneType' object has no attribute 'set'"
+            redis_client = self.redis_service or self.redis
+            if not redis_client:
+                logger.warning("Redis not available - skipping personalization analytics recording")
+                return
+
             # Guardar en Redis para analytics posteriores
             analytics_key = f"mcp:analytics:personalization:{mcp_context.session_id}:{int(time.time())}"
-            await self.redis.set(
+            await redis_client.set(
                 analytics_key,
                 json.dumps(analytics_event),
-                ex=7 * 24 * 3600  # 7 días
+                ttl=7 * 24 * 3600  # 7 días; RedisService usa ttl= (no ex=)
             )
             
         except Exception as e:
@@ -2200,20 +3406,28 @@ Tu objetivo es crear experiencias conversacionales que se sientan únicas para c
     async def _check_product_availability(self, product_id: str, market_id: str) -> bool:
         """Verifica disponibilidad de producto en mercado específico."""
         try:
+            # ✅ ENTERPRISE FIX (17/03/2026): Usar redis_service si está disponible,
+            # fallback a redis (legacy). self.redis es None cuando el engine fue
+            # creado via ServiceFactory.
+            redis_client = self.redis_service or self.redis
+            if not redis_client:
+                # Sin Redis no bloqueamos el flujo — asumimos disponible
+                return True
+
             # Verificar en caché primero
             cache_key = f"availability:{market_id}:{product_id}"
-            cached_availability = await self.redis.get(cache_key)
-            
+            cached_availability = await redis_client.get(cache_key)
+
             if cached_availability is not None:
                 return json.loads(cached_availability)
-            
+
             # En implementación real, esto consultaría Shopify Markets/MCP
             # Por ahora, simulamos disponibilidad alta
             availability = True  # 90% de productos disponibles por defecto
-            
-            # Cachear resultado por 1 hora
-            await self.redis.set(cache_key, json.dumps(availability), ex=3600)
-            
+
+            # Cachear resultado por 1 hora; RedisService usa ttl= (no ex=)
+            await redis_client.set(cache_key, json.dumps(availability), ttl=3600)
+
             return availability
             
         except Exception as e:
@@ -2314,12 +3528,20 @@ Tu objetivo es crear experiencias conversacionales que se sientan únicas para c
             cutoff_time = time.time() - (lookback_days * 24 * 3600)
             sessions = []
             
+            # ✅ ENTERPRISE FIX (17/03/2026): Usar redis_service si está disponible,
+            # fallback a redis (legacy). self.redis es None cuando el engine fue
+            # creado via ServiceFactory.
+            redis_client_sessions = self.redis_service or self.redis
+            if not redis_client_sessions:
+                logger.warning("Redis not available - returning empty session history")
+                return []
+
             # En implementación real, esto buscaría en base de datos de sesiones
             # Por ahora, simulamos con datos de ejemplo
-            session_keys = await self.redis.keys(f"mcp:conversation:{user_id}:*")
-            
+            session_keys = await redis_client_sessions.keys(f"mcp:conversation:{user_id}:*")
+
             for key in session_keys:
-                session_data = await self.redis.get(key)
+                session_data = await redis_client_sessions.get(key)
                 if session_data:
                     session = json.loads(session_data)
                     if (session.get("created_at", 0) > cutoff_time and 
@@ -2913,6 +4135,180 @@ Tu objetivo es crear experiencias conversacionales que se sientan únicas para c
         except Exception as e:
             logger.error(f"Error calculating brand factor: {e}")
             return 0.5
+    
+    def _determine_personalization_tier(self, context: PersonalizationContext) -> str:
+        """Determina el tier de personalización basado en el contexto."""
+        if context.personalization_profile.purchase_propensity > 0.8:
+            return "premium"
+        elif context.personalization_profile.purchase_propensity > 0.5:
+            return "standard"
+        else:
+            return "basic"
+
+    def _build_personalized_user_prompt(
+        self,
+        context: PersonalizationContext,
+        personalized_result: Dict[str, Any]
+    ) -> str:
+        """Construye prompt del usuario con contexto personalizado.
+
+        FIX (28/03/2026 - Opcion A): El precio ahora se lee desde market_prices
+        en lugar de rec.get('price'), que solo contenia el valor CLP crudo.
+        market_prices es poblado por ShopifyIntegration.get_products_with_shopify_prices()
+        durante el startup con precios autorizados por Shopify para cada mercado.
+
+        Misma logica que _build_advanced_personalization_prompt._get_price_for_prompt().
+        Mantener sincronizados si se cambia la logica de formato de precios.
+        """
+        recommendations = personalized_result.get("recommendations", [])
+        market_id = context.mcp_context.current_market_id
+        market_currency = context.market_config.currency
+
+        # REFACTOR (30/03/2026): Funcion local _format_price() eliminada.
+        # Ahora usa self._format_price_for_market() que centraliza la logica
+        # de las 3 prioridades y el WARNING del fallback en un unico lugar.
+        # Ver docstring de _format_price_for_market() para detalle completo.
+
+        prompt = f"Usuario consulta: {context.mcp_context.current_query}\n\n"
+
+        if recommendations:
+            prompt += "Recomendaciones personalizadas disponibles:\n"
+            for i, rec in enumerate(recommendations[:3], 1):
+                price_str = self._format_price_for_market(rec, market_id, market_currency)
+                prompt += f"{i}. {rec.get('title', 'Producto')} - {price_str}\n"
+            prompt += "\n"
+
+        prompt += "Responde de manera personalizada y util, incluyendo las recomendaciones si son relevantes."
+
+        return prompt
+
+    def _calculate_personalization_level(self, context: PersonalizationContext) -> float:
+        """Calcula el nivel de personalización aplicado."""
+        factors = [
+            len(context.personalization_profile.category_affinities) * 0.1,
+            context.personalization_profile.purchase_propensity * 0.3,
+            len(context.real_time_signals) * 0.05,
+            context.conversation_momentum * 0.2
+        ]
+        return min(sum(factors), 1.0)
+
+    def _evaluate_response_quality(self, response_text: str) -> float:
+        """Evalúa la calidad de la respuesta generada."""
+        # Evaluación básica de calidad
+        quality_score = 0.5  # Base score
+        
+        if len(response_text) > 50:
+            quality_score += 0.2
+        if any(word in response_text.lower() for word in ["recomiendo", "sugiero", "perfecto"]):
+            quality_score += 0.2
+        if response_text.count('.') >= 2:  # Múltiples oraciones
+            quality_score += 0.1
+        
+        return min(quality_score, 1.0)
+
+    def _generate_fallback_response(self, context: PersonalizationContext) -> str:
+        """Genera respuesta de fallback cuando Claude falla."""
+        market_id = context.market_config.market_id
+        
+        fallback_responses = {
+            "US": "I'm here to help you find the perfect products. Let me assist you with your shopping needs.",
+            "ES": "Estoy aquí para ayudarte a encontrar los productos perfectos. Permíteme asistirte con tus necesidades de compra.",
+            "MX": "¡Hola! Estoy aquí para ayudarte a encontrar exactamente lo que buscas. ¿En qué te puedo ayudar?"
+        }
+        
+        return fallback_responses.get(market_id, fallback_responses["US"])
+
+    async def _generate_claude_personalized_response_v2(
+        self,
+        personalization_context: PersonalizationContext,
+        personalized_result: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Genera respuesta conversacional personalizada usando Claude con configuración centralizada.
+        
+        Esta es la versión secundaria que usa config.to_anthropic_params() y devuelve
+        un dict con métricas adicionales (model_used, tokens_used, cost_estimate, etc.).
+        Se usa en el path de personalización avanzada cuando se necesitan esas métricas.
+
+        NOTA: La versión principal es _generate_claude_personalized_response() que devuelve
+        str puro (FIX 27/03/2026). Esta versión (_v2) es complementaria y devuelve el dict
+        completo para casos donde se requieren las métricas de respuesta.
+        
+        Args:
+            personalization_context: Contexto de personalización
+            personalized_result: Resultado de personalización previo
+            
+        Returns:
+            Dict con respuesta y métricas de la llamada Claude
+        """
+        try:
+            # 🚀 REFACTORIZADO: Usar configuración centralizada Claude
+            call_context = {
+                "user_id": personalization_context.mcp_context.user_id,
+                "market_id": personalization_context.market_config.market_id,
+                "personalization_tier": self._determine_personalization_tier(personalization_context)
+            }
+            
+            config = self.claude_config.get_model_config(call_context)
+            
+            # Construir prompts personalizados
+            system_prompt = self._build_personalized_system_prompt(personalization_context)
+            user_prompt = self._build_personalized_user_prompt(
+                personalization_context, 
+                personalized_result
+            )
+            
+            # Log de diagnóstico para monitorear el tamaño del prompt en producción.
+            # Buscar 'mcp_prompt_size' en GCP Logs Explorer para confirmar que los tokens
+            # de INPUT están dentro del rango esperado (system ~80t, user ~60t = ~140t total).
+            logger.info(
+                f"🎯 Generating personalized Claude response with {config.model_name} | "
+                f"mcp_prompt_size: system={len(system_prompt)}chars user={len(user_prompt)}chars"
+            )
+            
+            # CORRECCIÓN (21/03/2026): el system prompt va en el parámetro `system=`
+            # de la API de Anthropic — NO en messages[] con role="system".
+            # Poner role="system" en messages[] es inválido para la API de Anthropic
+            # (a diferencia de OpenAI). El SDK puede silenciosamente rechazarlo o
+            # tratarlo como un mensaje de usuario, causando comportamiento inesperado
+            # y potencialmente re-intentos internos que añaden latencia.
+            # Referencia: https://docs.anthropic.com/en/api/messages
+            response = await self.claude.messages.create(
+                **config.to_anthropic_params(),
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_prompt}
+                ]
+            )
+            
+            # Calcular métricas
+            tokens_used = response.usage.output_tokens if hasattr(response, 'usage') else 0
+            cost_estimate = (tokens_used * config.cost_per_1k_tokens / 1000) if tokens_used > 0 else 0
+            
+            return {
+                "conversational_response": response.content[0].text,
+                "model_used": config.model_name,  # ✅ Siempre correcto desde configuración
+                "model_tier": self.claude_config.claude_model_tier.value,
+                "tokens_used": tokens_used,
+                "cost_estimate": cost_estimate,
+                "personalization_level": self._calculate_personalization_level(personalization_context),
+                "cultural_adaptation": personalized_result.get("cultural_adaptation", {}),
+                "response_quality_score": self._evaluate_response_quality(response.content[0].text)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating Claude personalized response v2: {e}")
+            
+            # Fallback response
+            return {
+                "conversational_response": self._generate_fallback_response(personalization_context),
+                "model_used": None,
+                "model_tier": self.claude_config.claude_model_tier.value,
+                "tokens_used": 0,
+                "cost_estimate": 0,
+                "error": str(e),
+                "fallback_used": True
+            }
 
 
 # === CLASE AUXILIAR PARA ANÁLISIS DE INSIGHTS ===
@@ -2922,10 +4318,22 @@ class PersonalizationInsightsAnalyzer:
     Analizador especializado para extraer insights profundos
     de datos de personalización y generar recomendaciones accionables.
     """
-    
-    def __init__(self, redis_client=None):
-        """Initialize PersonalizationInsightsAnalyzer with enterprise Redis support"""
-        self.redis = redis_client  # Will use ServiceFactory if None
+
+    def __init__(self, redis_client=None, redis_service=None):
+        """
+        Initialize PersonalizationInsightsAnalyzer with enterprise Redis support.
+
+        Args:
+            redis_client: Legacy raw Redis client (puede ser None).
+            redis_service: RedisService enterprise (preferido). Si ambos son None,
+                           los métodos de análisis devolverán datos vacíos gracefully.
+        """
+        # ✅ ENTERPRISE FIX (17/03/2026): soportar redis_service (enterprise)
+        # además del redis_client legacy.  self.redis podría ser None si la clase
+        # se instancia sin argumentos — todos los métodos deben usar el patrón
+        # `redis_client = self.redis_service or self.redis` antes de llamar a Redis.
+        self.redis_service = redis_service
+        self.redis = redis_client  # Legacy compatibility — puede ser None
         
     async def generate_comprehensive_user_report(
         self,
@@ -2984,9 +4392,14 @@ class PersonalizationInsightsAnalyzer:
     async def _analyze_behavioral_profile(self, user_id: str, market_id: str) -> Dict[str, Any]:
         """Analiza el perfil comportamental detallado del usuario."""
         try:
+            # ✅ ENTERPRISE: Usar redis_service si está disponible, fallback a redis
+            redis_client = self.redis_service or self.redis
+            if not redis_client:
+                return {"status": "no_redis", "message": "Redis no disponible"}
+
             # Obtener datos históricos del usuario
             profile_key = f"mcp:personalization:profile:{user_id}"
-            profile_data = await self.redis.get(profile_key)
+            profile_data = await redis_client.get(profile_key)
             
             if not profile_data:
                 return {"status": "no_data", "message": "Perfil no encontrado"}
@@ -3014,20 +4427,24 @@ class PersonalizationInsightsAnalyzer:
     async def _analyze_conversation_effectiveness(self, user_id: str, market_id: str) -> Dict[str, Any]:
         """Analiza la efectividad de las conversaciones del usuario."""
         try:
+            # ✅ ENTERPRISE: Usar redis_service si está disponible, fallback a redis
+            redis_client = self.redis_service or self.redis
+            if not redis_client:
+                return {"status": "no_redis", "message": "Redis no disponible"}
+
             # Buscar sesiones conversacionales
-            session_keys = await self.redis.keys(f"mcp:conversation:*{user_id}*")
-            
+            session_keys = await redis_client.keys(f"mcp:conversation:*{user_id}*")
+
             if not session_keys:
                 return {"status": "no_conversations", "message": "No hay conversaciones registradas"}
-            
+
             # Métricas de efectividad
             total_sessions = len(session_keys)
             successful_sessions = 0
             avg_satisfaction = 0.0
-            conversation_patterns = {}
-            
+
             for key in session_keys:
-                session_data = await self.redis.get(key)
+                session_data = await redis_client.get(key)
                 if session_data:
                     session = json.loads(session_data)
                     if session.get("current_market_id") == market_id:
@@ -3063,9 +4480,14 @@ class PersonalizationInsightsAnalyzer:
         try:
             recommendations = []
             
+            # ✅ ENTERPRISE: Usar redis_service si está disponible, fallback a redis
+            redis_client = self.redis_service or self.redis
+            if not redis_client:
+                return []
+
             # Obtener perfil y sesiones para análisis
             profile_key = f"mcp:personalization:profile:{user_id}"
-            profile_data = await self.redis.get(profile_key)
+            profile_data = await redis_client.get(profile_key)
             
             if profile_data:
                 profile = json.loads(profile_data)
@@ -3148,9 +4570,14 @@ class PersonalizationInsightsAnalyzer:
     async def _perform_deep_predictive_analysis(self, user_id: str, market_id: str) -> Dict[str, Any]:
         """Realiza análisis predictivo profundo del comportamiento del usuario."""
         try:
+            # ✅ ENTERPRISE: Usar redis_service si está disponible, fallback a redis
+            redis_client = self.redis_service or self.redis
+            if not redis_client:
+                return {"status": "no_redis"}
+
             # Obtener datos históricos extensos
             profile_key = f"mcp:personalization:profile:{user_id}"
-            profile_data = await self.redis.get(profile_key)
+            profile_data = await redis_client.get(profile_key)
             
             if not profile_data:
                 return {"status": "insufficient_data"}
@@ -3303,6 +4730,42 @@ class PersonalizationInsightsAnalyzer:
         
         return analysis
     
+    def _analyze_temporal_patterns(self, behavioral_patterns: Dict) -> Dict[str, Any]:
+        """Analiza patrones temporales de interacción."""
+        temporal_prefs = behavioral_patterns.get("temporal_preferences", {})
+        
+        if not temporal_prefs:
+            return {"status": "no_temporal_data"}
+        
+        peak_hour = max(temporal_prefs, key=temporal_prefs.get) if temporal_prefs else None
+        
+        return {
+            "peak_activity_hour": peak_hour.replace("hour_", "") if peak_hour else None,
+            "total_time_slots_active": len(temporal_prefs),
+            "activity_distribution": temporal_prefs
+        }
+    
+    def _analyze_engagement_characteristics(self, profile: Dict) -> Dict[str, Any]:
+        """Analiza las características de engagement del usuario."""
+        return {
+            "conversation_style": profile.get("conversation_style", "standard"),
+            "purchase_propensity": profile.get("purchase_propensity", 0.5),
+            "category_diversity": len(profile.get("category_affinities", {})),
+            "cross_market_presence": len(profile.get("cross_market_insights", {}).get("market_behaviors", {}))
+        }
+    
+    def _analyze_market_adaptation(self, profile: Dict, market_id: str) -> Dict[str, Any]:
+        """Analiza la adaptación del usuario al mercado específico."""
+        market_behaviors = profile.get("cross_market_insights", {}).get("market_behaviors", {})
+        market_data = market_behaviors.get(market_id, {})
+        
+        return {
+            "sessions_in_market": market_data.get("total_sessions", 0),
+            "avg_turns_in_market": market_data.get("avg_turns_per_session", 0),
+            "last_activity": market_data.get("last_activity", 0),
+            "market_engagement_level": "high" if market_data.get("total_sessions", 0) > 5 else "low"
+        }
+    
     def _classify_price_sensitivity(self, price_curve: Dict) -> str:
         """Clasifica el perfil de sensibilidad al precio."""
         if not price_curve:
@@ -3345,6 +4808,21 @@ class PersonalizationInsightsAnalyzer:
         except Exception as e:
             logger.error(f"Error calculating session effectiveness: {e}")
             return 0.5
+    
+    def _calculate_clarity_score(self, session_keys: List) -> float:
+        """Calcula score de claridad de conversaciones (simplificado)."""
+        # En implementación real, analizaría la claridad de las respuestas
+        return 0.75  # Placeholder
+    
+    def _calculate_relevance_score(self, session_keys: List) -> float:
+        """Calcula score de relevancia de conversaciones (simplificado)."""
+        # En implementación real, analizaría la relevancia de las recomendaciones
+        return 0.80  # Placeholder
+    
+    def _identify_conversation_improvement_areas(self, session_keys: List) -> List[str]:
+        """Identifica áreas de mejora en conversaciones (simplificado)."""
+        # En implementación real, analizaría patrones de bajo rendimiento
+        return ["Mejorar claridad de respuestas", "Aumentar relevancia de recomendaciones"]
     
     def _predict_customer_lifecycle_stage(self, profile: Dict) -> str:
         """Predice la etapa del ciclo de vida del cliente."""
@@ -3425,163 +4903,100 @@ class PersonalizationInsightsAnalyzer:
         except Exception as e:
             logger.error(f"Error predicting customer lifetime value: {e}")
             return {"predicted_value": 0, "confidence": 0.0}
-
-
-# === FACTORY PARA CREAR INSTANCIA CONFIGURADA ===
-
-    async def _generate_claude_personalized_response(
-        self,
-        personalization_context: PersonalizationContext,
-        personalized_result: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Genera respuesta conversacional personalizada usando Claude con configuración centralizada.
-        
-        Args:
-            personalization_context: Contexto de personalización
-            personalized_result: Resultado de personalización previo
-            
-        Returns:
-            Respuesta conversacional personalizada
-        """
-        try:
-            # 🚀 REFACTORIZADO: Usar configuración centralizada Claude
-            call_context = {
-                "user_id": personalization_context.mcp_context.user_id,
-                "market_id": personalization_context.market_config.market_id,
-                "personalization_tier": self._determine_personalization_tier(personalization_context)
-            }
-            
-            config = self.claude_config.get_model_config(call_context)
-            
-            # Construir prompts personalizados
-            system_prompt = self._build_personalized_system_prompt(personalization_context)
-            user_prompt = self._build_personalized_user_prompt(
-                personalization_context, 
-                personalized_result
-            )
-            
-            logger.info(f"🎯 Generating personalized Claude response with {config.model_name}")
-            
-            response = await self.claude.messages.create(
-                **config.to_anthropic_params(),
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ]
-            )
-            
-            # Calcular métricas
-            tokens_used = response.usage.output_tokens if hasattr(response, 'usage') else 0
-            cost_estimate = (tokens_used * config.cost_per_1k_tokens / 1000) if tokens_used > 0 else 0
-            
-            return {
-                "conversational_response": response.content[0].text,
-                "model_used": config.model_name,  # ✅ Siempre correcto desde configuración
-                "model_tier": self.claude_config.claude_model_tier.value,
-                "tokens_used": tokens_used,
-                "cost_estimate": cost_estimate,
-                "personalization_level": self._calculate_personalization_level(personalization_context),
-                "cultural_adaptation": personalized_result.get("cultural_adaptation", {}),
-                "response_quality_score": self._evaluate_response_quality(response.content[0].text)
-            }
-            
-        except Exception as e:
-            logger.error(f"Error generating Claude personalized response: {e}")
-            
-            # Fallback response
-            return {
-                "conversational_response": self._generate_fallback_response(personalization_context),
-                "model_used": None,
-                "model_tier": self.claude_config.claude_model_tier.value,
-                "tokens_used": 0,
-                "cost_estimate": 0,
-                "error": str(e),
-                "fallback_used": True
-            }
     
-    def _determine_personalization_tier(self, context: PersonalizationContext) -> str:
-        """Determina el tier de personalización basado en el contexto"""
-        if context.personalization_profile.purchase_propensity > 0.8:
-            return "premium"
-        elif context.personalization_profile.purchase_propensity > 0.5:
-            return "standard"
+    def _predict_next_purchase_timing(self, profile: Dict) -> Dict[str, Any]:
+        """Predice el timing de la próxima compra (simplificado)."""
+        purchase_propensity = profile.get("purchase_propensity", 0.5)
+        
+        if purchase_propensity > 0.8:
+            days_estimate = 3
+            confidence = 0.8
+        elif purchase_propensity > 0.6:
+            days_estimate = 7
+            confidence = 0.65
+        elif purchase_propensity > 0.4:
+            days_estimate = 14
+            confidence = 0.5
         else:
-            return "basic"
-    
-    def _build_personalized_system_prompt(self, context: PersonalizationContext) -> str:
-        """Construye prompt del sistema personalizado"""
-        market_id = context.market_config.market_id
-        user_style = context.personalization_profile.conversation_style
+            days_estimate = 30
+            confidence = 0.3
         
-        return f"""
-        Eres un asistente de ventas especializado para el mercado {market_id}.
-        
-        Perfil del usuario:
-        - Estilo de conversación preferido: {user_style}
-        - Propensión de compra: {context.personalization_profile.purchase_propensity:.1f}
-        - Mercado principal: {market_id}
-        
-        Adapta tu respuesta al estilo cultural del mercado {market_id} y al perfil del usuario.
-        Sé {user_style} en tu comunicación.
-        Incluye recomendaciones relevantes cuando sea apropiado.
-        """
-    
-    def _build_personalized_user_prompt(
-        self, 
-        context: PersonalizationContext, 
-        personalized_result: Dict[str, Any]
-    ) -> str:
-        """Construye prompt del usuario con contexto personalizado"""
-        recommendations = personalized_result.get("recommendations", [])
-        
-        prompt = f"Usuario consulta: {context.mcp_context.current_query}\n\n"
-        
-        if recommendations:
-            prompt += "Recomendaciones personalizadas disponibles:\n"
-            for i, rec in enumerate(recommendations[:3], 1):
-                prompt += f"{i}. {rec.get('title', 'Producto')} - {rec.get('price', 'N/A')}\n"
-            prompt += "\n"
-        
-        prompt += "Responde de manera personalizada y útil, incluyendo las recomendaciones si son relevantes."
-        
-        return prompt
-    
-    def _calculate_personalization_level(self, context: PersonalizationContext) -> float:
-        """Calcula el nivel de personalización aplicado"""
-        factors = [
-            len(context.personalization_profile.category_affinities) * 0.1,
-            context.personalization_profile.purchase_propensity * 0.3,
-            len(context.real_time_signals) * 0.05,
-            context.conversation_momentum * 0.2
-        ]
-        return min(sum(factors), 1.0)
-    
-    def _evaluate_response_quality(self, response_text: str) -> float:
-        """Evalúa la calidad de la respuesta generada"""
-        # Evaluación básica de calidad
-        quality_score = 0.5  # Base score
-        
-        if len(response_text) > 50:
-            quality_score += 0.2
-        if any(word in response_text.lower() for word in ["recomiendo", "sugiero", "perfecto"]):
-            quality_score += 0.2
-        if response_text.count('.') >= 2:  # Múltiples oraciones
-            quality_score += 0.1
-        
-        return min(quality_score, 1.0)
-    
-    def _generate_fallback_response(self, context: PersonalizationContext) -> str:
-        """Genera respuesta de fallback cuando Claude falla"""
-        market_id = context.market_config.market_id
-        
-        fallback_responses = {
-            "US": "I'm here to help you find the perfect products. Let me assist you with your shopping needs.",
-            "ES": "Estoy aquí para ayudarte a encontrar los productos perfectos. Permíteme asistirte con tus necesidades de compra.",
-            "MX": "¡Hola! Estoy aquí para ayudarte a encontrar exactamente lo que buscas. ¿En qué te puedo ayudar?"
+        return {
+            "estimated_days_to_purchase": days_estimate,
+            "confidence": confidence,
+            "trigger_factors": ["engagement_increase", "category_browsing"]
         }
+    
+    def _predict_category_expansion(self, profile: Dict) -> List[str]:
+        """Predice categorías de expansión potencial."""
+        category_affinities = profile.get("category_affinities", {})
         
-        return fallback_responses.get(market_id, fallback_responses["US"])
+        if not category_affinities:
+            return []
+        
+        # Categorías con afinidad media (candidatas a expansión)
+        expansion_candidates = [
+            cat for cat, score in category_affinities.items()
+            if 0.2 <= score <= 0.5
+        ]
+        
+        return expansion_candidates[:3]  # Top 3 candidatos
+    
+    def _predict_price_sensitivity_changes(self, profile: Dict) -> Dict[str, Any]:
+        """Predice cambios en sensibilidad al precio."""
+        current_sensitivity = profile.get("price_sensitivity_curve", {})
+        purchase_propensity = profile.get("purchase_propensity", 0.5)
+        
+        # Usuarios con alta propensión tienden a ser menos sensibles al precio
+        predicted_direction = "decreasing" if purchase_propensity > 0.7 else "stable"
+        
+        return {
+            "current_profile": self._classify_price_sensitivity(current_sensitivity),
+            "predicted_direction": predicted_direction,
+            "confidence": 0.6
+        }
+    
+    def _analyze_seasonal_patterns(self, profile: Dict) -> Dict[str, Any]:
+        """Analiza patrones estacionales del usuario (simplificado)."""
+        temporal_patterns = profile.get("temporal_patterns", {})
+        
+        return {
+            "seasonal_data_available": bool(temporal_patterns),
+            "peak_seasons": temporal_patterns.get("peak_seasons", []),
+            "activity_consistency": "high" if len(temporal_patterns) > 3 else "low"
+        }
+    
+    def _analyze_cross_market_potential(self, profile: Dict, current_market_id: str) -> Dict[str, Any]:
+        """Analiza el potencial de expansión cross-market."""
+        cross_market_data = profile.get("cross_market_insights", {}).get("market_behaviors", {})
+        
+        markets_active = list(cross_market_data.keys())
+        markets_potential = [m for m in ["US", "ES", "MX", "CL"] 
+                            if m not in markets_active and m != current_market_id]
+        
+        return {
+            "currently_active_markets": markets_active,
+            "potential_expansion_markets": markets_potential[:2],
+            "cross_market_score": len(markets_active) / 4  # 4 mercados totales
+        }
+    
+    def _classify_price_sensitivity(self, price_curve: Dict) -> str:
+        """Clasifica el perfil de sensibilidad al precio."""
+        if not price_curve:
+            return "unknown"
+        
+        high_sensitivity = price_curve.get("high", 0.5)
+        medium_sensitivity = price_curve.get("medium", 0.5)
+        low_sensitivity = price_curve.get("low", 0.5)
+        
+        if high_sensitivity > 0.7:
+            return "price_conscious"
+        elif low_sensitivity > 0.6:
+            return "value_seeker"
+        elif medium_sensitivity > 0.6:
+            return "balanced"
+        else:
+            return "premium_oriented"
 
 
 # === FACTORY REFACTORIZADO ===
@@ -3627,6 +5042,12 @@ async def create_mcp_personalization_engine(
         # anthropic_client = Anthropic(api_key=anthropic_api_key)
         anthropic_client = AsyncAnthropic(api_key=anthropic_api_key)
         
+        # Obtener shopify_client para resolucion lazy de precios.
+        # init_shopify() devuelve la instancia singleton ya creada en startup
+        # (no hace ninguna conexion extra — es solo un getter).
+        from src.api.core.store import init_shopify
+        shopify_client = init_shopify()
+
         engine = MCPPersonalizationEngine(
             redis_service=redis_service,  # Use SERVICE for orchestration
             anthropic_client=anthropic_client,
@@ -3634,6 +5055,7 @@ async def create_mcp_personalization_engine(
             state_manager=state_manager,
             profile_ttl=profile_ttl,
             enable_ml_predictions=enable_ml_predictions,
+            shopify_client=shopify_client,  # Para resolucion lazy de precios
             **kwargs
         )
         

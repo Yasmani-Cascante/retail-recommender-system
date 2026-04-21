@@ -58,6 +58,14 @@ from src.api.security_auth import get_current_user
 from src.api.core.store import get_shopify_client
 from src.api.core.metrics import recommendation_metrics, time_function
 
+
+# ✅ M2: Prometheus metrics
+from src.api.core.prometheus_metrics import (
+    recommendation_requests_total,
+    recommendation_duration_seconds,
+    recommendation_errors_total
+)
+
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -325,6 +333,11 @@ async def get_recommendations(
         - Registra métricas de performance y calidad
     """
     start_time = time.time()
+
+    # ✅ M2: Extract strategy and market for metrics
+    strategy = "content"  # Default for product-based recommendations
+    market = "US"  # Default market (could be extracted from request if available)
+
     try:
         client = get_shopify_client()
         if not client:
@@ -362,11 +375,17 @@ async def get_recommendations(
         if effective_user_id:
             logger.info(f"[HYBRID] Usuario identificado: {effective_user_id} - usando sistema híbrido completo")
             # ✅ UPDATED: Usar hybrid_recommender inyectado
+            # FIX: exclude_seen NO se pasa como kwarg porque EnhancedHybridRecommenderWithExclusion
+            # implementa la exclusión de productos vistos internamente. Su firma get_recommendations()
+            # acepta: (user_id, product_id, n_recommendations, user_query) — NO exclude_seen.
+            # La exclusión se activa automáticamente cuando settings.exclude_seen_products=True
+            # (default en config.py), que hace que ServiceFactory instancie
+            # EnhancedHybridRecommenderWithExclusion en lugar de la clase base.
+            # Pasar exclude_seen=True aquí causaba: TypeError: got an unexpected keyword argument
             recommendations = await hybrid_recommender.get_recommendations(
                 user_id=effective_user_id,
                 product_id=str(product_id),
-                n_recommendations=n_effective,
-                exclude_seen=True  # Excluir productos vistos por defecto
+                n_recommendations=n_effective
             )
         else:
             logger.info(f"[HYBRID] Usuario no identificado - usando solo TF-IDF para mayor eficiencia")
@@ -399,6 +418,18 @@ async def get_recommendations(
             product_id=product_id
         )
         
+        # ✅ M2: Track success in Prometheus
+        try:
+            recommendation_requests_total.labels(
+                market=market,
+                strategy=strategy
+            ).inc()
+            recommendation_duration_seconds.labels(
+                strategy=strategy
+            ).observe(response_time_ms / 1000.0)  # Convert ms to seconds
+        except Exception as prom_error:
+            logger.debug(f"prometheus_metric_error: {prom_error}")
+        
         response = {
             "product": {
                 "id": product.get('id'),
@@ -410,14 +441,25 @@ async def get_recommendations(
                 "total_recommendations": len(recommendations),
                 "took_ms": response_time_ms,
                 "source": "hybrid_tfidf_product",
-                "di_migration": "phase2_complete"  # ✅ NEW: Migration flag
+                "di_migration": "phase2_complete"
             }
         }
         
         return response
+    
     except ValueError as e:
+        # ✅ M2: Track error
+        try:
+            recommendation_errors_total.labels(error_type="ValueError").inc()
+        except:
+            pass
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
+        # ✅ M2: Track error
+        try:
+            recommendation_errors_total.labels(error_type=type(e).__name__).inc()
+        except:
+            pass
         logger.error(f"Error getting recommendations: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -503,10 +545,12 @@ async def get_user_recommendations(
 
         # Obtener recomendaciones
         logger.info("Getting recommendations from hybrid recommender")
+        # FIX: exclude_seen eliminado — EnhancedHybridRecommenderWithExclusion maneja
+        # la exclusión internamente. Su firma no acepta este kwarg.
+        # Ver: src/api/core/enhanced_hybrid_recommender.py :: get_recommendations()
         recommendations = await hybrid_recommender.get_recommendations(
             user_id=user_id,
-            n_recommendations=n_effective,
-            exclude_seen=True  # Excluir productos vistos por defecto
+            n_recommendations=n_effective
         )
         
         if not recommendations:

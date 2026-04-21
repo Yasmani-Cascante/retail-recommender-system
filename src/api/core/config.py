@@ -45,9 +45,13 @@ class RecommenderSettings(BaseSettings):
     use_gcs_import: bool = Field(default=True, env="USE_GCS_IMPORT")
     gcs_bucket_name: Optional[str] = Field(default=None, env="GCS_BUCKET_NAME")
     
-    # Configuración de Shopify
+    # Configuración de Shopify (Legacy - lowercase)
     shopify_shop_url: Optional[str] = Field(default=None, env="SHOPIFY_SHOP_URL")
     shopify_access_token: Optional[str] = Field(default=None, env="SHOPIFY_ACCESS_TOKEN")
+
+    # Configuración de Shopify (New - uppercase for KB integration)
+    SHOPIFY_SHOP_URL: Optional[str] = Field(default=None, env="SHOPIFY_SHOP_URL")
+    SHOPIFY_ACCESS_TOKEN: Optional[str] = Field(default=None, env="SHOPIFY_ACCESS_TOKEN")
 
     # Configuración de seguridad
     api_key: Optional[str] = Field(default=None, env="API_KEY")
@@ -110,13 +114,190 @@ class RecommenderSettings(BaseSettings):
     # MCP Caching
     mcp_local_cache_enabled: bool = True
     mcp_cache_ttl: int = 300
+    
+    # ═══════════════════════════════════════════════════════════════
+    # INTENT DETECTION CONFIGURATION
+    # ═══════════════════════════════════════════════════════════════
+    
+    # Enable/disable intent detection system
+    enable_intent_detection: bool = Field(default=False, env="ENABLE_INTENT_DETECTION")
+    
+    # Minimum confidence threshold for intent classification
+    # Queries below this threshold fall back to transactional (products)
+    intent_confidence_threshold: float = Field(default=0.7, env="INTENT_CONFIDENCE_THRESHOLD")
+    
+    # Enable logging of intent detection for debugging/monitoring
+    intent_detection_logging: bool = Field(default=True, env="INTENT_DETECTION_LOGGING")
+    
+    # Enable metrics collection for intent detection
+    intent_detection_metrics: bool = Field(default=True, env="INTENT_DETECTION_METRICS")
+
+
+    # ============================================================================
+    # ML INTENT DETECTION CONFIGURATION
+    # ============================================================================
+    
+    # Enable/disable ML-based intent detection (hybrid with rule-based)
+    ml_intent_enabled: bool = Field(
+        default=False, 
+        env="ML_INTENT_ENABLED",
+        description="Enable ML-based intent detection (sklearn integrated)"
+    )
+    
+    # Confidence threshold for rule-based to trigger ML fallback
+    # If rule-based confidence < threshold → use ML
+    # Higher = more queries go to ML (slower but more accurate)
+    # Lower = more queries stay in rule-based (faster but less accurate for edge cases)
+    ml_confidence_threshold: float = Field(
+        default=0.8,
+        env="ML_CONFIDENCE_THRESHOLD",
+        ge=0.0,
+        le=1.0,
+        description="Threshold for ML fallback (0.0-1.0)"
+    )
+    
+    # Path to ML model directory (relative to project root)
+    ml_model_path: str = Field(
+        default="models/intent_classifier",
+        env="ML_MODEL_PATH",
+        description="Path to ML model directory"
+    )
+
+
+    # ═══════════════════════════════════════════════════════════
+    # POSTGRESQL CONFIGURATION
+    # ═══════════════════════════════════════════════════════════
+
+    db_host: str = Field(default="localhost", env="DB_HOST")
+    db_port: int = Field(default=5432, env="DB_PORT")
+    db_user: str = Field(default="postgres", env="DB_USER")
+    db_password: Optional[str] = Field(default=None, env="DB_PASSWORD")
+    db_name: str = Field(default="retail_recommender_db", env="DB_NAME")
+    DB_MIN_POOL_SIZE: int = Field(default=2, env="DB_MIN_POOL_SIZE")
+    DB_MAX_POOL_SIZE: int = Field(default=10, env="DB_MAX_POOL_SIZE")
+    DB_POOL_TIMEOUT: int = Field(default=30, env="DB_POOL_TIMEOUT")
+
+    # SSL para PostgreSQL — controlado por entorno:
+    #   - Local (default False): PostgreSQL local/Docker no requiere SSL
+    #   - Producción (True):     Neon/Cloud SQL exigen SSL obligatoriamente
+    # Configurar DB_SSL=true en Cloud Run env vars; dejar sin definir en .env local.
+    db_ssl: bool = Field(
+        default=False,
+        env="DB_SSL",
+        description=(
+            "Activar SSL en la conexión asyncpg a PostgreSQL. "
+            "False en desarrollo (PostgreSQL local/Docker), "
+            "True en producción (Neon, Cloud SQL)."
+        ),
+    )
+
+    # DB_HOST: str = Field(default="localhost", env="DB_HOST")
+    # DB_PORT: int = Field(default=5432, env="DB_PORT")
+    # DB_USER: str = Field(default="postgres", env="DB_USER")
+    # DB_PASSWORD: Optional[str] = Field(default=None, env="DB_PASSWORD")
+    # DB_NAME: str = Field(default="retail_recommender_db", env="DB_NAME")
+
+    # DB_MIN_POOL_SIZE: int = Field(default=2, env="DB_MIN_POOL_SIZE")
+    # DB_MAX_POOL_SIZE: int = Field(default=10, env="DB_MAX_POOL_SIZE")
+    # DB_POOL_TIMEOUT: int = Field(default=30, env="DB_POOL_TIMEOUT")
+
+    # ═══════════════════════════════════════════════════════════
+    # SHOPIFY KB CONFIGURATION (NUEVO)
+    # ═══════════════════════════════════════════════════════════
+    
+    SHOPIFY_WEBHOOK_SECRET: Optional[str] = Field(
+        default=None,
+        env="SHOPIFY_WEBHOOK_SECRET"
+    )
+    
+    KB_SYNC_INTERVAL_MINUTES: int = Field(
+        default=5,
+        env="KB_SYNC_INTERVAL_MINUTES"
+    )
+    
+    KB_ENABLE_BACKGROUND_SYNC: bool = Field(
+        default=True,
+        env="KB_ENABLE_BACKGROUND_SYNC"
+    )
+    
+    KB_CACHE_TTL_HOURS: int = Field(
+        default=24,
+        env="KB_CACHE_TTL_HOURS"
+    )
+    
+    KB_BUFFER_MAX_AGE_HOURS: int = Field(
+        default=48,
+        env="KB_BUFFER_MAX_AGE_HOURS"
+    )
+    
+    KB_USE_SHOPIFY_CMS: bool = Field(
+        default=True,
+        env="KB_USE_SHOPIFY_CMS"
+    )
+    
+    KB_ENABLE_FALLBACK: bool = Field(
+        default=True,
+        env="KB_ENABLE_FALLBACK"
+    )
+
+    # ═══════════════════════════════════════════════════════════
+    # SHOPIFY KB WEBHOOKS — M4 Incremental Sync
+    # ═══════════════════════════════════════════════════════════
+    #
+    # Estas variables gobiernan el sistema de webhooks en tiempo real
+    # introducido en M4. El full sync periódico (KBBackgroundSyncJob)
+    # sigue activo como safety net; los webhooks lo complementan.
+    #
+    # ┌─────────────────────────────────────────────────────────┐
+    # │ Para activar M4 en producción:                          │
+    # │   KB_WEBHOOKS_ENABLED=true                              │
+    # │   SHOPIFY_WEBHOOK_SECRET=whsec_<valor_real>             │
+    # │   APP_PUBLIC_URL=https://<cloud-run-url>                │
+    # └─────────────────────────────────────────────────────────┘
+
+    APP_PUBLIC_URL: Optional[str] = Field(
+        default=None,
+        env="APP_PUBLIC_URL",
+        description=(
+            "URL pública del servicio (ej. https://mi-app.run.app). "
+            "Usada por shopify_webhook_registry.py para construir la dirección "
+            "del webhook al registrarlo programáticamente en Shopify. "
+            "Si es None, el registro automático al startup queda deshabilitado."
+        ),
+    )
+
+    KB_WEBHOOKS_ENABLED: bool = Field(
+        default=False,
+        env="KB_WEBHOOKS_ENABLED",
+        description=(
+            "Feature flag para activar el procesamiento de webhooks M4. "
+            "Cuando es False, el endpoint /api/webhooks/shopify/pages acepta "
+            "requests y responde 200 (no hace retry Shopify), pero no despacha "
+            "background tasks. Permite rollback instantáneo sin redeploy. "
+            "Valor por defecto False → el full sync sigue siendo el mecanismo "
+            "principal hasta que M4 sea validado en staging."
+        ),
+    )
+
+    KB_WEBHOOK_IDEMPOTENCY_TTL: int = Field(
+        default=300,
+        env="KB_WEBHOOK_IDEMPOTENCY_TTL",
+        description=(
+            "TTL en segundos para las idempotency keys de webhooks en Redis. "
+            "Shopify no reintenta el mismo webhook con menos de ~5 minutos de "
+            "diferencia en condiciones normales, por lo que 300 s es seguro. "
+            "Aumentar si se observan duplicados; reducir solo en entornos de test. "
+            "Rango razonable: 60–900 s."
+        ),
+    )
+
 
     # Configuración para diferentes versiones de Pydantic
     if PYDANTIC_SETTINGS_AVAILABLE:
         # Pydantic v2 con pydantic-settings
         model_config = {
             "env_file": ".env",
-            "case_sensitive": False,
+            "case_sensitive": True,   # ← Linux es case-sensitive; Cloud Run inyecta en MAYÚSCULAS
             "extra": "ignore"
         }
     else:

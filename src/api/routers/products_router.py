@@ -51,7 +51,7 @@ from src.recommenders.tfidf_recommender import TFIDFRecommender
 
 # ✅ CORRECCIÓN CRÍTICA: Dependency injection unificada (ORIGINAL)
 from src.api.core.redis_service import get_redis_service, RedisService
-from src.api.core.redis_config_fix import PatchedRedisClient  # ✅ Añadir import faltante
+# from src.api.core.redis_config_fix import PatchedRedisClient  # ✅ Añadir import faltante
 
 
 # ============================================================================

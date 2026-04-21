@@ -9,6 +9,7 @@ usar el enhanced_hybrid_recommender.py
 """
 
 import logging
+import os
 import random
 import time
 from typing import List, Dict, Optional, Set, Any
@@ -45,6 +46,33 @@ class HybridRecommender:
         self.retail_recommender = retail_recommender
         self.content_weight = content_weight
         self.product_cache = product_cache
+
+        # ── ColBERT semantic retriever (Fase C) ────────────────────────────────
+        # Se inicializa solo si LFM_COLBERT_ENABLED=true Y la URL del servicio
+        # esta configurada. Si falta cualquiera de las dos condiciones, self._colbert
+        # queda None y get_recommendations() usa TF-IDF como siempre.
+        #
+        # El flag se lee directamente de os.environ (no lru_cache) por la misma
+        # razon que en mcp_personalization_engine.py: lru_cache congela el valor
+        # al momento del import, antes de que Cloud Run inyecte los secrets.
+        self._colbert = None
+        _lfm_colbert_enabled = os.environ.get('LFM_COLBERT_ENABLED', 'false').lower() == 'true'
+        if _lfm_colbert_enabled:
+            try:
+                from src.api.services.colbert_client import LFM2ColBERTClient
+                self._colbert = LFM2ColBERTClient()
+                logger.info('LFM2-ColBERT semantic retrieval ENABLED')
+            except ValueError as e:
+                # LFM2ColBERTClient lanza ValueError si COLBERT_SERVICE_URL no esta seteada.
+                # En ese caso el sistema sigue funcionando con TF-IDF — no es un error fatal.
+                logger.warning(
+                    'LFM_COLBERT_ENABLED=true pero client no inicializado '
+                    '(COLBERT_SERVICE_URL no configurada?): %s', e
+                )
+            except Exception as e:
+                logger.warning('ColBERT client init failed, fallback a TF-IDF: %s', e)
+        else:
+            logger.info('LFM2-ColBERT semantic retrieval DISABLED (LFM_COLBERT_ENABLED=false)')
         
         logger.info(f"HybridRecommender inicializado con content_weight={content_weight}")
         logger.info(f"Cache de productos: {'habilitada' if product_cache else 'deshabilitada'}")
@@ -76,8 +104,54 @@ class HybridRecommender:
         content_recs = []
         retail_recs = []
         
+        # ── CONTENT-BASED RETRIEVAL: ColBERT > TF-IDF ────────────────────────
+        # Cuando hay product_id (modo similar-products), intentamos primero ColBERT
+        # para obtener similitud semantica real (cross-lingual: query ES/MX/CL contra
+        # catalo EN). Si ColBERT no esta activo o falla, caemos a TF-IDF exactamente
+        # como antes. El comportamiento sin ColBERT es identico al sistema original.
+        #
+        # NOTA: product_id en widget_context llega como handle string (ej: 'camisa-azul'),
+        # no como ID numerico de Shopify. ColBERT acepta cualquier string como query.
+        colbert_used = False
+        if product_id and self.content_weight > 0 and self._colbert:
+            try:
+                # top_k = n_recommendations * 2 para dar al ranking combinado
+                # suficiente material sin pedir demasiado al microservicio.
+                colbert_ids = await self._colbert.search(
+                    query=product_id,
+                    top_k=n_recommendations * 2,
+                )
+                if colbert_ids:
+                    # ColBERT devuelve IDs ordenados por relevancia.
+                    # Convertir a la estructura Dict que espera _combine_recommendations().
+                    # El score decrece linealmente: 1.0 para el 1o, hasta ~0.55 para el top_k.
+                    # Este rango es compatible con los scores de TF-IDF (similarity_score 0-1).
+                    content_recs = [
+                        {
+                            'id': pid,
+                            'similarity_score': 1.0 - (i * (0.45 / max(len(colbert_ids) - 1, 1))),
+                            'source': 'colbert',
+                        }
+                        for i, pid in enumerate(colbert_ids)
+                    ]
+                    colbert_used = True
+                    logger.info(
+                        'ColBERT content_recs: %d results for product_id=%s',
+                        len(content_recs), product_id,
+                    )
+                else:
+                    logger.warning(
+                        'ColBERT returned empty results for product_id=%s — '
+                        'falling back to TF-IDF', product_id,
+                    )
+            except Exception as colbert_e:
+                logger.warning(
+                    'ColBERT search failed for product_id=%s, fallback a TF-IDF: %s',
+                    product_id, colbert_e,
+                )
+
         # Optimización: si content_weight=0, no llamar al recomendador de contenido
-        if product_id and self.content_weight > 0:
+        if product_id and self.content_weight > 0 and not colbert_used:
             try:
                 content_recs = await self.content_recommender.get_recommendations(product_id, n_recommendations)
                 logger.info(f"Obtenidas {len(content_recs)} recomendaciones basadas en contenido para producto {product_id}")

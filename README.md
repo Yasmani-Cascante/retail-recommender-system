@@ -1,7 +1,8 @@
 # Sistema de Recomendaciones para Retail - Nivel Empresarial
 
 [![Estado](https://img.shields.io/badge/Estado-Producción%20Empresarial-success)](https://github.com)
-[![Versión](https://img.shields.io/badge/Versión-0.5.0-blue)](https://github.com)
+[![Versión](https://img.shields.io/badge/Versión-2.1.0-blue)](https://github.com)
+[![Tests](https://img.shields.io/badge/tests-45%2F45%20passing-brightgreen)](https://github.com)
 [![Python](https://img.shields.io/badge/Python-3.9+-blue)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green)](https://fastapi.tiangolo.com)
 [![Google Cloud](https://img.shields.io/badge/Google%20Cloud-Ready-orange)](https://cloud.google.com)
@@ -14,12 +15,14 @@ Este es un **sistema de recomendaciones completamente funcional y desplegado en 
 
 - 🤖 **Sistema de Recomendaciones Híbrido**: Combina TF-IDF con Google Cloud Retail API
 - ⚡ **Sistema de Caché Híbrido con Redis**: 5 niveles de fallback con resiliencia empresarial
+- 🌍 **Soporte Multi-Idioma (NEW v2.1.0)**: ES/EN con detección automática vía Accept-Language
+- 🧠 **Knowledge Base Inteligente**: Sistema conversacional con integración Shopify
 - 🔒 **Validación Inteligente de Productos**: Resumen automático de descripciones largas
 - 📊 **Sistema de Métricas en Tiempo Real**: Monitoreo empresarial completo
 - 🏗️ **Arquitectura Modular**: Patrón de fábricas con configuración centralizada
 - 🛡️ **Resiliencia y Tolerancia a Fallos**: Degradación elegante ante fallos
 - 🚀 **Despliegue Automatizado**: Scripts DevOps para múltiples entornos
-- 🧪 **Suite de Pruebas Comprehensiva**: Unitarias, integración y rendimiento
+- 🧪 **Suite de Pruebas Comprehensiva**: 45 tests E2E automatizados
 
 ## 🏗️ Arquitectura del Sistema
 
@@ -153,7 +156,7 @@ STARTUP_TIMEOUT=300.0
 
 El sistema implementa un mecanismo de caché híbrido que utiliza Redis para optimizar el rendimiento y resolver el problema de enriquecimiento de productos que no existen en el catálogo local:
 
-### Características del Sistema de Caché
+#### Características del Sistema de Caché
 
 - **Caché centralizada con Redis**: Proporciona almacenamiento en caché rápido y distribuido
 - **Múltiples niveles de fallback**: Redis -> Catálogo local -> Shopify -> Gateway -> Producto mínimo
@@ -162,7 +165,7 @@ El sistema implementa un mecanismo de caché híbrido que utiliza Redis para opt
 - **Precarga de productos**: Optimización para cargar múltiples productos en paralelo
 - **Resiliencia ante fallos**: Degradación elegante cuando Redis no está disponible
 
-### Activación del Sistema de Caché
+#### Activación del Sistema de Caché
 
 Para activar el sistema de caché, configura las siguientes variables de entorno:
 
@@ -293,8 +296,56 @@ docker run -p 8080:8080 --env-file .env retail-recommender
 | POST | `/v1/events/user/{user_id}` | Registro de eventos de usuario | ✅ |
 | GET | `/v1/products/` | Lista productos (paginado) | ❌ |
 | GET | `/v1/products/search/` | Búsqueda semántica | ✅ |
+| GET | `/v1/kb/answer` | Knowledge Base multi-idioma (NEW) | ❌ |
 | GET | `/v1/metrics` | Métricas del sistema | ✅ |
 | GET | `/health` | Estado del sistema + caché | ❌ |
+
+### 🌍 Knowledge Base Multi-Idioma (v2.1.0)
+
+El sistema ahora incluye un Knowledge Base conversacional con soporte multi-idioma:
+
+**Características:**
+- ✅ Detección automática de idioma vía `Accept-Language` header (RFC 7231)
+- ✅ Soporte para Español (ES) e Inglés (EN)
+- ✅ Fallback graceful a ES para idiomas no soportados
+- ✅ 13 sub-intents disponibles (políticas, productos, cuenta, FAQ)
+- ✅ Cache multi-capa (Redis + PostgreSQL)
+- ✅ Sincronización automática con Shopify
+
+**Ejemplo de uso:**
+
+```bash
+# Idioma explícito
+curl "$BASE_URL/v1/kb/answer?sub_intent=policy_return&language=en"
+
+# Detección automática desde browser
+curl "$BASE_URL/v1/kb/answer?sub_intent=policy_return" \
+  -H "Accept-Language: en-US,en;q=0.9,es;q=0.8"
+
+# Fallback a español (default)
+curl "$BASE_URL/v1/kb/answer?sub_intent=policy_return"
+```
+
+**Sub-intents disponibles:**
+- `policy_return`, `policy_shipping`, `policy_warranty`, `policy_payment`, `policy_privacy`
+- `product_care`, `product_sizing`, `product_material`, `product_availability`
+- `account_modifications`, `account_orders`
+- `general_faq`, `unknown`
+
+**Respuesta:**
+```json
+{
+  "sub_intent": "policy_return",
+  "language": "en",
+  "category": null,
+  "answer": "## Return Policy\n\nYou can return products within 30 days...",
+  "sub_intent_value": "policy_return",
+  "sources": [],
+  "related_links": []
+}
+```
+
+**Ver documentación completa:** [docs/architecture/ARCHITECTURE_KNOWLEDGE_BASE_MULTI-LANGUAGE.md](docs/architecture/ARCHITECTURE_KNOWLEDGE_BASE_MULTI-LANGUAGE.md)
 
 ### Ejemplos de Uso
 
@@ -331,8 +382,13 @@ pytest tests/unit/ -v --cov=src
 # Pruebas de integración end-to-end  
 pytest tests/integration/ -v
 
+# Pruebas E2E Knowledge Base (45 tests)
+pytest tests/e2e/test_kb_multi_language_e2e.py -v
+
 # Pruebas de rendimiento con Locust
 locust -f tests/performance/locustfile.py
+# O para KB específicamente:
+locust -f locustfile.py --host=http://localhost:8000
 
 # Verificación del sistema de caché
 python verify_cache_system_fixed.py
@@ -347,6 +403,7 @@ python verify_cache_system_fixed.py
 |------|-------------|-----------|
 | **Unitarias** | Componentes aislados | 85%+ |
 | **Integración** | Flujos end-to-end | 90%+ |
+| **E2E (KB)** | Knowledge Base completo | 100% (45 tests) |
 | **Rendimiento** | Carga y estrés | SLA definido |
 | **Redis** | Conectividad y operaciones | 100% |
 | **API** | Todos los endpoints | 100% |
@@ -450,7 +507,8 @@ python verify_cache_system_fixed.py
 ## 🚀 Roadmap y Mejoras Futuras
 
 ### Corto Plazo (1-2 meses)
-- [ ] **Consolidación arquitectura unificada**: Migración completa
+- [x] **Soporte Multi-Idioma**: ES/EN completado (v2.1.0)
+- [x] **Knowledge Base**: Integración con Shopify
 - [ ] **CI/CD pipeline**: GitHub Actions automated
 - [ ] **Dashboards Grafana**: Visualización avanzada de métricas
 - [ ] **A/B Testing**: Framework para experimentos
@@ -460,6 +518,7 @@ python verify_cache_system_fixed.py
 - [ ] **ML Pipeline automation**: Reentrenamiento automático
 - [ ] **Multi-tenant support**: Soporte para múltiples clientes
 - [ ] **Edge deployment**: CDN para latencia global
+- [ ] **Más idiomas**: PT, FR, DE
 
 ### Largo Plazo (6+ meses)
 - [ ] **Deep Learning models**: Transformers en producción
@@ -512,7 +571,7 @@ Este proyecto está licenciado bajo la **Licencia MIT** - ver el archivo [LICENS
 
 ```bash
 # 1-liner para empezar
-git clone https://github.com/tu-usuario/retail-recommender-system.git && cd retail-recommender-system && python -m venv venv && .\venv\Scripts\activate && pip install -r requirements.txt pydantic-settings && cp .env.example .env && echo "✅ Sistema listo! Edita .env y ejecuta: python run.py"
+git clone https://github.com/tu-usuario/retail-recommender-system.git && cd retail-recommender-system && python -m venv venv && .\venv\Scripts\activate && pip install -r requirements.txt pydantic-settings && npm install -g @anthropic-ai/claude-code@latest && cp .env.example .env && echo "✅ Sistema listo! Edita .env y ejecuta: python run.py"
 ```
 
 ---

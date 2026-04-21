@@ -1,0 +1,71 @@
+# ============================================================================
+# REQUIREMENTS COMPLETO - CLOUD RUN - TODAS LAS DEPENDENCIAS
+# ============================================================================
+# Version: FINAL - 19/02/2026
+# Incluye todas las dependencias identificadas durante testing iterativo
+# ============================================================================
+
+# === CORE FRAMEWORK ===
+fastapi==0.115.0
+uvicorn[standard]==0.34.0
+pydantic==2.10.0
+pydantic-settings==2.5.2
+python-dotenv==1.0.0
+
+# === COMPATIBILIDAD FASTAPI ===
+starlette>=0.37.2,<0.39.0
+anyio>=3.7.0,<5.0.0
+
+# === ML Y PROCESAMIENTO DE DATOS ===
+numpy==1.23.5
+scipy==1.10.1
+scikit-learn==1.6.1  # CRITICAL: must match the version used to train models/intent_classifier/*.pkl (trained 2026-01-08)
+
+# === GOOGLE CLOUD INTEGRATIONS ===
+google-cloud-retail==1.24.0
+google-cloud-storage==2.19.0
+google-cloud-core==2.4.1
+google-api-core>=2.15.0
+# M3: Push de métricas Prometheus a GCP Cloud Monitoring (exporter activo en Cloud Run)
+google-cloud-monitoring>=2.0.0
+
+# === SHOPIFY INTEGRATION ===
+shopify-python-api==1.0.1
+
+# === REDIS CACHE ===
+redis>=4.6.0
+cachetools>=5.3.0  # In-memory caching utilities - REQUERIDO
+
+# === DATABASE SUPPORT ===
+asyncpg>=0.29.0  # PostgreSQL async driver
+
+# === LOGGING Y OBSERVABILITY ===
+structlog>=24.1.0  # Structured logging - REQUERIDO
+python-json-logger>=2.0.7  # JSON logging support
+prometheus-client>=0.19.0  # Prometheus metrics - REQUERIDO para monitoring
+prometheus-fastapi-instrumentator>=7.0.0  # FastAPI metrics instrumentation - REQUERIDO
+
+# === HTTP CLIENTS ===
+httpx>=0.27.0  # Async HTTP client
+aiohttp>=3.9.0  # Alternative async HTTP
+
+# === UTILIDADES ===
+tqdm==4.67.0
+requests==2.32.0
+jinja2==3.1.5
+
+# === ANTHROPIC CLAUDE (SI SE USA) ===
+anthropic>=0.18.0  # Claude API client
+
+# === ASYNC UTILITIES ===
+aiofiles>=23.0.0  # Async file operations
+
+# === HTML → MARKDOWN (L1) ===
+# markdownify: Convierte HTML de Shopify a Markdown limpio para la Knowledge Base.
+#   Preserva tablas, listas, links y headings que el parser regex anterior perdia.
+# Referencia: src/api/services/shopify_kb_sync.py → _html_to_markdown()
+markdownify>=0.12.1
+beautifulsoup4>=4.12.0
+
+# --- Liquid AI integration (agregado Fase A/B) ---
+openai>=1.50.0

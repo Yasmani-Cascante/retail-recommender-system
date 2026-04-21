@@ -1,53 +1,536 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Retail Recommender Widget</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    
-    <!-- Demo page content -->
-    <div style="padding: 20px; max-width: 800px; margin: 0 auto;">
-      <h1>Retail Recommender Widget Demo</h1>
-      <p>This is a demo page to test the widget integration.</p>
-      
-      <div style="margin: 20px 0;">
-        <h2>Sample Product</h2>
-        <div style="border: 1px solid #ddd; padding: 15px; border-radius: 8px;">
-          <h3>Premium Wireless Headphones</h3>
-          <p>High-quality wireless headphones with noise cancellation.</p>
-          <p><strong>Price:</strong> $299.99</p>
-        </div>
-      </div>
+    <title>🛍️ AI-Shoppings — Widget Dev Preview</title>
 
-      <p>The widget should appear in the bottom-right corner. Try asking questions like:</p>
-      <ul>
-        <li>"Show me similar headphones"</li>
-        <li>"What are your best electronics?"</li>
-        <li>"I need something under $200"</li>
-      </ul>
+    <!-- ============================================================
+         PÁGINA DE DESARROLLO LOCAL — AI-Shoppings replica
+         
+         MODOS DE USO:
+         
+         1. DEV LOCAL CON BACKEND (API real en localhost:8000):
+            • Inicia el backend: uvicorn src.api.main_unified_redis:app
+            • Inicia el frontend: npm run dev
+            • Cambia CONFIG.mode = 'local'
+         
+         2. DEV LOCAL CON CLOUD RUN (API real en producción):
+            • Solo inicia el frontend: npm run dev  
+            • Cambia CONFIG.mode = 'production'
+            • La API key real se usa contra Cloud Run
+         
+         3. DEV OFFLINE (sin backend, respuestas mock):
+            • Solo inicia el frontend: npm run dev
+            • Cambia CONFIG.mode = 'mock'
+            • Ideal para iterar solo en UI/UX
+         ============================================================ -->
+
+    <!-- Simular fonts de Shopify -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+      /* ── Reset base idéntico al de Shopify ── */
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      
+      body {
+        font-family: 'Assistant', -apple-system, BlinkMacSystemFont, sans-serif;
+        background: #f8f4f0;
+        color: #1c1c1c;
+        min-height: 100vh;
+      }
+
+      /* ── Barra de anuncio ── */
+      .announcement-bar {
+        background: #1c1c1c;
+        color: #fff;
+        text-align: center;
+        padding: 10px;
+        font-size: 13px;
+        letter-spacing: 0.05em;
+      }
+
+      /* ── Header ── */
+      .site-header {
+        background: #fff;
+        border-bottom: 1px solid #e8e0d8;
+        padding: 16px 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+      .site-logo { font-size: 22px; font-weight: 700; letter-spacing: 0.1em; }
+      .site-nav { display: flex; gap: 28px; list-style: none; }
+      .site-nav a { text-decoration: none; color: #1c1c1c; font-size: 14px; font-weight: 500; }
+      .site-nav a:hover { border-bottom: 1px solid currentColor; }
+      .header-icons { display: flex; gap: 16px; align-items: center; }
+      .header-icons svg { width: 22px; height: 22px; cursor: pointer; }
+
+      /* ── Hero ── */
+      .hero {
+        background: linear-gradient(135deg, #f3ede6 0%, #e8ddd4 100%);
+        padding: 80px 32px;
+        text-align: center;
+      }
+      .hero h1 { font-size: 42px; font-weight: 700; margin-bottom: 16px; letter-spacing: -0.02em; }
+      .hero p { font-size: 18px; color: #666; max-width: 500px; margin: 0 auto 32px; }
+      .hero-btn {
+        display: inline-block; padding: 14px 36px;
+        background: #1c1c1c; color: #fff;
+        text-decoration: none; border-radius: 4px;
+        font-weight: 600; font-size: 14px; letter-spacing: 0.05em;
+        transition: background 0.2s;
+      }
+      .hero-btn:hover { background: #333; }
+
+      /* ── Producto grid ── */
+      .section { padding: 60px 32px; max-width: 1200px; margin: 0 auto; }
+      .section-title { font-size: 24px; font-weight: 700; margin-bottom: 32px; letter-spacing: -0.01em; }
+      .products-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 24px; }
+      .product-card {
+        background: #fff;
+        border-radius: 8px;
+        overflow: hidden;
+        transition: transform 0.2s, box-shadow 0.2s;
+        cursor: pointer;
+      }
+      .product-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,0.1); }
+      .product-img {
+        aspect-ratio: 4/5;
+        background: #f0ebe4;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 48px;
+      }
+      .product-info { padding: 16px; }
+      .product-name { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+      .product-desc { font-size: 12px; color: #888; margin-bottom: 8px; line-height: 1.4; }
+      .product-price { font-size: 16px; font-weight: 700; color: #1c1c1c; }
+      .product-price .original { text-decoration: line-through; color: #aaa; font-size: 13px; margin-left: 6px; }
+      .product-tag {
+        display: inline-block; padding: 2px 8px; border-radius: 20px;
+        font-size: 10px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.05em; margin-bottom: 8px;
+      }
+      .tag-new { background: #e8f5e9; color: #2e7d32; }
+      .tag-sale { background: #fdecea; color: #c62828; }
+
+      /* ── Dev panel ── */
+      .dev-panel {
+        position: fixed;
+        top: 80px;
+        left: 16px;
+        background: #1c1c1c;
+        color: #fff;
+        border-radius: 12px;
+        padding: 16px;
+        font-size: 12px;
+        font-family: monospace;
+        z-index: 9998;
+        min-width: 200px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      }
+      .dev-panel h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: #888; margin-bottom: 12px; }
+      .dev-mode-btn {
+        display: block; width: 100%;
+        padding: 8px 12px; margin-bottom: 6px;
+        border: 1px solid #444; background: transparent; color: #ccc;
+        border-radius: 6px; cursor: pointer; font-family: monospace; font-size: 11px;
+        text-align: left; transition: all 0.15s;
+      }
+      .dev-mode-btn.active { background: #4CAF50; border-color: #4CAF50; color: #fff; }
+      .dev-mode-btn:hover:not(.active) { border-color: #888; color: #fff; }
+      .dev-status { margin-top: 12px; padding-top: 12px; border-top: 1px solid #333; }
+      .dev-status-dot {
+        display: inline-block; width: 8px; height: 8px;
+        border-radius: 50%; margin-right: 6px; vertical-align: middle;
+      }
+      .dot-green { background: #4CAF50; }
+      .dot-yellow { background: #FFC107; }
+      .dot-red { background: #f44336; }
+      .dev-status-label { color: #aaa; }
+
+      /* ── Footer ── */
+      .site-footer {
+        background: #1c1c1c; color: #888;
+        padding: 48px 32px 24px;
+        margin-top: 80px;
+      }
+      .footer-grid {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 32px; max-width: 1200px; margin: 0 auto 32px;
+      }
+      .footer-col h5 { color: #fff; font-size: 13px; font-weight: 700; margin-bottom: 12px; }
+      .footer-col a { display: block; color: #888; text-decoration: none; font-size: 13px; margin-bottom: 6px; }
+      .footer-col a:hover { color: #fff; }
+      .footer-bottom { text-align: center; font-size: 12px; border-top: 1px solid #333; padding-top: 24px; max-width: 1200px; margin: 0 auto; }
+    </style>
+  </head>
+
+  <body>
+
+    <!-- ══════════════════════════════════════════════
+         PÁGINA DEMO — replica de ai-shoppings.myshopify.com
+         para desarrollo local del widget
+    ═══════════════════════════════════════════════ -->
+
+    <!-- Anuncio -->
+    <div class="announcement-bar">
+      ENVÍO GRATUITO EN PEDIDOS SUPERIORES A 50€ · DEVOLUCIONES GRATIS 30 DÍAS
     </div>
 
+    <!-- Header -->
+    <header class="site-header">
+      <div class="site-logo">AI-SHOPPINGS</div>
+      <nav>
+        <ul class="site-nav">
+          <li><a href="#">Inicio</a></li>
+          <li><a href="#">Para invitadas</a></li>
+          <li><a href="#">Para novias</a></li>
+          <li><a href="#">Complementos</a></li>
+          <li><a href="#">Contacto</a></li>
+        </ul>
+      </nav>
+      <div class="header-icons">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+        <span style="font-size:13px; font-weight:600;">CHF | Suiza</span>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="hero">
+      <h1>Colección Primavera 2026</h1>
+      <p>Descubre piezas únicas para cada momento especial. Moda con alma.</p>
+      <a href="#" class="hero-btn">EXPLORAR COLECCIÓN</a>
+    </section>
+
+    <!-- Productos -->
+    <section class="section">
+      <h2 class="section-title">Nuevos Productos</h2>
+      <div class="products-grid">
+
+        <div class="product-card">
+          <div class="product-img">👗</div>
+          <div class="product-info">
+            <span class="product-tag tag-new">Nuevo</span>
+            <p class="product-name">Vestido Midi Floral Primavera</p>
+            <p class="product-desc">Tejido ligero con estampado floral. Perfecto para ocasiones especiales.</p>
+            <div class="product-price">89,00€</div>
+          </div>
+        </div>
+
+        <div class="product-card">
+          <div class="product-img">👰</div>
+          <div class="product-info">
+            <span class="product-tag tag-new">Nuevo</span>
+            <p class="product-name">Vestido Novia Encaje Clásico</p>
+            <p class="product-desc">Encaje premium con corte sirena. El vestido de tus sueños.</p>
+            <div class="product-price">349,00€</div>
+          </div>
+        </div>
+
+        <div class="product-card">
+          <div class="product-img">👜</div>
+          <div class="product-info">
+            <span class="product-tag tag-sale">Sale</span>
+            <p class="product-name">Bolso Clutch Dorado</p>
+            <p class="product-desc">Diseño minimalista con cierre magnético. Ideal para eventos nocturnos.</p>
+            <div class="product-price">45,00€ <span class="original">69,00€</span></div>
+          </div>
+        </div>
+
+        <div class="product-card">
+          <div class="product-img">💎</div>
+          <div class="product-info">
+            <p class="product-name">Collar Perlas Naturales</p>
+            <p class="product-desc">Perlas de agua dulce. Elegancia atemporal para cada ocasión.</p>
+            <div class="product-price">125,00€</div>
+          </div>
+        </div>
+
+        <div class="product-card">
+          <div class="product-img">🥿</div>
+          <div class="product-info">
+            <span class="product-tag tag-new">Nuevo</span>
+            <p class="product-name">Zapatos Salón Nude Satén</p>
+            <p class="product-desc">Tacón kitten 5cm. Comodidad y elegancia durante toda la jornada.</p>
+            <div class="product-price">79,00€</div>
+          </div>
+        </div>
+
+        <div class="product-card">
+          <div class="product-img">🧣</div>
+          <div class="product-info">
+            <p class="product-name">Capa Ceremonia Crema</p>
+            <p class="product-desc">Gasa de seda con acabados en encaje. Complemento perfecto para novias.</p>
+            <div class="product-price">95,00€</div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="site-footer">
+      <div class="footer-grid">
+        <div class="footer-col">
+          <h5>AI-SHOPPINGS</h5>
+          <a href="#">Sobre nosotras</a>
+          <a href="#">Blog de moda</a>
+          <a href="#">Prensa</a>
+        </div>
+        <div class="footer-col">
+          <h5>Ayuda</h5>
+          <a href="#">Guía de tallas</a>
+          <a href="#">Envíos y devoluciones</a>
+          <a href="#">Contacto</a>
+        </div>
+        <div class="footer-col">
+          <h5>Legal</h5>
+          <a href="#">Política de privacidad</a>
+          <a href="#">Términos de servicio</a>
+          <a href="#">Cookies</a>
+        </div>
+      </div>
+      <div class="footer-bottom">© 2026 AI-Shoppings · Tecnología Shopify, Inc.</div>
+    </footer>
+
+    <!-- ══════════════════════════════════════════════
+         WIDGET: Entry point de React
+    ═══════════════════════════════════════════════ -->
+    <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    
-    <!-- Initialize widget for development -->
+
+    <!-- ══════════════════════════════════════════════
+         PANEL DE DESARROLLO: Control de modos
+    ═══════════════════════════════════════════════ -->
+    <div class="dev-panel" id="devPanel">
+      <h4>🛠 Widget Dev Panel</h4>
+
+      <button class="dev-mode-btn" id="btn-production" onclick="setMode('production')">
+        ☁️ Cloud Run (prod)
+      </button>
+      <button class="dev-mode-btn" id="btn-local" onclick="setMode('local')">
+        🖥️ Local API (:8000)
+      </button>
+      <button class="dev-mode-btn active" id="btn-mock" onclick="setMode('mock')">
+        🎭 Mock (sin backend)
+      </button>
+
+      <div class="dev-status">
+        <div id="statusIndicator">
+          <span class="dev-status-dot dot-yellow"></span>
+          <span class="dev-status-label">Inicializando...</span>
+        </div>
+        <div id="modeLabel" style="margin-top:6px; color:#666; font-size:10px;"></div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════
+         INICIALIZACIÓN DEL WIDGET
+    ═══════════════════════════════════════════════ -->
     <script>
-      // Wait for widget to load, then initialize
-      document.addEventListener('DOMContentLoaded', () => {
+      // ────────────────────────────────────────────
+      // Configuración — cambia el modo aquí o usa el panel
+      // ────────────────────────────────────────────
+      const CONFIG = {
+        // 'production' | 'local' | 'mock'
+        defaultMode: 'mock',
+
+        production: {
+          apiUrl: 'https://retail-recommender-lzf2y6pspa-uc.a.run.app',
+          apiKey: '2fed9999056fab6dac5654238f0cae1c',
+          marketId: 'ES',
+        },
+        local: {
+          apiUrl: 'http://localhost:8000',
+          apiKey: '2fed9999056fab6dac5654238f0cae1c',
+          marketId: 'CH',
+        },
+        mock: {
+          apiUrl: '__mock__',   // señal especial — interceptada abajo
+          apiKey: 'mock-key',
+          marketId: 'ES',
+        }
+      };
+
+      // ────────────────────────────────────────────
+      // Mock interceptor: parchea fetch globalmente
+      // Solo activo en modo mock para simular respuestas
+      // del endpoint /v1/mcp/conversation
+      // ────────────────────────────────────────────
+      const _originalFetch = window.fetch;
+
+      function installMockFetch() {
+        window.fetch = async function(url, options) {
+          // Solo interceptar llamadas al endpoint de conversación
+          if (typeof url === 'string' && url.includes('/v1/mcp/conversation')) {
+            const body = options?.body ? JSON.parse(options.body) : {};
+            const query = body.query || '';
+
+            console.log('🎭 [MOCK] Intercepted:', query);
+            await new Promise(r => setTimeout(r, 800 + Math.random() * 600)); // simular latencia
+
+            const mockResponse = generateMockResponse(query);
+            return new Response(JSON.stringify(mockResponse), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+          // Todo lo demás pasa normalmente (fonts, assets, etc.)
+          return _originalFetch(url, options);
+        };
+        console.log('🎭 [MOCK] Fetch interceptor installed');
+      }
+
+      function uninstallMockFetch() {
+        window.fetch = _originalFetch;
+        console.log('🎭 [MOCK] Fetch interceptor removed');
+      }
+
+      // ────────────────────────────────────────────
+      // Generador de respuestas mock realistas
+      // ────────────────────────────────────────────
+      function generateMockResponse(query) {
+        const q = query.toLowerCase();
+        let answer = '';
+        let recommendations = [];
+
+        if (q.includes('novia') || q.includes('boda') || q.includes('wedding')) {
+          answer = '¡Hola! Para tu boda tengo selecciones preciosas 👰 Aquí tienes mis recomendaciones principales para novias, con piezas que combinan elegancia y comodidad.';
+          recommendations = [
+            { id: '001', title: 'Vestido Novia Encaje Clásico', description: 'Encaje premium con corte sirena. El vestido de tus sueños.', price: 349.00, currency: 'EUR', score: 0.97, category: 'Para novias', imageUrl: null, reason: 'Top ventas temporada', viability_score: 0.95 },
+            { id: '002', title: 'Capa Ceremonia Crema', description: 'Gasa de seda con acabados en encaje.', price: 95.00, currency: 'EUR', score: 0.88, category: 'Complementos', imageUrl: null, reason: 'Complemento perfecto', viability_score: 0.90 },
+            { id: '003', title: 'Collar Perlas Naturales', description: 'Perlas de agua dulce. Elegancia atemporal.', price: 125.00, currency: 'EUR', score: 0.82, category: 'Joyería', imageUrl: null, reason: 'Combinación clásica', viability_score: 0.85 },
+          ];
+        } else if (q.includes('precio') || q.includes('económico') || q.includes('barato') || q.includes('oferta')) {
+          answer = '¡Claro! Tengo opciones estupendas para todos los presupuestos. Aquí están nuestras mejores ofertas actuales 🏷️';
+          recommendations = [
+            { id: '004', title: 'Bolso Clutch Dorado', description: 'Diseño minimalista. Rebajado 35%.', price: 45.00, currency: 'EUR', score: 0.91, category: 'Complementos', imageUrl: null, reason: 'En oferta', viability_score: 0.88 },
+            { id: '005', title: 'Pañuelo Seda Estampado', description: 'Complemento versátil para cualquier look.', price: 29.00, currency: 'EUR', score: 0.79, category: 'Accesorios', imageUrl: null, reason: 'Mejor precio', viability_score: 0.80 },
+          ];
+        } else if (q.includes('vestido') || q.includes('dress')) {
+          answer = 'Tenemos una selección increíble de vestidos para esta temporada 👗 Desde midi florales hasta diseños de noche más sofisticados.';
+          recommendations = [
+            { id: '006', title: 'Vestido Midi Floral Primavera', description: 'Tejido ligero con estampado floral.', price: 89.00, currency: 'EUR', score: 0.94, category: 'Para invitadas', imageUrl: null, reason: 'Tendencia primavera', viability_score: 0.92 },
+            { id: '007', title: 'Vestido Noche Terciopelo Negro', description: 'Corte recto, escote en V, elegancia pura.', price: 149.00, currency: 'EUR', score: 0.87, category: 'Para invitadas', imageUrl: null, reason: 'Clásico atemporal', viability_score: 0.89 },
+          ];
+        } else if (q.includes('hola') || q.includes('hi') || q.includes('hello') || q.includes('buenas')) {
+          answer = '¡Hola! 👋 Soy tu asistente personal de moda en AI-Shoppings. ¿Buscas algo especial hoy? Puedo ayudarte con:\n\n• Vestidos para bodas e invitadas\n• Complementos y accesorios\n• Regalos y ocasiones especiales\n• Asesoramiento de estilo\n\n¿Qué te gustaría encontrar?';
+          recommendations = [];
+        } else {
+          answer = `He buscado en nuestro catálogo para "${query}" y he encontrado algunas opciones que podrían interesarte. ¿Te gustaría que filtre por categoría o precio?`;
+          recommendations = [
+            { id: '008', title: 'Vestido Midi Floral Primavera', description: 'Opción popular de la temporada.', price: 89.00, currency: 'EUR', score: 0.78, category: 'Para invitadas', imageUrl: null, reason: 'Más vendido', viability_score: 0.82 },
+            { id: '009', title: 'Zapatos Salón Nude Satén', description: 'Comodidad y elegancia.', price: 79.00, currency: 'EUR', score: 0.71, category: 'Calzado', imageUrl: null, reason: 'Complemento versátil', viability_score: 0.75 },
+          ];
+        }
+
+        return {
+          answer,
+          recommendations,
+          session_id: 'mock-session-dev',
+          session_metadata: { session_id: 'mock-session-dev', turn_number: 1, state_persisted: false, conversation_stage: 'exploring' },
+          intent_analysis: { intent: 'product_search', confidence: 0.9, attributes: ['mock_mode'] },
+          market_context: { market_id: 'ES', currency: 'EUR' },
+          personalization_metadata: { strategy_used: 'mock', personalization_applied: false },
+          metadata: { source: 'mock', market_id: 'ES' },
+          took_ms: 823.4
+        };
+      }
+
+      // ────────────────────────────────────────────
+      // Gestión de modos y re-inicialización del widget
+      // ────────────────────────────────────────────
+      let currentMode = CONFIG.defaultMode;
+
+      function setMode(mode) {
+        currentMode = mode;
+
+        // Actualizar botones
+        document.querySelectorAll('.dev-mode-btn').forEach(btn => btn.classList.remove('active'));
+        document.getElementById(`btn-${mode}`)?.classList.add('active');
+
+        // Instalar/desinstalar mock fetch
+        if (mode === 'mock') {
+          installMockFetch();
+        } else {
+          uninstallMockFetch();
+        }
+
+        // Reinicializar widget con nueva configuración
+        const cfg = CONFIG[mode];
+        const apiUrl = mode === 'mock' ? CONFIG.production.apiUrl : cfg.apiUrl;
+
+        updateStatus('yellow', 'Reinicializando...');
+
+        // Destruir instancia anterior si existe
+        if (window.RetailRecommenderWidget?.destroy) {
+          try { window.RetailRecommenderWidget.destroy(); } catch(e) {}
+        }
+
+        // Re-inicializar
         setTimeout(() => {
           if (window.RetailRecommenderWidget) {
             window.RetailRecommenderWidget.init({
-              apiUrl: 'http://localhost:8000',
-              apiKey: '2fed9999056fab6dac5654238f0cae1c',
-              marketId: 'US',
-              theme: 'light'
+              apiUrl: apiUrl,
+              apiKey: cfg.apiKey,
+              marketId: cfg.marketId,
+              theme: 'light',
             });
+            updateStatus('green', `Modo: ${mode}`);
+            document.getElementById('modeLabel').textContent = apiUrl.replace('https://', '');
+          } else {
+            updateStatus('red', 'Widget no cargado');
           }
-        }, 1000);
+        }, 300);
+      }
+
+      function updateStatus(color, label) {
+        const dot = document.querySelector('.dev-status-dot');
+        const lbl = document.querySelector('.dev-status-label');
+        dot.className = `dev-status-dot dot-${color}`;
+        lbl.textContent = label;
+      }
+
+      // ────────────────────────────────────────────
+      // Inicialización automática al cargar la página
+      // Espera a que main.tsx registre window.RetailRecommenderWidget
+      // ────────────────────────────────────────────
+      function waitForWidget(callback, maxAttempts = 30) {
+        let attempts = 0;
+        const interval = setInterval(() => {
+          attempts++;
+          if (window.RetailRecommenderWidget) {
+            clearInterval(interval);
+            callback();
+          } else if (attempts >= maxAttempts) {
+            clearInterval(interval);
+            updateStatus('red', 'Widget no encontrado');
+            console.error('❌ RetailRecommenderWidget no se registró en window');
+          }
+        }, 100);
+      }
+
+      document.addEventListener('DOMContentLoaded', () => {
+        // Instalar mock desde el principio si el modo default es mock
+        if (CONFIG.defaultMode === 'mock') {
+          installMockFetch();
+        }
+
+        waitForWidget(() => {
+          setMode(CONFIG.defaultMode);
+          console.log('✅ Widget inicializado en modo:', CONFIG.defaultMode);
+        });
       });
     </script>
+
   </body>
 </html>

@@ -1,0 +1,289 @@
+import { useState, useCallback, useEffect } from 'react';
+import { ChatBubble } from './ChatBubble';
+import { MessageList } from './MessageList';
+import { MessageInput } from './MessageInput';
+import { ConversationAPI } from '../services/api';
+import type { WidgetConfig, Message, ConversationState } from '../types/widget';
+import styles from './ChatWidget.module.css';
+
+interface ChatWidgetProps {
+  config: WidgetConfig;
+}
+
+// Sugerencias iniciales inspiradas en el estilo Zalando.
+// Se muestran solo en la pantalla de bienvenida (sin mensajes del usuario aún).
+const SUGGESTION_CHIPS = [
+  'Muéstrame las tendencias de esta semana',
+  'Busco un look para una ocasión especial',
+  'Recomiéndame algo informal para el fin de semana',
+  'Ayúdame a elegir mi talla',
+];
+
+export function ChatWidget({ config }: ChatWidgetProps) {
+  const [state, setState] = useState<ConversationState>({
+    sessionId: '',
+    messages: [],
+    isLoading: false,
+    isMinimized: false,
+  });
+
+  // isOpen: el panel flotante está visible
+  const [isOpen, setIsOpen] = useState(false);
+  // isExpanded: modo pantalla completa (inspirado en Zalando)
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const [api] = useState(() => new ConversationAPI(config));
+
+  // Determinar si hay conversación activa (el usuario ya envió al menos un mensaje)
+  const hasUserMessages = state.messages.some(m => m.type === 'user');
+
+  // ── Saludo personalizado ────────────────────────────────────────────────
+  // Si hay nombre de cliente lo usamos. Si no, saludo genérico.
+  // Solo se muestra cuando el chat está abierto y no hay mensajes de usuario.
+  const greetingName = config.customerName?.trim() || '';
+  const isLoggedIn = Boolean(config.customerId);
+
+  // ── Mensaje de bienvenida en el historial ──────────────────────────────
+  useEffect(() => {
+    const welcomeText = greetingName
+      ? `¡Hola, ${greetingName}! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?`
+      : '👋 ¡Hola! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?';
+
+    const welcomeMessage: Message = {
+      id: 'welcome',
+      type: 'assistant',
+      content: welcomeText,
+      timestamp: Date.now(),
+      recommendations: [],
+    };
+    setState(prev => ({ ...prev, messages: [welcomeMessage] }));
+  }, [greetingName]);
+
+  const handleSendMessage = useCallback(async (messageText: string) => {
+    const userMessage: Message = {
+      id: `user_${Date.now()}`,
+      type: 'user',
+      content: messageText,
+      timestamp: Date.now(),
+    };
+
+    setState(prev => ({
+      ...prev,
+      messages: [...prev.messages, userMessage],
+      isLoading: true,
+    }));
+
+    try {
+      const assistantMessage = await api.sendMessage(messageText);
+      setState(prev => ({
+        ...prev,
+        messages: [...prev.messages, assistantMessage],
+        isLoading: false,
+        sessionId: assistantMessage.metadata?.sessionId || prev.sessionId,
+      }));
+    } catch {
+      const errorMessage: Message = {
+        id: `error_${Date.now()}`,
+        type: 'error',
+        content: 'Lo siento, ha ocurrido un error. Por favor intenta de nuevo.',
+        timestamp: Date.now(),
+      };
+      setState(prev => ({
+        ...prev,
+        messages: [...prev.messages, errorMessage],
+        isLoading: false,
+      }));
+    }
+  }, [api]);
+
+  // Chip de sugerencia clickado → se envía como mensaje
+  const handleSuggestion = useCallback((text: string) => {
+    handleSendMessage(text);
+  }, [handleSendMessage]);
+
+  const handleToggle = useCallback(() => {
+    setIsOpen(prev => !prev);
+    setState(prev => ({ ...prev, isMinimized: false }));
+  }, []);
+
+  const handleClose = useCallback(() => {
+    setIsOpen(false);
+    setIsExpanded(false);
+    setState(prev => ({ ...prev, isMinimized: false }));
+  }, []);
+
+  const handleToggleExpand = useCallback(() => {
+    setIsExpanded(prev => !prev);
+  }, []);
+
+  return (
+    <>
+      {/* ── Panel de chat ───────────────────────────────────────────── */}
+      {isOpen && !state.isMinimized && (
+        <div
+          className={`${styles.panel} ${isExpanded ? styles.panelExpanded : ''}`}
+          role="dialog"
+          aria-label="Asistente de moda"
+          aria-modal="true"
+        >
+          {/* Fondo decorativo sutil */}
+          <div className={styles.float_form_wrapper} />
+
+          {/* ── Header ──────────────────────────────────────────────── */}
+          <div className={styles.header}>
+            <div className={styles.headerLeft}>
+              <div className={styles.headerAvatar} aria-hidden="true">
+                {/* Icono del asistente — mismo SVG que el ChatBubble */}
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                  width="22" height="22" fill="none" color="white">
+                  <g clipPath="url(#clip0_990_39490)">
+                    <path d="M13.4733 5H21V18.2102L16.14 22V18.2102H6V12.2941"
+                      stroke="currentColor" strokeWidth="2.03704"
+                      strokeMiterlimit="10" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M10 5.00002C7.74328 5.00002 6.00049 3.25689 6.00049 1C6.00049 3.25689 4.25672 5.00021 2 5.00021C4.25672 5.00021 5.9997 6.74311 5.9997 9C5.9997 6.74311 7.74328 5.00002 10 5.00002Z"
+                      stroke="currentColor" strokeWidth="2.03704" strokeLinejoin="round" />
+                  </g>
+                </svg>
+              </div>
+              <div>
+                <div className={styles.headerName}>Asistente de Moda</div>
+                <div className={styles.headerStatus}>En línea</div>
+              </div>
+            </div>
+
+            <div className={styles.headerActions}>
+              {/* Botón Maximizar / Restaurar — solo en desktop */}
+              <button
+                onClick={handleToggleExpand}
+                className={styles.expandBtn}
+                aria-label={isExpanded ? 'Restaurar tamaño' : 'Maximizar chat'}
+                title={isExpanded ? 'Restaurar' : 'Maximizar'}
+              >
+                {isExpanded ? (
+                  // Icono: comprimir / restaurar
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="4 14 10 14 10 20" />
+                    <polyline points="20 10 14 10 14 4" />
+                    <line x1="10" y1="14" x2="3" y2="21" />
+                    <line x1="21" y1="3" x2="14" y2="10" />
+                  </svg>
+                ) : (
+                  // Icono: expandir
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 3 21 3 21 9" />
+                    <polyline points="9 21 3 21 3 15" />
+                    <line x1="21" y1="3" x2="14" y2="10" />
+                    <line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                )}
+              </button>
+
+              {/* Botón Cerrar */}
+              <button onClick={handleClose} className={styles.closeBtn}
+                aria-label="Cerrar chat">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+                  viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* ── Pantalla de bienvenida (estilo Zalando) ──────────────
+              Se muestra solo cuando no hay mensajes de usuario todavía.
+              Incluye el saludo con nombre si el usuario está logueado.   */}
+          {!hasUserMessages && (
+            <div className={styles.welcomeScreen}>
+              {/* Saludo personalizado — visible solo si hay nombre */}
+              {isLoggedIn && greetingName && (
+                <div className={styles.personalGreeting}>
+                  <span className={styles.personalGreetingHi}>Hola, {greetingName} 👋</span>
+                  <span className={styles.personalGreetingVerif}>
+                    {/* Icono de escudo — usuario identificado */}
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"
+                      viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                      aria-hidden="true">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                      <polyline points="9 12 11 14 15 10" />
+                    </svg>
+                    Cuenta verificada
+                  </span>
+                </div>
+              )}
+
+              {/* Título principal del asistente */}
+              <h2 className={styles.welcomeTitle}>
+                {isLoggedIn && greetingName
+                  ? `¿Qué buscas hoy, ${greetingName}?`
+                  : '¿En qué puedo ayudarte?'}
+              </h2>
+              <p className={styles.welcomeSubtitle}>
+                Pregúntame sobre moda, tallas, tendencias o te ayudo a encontrar tu próximo look.
+              </p>
+
+              {/* Chips de sugerencia — inspirados en Zalando */}
+              <div className={styles.suggestions} aria-label="Sugerencias">
+                <span className={styles.suggestionsLabel}>
+                  {/* Icono chispa */}
+                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13"
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                    aria-hidden="true">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                  </svg>
+                  Sugerencias
+                </span>
+                {SUGGESTION_CHIPS.map((chip) => (
+                  <button
+                    key={chip}
+                    className={styles.chip}
+                    onClick={() => handleSuggestion(chip)}
+                  >
+                    {chip}
+                  </button>
+                ))}
+              </div>
+
+              {/* Nota beta (igual que Zalando) */}
+              <p className={styles.betaNote}>
+                Estoy en beta, sigo aprendiendo.{' '}
+                <a href="#" className={styles.betaLink}
+                  onClick={(e) => { e.preventDefault(); }}>
+                  Más información
+                </a>
+              </p>
+            </div>
+          )}
+
+          {/* ── Lista de mensajes — visible cuando hay conversación ── */}
+          {hasUserMessages && (
+            <MessageList messages={state.messages} isLoading={state.isLoading} />
+          )}
+
+          {/* ── Input ───────────────────────────────────────────────── */}
+          <MessageInput
+            onSendMessage={handleSendMessage}
+            disabled={state.isLoading}
+            placeholder="Escribe tu mensaje..."
+          />
+        </div>
+      )}
+
+      {/* ── Burbuja flotante ────────────────────────────────────────── */}
+      <ChatBubble
+        isOpen={isOpen}
+        isMinimized={state.isMinimized}
+        hasUnreadMessages={false}
+        onToggle={handleToggle}
+        onMinimize={() => {}}
+      />
+    </>
+  );
+}

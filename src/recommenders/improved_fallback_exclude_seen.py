@@ -254,11 +254,23 @@ CATEGORY_KEYWORDS = {
     },
     
     "ACCESSORIES": {
-        "type": "concrete",
+        # FIX (11/04/2026): ACCESSORIES era 'concrete' pero ningún producto
+        # real tiene product_type=='ACCESSORIES'. El catálogo usa nombres
+        # específicos: AROS, COLLARES, BRAZALETES, CLUTCH, CINTURONES, etc.
+        # Convirtiendo a 'parent' el sistema expande automáticamente a los
+        # product_types reales cuando el usuario dice 'accesorios'.
+        "type": "parent",
+        "subcategories": [
+            "AROS", "COLLARES", "BRAZALETES",
+            "CLUTCH", "CINTURONES", "CARTERAS",
+            "TOCADOS", "BRALETTES",
+        ],
         "keywords": [
-            # Genéricos
+            # Español genérico
             "accesorio", "accesorios",
+            # Inglés
             "accessory", "accessories",
+            # Complemento
             "complemento", "complementos",
             # Descriptivos
             "detalle", "detalles",
@@ -623,6 +635,34 @@ def extract_categories_from_query(
     query_lower = query.lower()
     query_normalized = query_lower.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
     
+    # -----------------------------------------------------------------------
+    # FIX (11/04/2026): Patrones relacionales para penalizar categorias de contexto.
+    # En "Que accesorios combinan con este vestido?", 'vestido' es contexto,
+    # no intencion. Las categorias DESPUES del marcador relacional reciben
+    # specificity=0.1 para quedar al final de la lista y no afectar el reparto.
+    # -----------------------------------------------------------------------
+    RELATIONAL_PATTERNS = [
+        r'combina[rn]?\s+con',
+        r'combinen?\s+con',
+        r'que\s+va[yn]a?\s+con',
+        r'van\s+con',
+        r'va\s+con',
+        r'para\s+(?:este|esta|ese|esa|un|una|el|la)\b',
+        r'con\s+(?:este|esta|ese|esa|el|la)\b',
+        r'que\s+combine[n]?\s+con',
+        r'que\s+pegue[n]?\s+con',
+        r'que\s+quede[n]?\s+con',
+        r'similar(?:es)?\s+a\s+este',
+        r'parecidos?\s+a\s+este',
+    ]
+    relational_cutoff_pos = None
+    for _pat in RELATIONAL_PATTERNS:
+        _m = re.search(_pat, query_normalized)
+        if _m:
+            relational_cutoff_pos = _m.start()
+            logger.debug(f"Relational pattern '{_pat}' at pos {relational_cutoff_pos}")
+            break
+
     # 2. Trackear categorías detectadas y su especificidad
     detected_categories = {}  # {category: specificity_score}
     
@@ -639,8 +679,22 @@ def extract_categories_from_query(
             pattern = r'\b' + re.escape(keyword_normalized) + r'\b'
             
             if re.search(pattern, query_normalized):
-                # Calcular especificidad (keywords más largos = más específicos)
-                specificity = len(keyword.split())  # Número de palabras
+                # Calcular especificidad (keywords mas largos = mas especificos)
+                specificity = len(keyword.split())  # Numero de palabras
+                
+                # FIX (11/04/2026): Si el keyword aparece DESPUES del marcador
+                # relacional, es categoria de contexto. Penalizar a 0.1.
+                _kw_match = re.search(pattern, query_normalized)
+                if (
+                    relational_cutoff_pos is not None
+                    and _kw_match is not None
+                    and _kw_match.start() > relational_cutoff_pos
+                ):
+                    specificity = 0.1
+                    logger.debug(
+                        f"Context cat '{category}' (kw:'{keyword}') penalized "
+                        f"after relational marker at pos {relational_cutoff_pos}"
+                    )
                 
                 # Si es categoría padre → expandir a subcategorías
                 if category_type == "parent":
@@ -1067,6 +1121,7 @@ class ImprovedFallbackStrategies:
                 "price": price,
                 "category": product.get("product_type", ""),
                 "score": score,
+                "handle": product.get("handle", ""),
                 "recommendation_type": "popular_fallback"
             })
         
@@ -1212,6 +1267,7 @@ class ImprovedFallbackStrategies:
                             "price": price,
                             "category": product.get("product_type", ""),
                             "score": 0.5,
+                            "handle": product.get("handle", ""),
                             "recommendation_type": "smart_diverse_fallback"
                         })
                     
@@ -1278,6 +1334,7 @@ class ImprovedFallbackStrategies:
                 "price": price,
                 "category": product.get("product_type", ""),
                 "score": 0.5,
+                "handle": product.get("handle", ""),
                 "recommendation_type": "diverse_fallback"
             })
         
@@ -1361,9 +1418,17 @@ class ImprovedFallbackStrategies:
                         # Score decreciente: más alto para primeros productos
                         # Rango: 0.95 (primero) → 0.70 (último)
                         score = 0.95 - (i * 0.25 / n)
-                        
+
                         recommendations.append({
                             **product,
+                            # FIX (27/03/2026): sobrescribir price explicitamente.
+                            # **product puede traer price=None (catalogo TF-IDF crudo).
+                            # safe_extract_price() sube variants[0].price al nivel
+                            # raiz si price es None o 0, garantizando que
+                            # sanitize_rec_for_frontend y ProductCard.tsx reciban
+                            # el valor correcto incluso si tfidf aun no fue
+                            # reentrenado con _normalize_product_price.
+                            "price": safe_extract_price(product),
                             "score": score,
                             "recommendation_type": "query_category_driven_multi",
                             "detected_categories": query_categories,
@@ -1399,53 +1464,82 @@ class ImprovedFallbackStrategies:
                 category_counts = {}
                 for cat in user_categories:
                     category_counts[cat] = category_counts.get(cat, 0) + 1
-                
+
                 # Ordenar por frecuencia (más interactuadas primero)
                 sorted_categories = sorted(
                     category_counts.items(),
                     key=lambda x: x[1],
                     reverse=True
                 )
-                
+
                 # Tomar top 3 categorías preferidas
                 preferred_categories = [cat for cat, count in sorted_categories[:3]]
-                
                 logger.info(f"   Preferred categories: {preferred_categories}")
-                
+
+                # FIX (10/04/2026): normalizar a uppercase para comparar con product_type
+                preferred_categories_upper = [cat.upper() for cat in preferred_categories]
+                logger.info(f"   Preferred categories (normalized): {preferred_categories_upper}")
+
+                # Cuantas categorias tienen productos reales (para calcular sample_size)
+                # FIX (21/04/2026 — BUG-NREC-3): antes sample_size=min(3,...) hardcodeado.
+                # Si solo 1 categoria matchea, 3 << n=8. Ahora usamos ceil(n/n_cats_reales).
+                n_cats_with_products = len([
+                    c for c in preferred_categories_upper
+                    if any(p.get("product_type", "").upper() == c for p in available_products)
+                ])
+
                 # Generar recomendaciones de categorías preferidas
                 personalized_products = []
-                
-                for category in preferred_categories:
+
+                for category in preferred_categories_upper:
                     category_products = [
                         p for p in available_products
-                        if p.get("product_type") == category
+                        if p.get("product_type", "").upper() == category
                     ]
-                    
+
                     if category_products:
-                        # Sample aleatorio de esta categoría
-                        sample_size = min(3, len(category_products))
+                        # Ceil division: garantiza que la suma cubra n cuando hay pocas categorias
+                        per_cat = max(1, -(-n // max(n_cats_with_products, 1)))
+                        sample_size = min(per_cat, len(category_products))
                         sampled = random.sample(category_products, sample_size)
                         personalized_products.extend(sampled)
-                
+
                 # Si tenemos productos personalizados
                 if personalized_products:
-                    # Limitar a n productos
+                    # Limitar a n primero
                     personalized_products = personalized_products[:n]
-                    
+
+                    # FIX (21/04/2026 — BUG-NREC-3 cont.): Top-up garantizado.
+                    # Si las categorias preferidas tienen pocos productos tras exclusiones,
+                    # rellenar con cualquier disponible para siempre retornar n.
+                    if len(personalized_products) < n:
+                        needed = n - len(personalized_products)
+                        used_ids = {str(p.get("id", "")) for p in personalized_products}
+                        remaining = [
+                            p for p in available_products
+                            if str(p.get("id", "")) not in used_ids
+                        ]
+                        if remaining:
+                            extra = random.sample(remaining, min(needed, len(remaining)))
+                            personalized_products.extend(extra)
+                            logger.info(
+                                f"   Top-up P2: added {len(extra)} products from other"
+                                f" categories (needed {needed}, pool={len(remaining)})"
+                            )
+
                     # Agregar scores
                     recommendations = []
                     for i, product in enumerate(personalized_products):
-                        # Score decreciente: 0.9 → 0.5
-                        score = 0.9 - (i * 0.4 / n)
-                        
+                        score = 0.9 - (i * 0.4 / max(len(personalized_products), 1))
                         recommendations.append({
                             **product,
+                            "price": safe_extract_price(product),
                             "score": score,
                             "recommendation_type": "personalized_fallback",
-                            "based_on_categories": preferred_categories
+                            "based_on_categories": preferred_categories,
                         })
-                    
-                    logger.info(f"✅ Generated {len(recommendations)} personalized recommendations")
+
+                    logger.info(f"\u2705 Generated {len(recommendations)} personalized recommendations")
                     return recommendations
         
         # ═══════════════════════════════════════════════════════════════════════════
@@ -1536,14 +1630,19 @@ class ImprovedFallbackStrategies:
         logger.info(f"Smart fallback exclusions: {len(interacted_products)} from interactions + {len(exclude_products or set())} from context = {len(combined_exclude)} total")
         
         # ✨ PRIORIZAR: Si hay query con categoría, usar personalized_fallback que ahora la detecta
+        # FIX (21/04/2026 — BUG-NREC-1): combined_exclude NO se pasaba a get_personalized_fallback
+        # cuando había user_query. Resultado: los 16 productos ya mostrados en turnos anteriores
+        # no se excluían, y el sistema podía devolver duplicados O, al filtrar internamente
+        # con un pool reducido por el bug #3, devolver menos de n.
         if user_query:
             logger.info(f"🎯 Using query-aware personalized fallback with query: '{user_query[:50]}...'")
             return await ImprovedFallbackStrategies.get_personalized_fallback(
-                user_id, 
-                products, 
-                user_events, 
+                user_id,
+                products,
+                user_events,
                 n,
-                user_query=user_query  # ✨ Pasar query
+                exclude_products=combined_exclude,  # FIX: pasar exclusiones reales
+                user_query=user_query,
             )
         
         # Si tenemos eventos del usuario pero no query, usar recomendaciones personalizadas

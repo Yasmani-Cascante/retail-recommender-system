@@ -3,11 +3,15 @@
   
   // Configuration
   const WIDGET_VERSION = '1.0.0';
+  // FIX v2.2.0 (29/03/2026): Mercado primario es Chile (CL), no US.
+  // El Liquid snippet de Shopify inyecta data-market-id dinamicamente para
+  // cada mercado activo. Este default aplica SOLO si el snippet no lo setea
+  // (ej. modo standalone fuera de Shopify).
   const DEFAULT_CONFIG = {
     theme: 'light',
     position: 'bottom-right',
-    marketId: 'US',
-    language: 'en'
+    marketId: 'CL',
+    language: 'es'
   };
 
   // Load widget script
@@ -21,7 +25,9 @@
 
       // Create script element
       const script = document.createElement('script');
-      script.src = config.scriptUrl || `${config.apiUrl}/static/widget/widget.js`;
+      // FIX (22/03/2026): Vite 4 con "type":"module" genera widget.umd.cjs, no widget.js.
+      // Verificado en static/widget/ — el archivo real es widget.umd.cjs (150KB).
+      script.src = config.scriptUrl || `${config.apiUrl}/static/widget/widget.umd.cjs`;
       script.onload = () => {
         if (window.RetailRecommenderWidget) {
           resolve(window.RetailRecommenderWidget);
@@ -74,7 +80,7 @@
         initWidget({
           apiUrl,
           apiKey,
-          marketId: currentScript.getAttribute('data-market-id') || 'US',
+          marketId: currentScript.getAttribute('data-market-id') || 'CL',  // FIX v2.2.0: default CL
           theme: currentScript.getAttribute('data-theme') || 'light',
         });
       }

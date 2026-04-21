@@ -4,6 +4,7 @@ import logging
 import asyncio
 import json  # Added for response transformation
 from datetime import datetime, timezone  # Fix: Use datetime to avoid all time shadowing issues
+import structlog  # ✅ H1: Structured Logging Migration
 
 # ASYNC-FIRST IMPORTS - CORRECCIÓN CRÍTICA
 from src.api.utils.market_utils import (
@@ -14,14 +15,20 @@ adapt_product_for_market_async,
 )
 from src.core.market.adapter import get_market_adapter
 from typing import Dict, List, Optional, Any
-from fastapi import APIRouter, Depends, HTTPException, Header, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request
+from pydantic import BaseModel, field_validator
 
 
 # 🚀 PERFORMANCE: Import optimized performance components
 from src.api.core.performance_optimizer import (
     execute_mcp_call, execute_personalization_call, execute_retail_api_call,
     get_performance_report, ComponentType
+)
+
+# ✅ NUEVO: Import language detection utilities
+from src.api.utils.language_detection import (
+    detect_language_from_request,
+    validate_language
 )
 
 # ⚡ CRITICAL PERFORMANCE OPTIMIZATION: Import enhanced optimizer
@@ -79,8 +86,8 @@ from src.api.utils.market_integration import fix_recommendations
 # from src.api.routers.mcp_conversation_state_fix import get_conversation_state_manager
 from src.api.mcp.conversation_state_manager import get_conversation_state_manager
 
-logger = logging.getLogger(__name__)
-
+# logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)  # ✅ H1: Structured Logging Migration
 # ============================================================================
 # CRITICAL FIX: Response Validation Error Solution
 # ============================================================================
@@ -143,33 +150,233 @@ def extract_answer_from_claude_response(claude_response: Any) -> str:
         return f"Error processing response: {str(e)}"
 
 # ============================================================================
+# FIX (27/03/2026): sanitize_rec_for_frontend — red de seguridad última milla
+# ============================================================================
+
+def sanitize_rec_for_frontend(rec: Any) -> Dict[str, Any]:
+    """
+    Garantiza que cada recomendación tenga los campos mínimos que el frontend
+    espera, independientemente del path que la generó.
+
+    PROBLEMA: Dos paths distintos producen estructuras diferentes:
+
+      Path A — Primera ronda (sin diversificación):
+        HybridRecommender → MCPPersonalizationEngine → MarketAdapter
+        MarketAdapter normaliza price, currency, score, image_url.
+        Los campos llegan correctamente al frontend.
+
+      Path B — Segunda ronda (con diversificación):
+        ImprovedFallbackStrategies.smart_fallback()
+        Construye dicts con **product (catálogo TF-IDF) + score + metadata.
+        El catálogo fue indexado para búsqueda textual, no para presentación.
+        'price' puede estar ausente si Shopify devolvió el precio en
+        variants[0].price y el catálogo no lo aplanó al indexar.
+        El handler tiene Fase 5 de market adaptation, pero si market_adapter
+        falla o no está disponible, los campos crudos llegan al router.
+
+    SOLUCIÓN: Aplicar este saneado en el router sobre TODAS las recomendaciones
+    antes de construir el response. Principio tolerant reader: acepta cualquier
+    estructura que llegue y emite siempre la estructura canónica que
+    ProductCard.tsx espera.
+
+    Invariantes garantizados:
+      • id          — str non-empty  (fallback: 'unknown')
+      • title       — str non-empty  (fallback: 'Producto')
+      • price       — float >= 0     (acepta price o market_price; NaN-safe)
+      • currency    — str non-empty  (fallback: 'EUR' para mercado ES)
+      • score       — float en [0,1] (acepta score, hybrid_score, market_score…)
+      • description — str sin HTML, máx 300 chars
+      • image_url   — str | None     (acepta image_url, imageUrl, images[0])
+      • url         — str | None     (opcional, para el link de ProductCard)
+
+    Los campos extra útiles (reason, market_adapted, recommendation_type, etc.)
+    se preservan tal cual — no se descarta información que el frontend use.
+    """
+    import re as _re
+    import os as _os
+
+    # ── Normalizar a dict puro ────────────────────────────────────────────────
+    # El handler puede retornar Pydantic models, dataclasses o dicts crudos.
+    if not isinstance(rec, dict):
+        if hasattr(rec, 'model_dump'):
+            rec = rec.model_dump()
+        elif hasattr(rec, '__dict__'):
+            rec = vars(rec)
+        else:
+            try:
+                rec = dict(rec)
+            except Exception:
+                rec = {}
+
+    # ── price ─────────────────────────────────────────────────────────────────
+    # Acepta 'price' (primera ronda, ya adaptado) o 'market_price' (adapter).
+    # Catálogo TF-IDF puede tener price=None o ausente → default 0.0.
+    raw_price = rec.get("price") if rec.get("price") is not None else rec.get("market_price")
+    try:
+        price = float(raw_price) if raw_price is not None else 0.0
+        if not (price >= 0):  # captura NaN y negativos
+            price = 0.0
+    except (TypeError, ValueError):
+        price = 0.0
+
+    # ── score ─────────────────────────────────────────────────────────────────
+    # Path de diversificación emite 'score'; personalización emite
+    # 'hybrid_score' o 'market_score'. Acepta cualquiera de los cinco.
+    raw_score = (
+        rec.get("score")
+        or rec.get("market_score")
+        or rec.get("hybrid_score")
+        or rec.get("similarity_score")
+        or rec.get("viability_score")
+    )
+    try:
+        score = float(raw_score) if raw_score is not None else 0.5
+        score = max(0.0, min(1.0, score))
+    except (TypeError, ValueError):
+        score = 0.5
+
+    # ── description ───────────────────────────────────────────────────────────
+    # El catálogo puede guardar body_html con etiquetas HTML residuales.
+    raw_desc = str(rec.get("description") or rec.get("body_html") or "")
+    description = _re.sub(r'<[^>]+>', '', raw_desc).strip()[:300]
+
+    # ── image_url ─────────────────────────────────────────────────────────────
+    # Shopify puede devolver el campo como image_url, imageUrl, o images[].
+    image_url: Optional[str] = None
+    for key in ("image_url", "imageUrl"):
+        val = rec.get(key)
+        if isinstance(val, str) and val:
+            image_url = val
+            break
+    if image_url is None:
+        images = rec.get("images")
+        if isinstance(images, list) and images:
+            # images puede ser lista de strings o lista de dicts {"src": ...}
+            first = images[0]
+            image_url = first if isinstance(first, str) else (
+                first.get("src") or first.get("url") if isinstance(first, dict) else None
+            )
+
+    # ── url ───────────────────────────────────────────────────────────────────
+    # Use the url field if already present, otherwise construct from handle.
+    product_url: Optional[str] = None
+    existing_url = rec.get("url")
+    if isinstance(existing_url, str) and existing_url:
+        product_url = existing_url
+    else:
+        handle = rec.get("handle") or ""
+        if handle:
+            shop_url = _os.environ.get("SHOPIFY_SHOP_URL", "").strip()
+            if shop_url:
+                shop_url = shop_url.rstrip("/").removeprefix("https://").removeprefix("http://")
+                product_url = f"https://{shop_url}/products/{handle}"
+
+    # ── Campos a descartar del spread ─────────────────────────────────────────
+    # Nombres alternativos ya normalizados arriba; no enviarlos duplicados.
+    _drop = frozenset({
+        "imageUrl", "images", "body_html",
+        "market_price", "market_score", "hybrid_score",
+        "similarity_score", "viability_score",
+        "localized_title",
+    })
+
+    return {
+        "id":          str(rec.get("id") or "unknown"),
+        "title":       str(rec.get("title") or rec.get("localized_title") or "Producto"),
+        "description": description,
+        "price":       price,
+        "currency":    str(rec.get("currency") or "EUR"),
+        "category":    str(rec.get("category") or rec.get("product_type") or ""),
+        # FIX (10/04/2026): Incluir vendor/marca para mostrarla en ProductCard.
+        # Shopify almacena la marca en el campo 'vendor'. El catálogo TF-IDF
+        # y el MarketAdapter lo preservan sin transformación. Llega como string
+        # o puede estar ausente — defaultear a empty string para el frontend.
+        "vendor":      str(rec.get("vendor") or ""),
+        "score":       score,
+        "image_url":   image_url,
+        "url":         product_url,
+        # Preservar campos extra útiles sin duplicar los ya normalizados arriba.
+        **{k: v for k, v in rec.items() if k not in (
+            "id", "title", "description", "price", "currency",
+            "category", "score", "image_url", "url",
+            *_drop
+        )},
+    }
+
+# ============================================================================
 
 # Modelos de datos para la API
 class ConversationRequest(BaseModel):
-    """Modelo para peticiones de conversación con MCP"""
+    """Modelo para peticiones de conversación con MCP.
+    
+    FIX (23/03/2026): Añadido widget_context para recibir el contexto de página
+    enviado por el widget React (page_url, page_type, product_id, user_agent).
+    Pydantic lo ignoraba silenciosamente antes — ahora se persiste para uso futuro.
+    """
     query: str
     user_id: Optional[str] = None
     session_id: Optional[str] = None
     market_id: str = "default"
-    language: str = "en"
+    language: Optional[str] = None  # ISO language code, e.g., 'en', 'es'
     product_id: Optional[str] = None
-    n_recommendations: int = 5
+    # FIX (20/04/2026): Incrementado de 5 a 8.
+    # El frontend hacía .slice(0,3) sobre los 5 productos recibidos — mostraba solo 3.
+    # Ahora pedimos 8 al backend y el frontend muestra los 8, maximizando la
+    # diversidad sin impacto significativo en latencia (~+200ms sobre los 6.5s actuales;
+    # el cuello de botella es Claude/LFM, no el número de productos).
+    # Los 8 IDs se guardan en Redis para diversificación multi-turno (F-07).
+    n_recommendations: int = 8
+    # FIX (23/03/2026): El widget envía widget_context con page_url, page_type, etc.
+    # Sin este campo, Pydantic lo descartaba — ahora se recibe correctamente.
+    widget_context: Optional[Dict[str, Any]] = None
 
 class ConversationResponse(BaseModel):
-    """Modelo para respuestas conversacionales"""
+    """Modelo para respuestas conversacionales.
+    
+    FIX (23/03/2026): ResponseValidationError en producción — 1 validation error.
+    Causa raíz: el handler devuelve took_ms calculado como (time.time() - start) * 1000
+    que puede ser un float normal, pero en algunas rutas de código era un objeto
+    datetime o None, rompiendo la validación Pydantic en el middleware de FastAPI.
+    
+    SOLUCIÓN: model_config con arbitrary_types_allowed=True NO resuelve esto.
+    La solución correcta es sanitizar took_ms con un validator antes de serializar.
+    Adicionalmente, metadata puede estar ausente en paths de error — default a {}.
+    """
     answer: str
     recommendations: List[Dict[str, Any]]
+
+    # FIX (26/03/2026): kb_document was missing from the Pydantic model.
+    # The handler returns it inside response_dict (key 'kb_document') and the
+    # router extracted it into the return dict, but Pydantic silently dropped it
+    # because the field was not declared here.  Adding it with default="" means:
+    #   - Generic queries  → kb_document = full KB page text (answer == kb_document)
+    #   - Specific queries → kb_document = full KB page text, answer = Claude summary
+    # The frontend can use kb_document to offer a "see full policy" expansion.
+    kb_document: str = ""
     
-    # ✅ ADDED: Required fields for Phase 2 validation
+    # Phase 2 fields
     session_metadata: Dict[str, Any] = {}
     intent_analysis: Dict[str, Any] = {}
     market_context: Dict[str, Any] = {}
     personalization_metadata: Dict[str, Any] = {}
     
-    # ✅ PRESERVED: Original fields
-    metadata: Dict[str, Any]
-    session_id: str
+    # Original fields — metadata tiene default para paths de error
+    metadata: Dict[str, Any] = {}
+    session_id: str = ""
+    # FIX (23/03/2026): Usar validator para garantizar que took_ms sea siempre float.
+    # Sin esto, un valor None o datetime causaba ResponseValidationError → HTTP 500.
     took_ms: float = 0.0
+
+    @field_validator('took_ms', mode='before')
+    @classmethod
+    def coerce_took_ms_to_float(cls, v: Any) -> float:
+        """Garantiza que took_ms sea siempre un float válido.
+        Convierte None, str, datetime, o cualquier otro tipo a 0.0 como fallback.
+        Esto previene ResponseValidationError cuando el handler retorna un tipo inesperado."""
+        try:
+            return float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
 
 class MarketSupportedResponse(BaseModel):
     """Modelo para respuesta de mercados soportados"""
@@ -385,6 +592,7 @@ router = APIRouter(
 @router.post("/conversation", response_model=ConversationResponse)
 async def process_conversation(
     conversation: ConversationRequest,
+    request: Request,  # ✅ AGREGAR Request para access headers si es necesario
     mcp_client: MCPClientDep,
     market_manager: MarketManagerDep,
     market_cache: MarketCacheDep,
@@ -399,8 +607,36 @@ async def process_conversation(
     ✅ ENTERPRISE: Capacidades ML + compatibilidad tests Fase 2
     """
     start_time = time.time()
-    
+
     try:
+        # ✅ NUEVO: Detección automática de idioma
+        if conversation.language and conversation.language != "en":
+            # Usuario especificó idioma explícitamente
+            detected_language = validate_language(conversation.language)
+            detection_method = "explicit_request_body"
+        else:
+            # Auto-detectar: texto del mensaje (prioridad 1) > Accept-Language header (prioridad 2).
+            # FIX (09/04/2026): detect_language_from_request ahora acepta query_text.
+            # Sin esto, un usuario con navegador en-US que escribe en espanol recibe
+            # respuestas de Claude en ingles aunque el query sea 100% espanol.
+            from src.api.utils.language_detection import detect_language_from_text as _dlt
+            _text_lang = _dlt(conversation.query)
+            detected_language = detect_language_from_request(
+                request,
+                query_text=conversation.query,
+            )
+            if _text_lang is not None:
+                detection_method = "text_content"
+            elif request.headers.get("Accept-Language"):
+                detection_method = "accept_language_header"
+            else:
+                detection_method = "default"
+        
+        logger.info(
+            f"MCP Conversation - Language: {detected_language} "
+            f"(method: {detection_method}), Market: {conversation.market_id}"
+        )
+
         # 🔧 FIX CRÍTICO #1: Obtener ConversationStateManager INMEDIATAMENTE
         state_manager = await get_conversation_state_manager()
         if not state_manager:
@@ -414,9 +650,29 @@ async def process_conversation(
         if not validated_user_id or validated_user_id.lower() in ['string', 'null', 'undefined', 'none']:
             validated_user_id = "anonymous"
             
-        validated_product_id = conversation.product_id
+        # F-01 (04/04/2026): product_id puede llegar por dos vías:
+        #   1. conversation.product_id  — campo raíz del body (legado, rara vez populado)
+        #   2. widget_context.product_id — donde api.ts realmente lo envía siempre
+        #      (extractProductId() lo lee de window.location.pathname en cada mensaje)
+        #
+        # Hasta ahora solo se leía la vía 1, por eso validated_product_id era
+        # siempre None aunque el usuario estuviera en /products/camisa-azul.
+        # Este fix lee también la vía 2 y usa la primera que no sea vacía.
+        _widget_ctx_early = conversation.widget_context or {}
+        _widget_product_id = (
+            _widget_ctx_early.get("product_id")
+            or _widget_ctx_early.get("productId")
+            or None
+        )
+        validated_product_id = conversation.product_id or _widget_product_id
         if validated_product_id and validated_product_id.lower() in ['string', 'null', 'undefined', 'none']:
             validated_product_id = None
+        logger.info(
+            f"F-01 product_id resolution: "
+            f"body={conversation.product_id!r} "
+            f"widget_ctx={_widget_product_id!r} "
+            f"resolved={validated_product_id!r}"
+        )
 
         # 🔧 FIX CRÍTICO #2: Obtener o crear sesión conversacional ANTES del procesamiento
         conversation_session = None
@@ -619,22 +875,124 @@ async def process_conversation(
         try:
             # ✅ Use corrected architecture handler instead of problematic mcp_recommender.get_recommendations()
             # ✅ LLAMADA AL HANDLER (business logic only)
+            # F-04 (04/04/2026): Extraer customer_id de widget_context.
+            # El frontend lo inyecta via data-customer-id="{{ customer.id }}"
+            # en theme.liquid. Para usuarios anonimos llega vacio o ausente.
+            # F-04: Extraer customer_id de widget_context.
+            # _widget_ctx_early ya fue construido arriba para product_id;
+            # lo reutilizamos aquí para no releer widget_context.
+            _widget_ctx = _widget_ctx_early
+            _customer_id = (
+                _widget_ctx.get("customer_id")
+                or _widget_ctx.get("customerId")
+                or None
+            )
+
             response_dict = await get_mcp_conversation_recommendations(
                 validated_user_id=validated_user_id,
                 validated_product_id=validated_product_id,
                 conversation_query=conversation.query,
                 market_id=conversation.market_id,
                 n_recommendations=conversation.n_recommendations,
-                session_id=real_session_id
+                session_id=real_session_id,
+                language=detected_language,  # Idioma detectado
+                customer_id=_customer_id,    # F-04: perfil de cliente
             )
-            
+
+            # ✅ NUEVO: Log para confirmar que se pasó correctamente
+            logger.info(f"✅ Passed language '{detected_language}' to handler")
+
             # ✅ EXTRAER datos del handler
             ai_response = response_dict.get("ai_response", f"Based on your query '{conversation.query}', here are some recommendations.")
             recommendations = response_dict.get("recommendations", [])
             metadata = response_dict.get("metadata", {})
-            
+            response_type = response_dict.get("type", "transactional")
+
             logger.info("✅ MCP conversation recommendations obtained successfully with corrected architecture")
-            
+            logger.info(f"📤 Handler response type: {response_type}")
+
+            # FIX (25/03/2026): INFORMATIONAL and GREETING responses are already complete
+            # when they leave the handler — they carry a clean string in ai_response and
+            # need no further personalisation. Without this guard, execution falls through
+            # to the second path below which calls mcp_recommender.generate_personalized_response();
+            # that call returns a dict {'response': '...', 'tone_adaptation': ...} which gets
+            # serialised as a raw JSON string and displayed verbatim in the chat widget.
+            if response_type in ("informational", "greeting"):
+                logger.info(f"📤 Early return for '{response_type}' response — skipping personalisation path")
+
+                # Persist the turn (no recommendation IDs for KB/greeting responses)
+                if state_manager and conversation_session:
+                    try:
+                        updated_session = await state_manager.add_conversation_turn_with_recommendations(
+                            session=conversation_session,
+                            user_query=conversation.query,
+                            ai_response=str(ai_response),
+                            recommendation_ids=[],
+                            metadata={
+                                "response_type": response_type,
+                                "knowledge_base_used": metadata.get("knowledge_base_used", False),
+                                "kb_contextualised": metadata.get("kb_contextualised", False),
+                                "market_id": conversation.market_id,
+                                "source": "mcp_router_early_return",
+                            }
+                        )
+                        await state_manager.save_conversation_state(updated_session)
+                        real_session_id = updated_session.session_id
+                        turn_number = len(updated_session.turns)
+                        state_persisted = True
+                        logger.info(f"✅ {response_type.upper()} turn persisted: session={real_session_id}, turn={turn_number}")
+                    except Exception as state_err:
+                        logger.error(f"❌ State persistence failed for {response_type}: {state_err}")
+
+                # FIX (26/03/2026): Extract kb_document from handler response.
+                # The handler always sets response_dict["kb_document"] = kb_answer.answer
+                # (the full KB page text) regardless of whether the answer was
+                # contextualised by Claude or returned verbatim.  We extract it here
+                # and include it as a top-level field so the frontend can:
+                #   a) display the short contextualised answer in the chat bubble
+                #   b) offer an expandable "view full policy" using kb_document
+                # Without this extraction the field was present in response_dict but
+                # never forwarded — and even if it had been, Pydantic would have dropped
+                # it because ConversationResponse lacked the kb_document declaration.
+                kb_document = response_dict.get("kb_document", "")
+
+                return {
+                    "answer": str(ai_response),
+                    "kb_document": kb_document,  # full KB source page (always present for informational)
+                    "recommendations": [],
+                    "session_metadata": {
+                        "session_id": real_session_id,
+                        "turn_number": turn_number,
+                        "state_persisted": state_persisted,
+                        "conversation_stage": response_type,
+                    },
+                    "intent_analysis": {
+                        "intent": response_type,
+                        "confidence": metadata.get("intent_detection", {}).get("confidence", 0.9),
+                        "attributes": [response_type, "early_return"],
+                        "urgency": "low",
+                    },
+                    "market_context": {
+                        "market_id": conversation.market_id,
+                        "currency": "EUR",
+                        "availability_checked": False,
+                        "market_optimization": {},
+                    },
+                    "personalization_metadata": {
+                        "strategy_used": "kb_direct",
+                        "personalization_applied": False,
+                        "kb_contextualised": metadata.get("kb_contextualised", False),
+                        "kb_had_specific_entities": metadata.get("kb_had_specific_entities", False),
+                    },
+                    "metadata": {
+                        **metadata,
+                        "architecture_pattern": "early_return_informational",
+                        "state_management": "centralized_in_router",
+                    },
+                    "session_id": real_session_id,
+                    "took_ms": (time.time() - start_time) * 1000,
+                }
+
             # 🎯 SOLUCIÓN CRÍTICA: Extraer recommendation IDs del handler
             recommendation_ids = metadata.get("recommendation_ids", [])
             next_turn_number = metadata.get("session_context", {}).get("next_turn_number", 1)
@@ -676,9 +1034,22 @@ async def process_conversation(
                     # Continue with response even if state fails
                     
                 # ✅ CONSTRUIR respuesta con datos del handler
+                # FIX (27/03/2026): Reemplaza el loop de conversión manual.
+                # sanitize_rec_for_frontend() garantiza que TODAS las recomendaciones
+                # —tanto de primera ronda (MarketAdapter) como de segunda ronda
+                # (ImprovedFallbackStrategies.smart_fallback / catálogo TF-IDF)—
+                # emitan los invariantes que ProductCard.tsx requiere:
+                # price float>=0, score [0,1], description sin HTML, image_url str|None.
+                safe_recs = [sanitize_rec_for_frontend(rec) for rec in recommendations]
+
+                logger.info(f"✅ sanitize_rec_for_frontend aplicado a {len(safe_recs)} recs")
+                if safe_recs:
+                    prices = [r.get('price', 0) for r in safe_recs]
+                    logger.info(f"   Price sample (primeros 3): {prices[:3]}")
+
                 return {
-                    "answer": ai_response,
-                    "recommendations": recommendations,
+                    "answer": str(ai_response) if ai_response is not None else "",
+                    "recommendations": safe_recs,
                     "session_metadata": {
                         "session_id": real_session_id,
                         "turn_number": turn_number,
@@ -1040,7 +1411,7 @@ async def process_conversation(
                                     conversation.market_id: UserMarketPreferences(
                                         market_id=conversation.market_id,
                                         currency_preference='USD' if conversation.market_id == 'US' else 'EUR',
-                                        language_preference=conversation.language,
+                                        language_preference=detected_language,
                                         price_sensitivity=0.5,
                                         brand_affinities=[],
                                         category_interests={},
@@ -1054,7 +1425,7 @@ async def process_conversation(
                                     conversation.market_id: {
                                         'market_id': conversation.market_id,
                                         'currency_preference': 'USD' if conversation.market_id == 'US' else 'EUR',
-                                        'language_preference': conversation.language,
+                                        'language_preference': detected_language,
                                         'price_sensitivity': 0.5,
                                         'updated_at': current_time
                                     }
@@ -1078,7 +1449,7 @@ async def process_conversation(
                             # === CONTEXTO DE MERCADO ===
                             self.market_config = {
                                 'currency': 'USD' if conversation.market_id == 'US' else 'EUR',
-                                'language': conversation.language,
+                                'language': detected_language,
                                 'cultural_preferences': {'communication_style': 'standard'},
                                 'local_holidays': [],
                                 'price_sensitivity': 'medium',
@@ -1091,14 +1462,14 @@ async def process_conversation(
                                 'query': conversation.query,
                                 'session_id': self.session_id,
                                 'market_id': self.market_id,
-                                'language': conversation.language
+                                'language': detected_language
                             }
                             
                             # === DATOS DE PERSONALIZACIÓN ===
                             self.personalization_data = {
                                 'strategy_history': ['hybrid'],
                                 'adaptation_scores': {'cultural': 0.7, 'behavioral': 0.6},
-                                'cultural_adaptations': {'language': conversation.language},
+                                'cultural_adaptations': {'language': detected_language},
                                 'ml_predictions': {'intent_confidence': 0.8}
                             }
                             
@@ -1108,11 +1479,35 @@ async def process_conversation(
                             self.intent_signals = {}
                             self.conversation_history = []
                             self.currency = 'USD' if conversation.market_id == 'US' else 'EUR'
-                            
+
+                            # === F-04: PERFIL DE CLIENTE (se rellena post-construccion) ===
+                            self.customer_profile = None  # poblado abajo si hay customer_id
+
                             logger.debug(f"✅ Created CompleteMCPContext with all {len(self.__dict__)} required attributes")
-                    
+
                     mcp_context = CompleteMCPContext()
                     logger.info("✅ Created complete MCP context with ALL required attributes including engagement_score")
+
+                    # ── F-04: Lazy fetch del perfil de cliente ─────────────────────
+                    # customer_id llega via widget_context (inyectado desde Shopify
+                    # Liquid: window.shopifyCustomer.id en theme.liquid).
+                    # Si no hay customer_id (usuario anonimo) el servicio retorna None
+                    # y el chat continua sin personalizacion de historial.
+                    try:
+                        widget_ctx = conversation.widget_context or {}
+                        customer_id_raw = widget_ctx.get("customer_id") or widget_ctx.get("customerId")
+                        if customer_id_raw:
+                            from src.api.factories.service_factory import ServiceFactory as _SF
+                            _cps = await _SF.get_customer_profile_service()
+                            mcp_context.customer_profile = await _cps.get_profile(str(customer_id_raw))
+                            if mcp_context.customer_profile:
+                                logger.info(
+                                    "customer_profile_injected",
+                                    customer_id=customer_id_raw,
+                                    ltv_tier=mcp_context.customer_profile.get("ltv_tier"),
+                                )
+                    except Exception as _cp_err:
+                        logger.warning(f"F-04 customer profile fetch failed (graceful degradation): {_cp_err}")
                 
                 # ✅ CORRECCIÓN: Aplicar personalización con fallback robusto y performance optimization
                 try:
@@ -1489,6 +1884,7 @@ async def get_supported_markets(
 @router.get("/recommendations/{product_id}", response_model=Dict)
 async def get_market_recommendations(
     product_id: str,
+    request: Request,  # ✅ AGREGAR Request para headers
     mcp_recommender: MCPRecommenderDep,  # ✅ AÑADIDO DI
     market_id: str = Query(MarketID.DEFAULT, description="ID del mercado"),
     user_id: Optional[str] = Header(None),
@@ -1499,6 +1895,7 @@ async def get_market_recommendations(
         description="ID de sesión para mantener contexto conversacional. "
                     "Si no se provee, se generará uno nuevo por mercado con una duración de 24 horas."
     ),
+    language: Optional[str] = Query(None, description="Idioma (es, en)"),  # ✅ NUEVO
     current_user: str = Depends(get_current_user)
 ):
     """
@@ -1513,6 +1910,7 @@ async def get_market_recommendations(
         user_id: ID del usuario (opcional)
         n: Número de recomendaciones (1-20)
         session_id: ID de sesión (NUEVO - opcional)
+        language: Idioma explícito (opcional, se auto-detecta si no se provee)
         current_user: Usuario autenticado
         
     ✅ MEJORADO: Session management automático con opción manual
@@ -1526,6 +1924,20 @@ async def get_market_recommendations(
     start_time = time.time()
     
     try:
+        # ✅ Detección automática de idioma
+        if language and language != "en":
+            detected_language = validate_language(language)
+            detection_method = "explicit_query_parameter"
+        else:
+            detected_language = detect_language_from_request(request)
+            detection_method = "accept_language_header" if request.headers.get("Accept-Language") else "default"
+        
+        logger.info(
+            f"Market Recommendations - Language: {detected_language} "
+            f"(method: {detection_method}), Market: {market_id}"
+        )
+
+        # ✅ VALIDACIÓN: mcp_recommender
         if not mcp_recommender:
             raise HTTPException(status_code=503, detail="MCP recommender not initialized")
         
@@ -1536,6 +1948,8 @@ async def get_market_recommendations(
             
         # ✅ VALIDACIÓN: product_id
         validated_product_id = product_id
+        # Yo: Aqui no entra
+        logging.info(f"Received product_id 2 http: {validated_product_id}")
         if not validated_product_id or validated_product_id.lower() in ['string', 'null', 'undefined', 'none']:
             raise HTTPException(status_code=400, detail="Valid product_id is required")
         
@@ -1577,7 +1991,8 @@ async def get_market_recommendations(
                 market_id=market_id,
                 user_id=validated_user_id,
                 n_recommendations=n,
-                session_id=effective_session_id
+                session_id=effective_session_id,
+                language=detected_language
             )
             
             recommendations = response_dict.get("recommendations", [])
@@ -1637,49 +2052,12 @@ async def get_market_recommendations(
             recommendations = []
             market_context = {}
     
-        simplified_recs = []
-        for rec in recommendations:
-            reason = (
-                rec.get("reason") or
-                rec.get("explanation") or
-                rec.get("recommendation_reason") or
-                (rec.get("metadata", {}).get("reason") if isinstance(rec.get("metadata"), dict) else None) or
-                f"Recommended based on similarity to {rec.get('title', 'your preferences')}"
-            )
-            reason = str(reason).strip() if reason else "Recommended for you"
-
-            if hasattr(rec, 'product'):
-                product = rec.product
-                simplified_rec = {
-                    "id": rec.id,
-                    "title": rec.localized_title or rec.title,
-                    "price": rec.price,
-                    "currency": rec.currency,
-                    "score": rec.similarity_score or 0.0,
-                    "reason": reason,
-                    "market_adapted": True,
-                    "source": getattr(rec, 'metadata', {}).get("source", "unknown")
-                }
-            else:
-                product = rec.get("product", {})
-                simplified_rec = {
-                    "id": rec.get("id"),
-                    "title": rec.get("localized_title") or rec.get("title"),
-                    "price": rec.get("price"),
-                    "currency": rec.get("currency"),
-                    "score": rec.get("similarity_score", 0.0),
-                    "reason": reason,
-                    "market_adapted": True,
-                    "source": rec.get("metadata", {}).get("source", "mcp")
-                }
-            
-            # try:
-            #     adapter = get_market_adapter()
-            #     simplified_rec = await adapter.adapt_product(simplified_rec, market_id)
-            # except Exception as e:
-            #     logger.error(f"Market adaptation failed: {e}")
-
-            simplified_recs.append(simplified_rec)
+        # FIX (27/03/2026): Reemplaza el loop manual de extracción de campos.
+        # sanitize_rec_for_frontend() normaliza price, score, image_url y description
+        # independientemente del path que produjo la recomendación (primera ronda
+        # MarketAdapter o segunda ronda ImprovedFallbackStrategies / catálogo TF-IDF).
+        # Se preserva 'reason' como campo extra a través del spread **{k:v}.
+        simplified_recs = [sanitize_rec_for_frontend(rec) for rec in recommendations]
             
         response = {
             "product_id": validated_product_id,
@@ -1940,9 +2318,10 @@ async def process_conversation_fixed(
         )
         
         # Transform to expected ConversationResponse format
+        # FIX (27/03/2026): sanitize_rec_for_frontend aplicado aquí también.
         return {
             "answer": response["ai_response"],
-            "recommendations": response["recommendations"],
+            "recommendations": [sanitize_rec_for_frontend(r) for r in response.get("recommendations", [])],
             "session_metadata": {
                 "session_id": response["metadata"].get("session_id", f"fixed_{int(time.time())}"),
                 "turn_number": 1,
@@ -2015,7 +2394,8 @@ async def get_market_recommendations_fixed(
             "product_id": product_id,
             "market_id": market_id,
             "user_id": user_id,
-            "recommendations": response["recommendations"],
+            # FIX (27/03/2026): sanitize_rec_for_frontend aplicado aquí también.
+            "recommendations": [sanitize_rec_for_frontend(r) for r in response.get("recommendations", [])],
             "ai_response": response["ai_response"],
             "metadata": {
                 **response["metadata"],

@@ -24,4 +24,4 @@ COPY . .
 EXPOSE 8080
 
 # Comando para ejecutar la aplicación
-CMD exec uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8080}
+CMD exec uvicorn src.api.main_unified_redis:app --host 0.0.0.0 --port ${PORT:-8080}

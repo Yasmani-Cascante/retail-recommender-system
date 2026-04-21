@@ -13,6 +13,86 @@ import os
 import sys
 import asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
+from pathlib import Path
+from dotenv import load_dotenv  # ✅ AGREGAR
+
+# ✅ CARGAR .env.test ANTES de cualquier import de config
+env_path = Path(__file__).parent.parent / ".env.test"
+if env_path.exists():
+    load_dotenv(env_path, override=True)
+    print(f"✅ Loaded test environment from: {env_path}")
+else:
+    print(f"⚠️ .env.test not found at: {env_path}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ✅ STRUCTLOG CONFIGURATION FOR TESTS
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# PROBLEMA (M3): redis_service.py usa structlog con kwargs estructurados:
+#
+#   logger.warning(
+#       "distributed_lock_redis_unavailable",
+#       lock_name=lock_name,       ← kwargs arbitrarios
+#       action="yielding_without_lock",
+#   )
+#
+# Sin configuración, structlog delega al logging.Logger estándar de Python,
+# que NO acepta kwargs arbitrarios → TypeError: Logger._log() got unexpected
+# keyword argument 'lock_name'.
+#
+# SOLUCIÓN: Configurar structlog en modo minimal para tests.
+#
+# DISEÑO DEL MODO TEST:
+#   - PrintLoggerFactory: escribe directo a stdout sin pasar por stdlib logger
+#   - KeyValueRenderer: formato legible "event=X lock_name=Y" en vez de JSON
+#   - cache_logger_on_first_use=False: evita que un logger no-configurado
+#     quede cacheado antes de que se ejecute este bloque
+#   - NO JSONRenderer: no se necesita JSON en tests, y añade overhead innecesario
+#
+# NOTA: Esta configuración es idempotente — llamar structlog.configure()
+# múltiples veces no causa problemas. Si la app llama configure_structlog()
+# después (ej. en test_app_with_mocks), sobreescribe esta configuración,
+# lo cual es el comportamiento esperado.
+#
+# APRENDIZAJE CLAVE:
+#   structlog.configure() debe llamarse antes de usar cualquier logger
+#   que use kwargs estructurados. En tests, este es el lugar correcto
+#   (top-level del conftest.py, antes de cualquier fixture).
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    import structlog
+
+    structlog.configure(
+        # PrintLoggerFactory: logger que acepta kwargs sin delegarlos a stdlib.
+        # Escribe directamente a stdout con print(), evitando el pipeline de
+        # logging.Logger que rechaza los kwargs arbitrarios.
+        logger_factory=structlog.PrintLoggerFactory(),
+
+        # Procesadores mínimos para tests:
+        #   1. add_log_level: agrega el nivel (info, warning, error) al evento
+        #   2. KeyValueRenderer: formatea como "event=X key1=val1 key2=val2"
+        processors=[
+            structlog.stdlib.add_log_level,
+            structlog.dev.ConsoleRenderer(colors=False),  # Legible, sin colores ANSI
+        ],
+
+        # Evitar que un logger con configuración anterior quede cacheado.
+        # Crítico cuando los tests se ejecutan en orden arbitrario.
+        cache_logger_on_first_use=False,
+
+        # Diccionario estándar como contexto (thread-safe, sin overhead)
+        context_class=dict,
+
+        # Wrapper class: BoundLogger proporciona .info(), .warning(), etc.
+        # con soporte completo para kwargs estructurados.
+        wrapper_class=structlog.BoundLogger,
+    )
+except ImportError:
+    # structlog no instalado: logging estándar se usará.
+    # Los módulos que usen kwargs estructurados en logger.warning()
+    # pueden fallar — se acepta como trade-off en entornos muy mínimos.
+    pass
+
 from fastapi import Depends
 from fastapi.testclient import TestClient
 from typing import Optional, List, Dict
@@ -25,6 +105,9 @@ TEST_API_KEY = "test-api-key-123"
 
 # Importar datos de prueba consistentes
 from tests.data.sample_products import SAMPLE_PRODUCTS
+
+from contextlib import asynccontextmanager
+
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_environment():
@@ -520,6 +603,211 @@ def test_user_events():
         {"user_id": "test_user_1", "event_type": "add-to-cart", "product_id": "test_prod_2"},
         {"user_id": "test_user_1", "event_type": "purchase-complete", "product_id": "test_prod_1", "purchase_amount": 19.99}
     ]
+
+# ============================================================================
+# KNOWLEDGE BASE FIXTURES
+# ============================================================================
+
+@pytest.fixture
+def mock_db_pool():
+    """
+    Mock asyncpg pool con async context manager correcto.
+    
+    ✅ FIXED: Implementa __aenter__ y __aexit__ correctamente
+    para evitar "coroutine was never awaited" warnings.
+
+    Returns:
+        Tuple[MagicMock, AsyncMock]: (pool, conn) para configurar en tests
+    """
+    # Mock de la conexión
+    mock_conn = AsyncMock()
+    mock_conn.fetchval = AsyncMock(return_value=1)
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.execute = AsyncMock()
+    
+    # ✅ SOLUCIÓN: Usar @asynccontextmanager
+    @asynccontextmanager
+    async def mock_acquire():
+        """
+        Async context manager que simula:
+            async with pool.acquire() as conn:
+                await conn.execute(...)
+        """
+        try:
+            yield mock_conn
+        finally:
+            pass  # Cleanup si necesario
+    
+    # Mock del pool
+    mock_pool = MagicMock()
+    mock_pool.acquire = mock_acquire  # ✅ Asignar el context manager
+    mock_pool.get_size = MagicMock(return_value=10)
+    mock_pool.get_idle_size = MagicMock(return_value=8)
+    
+    # ✅ IMPORTANTE: Devolver tuple (pool, conn) para poder configurar conn en tests
+    return mock_pool, mock_conn
+
+
+@pytest.fixture
+def mock_shopify_kb_client(mock_shopify_client):
+    """
+    Extend existing mock_shopify_client with KB methods.
+    
+    ✅ FIXED: get_kb_pages() ahora acepta parámetros validate_metadata y limit.
+    ✅ FIXED: Retorna List[Tuple[ShopifyPage, Dict]] según signature real.
+    ✅ H4: Agregado get_page_title_translation()
+    """
+    from src.api.core.models.kb_models import ShopifyPage
+    
+    kb_pages = [{
+        "id": 158838489397,
+        "title": "Política de Devoluciones",
+        "handle": "politica-de-devoluciones",
+        "body_html": "<h2>Política de Devoluciones</h2>",
+        "created_at": "2025-01-10T10:00:00Z",  # ✅ REQUIRED by Pydantic
+        "updated_at": "2025-01-15T10:00:00Z",  # ✅ REQUIRED by Pydantic
+        "published_at": "2025-01-15T10:00:00Z",
+        "metafields": [
+            {"key": "kb_sub_intent", "value": "policy_return"},
+            {"key": "kb_category", "value": "general"}
+        ]
+    }]
+    
+    translations = {
+        158838489397: {
+            "es": "<h2>Política de Devoluciones</h2>",  # body_html only
+            "en": "<h2>Return Policy</h2>"  # body_html only
+        }
+    }
+
+    # ✅ H4: Traducciones de TÍTULOS (no body_html)
+    title_translations = {
+        158838489397: {
+            "es": "Política de Devoluciones",
+            "en": "Return Policy"
+        }
+    }
+    
+    # ✅ FIX: Aceptar parámetros validate_metadata y limit
+    async def mock_get_kb_pages(validate_metadata=True, limit=None):
+        """
+        Mock get_kb_pages que retorna List[Tuple[ShopifyPage, Dict]].
+        
+        Args:
+            validate_metadata: Si validar metadata (ignorado en mock)
+            limit: Límite de páginas (ignorado en mock)
+            
+        Returns:
+            List[Tuple[ShopifyPage, Dict]]: Lista de (página, metafields)
+        """
+        result = []
+        
+        for page_data in kb_pages:
+            # Crear ShopifyPage object
+            page = ShopifyPage(
+                id=page_data["id"],
+                title=page_data["title"],
+                handle=page_data["handle"],
+                body_html=page_data["body_html"],
+                created_at=page_data["created_at"],
+                updated_at=page_data["updated_at"],
+                published_at=page_data["published_at"],
+                tags=""
+            )
+            
+            # Crear metafields dict
+            metafields = {
+                "custom.kb_metadata": {
+                    "sub_intent": "policy_return",
+                    "language": "es",
+                    "category": "general"
+                }
+            }
+            
+            result.append((page, metafields))
+        
+        return result
+    
+    async def mock_get_page_translations(page_id):
+        """
+        Retorna traducciones body_html por idioma.
+        
+        Args:
+            page_id: ID de la página Shopify
+            
+        Returns:
+            Dict[str, str]: {"en": "<html>...", "pt": "<html>..."}
+        """
+        return translations.get(page_id, {})
+    
+    # ✅ H4: NUEVO método para títulos traducidos
+    async def mock_get_page_title_translation(page_id: int, locale: str) -> Optional[str]:
+        """
+        Mock de get_page_title_translation.
+        
+        Args:
+            page_id: ID de la página Shopify
+            locale: Código de idioma (es, en, pt)
+            
+        Returns:
+            Título traducido o None si no existe
+        """
+        page_translations = title_translations.get(page_id, {})
+        title = page_translations.get(locale)
+        
+        # Log para debugging
+        print(f"[MOCK] get_page_title_translation({page_id}, {locale}) → {title}")
+        
+        return title
+    
+    def mock_parse_metadata(page):
+        """Legacy method - mantener para compatibilidad."""
+        metafields = page.get("metafields", [])
+        metadata = {}
+        for field in metafields:
+            if field["key"] == "kb_sub_intent":
+                metadata["sub_intent"] = field["value"]
+            elif field["key"] == "kb_category":
+                metadata["category"] = field["value"]
+        return metadata
+    
+    # Configurar mocks
+    mock_shopify_client.get_kb_pages = AsyncMock(side_effect=mock_get_kb_pages)
+    mock_shopify_client.get_page_translations = AsyncMock(side_effect=mock_get_page_translations)
+    mock_shopify_client.get_page_title_translation = AsyncMock(side_effect=mock_get_page_title_translation)
+    mock_shopify_client.parse_kb_metadata = MagicMock(side_effect=mock_parse_metadata)
+    
+    return mock_shopify_client
+
+
+@pytest.fixture
+def mock_kb_redis_service():
+    """Mock RedisService with cache invalidation tracking."""
+    redis = AsyncMock()
+    redis.delete_calls = []
+    redis._cache = {}
+    
+    async def mock_get(key):
+        return redis._cache.get(key)
+    
+    async def mock_set(key, value, ttl=None):
+        redis._cache[key] = value
+    
+    async def mock_delete(key):
+        redis.delete_calls.append(key)
+        if key in redis._cache:
+            del redis._cache[key]
+    
+    async def mock_ping():
+        return True
+    
+    redis.get = AsyncMock(side_effect=mock_get)
+    redis.set = AsyncMock(side_effect=mock_set)
+    redis.delete = AsyncMock(side_effect=mock_delete)
+    redis.ping = AsyncMock(side_effect=mock_ping)
+    
+    return redis
 
 # Utilidades para pruebas asíncronas
 def async_test(f):

@@ -1,0 +1,621 @@
+"""
+Integration Tests - KB Sync Service
+====================================
+
+Tests de integración para ShopifyKBSyncService que validan:
+- Sincronización completa Shopify → PostgreSQL
+- Manejo de múltiples idiomas (ES, EN)
+- Invalidación de cache Redis
+- Error handling y resilience
+- Traducciones parciales
+
+Fecha: 31 Enero 2026
+Coverage objetivo: Mitigar R1 (Sync Silently Failing)
+"""
+
+import pytest
+import asyncio
+from datetime import datetime
+from unittest.mock import AsyncMock, patch
+import asyncpg
+
+# Fixtures
+from tests.fixtures.kb.kb_fixtures import (
+    mock_shopify_kb_client,
+    mock_redis_service,
+    db_connection,
+    clean_kb_table,
+    expected_cache_keys,
+    expected_db_count,
+    assert_kb_content_exists,
+    get_kb_content,
+    count_kb_records_by_language,
+    verify_cache_invalidation,
+    kb_sync_service_with_mocks,
+    MOCK_SHOPIFY_PAGES,
+    EXPECTED_DB_RECORDS
+)
+
+
+# ============================================================================
+# TEST CLASS: Sync Success Scenarios
+# ============================================================================
+
+@pytest.mark.asyncio
+class TestKBSyncSuccess:
+    """
+    Tests para validar que la sincronización funciona correctamente
+    en escenarios happy path.
+    """
+    
+    async def test_sync_all_pages_success(
+        self,
+        kb_sync_service_with_mocks,
+        db_connection,
+        mock_redis_service,
+        expected_db_count,
+        expected_cache_keys
+    ):
+        """
+        TEST: Sincronización completa exitosa
+        
+        Valida:
+        1. ✅ Se sincronizan todas las páginas de Shopify
+        2. ✅ Se crean registros en PostgreSQL para cada idioma
+        3. ✅ Se invalidan las cache keys en Redis
+        4. ✅ Report muestra successful = 3, failed = 0
+        
+        Mitiga: R1 (Sync Silently Failing)
+        """
+        service = kb_sync_service_with_mocks
+        
+        # Limpiar DB antes del test
+        await db_connection.execute("DELETE FROM kb_contents")
+        
+        # EJECUTAR SYNC
+        report = await service.sync_all_pages()
+        
+        # VALIDACIÓN 1: Report exitoso
+        assert report.successful == 3, \
+            f"Expected 3 successful syncs, got {report.successful}"
+        assert report.failed == 0, \
+            f"Expected 0 failures, got {report.failed}. Errors: {report.errors}"
+        assert report.total_pages == 3, \
+            f"Expected 3 total pages, got {report.total_pages}"
+        
+        # VALIDACIÓN 2: Registros en PostgreSQL
+        total_count = await db_connection.fetchval(
+            "SELECT COUNT(*) FROM kb_contents"
+        )
+        assert total_count == expected_db_count["total"], \
+            f"Expected {expected_db_count['total']} records in DB, got {total_count}"
+        
+        # VALIDACIÓN 3: Distribución por idioma
+        es_count = await count_kb_records_by_language(db_connection, "es")
+        en_count = await count_kb_records_by_language(db_connection, "en")
+        
+        assert es_count == expected_db_count["es"], \
+            f"Expected {expected_db_count['es']} ES records, got {es_count}"
+        assert en_count == expected_db_count["en"], \
+            f"Expected {expected_db_count['en']} EN records, got {en_count}"
+        
+        # VALIDACIÓN 4: Cache invalidation
+        assert verify_cache_invalidation(mock_redis_service, expected_cache_keys), \
+            "Not all expected cache keys were invalidated"
+        
+        print(f"✅ Sync successful: {report.successful}/{report.total_pages} pages")
+        print(f"✅ DB records: {total_count} total ({es_count} ES, {en_count} EN)")
+        print(f"✅ Cache keys invalidated: {len(mock_redis_service.delete_calls)}")
+    
+    
+    async def test_sync_creates_multiple_languages(
+        self,
+        kb_sync_service_with_mocks,
+        db_connection
+    ):
+        """
+        TEST: Sincronización crea múltiples idiomas para la misma página
+        
+        Valida:
+        1. ✅ policy_return tiene registro ES y EN
+        2. ✅ product_care tiene registro ES y EN
+        3. ✅ Ambos registros apuntan al mismo shopify_page_id
+        4. ✅ Contenido es diferente entre idiomas
+        
+        Mitiga: R1 (Sync Silently Failing)
+        """
+        service = kb_sync_service_with_mocks
+        
+        # Limpiar DB
+        await db_connection.execute("DELETE FROM kb_contents")
+        
+        # Ejecutar sync
+        await service.sync_all_pages()
+        
+        # VALIDACIÓN: policy_return tiene ES y EN
+        policy_es = await get_kb_content(db_connection, "policy_return", "es")
+        policy_en = await get_kb_content(db_connection, "policy_return", "en")
+        
+        assert policy_es is not None, "policy_return ES record not found"
+        assert policy_en is not None, "policy_return EN record not found"
+        
+        # Mismo shopify_page_id
+        assert policy_es["shopify_page_id"] == policy_en["shopify_page_id"], \
+            "ES and EN records should reference the same Shopify page"
+        
+
+        # Titles are NOT translated (only content is translated via Shopify API)
+        # So policy_en["title"] will be the same as policy_es["title"]
+        assert policy_es["content"] != policy_en["content"], \
+            "ES and EN content should be different (translated)"
+        # assert "Return" in policy_en["title"], ...
+        # assert "Devoluciones" in policy_es["title"], \
+        #     f"ES title should contain 'Devoluciones', got: {policy_es['title']}"
+        # assert "Return" in policy_en["title"], \
+        #     f"EN title should contain 'Return', got: {policy_en['title']}"
+        
+        # Contenido diferente
+        assert policy_es["content"] != policy_en["content"], \
+            "ES and EN content should be different"
+        
+        print(f"✅ policy_return ES: {policy_es['title']}")
+        print(f"✅ policy_return EN: {policy_en['title']}")
+    
+    
+    async def test_sync_partial_translations(
+        self,
+        kb_sync_service_with_mocks,
+        db_connection
+    ):
+        """
+        TEST: Manejo de traducciones parciales
+        
+        Escenario: policy_payment SOLO tiene ES, NO tiene EN
+        
+        Valida:
+        1. ✅ policy_payment ES existe en DB
+        2. ✅ policy_payment EN NO existe en DB
+        3. ✅ Sync NO falla por falta de traducción
+        4. ✅ Report sigue mostrando successful
+        
+        Mitiga: R4 (Partial Translations)
+        """
+        service = kb_sync_service_with_mocks
+        
+        # Limpiar DB
+        await db_connection.execute("DELETE FROM kb_contents")
+        
+        # Ejecutar sync
+        report = await service.sync_all_pages()
+        
+        # VALIDACIÓN 1: Sync exitoso (no falló por falta de EN)
+        assert report.successful == 3, \
+            f"Sync should succeed even with partial translations, got {report.successful}"
+        
+        # VALIDACIÓN 2: policy_payment ES existe
+        payment_es = await get_kb_content(db_connection, "policy_payment", "es")
+        assert payment_es is not None, \
+            "policy_payment ES should exist"
+        
+        # VALIDACIÓN 3: policy_payment EN NO existe
+        payment_en = await get_kb_content(db_connection, "policy_payment", "en")
+        assert payment_en is None, \
+            "policy_payment EN should NOT exist (no translation available)"
+        
+        # VALIDACIÓN 4: Otras páginas SÍ tienen ambos idiomas
+        return_en = await get_kb_content(db_connection, "policy_return", "en")
+        assert return_en is not None, \
+            "Other pages should still have EN translations"
+        
+        print(f"✅ Partial translation handled correctly")
+        print(f"✅ policy_payment: ES only (no EN)")
+        print(f"✅ policy_return: ES + EN")
+    
+    
+    async def test_sync_updates_existing_records(
+        self,
+        kb_sync_service_with_mocks,
+        db_connection
+    ):
+        """
+        TEST: Sincronización actualiza registros existentes
+        
+        Escenario: Ejecutar sync 2 veces, segunda vez debe UPDATE no INSERT
+        
+        Valida:
+        1. ✅ Primera sync: 5 registros creados
+        2. ✅ Segunda sync: Sigue habiendo 5 registros (no duplicados)
+        3. ✅ last_synced timestamp actualizado
+        
+        Mitiga: R1 (Sync Silently Failing)
+        """
+        service = kb_sync_service_with_mocks
+        
+        # Limpiar DB
+        await db_connection.execute("DELETE FROM kb_contents")
+        
+        # PRIMERA SYNC
+        report1 = await service.sync_all_pages()
+        count_after_first = await db_connection.fetchval(
+            "SELECT COUNT(*) FROM kb_contents"
+        )
+        
+        # Obtener timestamp de un registro
+        first_sync_time = await db_connection.fetchval(
+            "SELECT last_synced FROM kb_contents WHERE sub_intent = 'policy_return' AND language = 'es'"
+        )
+        
+        # Esperar 1 segundo para que timestamp sea diferente
+        await asyncio.sleep(1)
+        
+        # SEGUNDA SYNC
+        report2 = await service.sync_all_pages()
+        count_after_second = await db_connection.fetchval(
+            "SELECT COUNT(*) FROM kb_contents"
+        )
+        
+        # VALIDACIÓN 1: Mismo número de registros (no duplicados)
+        assert count_after_first == count_after_second, \
+            f"Second sync should UPDATE, not INSERT. " \
+            f"First: {count_after_first}, Second: {count_after_second}"
+        
+        # VALIDACIÓN 2: Timestamp actualizado
+        second_sync_time = await db_connection.fetchval(
+            "SELECT last_synced FROM kb_contents WHERE sub_intent = 'policy_return' AND language = 'es'"
+        )
+        
+        assert second_sync_time > first_sync_time, \
+            "last_synced should be updated on second sync"
+        
+        # VALIDACIÓN 3: Ambos reports exitosos
+        assert report1.successful == 3
+        assert report2.successful == 3
+        
+        print(f"✅ First sync: {count_after_first} records created")
+        print(f"✅ Second sync: {count_after_second} records (updated, not duplicated)")
+        print(f"✅ Timestamp updated: {first_sync_time} → {second_sync_time}")
+
+
+# ============================================================================
+# TEST CLASS: Cache Invalidation
+# ============================================================================
+
+@pytest.mark.asyncio
+class TestKBCacheInvalidation:
+    """
+    Tests para validar que la invalidación de cache funciona correctamente.
+    """
+    
+    async def test_sync_invalidates_all_cache_keys(
+        self,
+        kb_sync_service_with_mocks,
+        mock_redis_service,
+        expected_cache_keys
+    ):
+        """
+        TEST: Todas las cache keys son invalidadas después del sync
+        
+        Valida:
+        1. ✅ Se llama redis.delete() para cada key esperada
+        2. ✅ Se invalidan keys de ES y EN
+        3. ✅ NO se invalidan keys que no deberían existir
+        
+        Mitiga: R2 (Cache Invalidation Bugs)
+        """
+        service = kb_sync_service_with_mocks
+        redis = mock_redis_service
+        
+        # Poblar cache con valores "antiguos"
+        for key in expected_cache_keys:
+            await redis.set(key, "old_content", ttl=3600)
+        
+        # Ejecutar sync
+        await service.sync_all_pages()
+        
+        # VALIDACIÓN 1: Todas las keys esperadas fueron invalidadas
+        assert verify_cache_invalidation(redis, expected_cache_keys), \
+            "Not all expected cache keys were invalidated"
+        
+        # VALIDACIÓN 2: Keys invalidadas correctamente
+        for key in expected_cache_keys:
+            assert key in redis.delete_calls, \
+                f"Cache key {key} was not invalidated"
+        
+        # VALIDACIÓN 3: Cache está vacío después de invalidación
+        for key in expected_cache_keys:
+            cached_value = await redis.get(key)
+            assert cached_value is None, \
+                f"Cache key {key} should be None after invalidation, got: {cached_value}"
+        
+        print(f"✅ All {len(expected_cache_keys)} cache keys invalidated")
+        print(f"✅ Cache is empty after sync")
+    
+    
+    async def test_cache_invalidation_per_language(
+        self,
+        kb_sync_service_with_mocks,
+        mock_redis_service
+    ):
+        """
+        TEST: Invalidación de cache es específica por idioma
+        
+        Valida:
+        1. ✅ kb:policy_return:es:general es invalidada
+        2. ✅ kb:policy_return:en:general es invalidada
+        3. ✅ Son keys DIFERENTES (no se invalida ambos con una sola llamada)
+        
+        Mitiga: R2 (Cache Invalidation Bugs)
+        """
+        service = kb_sync_service_with_mocks
+        redis = mock_redis_service
+        
+        # Ejecutar sync
+        await service.sync_all_pages()
+        
+        # VALIDACIÓN: Keys separadas por idioma
+        es_keys = [k for k in redis.delete_calls if ":es:" in k]
+        en_keys = [k for k in redis.delete_calls if ":en:" in k]
+        
+        assert len(es_keys) > 0, "ES cache keys should be invalidated"
+        assert len(en_keys) > 0, "EN cache keys should be invalidated"
+        
+        # Verificar keys específicas
+        assert "kb:policy_return:es:general" in redis.delete_calls
+        assert "kb:policy_return:en:general" in redis.delete_calls
+        
+        print(f"✅ ES cache keys invalidated: {len(es_keys)}")
+        print(f"✅ EN cache keys invalidated: {len(en_keys)}")
+
+
+# ============================================================================
+# TEST CLASS: Error Handling
+# ============================================================================
+
+@pytest.mark.asyncio
+class TestKBSyncErrorHandling:
+    """
+    Tests para validar manejo de errores durante sincronización.
+    """
+    
+    async def test_sync_handles_shopify_timeout(
+        self,
+        mock_redis_service,
+        db_connection
+    ):
+        """
+        TEST: Manejo de timeout de Shopify API
+        
+        Valida:
+        1. ✅ Sync NO crashea si Shopify timeout
+        2. ✅ Report muestra failed > 0
+        3. ✅ Error message descriptivo
+        
+        Mitiga: R1 (Sync Silently Failing)
+        """
+        from src.api.services.shopify_kb_sync import ShopifyKBSyncService
+        
+        # Mock Shopify client con timeout
+        shopify_mock = AsyncMock()
+        shopify_mock.get_kb_pages = AsyncMock(
+            side_effect=TimeoutError("Shopify API timeout after 5s")
+        )
+        
+        # DB pool mock
+        db_pool = AsyncMock()
+        db_pool.acquire = AsyncMock(return_value=db_connection)
+        
+        service = ShopifyKBSyncService(
+            shopify_client=shopify_mock,
+            db_pool=db_pool,
+            redis_service=mock_redis_service
+        )
+        
+        # EJECUTAR SYNC (debería manejar error)
+        report = await service.sync_all_pages()
+        
+        # VALIDACIÓN 1: Sync NO crashea
+        assert report is not None, "Sync should return a report even on failure"
+        
+        # VALIDACIÓN 2: Report indica fallo
+        # NOTE: Dependiendo de implementación, puede ser:
+        # - report.failed > 0, O
+        # - report.successful == 0, O
+        # - len(report.errors) > 0
+        has_error_indication = (
+            report.failed > 0 or 
+            report.successful == 0 or 
+            len(report.errors) > 0
+        )
+        assert has_error_indication, \
+            "Report should indicate failure"
+        
+        # VALIDACIÓN 3: Error message presente
+        if len(report.errors) > 0:
+            assert "timeout" in str(report.errors).lower(), \
+                "Error message should mention timeout"
+        
+        print(f"✅ Sync handled Shopify timeout gracefully")
+        print(f"✅ Report: successful={report.successful}, failed={report.failed}")
+        print(f"✅ Errors: {report.errors}")
+    
+    
+    async def test_sync_continues_on_single_page_failure(
+        self,
+        db_connection,
+        mock_redis_service
+    ):
+        """
+        TEST: Sync continúa aunque una página falle
+        
+        Escenario: Página 2 tiene metafields con formato inválido 
+        (no tiene la estructura correcta en custom.kb_metadata)
+        
+        Valida:
+        1. ✅ Sync NO se detiene al primer error
+        2. ✅ Páginas exitosas se guardan en DB
+        3. ✅ Report muestra successful=2, failed=1
+        """
+        from src.api.services.shopify_kb_sync import ShopifyKBSyncService
+        from src.api.core.models.kb_models import ShopifyPage
+        from contextlib import asynccontextmanager
+
+        # Mock Shopify client con páginas NORMALES
+        shopify_mock = AsyncMock()
+        
+        # Crear páginas con formato CORRECTO
+        pages_with_metafields = []
+        
+        for page_data in MOCK_SHOPIFY_PAGES:
+            # Crear objeto ShopifyPage
+            page = ShopifyPage(
+                id=page_data["id"],
+                title=page_data["title"],
+                handle=page_data["handle"],
+                body_html=page_data["body_html"],
+                created_at=page_data["created_at"],
+                updated_at=page_data["updated_at"],
+                published_at=page_data["published_at"],
+                tags=""
+            )
+            
+            # Para la SEGUNDA página (product_care), crear metafields INVÁLIDOS
+            if page_data["id"] == 158888198453:  # product_care - PÁGINA QUE FALLA
+                # Metafields con estructura INVÁLIDA que hará fallar parse_kb_metadata
+                metafields = {
+                    "custom.kb_metadata": {
+                        # FALTA sub_intent! ← Esto causará el fallo
+                        "category": "general",
+                        "language": "es"
+                    }
+                }
+            else:
+                # Metafields VÁLIDOS para las otras páginas
+                metafields = {
+                    "custom.kb_metadata": {
+                        "sub_intent": page_data["metafields"][0]["value"],
+                        "category": page_data["metafields"][1]["value"],
+                        "language": "es"
+                    }
+                }
+            
+            pages_with_metafields.append((page, metafields))
+        
+        shopify_mock.get_kb_pages = AsyncMock(return_value=pages_with_metafields)
+        
+        # Mock get_page_translations
+        async def mock_get_translations(page_id):
+            from tests.fixtures.kb.kb_fixtures import MOCK_SHOPIFY_TRANSLATIONS
+            return MOCK_SHOPIFY_TRANSLATIONS.get(page_id, {})
+        
+        shopify_mock.get_page_translations = AsyncMock(side_effect=mock_get_translations)
+        
+        # DB pool - CORREGIDO: usar context manager asíncrono
+        db_pool = AsyncMock()
+        
+        @asynccontextmanager
+        async def mock_acquire():
+            """Mock async context manager que retorna la conexión real"""
+            yield db_connection
+        
+        db_pool.acquire = mock_acquire  # ✅ Esto es un context manager, no un AsyncMock
+        
+        service = ShopifyKBSyncService(
+            shopify_client=shopify_mock,
+            db_pool=db_pool,
+            redis_service=mock_redis_service
+        )
+        
+        # Limpiar DB
+        await db_connection.execute("DELETE FROM kb_contents")
+        
+        # EJECUTAR SYNC
+        report = await service.sync_all_pages()
+        
+        # VALIDACIÓN 1: Sync completó (no crasheó)
+        assert report is not None
+        
+        # VALIDACIÓN 2: Páginas 1 y 3 exitosas, página 2 falló
+        # DEBE SER: successful=2, failed=1
+        assert report.successful == 2, \
+            f"Expected 2 successful syncs, got {report.successful}. Errors: {report.errors}"
+        assert report.failed == 1, \
+            f"Expected 1 failure, got {report.failed}"
+        
+        # VALIDACIÓN 3: Páginas exitosas en DB
+        policy_return_exists = await assert_kb_content_exists(
+            db_connection, "policy_return", "es"
+        )
+        policy_payment_exists = await assert_kb_content_exists(
+            db_connection, "policy_payment", "es"
+        )
+        
+        assert policy_return_exists, "policy_return should be synced"
+        assert policy_payment_exists, "policy_payment should be synced"
+        
+        # VALIDACIÓN 4: Página fallida NO está en DB
+        product_care_exists = await assert_kb_content_exists(
+            db_connection, "product_care", "es"
+        )
+        assert not product_care_exists, "product_care should NOT be synced (failed)"
+        
+        print(f"✅ Sync continued despite single page failure")
+        print(f"✅ Successful: {report.successful}, Failed: {report.failed}")
+        print(f"✅ Errors in report: {report.errors}")
+
+
+
+# ============================================================================
+# TEST CLASS: Performance
+# ============================================================================
+
+@pytest.mark.asyncio
+class TestKBSyncPerformance:
+    """
+    Tests para validar que sync tiene performance aceptable.
+    """
+    
+    async def test_sync_completes_within_timeout(
+        self,
+        kb_sync_service_with_mocks
+    ):
+        """
+        TEST: Sync completa en tiempo razonable
+        
+        Valida:
+        1. ✅ Sync de 3 páginas completa en <10 segundos
+        2. ✅ NO hay timeouts internos
+        
+        Mitiga: R3 (Performance Degradation)
+        """
+        service = kb_sync_service_with_mocks
+        
+        # Medir tiempo
+        start_time = datetime.now()
+        
+        # Ejecutar sync
+        report = await service.sync_all_pages()
+        
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        
+        # VALIDACIÓN: Tiempo razonable (<10s para 3 páginas)
+        assert duration < 10.0, \
+            f"Sync took {duration:.2f}s, should be <10s for 3 pages"
+        
+        # VALIDACIÓN: Sync exitoso
+        assert report.successful == 3
+        
+        print(f"✅ Sync completed in {duration:.2f}s (within acceptable range)")
+        print(f"✅ Average time per page: {duration/3:.2f}s")
+
+
+# ============================================================================
+# EXPORT ALL TESTS
+# ============================================================================
+
+__all__ = [
+    "TestKBSyncSuccess",
+    "TestKBCacheInvalidation",
+    "TestKBSyncErrorHandling",
+    "TestKBSyncPerformance"
+]

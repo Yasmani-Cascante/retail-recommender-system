@@ -1,0 +1,6 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.8.2
+pylate>=1.2.0
+transformers>=4.55.0
+# torch se instala separado en Dockerfile (versión CPU-only)
