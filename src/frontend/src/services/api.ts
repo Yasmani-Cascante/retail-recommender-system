@@ -1,4 +1,4 @@
-import type { WidgetConfig, Message, ProductRecommendation } from '../types/widget';
+import type { WidgetConfig, Message, ProductRecommendation, RecapTurn } from '../types/widget';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS — defensive normalization of backend responses
@@ -323,6 +323,69 @@ export class ConversationAPI {
     }
   }
 
+  /**
+   * searchByImage — búsqueda visual de productos por imagen.
+   *
+   * Envía la imagen al backend (POST /v1/mcp/visual-search, multipart/form-data).
+   * El backend la pasa al embedding-service (fashionSigLIP + FAISS) y devuelve
+   * los productos más similares en el mismo formato que sendMessage().
+   *
+   * IMPORTANTE: NO establecer 'Content-Type' manualmente — fetch lo hace
+   * automáticamente con el boundary correcto para multipart/form-data.
+   *
+   * @param imageFile   Archivo subido por el usuario desde <input type="file">
+   * @param marketId    Mercado para precios (default: config.marketId ?? 'ES')
+   * @param topK        Número máximo de resultados (default: 8)
+   */
+  async searchByImage(
+    imageFile: File,
+    marketId?: string,
+    topK: number = 8,
+  ): Promise<ProductRecommendation[]> {
+    const formData = new FormData();
+    formData.append('file', imageFile);
+    formData.append('market_id', marketId ?? this.config.marketId ?? 'ES');
+    formData.append('top_k', String(topK));
+
+    const response = await fetch(`${this.config.apiUrl}/v1/mcp/visual-search`, {
+      method: 'POST',
+      headers: {
+        // No Content-Type: fetch lo añade con el boundary multipart correcto
+        'X-API-Key': this.config.apiKey,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      let errorDetail = '';
+      try {
+        const errBody = await response.json();
+        // El router devuelve { detail: { message: string } } o { detail: string }
+        const detail = errBody.detail;
+        if (detail && typeof detail === 'object' && 'message' in detail) {
+          errorDetail = String((detail as Record<string, unknown>).message);
+        } else if (typeof detail === 'string') {
+          errorDetail = detail;
+        }
+      } catch {
+        // Body no es JSON — continuar sin detalle
+      }
+      throw new Error(
+        errorDetail || `Visual search failed: HTTP ${response.status}`,
+      );
+    }
+
+    const data = (await response.json()) as {
+      recommendations: unknown[];
+      total_found: number;
+      latency_ms: number;
+    };
+
+    return (data.recommendations ?? [])
+      .filter((r): r is Record<string, unknown> => r != null && typeof r === 'object')
+      .map(normalizeRecommendation);
+  }
+
   private generateSessionId(): string {
     // F-07 / Paso 3 (06/04/2026): Persistir session_id en localStorage con TTL 24h.
     // Sin esta persistencia, cada recarga de página genera un session_id nuevo
@@ -426,6 +489,48 @@ export class ConversationAPI {
 
   updateConfig(newConfig: Partial<WidgetConfig>): void {
     this.config = { ...this.config, ...newConfig };
+  }
+
+  async checkHealth(): Promise<{ status: string; shutdown_at: number | null }> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 35_000);
+    try {
+      const response = await fetch(`${this.config.apiUrl}/health`, {
+        method: 'GET',
+        headers: { 'X-API-Key': this.config.apiKey },
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) return { status: 'unhealthy', shutdown_at: null };
+      const data = await response.json();
+      return { status: data.status ?? 'unknown', shutdown_at: data.shutdown_at ?? null };
+    } catch {
+      clearTimeout(timeoutId);
+      return { status: 'unreachable', shutdown_at: null };
+    }
+  }
+
+  async getSessionRecap(): Promise<{ turns: RecapTurn[] }> {
+    try {
+      const response = await fetch(
+        `${this.config.apiUrl}/v1/mcp/session/${this.sessionId}/recap`,
+        { method: 'GET', headers: { 'X-API-Key': this.config.apiKey } },
+      );
+      if (!response.ok) return { turns: [] };
+      const data = await response.json();
+      return { turns: Array.isArray(data.turns) ? data.turns : [] };
+    } catch {
+      return { turns: [] };
+    }
+  }
+
+  resetSession(): void {
+    const newId = `widget_session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    this.sessionId = newId;
+    try {
+      localStorage.setItem('rr_widget_session_id', newId);
+      localStorage.setItem('rr_widget_session_ts', String(Date.now()));
+    } catch {}
   }
 
   getSessionInfo() {
