@@ -97,3 +97,10 @@ export interface ConversationState {
   isMinimized: boolean;
   userId?: string;
 }
+
+export interface RecapTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export type ServiceStatus = 'healthy' | 'warming' | 'down';
