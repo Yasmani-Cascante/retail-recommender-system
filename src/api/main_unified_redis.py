@@ -354,6 +354,16 @@ async def _clear_shutdown_flag() -> None:
         logger.warning(f"Could not clear shutdown flag from Redis: {e}")
 
 
+async def _get_shutdown_at() -> Optional[int]:
+    """Read the service:shutdown_at Redis key and return its integer value, or None if not set."""
+    try:
+        rs = await ServiceFactory.get_redis_service()
+        raw = await rs._client.get("service:shutdown_at")
+        return int(raw) if raw else None
+    except Exception:
+        return None
+
+
 # ============================================================================
 # 🚀 FASTAPI LIFESPAN CONTEXT MANAGER (MODERN PATTERN) - CÓDIGO COMPLETO PRESERVADO
 # ============================================================================
@@ -1771,6 +1781,7 @@ async def enterprise_health_check():
         # ✅ CLOUD RUN FIX: If startup phase is complete, return 200 immediately
         # This satisfies Cloud Run's health check requirements without blocking for Redis
         if startup_complete:
+            shutdown_at = await _get_shutdown_at()
             return {
                 "timestamp": time.time(),
                 "service": "enterprise_retail_recommender",
@@ -1779,7 +1790,8 @@ async def enterprise_health_check():
                 "startup_phase": "complete",
                 "redis_status": "initializing" if not redis_initialized and redis_error is None else ("ready" if redis_initialized else "failed"),
                 "redis_error": redis_error,
-                "lifespan_pattern": "modern_contextmanager"
+                "lifespan_pattern": "modern_contextmanager",
+                "shutdown_at": shutdown_at
             }
         
         # Fallback: If startup not yet complete, do comprehensive check
