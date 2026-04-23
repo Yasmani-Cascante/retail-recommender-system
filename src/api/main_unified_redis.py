@@ -336,6 +336,24 @@ async def _initialize_redis_in_background():
     logger.info("[BG] REDIS INIT SUMMARY: initialized=%s error=%s",
                 redis_initialized, redis_error)
 
+async def _write_shutdown_flag() -> None:
+    try:
+        rs = await ServiceFactory.get_redis_service()
+        await rs._client.set("service:shutdown_at", str(int(time.time())), ex=3600)
+        logger.info("Cold-start flag written to Redis (TTL 1h)")
+    except Exception as e:
+        logger.warning(f"Could not write shutdown flag to Redis: {e}")
+
+
+async def _clear_shutdown_flag() -> None:
+    try:
+        rs = await ServiceFactory.get_redis_service()
+        await rs._client.delete("service:shutdown_at")
+        logger.info("Cold-start flag cleared from Redis")
+    except Exception as e:
+        logger.warning(f"Could not clear shutdown flag from Redis: {e}")
+
+
 # ============================================================================
 # 🚀 FASTAPI LIFESPAN CONTEXT MANAGER (MODERN PATTERN) - CÓDIGO COMPLETO PRESERVADO
 # ============================================================================
@@ -1563,6 +1581,7 @@ async def lifespan(app: FastAPI):
     # This allows /health endpoint to respond positively even while Redis is still connecting
     startup_complete = True
     startup_complete_event.set()  # Signal that startup has completed
+    await _clear_shutdown_flag()
     logger.info("✅ STARTUP PHASE COMPLETE - Server is ready to accept requests on port 8080")
     logger.info("   📌 Note: Redis initialization may still be running in background")
     
@@ -1577,7 +1596,8 @@ async def lifespan(app: FastAPI):
     # ============================================================================
     
     logger.info("🔄 Shutting down Enterprise Retail Recommender System")
-    
+    await _write_shutdown_flag()
+
     try:
         # ════════════════════════════════════════════════════════════════════
         # 🆕 PASO 8.6 SHUTDOWN: Cancelar Claude keep-alive background task
@@ -2436,6 +2456,37 @@ app.include_router(
     prefix="/api",
     tags=["health-db"]
 )
+
+# ─────────────────────────────────────────────────────────────────────────
+# VISUAL SEARCH ROUTER (AÑADIDO 22/04/2026 — Opción A)
+# ─────────────────────────────────────────────────────────────────────────
+# Expone:
+#   POST /v1/mcp/visual-search        — búsqueda por imagen (feature-flagged)
+#   POST /v1/mcp/visual-search/index  — disparar indexación [OPS, no en Swagger]
+#
+# Feature flag: VISUAL_SEARCH_ENABLED=false (default) — el endpoint responde
+# 503 hasta que se active explicitamente en Cloud Run.
+#
+# Para activar:
+#   gcloud run services update retail-recommender \
+#     --set-env-vars VISUAL_SEARCH_ENABLED=true
+#
+# Prerequisito: embedding-service debe tener visual_index_size > 0 (GET /health).
+# ─────────────────────────────────────────────────────────────────────────
+try:
+    from src.api.routers.visual_search_router import router as _visual_search_router
+    app.include_router(
+        _visual_search_router,
+        tags=["Visual Search (Opción A)"],
+    )
+    logger.info(
+        f"✅ visual_search_router registered — POST /v1/mcp/visual-search "
+        f"(VISUAL_SEARCH_ENABLED={os.environ.get('VISUAL_SEARCH_ENABLED', 'false')})"
+    )
+except ImportError as _vs_err:
+    logger.warning(
+        f"⚠️ visual_search_router not available — visual search disabled: {_vs_err}"
+    )
 # ============================================================================
 # 🔍 HELPER FUNCTIONS ADICIONALES - CÓDIGO ORIGINAL PRESERVADO
 # ============================================================================
