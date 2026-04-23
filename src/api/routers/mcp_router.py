@@ -85,6 +85,7 @@ from src.api.utils.market_integration import fix_recommendations
 # 🔧 CRITICAL CONVERSATION STATE FIX
 # from src.api.routers.mcp_conversation_state_fix import get_conversation_state_manager
 from src.api.mcp.conversation_state_manager import get_conversation_state_manager
+from src.api.factories.service_factory import ServiceFactory
 
 # logger = logging.getLogger(__name__)
 logger = structlog.get_logger(__name__)  # ✅ H1: Structured Logging Migration
@@ -2456,4 +2457,43 @@ async def get_architecture_status(
             "implementation_status": {"error": "failed_to_get_status"},
             "timestamp": time.time()
         }
+
+
+# ============================================================================
+# COLD START RECAP: Session recap endpoint for conversation resumption
+# ============================================================================
+
+async def get_session_recap(session_id: str) -> dict:
+    """
+    Reads the last 2 conversation turns for a session from Redis.
+    Used by the frontend to resume after a cold start.
+    """
+    try:
+        rs = await ServiceFactory.get_redis_service()
+        raw = await rs._client.get(f"conversation_session:{session_id}")
+    except Exception as e:
+        logger.warning(f"Recap: Redis error for session {session_id}: {e}")
+        raise HTTPException(status_code=503, detail="Redis unavailable")
+    if not raw:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=500, detail="Session data corrupted")
+    history: list = data.get("conversation_history", [])
+    last_two = history[-2:] if len(history) >= 2 else history
+    return {"session_id": session_id, "turns": last_two}
+
+
+@router.get("/session/{session_id}/recap")
+async def session_recap_endpoint(
+    session_id: str,
+    current_user: str = Depends(get_current_user),
+):
+    """
+    Returns the last 2 conversation turns for a session.
+    Called by the frontend when it detects a cold start and the user
+    clicks 'Let's continue', to show context before resuming.
+    """
+    return await get_session_recap(session_id)
     
