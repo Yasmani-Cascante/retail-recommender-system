@@ -7,20 +7,22 @@
   /* animation: chipsShow 1s cubic-bezier(0.16, 1, 0.3, 1);
   animation-delay: 1s; */
 }
+
 .h_hidden {
   opacity: 0;
   display: none;
 }
+
 .h_centerBottom {
- justify-content: end !important;
- height: calc(100% - 200px) !important;;
- /* padding-bottom: 140px !important; */
+  /* justify-content: end !important; */
+  /* height: calc(100% - 200px) !important; */
+  /* padding-bottom: 140px !important; */
 }
 
 .aiBubbleWrapper {
   display: flex;
   position: absolute;
-  top: 80px; 
+  top: 80px;
   justify-content: center;
   align-items: center;
   /* width: 200px;
@@ -34,10 +36,18 @@
 }
 
 @keyframes showBubble {
-  from { opacity: 0; transform: translateY(25px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(25px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
- /* @keyframes chipsShow {
+
+/* @keyframes chipsShow {
   from { opacity: 0; transform: translateX(8px); }
   to   { opacity: 1; transform: translateX(0); }
 } */
@@ -68,10 +78,10 @@
   animation: panelSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
   /* Transición suave al cambiar entre compacto y expandido */
   transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-              height 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-              bottom 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-              right 0.3s cubic-bezier(0.16, 1, 0.3, 1),
-              border-radius 0.3s ease;
+    height 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    bottom 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    right 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    border-radius 0.3s ease;
 }
 
 /* ── Modo expandido (pantalla completa en desktop) ───────────── */
@@ -115,6 +125,7 @@
     bottom: 0;
     border-radius: 0;
   }
+
   .panelExpanded {
     width: 100vw;
     height: 100vh;
@@ -122,29 +133,36 @@
     right: 0;
     border-radius: 0;
   }
+
   /* En móvil el botón de expandir no tiene mucho sentido: ocultarlo */
   .expandBtn {
     display: none !important;
   }
+
   /* Welcome screen en móvil ajustado */
   .welcomeScreen {
     padding: 24px 16px 16px;
     height: 100%;
   }
+
   .welcomeTitle {
     font-size: 20px;
   }
+
   .suggestions {
     max-width: 100%;
   }
+
   .welcomeSuggestionChip {
     padding: 10px 14px;
     font-size: 13px;
   }
+
   /* Zona inferior en móvil */
   .bottomZone {
     padding: 8px;
   }
+
   .contextChipWrapper {
     bottom: 80px;
   }
@@ -309,6 +327,7 @@
   /* box-shadow: 0 9px 12px #25252547; */
   box-shadow: none;
 }
+
 /* .moveMessagesContainer {
   transform: translateY(-60px);
   transition: transform 0.27s ease-in-out;
@@ -340,8 +359,8 @@
   gap: 0;
   /* Scroll suave */
   scroll-behavior: smooth;
-  height: calc(100% - 155px);
-  /* height: 100%; */
+  /* height: calc(100% - 155px); */
+  height: 100%;
 }
 
 /* ── Saludo personalizado (solo usuarios logueados) ──────────── */
@@ -354,7 +373,7 @@
   border: 1px solid rgba(0, 0, 0, 0.06);
   border-radius: 100px;
   padding: 6px 14px 6px 12px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
 .personalGreetingHi {
@@ -424,15 +443,17 @@
   justify-content: center;
   /* flex-direction: column; */
 }
+
 .welcomeSuggestionChip {
   width: fit-content;
   cursor: pointer;
   padding: 12px 16px;
-  box-shadow:rgba(59, 59, 59, 0.288) 0px 4px 4px -2px;
+  box-shadow: rgba(59, 59, 59, 0.288) 0px 4px 4px -2px;
   transition: all 0.17s cubic-bezier(0.16, 1, 0.3, 1);
   /* transition: all 0.25s ease-in-out; */
   /* border-color: transparent; */
 }
+
 .welcomeSuggestionChip:hover {
   /* background: #f8f7f5; */
   /* border-color: rgba(0, 0, 0, 0.18); */
@@ -442,6 +463,7 @@
 
   /* box-shadow: 0 3px 8px rgba(0,0,0,0.08); */
 }
+
 .suggestionsLabel {
   display: flex;
   align-items: center;
@@ -453,7 +475,7 @@
   letter-spacing: 0.06em;
   /* margin-bottom: 2px; */
   padding-left: 25px;
-  
+
 }
 
 /* Chip individual — botón de sugerencia */
@@ -470,7 +492,7 @@
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, transform 0.1s;
   line-height: 1.4;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   /* Sin font-weight extra — lectura natural */
 }
 
@@ -479,7 +501,7 @@
   /* border-color: rgba(0, 0, 0, 0.18); */
   border-color: rgba(0, 0, 0, 0.18);
   transform: translateY(-1px);
-  box-shadow: 0 3px 8px rgba(0,0,0,0.08);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
 }
 
 .chip:active {
@@ -524,16 +546,16 @@
 }
 
 .contextChipWrapper {
-/* background: rebeccapurple; */
-position: absolute; 
-bottom: 98px;
-width: 100%;
-padding: 10px 0;
-display: flex;
-flex-direction: column;
-gap: 10px;
-flex-shrink: 0;
-background: #f7f7f5;
+  /* background: rebeccapurple; */
+  /* position: absolute;  */
+  bottom: 94px;
+  width: 100%;
+  padding: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+  background: #f7f7f5;
 }
 
 /* ── Chip de contexto activo — "Hablemos sobre [Producto]" ────── */
@@ -555,7 +577,7 @@ background: #f7f7f5;
   width: 80%;
   height: 80px;
   max-width: 400px;
-  margin: 0 auto; 
+  margin: 0 auto;
   box-shadow: 0 1px 3px rgb(0 0 0 / 67%);
 }
 
@@ -572,8 +594,15 @@ background: #f7f7f5;
 }
 
 @keyframes chipSlideIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Emoji placeholder cuando no hay imagen */
@@ -737,6 +766,7 @@ background: #f7f7f5;
     opacity: 0;
     transform: translateY(16px) scale(0.97);
   }
+
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
@@ -744,6 +774,50 @@ background: #f7f7f5;
 }
 
 @keyframes statusPulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.4; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* ── Cold Start warming overlay (Case 1) ──────────────────────────────── */
+.warmingOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(4px);
+  z-index: 20;
+  border-radius: inherit;
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(0, 0, 0, 0.1);
+  border-top-color: var(--color-primary, #6c47ff);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.warmingText {
+  font-size: 13px;
+  color: #555;
+  text-align: center;
+  max-width: 220px;
+  line-height: 1.4;
+  margin: 0;
 }

@@ -3,7 +3,7 @@ import { ChatBubble } from './ChatBubble';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { ConversationAPI } from '../services/api';
-import type { WidgetConfig, Message, ConversationState, ActiveProductContext, ProductRecommendation } from '../types/widget';
+import type { WidgetConfig, Message, ConversationState, ActiveProductContext, ProductRecommendation, RecapTurn, ServiceStatus } from '../types/widget';
 import styles from './ChatWidget.module.css';
 import stylesmessage from './MessageList.module.css';
 
@@ -332,6 +332,33 @@ export function ChatWidget({ config }: ChatWidgetProps) {
 
   const [api] = useState(() => new ConversationAPI(config));
 
+  // isVisualSearching — true mientras se espera la respuesta del embedding-service.
+  // Bloquea el botón de cámara y el textarea durante la búsqueda visual para
+  // evitar que el usuario dispare múltiples peticiones en paralelo.
+  // Es independiente de state.isLoading (que cubre la búsqueda conversacional).
+  const [isVisualSearching, setIsVisualSearching] = useState(false);
+
+  // ── Cold Start UX state ─────────────────────────────────────────────────
+  // serviceStatus: tracks whether the backend is healthy, warming up, or down
+  const [serviceStatus, setServiceStatus] = useState<ServiceStatus>('healthy');
+  // showWarmingOverlay: true when health check takes >1.5s (Case 1)
+  const [showWarmingOverlay, setShowWarmingOverlay] = useState(false);
+  // isResuming: true when session resume is in progress (used in Task 8)
+  const [isResuming, setIsResuming] = useState(false);
+  // sessionRecap: previous session turns for recap display (used in Task 9)
+  const [sessionRecap, setSessionRecap] = useState<RecapTurn[] | null>(null);
+  // showInactivityWarning: true when user has been idle (used in Task 7)
+  const [showInactivityWarning, setShowInactivityWarning] = useState(false);
+  // lastInteractionRef: tracks last user interaction timestamp (used in Task 7)
+  const lastInteractionRef = useRef<number>(Date.now());
+  // Suppress "unused variable" lint errors for state reserved by Tasks 7–9.
+  // These will be wired up in subsequent tasks on this feature branch.
+  void serviceStatus; void setServiceStatus;
+  void isResuming; void setIsResuming;
+  void sessionRecap; void setSessionRecap;
+  void showInactivityWarning; void setShowInactivityWarning;
+  void lastInteractionRef;
+
   // Determinar si hay conversación activa (el usuario ya envió al menos un mensaje)
   const hasUserMessages = state.messages.some(m => m.type === 'user');
 
@@ -358,7 +385,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       welcome:          greetingName ? `¡Hola, ${greetingName}! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?` : '👋 ¡Hola! Soy tu asistente de moda personal. ¿Qué estás buscando hoy?',
       welcomeTitle:     isLoggedIn && greetingName ? `¿Qué buscas hoy, ${greetingName}?` : '¿En qué puedo ayudarte?',
       welcomeSubtitle:  'Pregúntame sobre moda, tallas, tendencias o te ayudo a encontrar tu próximo look.',
-      suggestions:      'Ideas',
+      suggestions:      'Sugerencias',
       betaNote:         'Estoy en beta, sigo aprendiendo.',
       betaLink:         'Más información',
       chatAbout:        'Hablemos sobre',
@@ -372,7 +399,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       welcome:          greetingName ? `Hello, ${greetingName}! I'm your personal fashion assistant. What are you looking for today?` : '👋 Hello! I\'m your personal fashion assistant. What are you looking for today?',
       welcomeTitle:     isLoggedIn && greetingName ? `What are you looking for today, ${greetingName}?` : 'How can I help you?',
       welcomeSubtitle:  'Ask me about fashion, sizes, trends, or let me help you find your next look.',
-      suggestions:      'Ideas',
+      suggestions:      'Suggestions',
       betaNote:         'I\'m in beta, still learning.',
       betaLink:         'More information',
       chatAbout:        'Let\'s chat about',
@@ -385,7 +412,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       welcome:          greetingName ? `Hallo, ${greetingName}! Ich bin Ihr persönlicher Modeassistent. Was suchen Sie heute?` : '👋 Hallo! Ich bin Ihr persönlicher Modeassistent. Was suchen Sie heute?',
       welcomeTitle:     isLoggedIn && greetingName ? `Was suchen Sie heute, ${greetingName}?` : 'Wie kann ich Ihnen helfen?',
       welcomeSubtitle:  'Fragen Sie mich nach Mode, Größen, Trends oder ich helfe Ihnen, Ihren nächsten Look zu finden.',
-      suggestions:      'Ideen',
+      suggestions:      'Vorschläge',
       betaNote:         'Ich bin in der Beta-Phase, noch am Lernen.',
       betaLink:         'Mehr Informationen',
       chatAbout:        'Über dieses Produkt sprechen',
@@ -398,7 +425,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       welcome:          greetingName ? `Bonjour, ${greetingName} ! Je suis votre assistant mode personnel. Que cherchez-vous aujourd'hui ?` : '👋 Bonjour ! Je suis votre assistant mode personnel. Que cherchez-vous aujourd\'hui ?',
       welcomeTitle:     isLoggedIn && greetingName ? `Que cherchez-vous aujourd'hui, ${greetingName} ?` : 'Comment puis-je vous aider ?',
       welcomeSubtitle:  'Posez-moi des questions sur la mode, les tailles, les tendances ou aidez-moi à trouver votre prochain look.',
-      suggestions:      'Idées',
+      suggestions:      'Suggestions',
       betaNote:         'Je suis en bêta, j\'apprends encore.',
       betaLink:         'Plus d\'informations',
       chatAbout:        'Parlons de',
@@ -502,6 +529,31 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       setIsHeaderHidden(false);
     }
   }, [isExpanded]);
+
+  // Case 1: Health check when chat opens — triggers Cloud Run warm-up
+  useEffect(() => {
+    if (!isOpen) return;
+
+    let cancelled = false;
+    const warmingTimer = setTimeout(() => {
+      if (!cancelled) setShowWarmingOverlay(true);
+    }, 1500);
+
+    api.checkHealth().then((result) => {
+      clearTimeout(warmingTimer);
+      if (!cancelled) {
+        setShowWarmingOverlay(false);
+        if (result.status === 'healthy' || result.status === 'unknown') {
+          setServiceStatus('healthy');
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(warmingTimer);
+    };
+  }, [isOpen]);
 
   /**
    * handleSendMessage — envía un mensaje al backend.
@@ -670,6 +722,111 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     setActiveProductContext(null);
   }, []);
 
+  /**
+   * handleImageUpload — búsqueda visual de productos por imagen.
+   *
+   * Flujo completo:
+   *   1. Crear URL de preview (blob:) para mostrar la imagen en la burbuja
+   *      del usuario antes de recibir respuesta del backend.
+   *   2. Añadir mensaje de usuario con suggestionChip que contiene la preview.
+   *   3. Llamar api.searchByImage() — POST /v1/mcp/visual-search (multipart).
+   *   4. Añadir mensaje de asistente con las recomendaciones (o sin resultados).
+   *   5. Liberar la blob URL en finally para evitar memory leaks.
+   *
+   * Guardias:
+   *   - Si isVisualSearching o state.isLoading ya es true, retornar inmediatamente
+   *     para evitar peticiones en paralelo.
+   *   - El mensaje de error cubre tanto el 503 (flag off, índice no construido)
+   *     como errores de red, usando el mismo patrón de localizón que handleSendMessage.
+   */
+  const handleImageUpload = useCallback(async (file: File) => {
+    // Guardia: no lanzar si ya hay una petición en vuelo
+    if (isVisualSearching || state.isLoading) return;
+
+    setIsVisualSearching(true);
+
+    // URL temporal de preview — se libera en finally
+    const previewUrl = URL.createObjectURL(file);
+
+    // Mensaje del usuario: burbuja vacía con chip que muestra la imagen
+    const lc = (navigator.language || 'es').split('-')[0].toLowerCase();
+    const chipLabel = lc === 'en' ? 'Search by image' : 'Buscar por imagen';
+
+    const userMsg: Message = {
+      id: `vs_user_${Date.now()}`,
+      type: 'user',
+      content: '',        // Sin texto — el chip ya muestra la imagen
+      timestamp: Date.now(),
+      suggestionChip: {
+        label: chipLabel,
+        image_url: previewUrl,
+      },
+    };
+
+    setState(prev => ({
+      ...prev,
+      messages: [...prev.messages, userMsg],
+      isLoading: true,
+    }));
+
+    try {
+      const recommendations = await api.searchByImage(
+        file,
+        config.marketId,
+        8,
+      );
+
+      const hasResults = recommendations.length > 0;
+      const replyText = hasResults
+        ? (lc === 'en'
+            ? `Found ${recommendations.length} visually similar products:`
+            : `Encontré ${recommendations.length} producto${recommendations.length !== 1 ? 's' : ''} similares:`)
+        : (lc === 'en'
+            ? 'No similar products found. Try with another image.'
+            : 'No encontré productos similares. Intenta con otra imagen.');
+
+      const assistantMsg: Message = {
+        id: `vs_assistant_${Date.now()}`,
+        type: 'assistant',
+        content: replyText,
+        timestamp: Date.now(),
+        recommendations: hasResults ? recommendations : undefined,
+      };
+
+      setState(prev => ({
+        ...prev,
+        messages: [...prev.messages, assistantMsg],
+        isLoading: false,
+      }));
+
+    } catch (error) {
+      // Extraer mensaje descriptivo del error (puede venir del backend: 503, 413, etc.)
+      const rawMsg = error instanceof Error ? error.message : '';
+      const friendlyMsg = rawMsg ||
+        (lc === 'en'
+          ? 'Visual search is not available right now. Please try again.'
+          : 'La búsqueda visual no está disponible ahora. Inténtalo de nuevo.');
+
+      const errorMsg: Message = {
+        id: `vs_error_${Date.now()}`,
+        type: 'error',
+        content: friendlyMsg,
+        timestamp: Date.now(),
+      };
+
+      setState(prev => ({
+        ...prev,
+        messages: [...prev.messages, errorMsg],
+        isLoading: false,
+      }));
+
+    } finally {
+      // Liberar la blob URL independientemente del resultado
+      URL.revokeObjectURL(previewUrl);
+      setIsVisualSearching(false);
+    }
+  }, [api, config.marketId, isVisualSearching, state.isLoading]);
+
   const handleToggle = useCallback(() => {
     const willOpen = !isOpen;
     setIsOpen(willOpen);
@@ -784,6 +941,20 @@ export function ChatWidget({ config }: ChatWidgetProps) {
             // className={`${styles.messagesContainer} ${isHeaderHidden && !isExpanded ? styles.moveMessagesContainer : ''}`}
 
           >
+            {/* ── Warming overlay — Case 1: Cloud Run cold start ────────
+                Shown when health check takes >1.5s (backend is warming up).
+                Disappears automatically once the health check resolves.    */}
+            {showWarmingOverlay && (
+              <div className={styles.warmingOverlay}>
+                <div className={styles.spinner} />
+                <p className={styles.warmingText}>
+                  {localStorage.getItem('rr_widget_session_id')
+                    ? 'Despertando el asistente… Tu sesión anterior está guardada.'
+                    : 'Iniciando el asistente…'}
+                </p>
+              </div>
+            )}
+
             {/* ── Pantalla de bienvenida (estilo Zalando) ──────────────
                 Se muestra solo cuando no hay mensajes de usuario todavía.
                 Incluye el saludo con nombre si el usuario está logueado.   */}
@@ -867,6 +1038,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                 isExpanded={isExpanded}
                 onChatAbout={handleChatAbout}
                 onShowSimilar={handleShowSimilar}
+                onSuggestionClick={(text) => handleSendMessage(text, undefined, undefined, true)}
               />
             )}
           </div>
@@ -958,9 +1130,10 @@ export function ChatWidget({ config }: ChatWidgetProps) {
             <MessageInput
               // onSendMessage={() => handleSendMessage(activeProductContext ? activeProductContext.title : '')}
               onSendMessage={(messageText) => handleSendMessage(messageText, undefined, undefined, true)}
-              
-              disabled={state.isLoading}
+              onImageUpload={handleImageUpload}
+              disabled={state.isLoading || isVisualSearching || showWarmingOverlay}
               placeholder={t('inputPlaceholder')}
+              visualSearchEnabled={true}
             />
           </div>
         </div>
