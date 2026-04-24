@@ -351,9 +351,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   const [showInactivityWarning, setShowInactivityWarning] = useState(false);
   // lastInteractionRef: tracks last user interaction timestamp (used in Task 7)
   const lastInteractionRef = useRef<number>(Date.now());
-  // Suppress "unused variable" lint errors for state reserved by Task 9.
-  // These will be wired up in subsequent tasks on this feature branch.
-  void sessionRecap; void setSessionRecap;
+  // sessionRecap and setSessionRecap are consumed by the resuming UI (Task 9).
 
   // Determinar si hay conversación activa (el usuario ya envió al menos un mensaje)
   const hasUserMessages = state.messages.some(m => m.type === 'user');
@@ -550,6 +548,22 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       clearTimeout(warmingTimer);
     };
   }, [isOpen]);
+
+  // Case 2b post-"Let's continue": poll until healthy then re-enable
+  useEffect(() => {
+    if (!isResuming) return;
+
+    const intervalId = setInterval(async () => {
+      const result = await api.checkHealth();
+      if (result.status === 'healthy') {
+        setIsResuming(false);
+        setServiceStatus('healthy');
+        clearInterval(intervalId);
+      }
+    }, 5_000);
+
+    return () => clearInterval(intervalId);
+  }, [isResuming]);
 
   // Case 2 & 3: Poll /health every 30s while chat is open
   useEffect(() => {
@@ -1140,6 +1154,34 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                       </button>
                     </div>
                   </div>
+                </div>
+              </>
+            )}
+
+            {/* Case 2b: Resuming state — shown after "Let's continue" is clicked */}
+            {isResuming && (
+              <>
+                <div className={styles.divider}>reanudando conversación</div>
+                {sessionRecap && sessionRecap.length > 0 && (
+                  <details className={styles.recapDropdown}>
+                    <summary className={styles.recapSummary}>
+                      📋 Ver resumen de conversación anterior
+                    </summary>
+                    <div className={styles.recapBody}>
+                      {sessionRecap.map((turn, i) => (
+                        <div key={i} className={styles.recapRow}>
+                          <span className={styles.recapRole}>
+                            {turn.role === 'user' ? 'Tú' : 'AI'}
+                          </span>
+                          <span className={styles.recapText}>{turn.content}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+                <div className={styles.resumingRow}>
+                  <div className={styles.spinnerSmall} />
+                  <span className={styles.resumingText}>Resumiendo conversación…</span>
                 </div>
               </>
             )}
