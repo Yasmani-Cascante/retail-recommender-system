@@ -351,13 +351,10 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   const [showInactivityWarning, setShowInactivityWarning] = useState(false);
   // lastInteractionRef: tracks last user interaction timestamp (used in Task 7)
   const lastInteractionRef = useRef<number>(Date.now());
-  // Suppress "unused variable" lint errors for state reserved by Tasks 7–9.
+  // Suppress "unused variable" lint errors for state reserved by Tasks 8–9.
   // These will be wired up in subsequent tasks on this feature branch.
-  void serviceStatus; void setServiceStatus;
   void isResuming; void setIsResuming;
   void sessionRecap; void setSessionRecap;
-  void showInactivityWarning; void setShowInactivityWarning;
-  void lastInteractionRef;
 
   // Determinar si hay conversación activa (el usuario ya envió al menos un mensaje)
   const hasUserMessages = state.messages.some(m => m.type === 'user');
@@ -555,6 +552,42 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     };
   }, [isOpen]);
 
+  // Case 2 & 3: Poll /health every 30s while chat is open
+  useEffect(() => {
+    if (!isOpen || serviceStatus !== 'healthy') return;
+
+    const intervalId = setInterval(async () => {
+      const result = await api.checkHealth();
+      if (result.shutdown_at !== null || result.status === 'unreachable') {
+        setServiceStatus('down');
+      }
+    }, 30_000);
+
+    return () => clearInterval(intervalId);
+  }, [isOpen, serviceStatus, api]);
+
+  // Case 3: Silent close if service goes down on welcome screen
+  useEffect(() => {
+    if (serviceStatus === 'down' && !hasUserMessages) {
+      setIsOpen(false);
+    }
+  }, [serviceStatus, hasUserMessages]);
+
+  // Case 2a: 15-minute inactivity warning
+  useEffect(() => {
+    if (!isOpen || !hasUserMessages) return;
+
+    const checkInactivity = () => {
+      const elapsed = Date.now() - lastInteractionRef.current;
+      if (elapsed >= 15 * 60 * 1000 && !showInactivityWarning) {
+        setShowInactivityWarning(true);
+      }
+    };
+
+    const timerId = setInterval(checkInactivity, 60_000);
+    return () => clearInterval(timerId);
+  }, [isOpen, hasUserMessages, showInactivityWarning]);
+
   /**
    * handleSendMessage — envía un mensaje al backend.
    *
@@ -574,6 +607,9 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     explicitProductHandle?: string,
     shouldAutoGenerateChip: boolean = false,
   ) => {
+    lastInteractionRef.current = Date.now();
+    setShowInactivityWarning(false);
+
     const productHandle = explicitProductHandle ?? activeProductContext?.handle ?? undefined;
 
     // Auto-generar chip solo si se solicita explícitamente y no hay uno provisto
@@ -1040,6 +1076,13 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                 onShowSimilar={handleShowSimilar}
                 onSuggestionClick={(text) => handleSendMessage(text, undefined, undefined, true)}
               />
+            )}
+
+            {/* Case 2a: Inactivity warning — shown after 15 min of no interaction */}
+            {showInactivityWarning && (
+              <div className={styles.inactivityWarning}>
+                ¿Sigues ahí? El chat entrará en reposo si no hay actividad en los próximos 5 minutos.
+              </div>
             )}
           </div>
 
