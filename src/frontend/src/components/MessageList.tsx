@@ -130,6 +130,117 @@ function containsMarkdown(text: string): boolean {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+function generateContextualSuggestions(recommendations: import('../types/widget').ProductRecommendation[], lang: string): string[] {
+  const code = lang.split('-')[0].toLowerCase();
+
+  if (!recommendations || recommendations.length === 0) {
+    const fallbacks: Record<string, string> = {
+      es: '¿Puedo ver más artículos?',
+      en: 'Can I see more items?',
+      de: 'Kann ich mehr Artikel sehen?',
+      fr: 'Puis-je voir plus d\'articles ?',
+    };
+    return [fallbacks[code] ?? fallbacks['es']];
+  }
+
+  const suggestions: string[] = [];
+
+  const categories = Array.from(new Set(recommendations.map(r => r.category).filter(Boolean)));
+  const vendors = Array.from(new Set(recommendations.map(r => r.vendor).filter(Boolean)));
+  const prices = recommendations.map(r => r.price).filter(p => p > 0);
+
+  // 1. Category-based exploration
+  if (categories.length > 0) {
+    const category = categories[0].toLowerCase();
+    const templates: Record<string, string> = {
+      es: `¿Qué combina bien con ${category}?`,
+      en: `What goes well with ${category}?`,
+      de: `Was passt gut zu ${category}?`,
+      fr: `Qu'est-ce qui va bien avec ${category} ?`,
+    };
+    suggestions.push(templates[code] ?? templates['es']);
+  }
+
+  // 2. Brand exploration
+  if (vendors.length > 0) {
+    const vendor = vendors[0];
+    const templates: Record<string, string> = {
+      es: `¿Tienes más de ${vendor}?`,
+      en: `Do you have more from ${vendor}?`,
+      de: `Haben Sie mehr von ${vendor}?`,
+      fr: `Avez-vous plus de ${vendor} ?`,
+    };
+    suggestions.push(templates[code] ?? templates['es']);
+  }
+
+  // 3. Alternatives/Variations
+  const colorSuggestions: Record<string, string> = {
+    es: '¿Los tienen en otros colores?',
+    en: 'Do you have these in other colors?',
+    de: 'Haben Sie diese in anderen Farben?',
+    fr: 'Les avez-vous dans d\'autres couleurs ?',
+  };
+  suggestions.push(colorSuggestions[code] ?? colorSuggestions['es']);
+
+  // 4. Budget
+  if (prices.length > 0) {
+    const minPrice = Math.min(...prices);
+    const currency = recommendations[0].currency || 'EUR';
+    if (minPrice > 20) {
+      const budget = Math.floor(minPrice / 10) * 10;
+      let formattedBudget = `${budget} ${currency}`;
+      try {
+        formattedBudget = new Intl.NumberFormat(navigator.language || 'en-US', { style: 'currency', currency: currency, maximumFractionDigits: 0 }).format(budget);
+      } catch { /* use fallback */ }
+      const templates: Record<string, string> = {
+        es: `Muéstrame opciones por debajo de ${formattedBudget}`,
+        en: `Show me options under ${formattedBudget}`,
+        de: `Zeig mir Optionen unter ${formattedBudget}`,
+        fr: `Montre-moi des options à moins de ${formattedBudget}`,
+      };
+      suggestions.push(templates[code] ?? templates['es']);
+    }
+  }
+
+  // 5. Fallback category
+  if (categories.length > 0 && suggestions.length < 3) {
+    const category = categories[0].toLowerCase();
+    const templates: Record<string, string> = {
+      es: `Muéstrame más ${category}`,
+      en: `Show me more ${category}`,
+      de: `Zeig mir mehr ${category}`,
+      fr: `Montre-moi plus de ${category}`,
+    };
+    suggestions.push(templates[code] ?? templates['es']);
+  }
+
+  // 6. Generic fallback
+  if (suggestions.length < 3) {
+    const fallbacks: Record<string, string> = {
+      es: '¿Puedo ver más artículos?',
+      en: 'Can I see more items?',
+      de: 'Kann ich mehr Artikel sehen?',
+      fr: 'Puis-je voir plus d\'articles ?',
+    };
+    suggestions.push(fallbacks[code] ?? fallbacks['es']);
+  }
+
+  // Deduplicate and limit to 3
+  return Array.from(new Set(suggestions)).slice(0, 3);
+}
+
+// ── i18n helpers for MessageList UI chrome ─────────────────────────────────
+const ML_UI_TEXT: Record<string, Record<string, string>> = {
+  es: { suggestions: 'Sugerencias', wasHelpful: '¿Te fue útil?' },
+  en: { suggestions: 'Suggestions', wasHelpful: 'Was this helpful?' },
+  de: { suggestions: 'Vorschläge', wasHelpful: 'War das hilfreich?' },
+  fr: { suggestions: 'Suggestions', wasHelpful: 'Cela vous a-t-il aidé ?' },
+};
+function mlT(key: string): string {
+  const code = (navigator.language || 'es').split('-')[0].toLowerCase();
+  return ML_UI_TEXT[code]?.[key] ?? ML_UI_TEXT['es'][key] ?? '';
+}
+
 interface MessageListProps {
   messages: Message[];
   isLoading: boolean;
@@ -143,10 +254,13 @@ interface MessageListProps {
    * Envía automáticamente una petición de productos similares (Sabor 2).
    */
   onShowSimilar?: (product: import('../types/widget').ProductRecommendation) => void;
+  onSuggestionClick?: (text: string) => void;
   isExpanded?: boolean;
+  /** isServiceDown — when true, all message bubbles are faded (Case 2b) */
+  isServiceDown?: boolean;
 }
 
-export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onShowSimilar }: MessageListProps) {
+export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onShowSimilar, onSuggestionClick, isServiceDown }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [expandedKbId, setExpandedKbId] = useState<string | null>(null);
 
@@ -156,46 +270,47 @@ export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onSh
 
   return (
     <div className={styles.list}>
-      {messages.map((message) => (
-        <div
-          key={message.id}
-          className={`${styles.row} ${
-            message.type === 'user' ? styles.rowUser : styles.rowAssistant
-          }`}
-        >
-          {/* Avatar del asistente (izquierda) */}
-          {message.type !== 'user' && (
-            <div className={styles.avatar} aria-hidden="true">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                width="24"
-                height="24"
-                fill="none"
-              >
-                <g clipPath="url(#clip0_990_39490)">
-                  <path
-                    d="M13.4733 5H21V18.2102L16.14 22V18.2102H6V12.2941"
-                    stroke="currentColor"
-                    strokeWidth="2.03704"
-                    strokeMiterlimit="10"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="M10 5.00002C7.74328 5.00002 6.00049 3.25689 6.00049 1C6.00049 3.25689 4.25672 5.00021 2 5.00021C4.25672 5.00021 5.9997 6.74311 5.9997 9C5.9997 6.74311 7.74328 5.00002 10 5.00002Z"
-                    stroke="currentColor"
-                    strokeWidth="2.03704"
-                    strokeLinejoin="round"
-                    style={{ transitionProperty: 'transform', transitionDuration: '0.3s', transform: 'scale(1.0)' }}
-                  />
-                </g>
-              </svg>
-            </div>
-          )}
+      {messages.map((message, index) => {
+        const isLastMessage = index === messages.length - 1;
+        return (
+          <div
+            key={message.id}
+            className={`${styles.row} ${message.type === 'user' ? styles.rowUser : styles.rowAssistant
+              }`}
+          >
+            {/* Avatar del asistente (izquierda) */}
+            {message.type !== 'user' && (
+              <div className={styles.avatar} aria-hidden="true">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  width="24"
+                  height="24"
+                  fill="none"
+                >
+                  <g clipPath="url(#clip0_990_39490)">
+                    <path
+                      d="M13.4733 5H21V18.2102L16.14 22V18.2102H6V12.2941"
+                      stroke="currentColor"
+                      strokeWidth="2.03704"
+                      strokeMiterlimit="10"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M10 5.00002C7.74328 5.00002 6.00049 3.25689 6.00049 1C6.00049 3.25689 4.25672 5.00021 2 5.00021C4.25672 5.00021 5.9997 6.74311 5.9997 9C5.9997 6.74311 7.74328 5.00002 10 5.00002Z"
+                      stroke="currentColor"
+                      strokeWidth="2.03704"
+                      strokeLinejoin="round"
+                      style={{ transitionProperty: 'transform', transitionDuration: '0.3s', transform: 'scale(1.0)' }}
+                    />
+                  </g>
+                </svg>
+              </div>
+            )}
 
-          <div className={styles.messageContent}>
-            {/*
+            <div className={styles.messageContent}>
+              {/*
              * CHIP DE SUGERENCIA — elemento separado, FUERA de la burbuja.
              *
              * Requisito: el chip debe poder estilizarse independientemente
@@ -210,125 +325,124 @@ export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onSh
              *
              * Solo se renderiza para mensajes de usuario con chip.
              */}
-            {message.type === 'user' && message.suggestionChip && (
-              <div className={styles.suggestionChip}>
-                <div className={styles.suggestionChipBadge}>
-                  {message.suggestionChip.image_url && (
-                    <img
-                      src={message.suggestionChip.image_url}
-                      alt=""
-                      className={styles.suggestionChipImg}
-                      aria-hidden="true"
-                      onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                    />
-                  )}
-                  <p>{message.suggestionChip.label}</p>
+              {message.type === 'user' && message.suggestionChip && (
+                <div className={styles.suggestionChip}>
+                  <div className={styles.suggestionChipBadge}>
+                    {message.suggestionChip.image_url && (
+                      <img
+                        src={message.suggestionChip.image_url}
+                        alt=""
+                        className={styles.suggestionChipImg}
+                        aria-hidden="true"
+                        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    )}
+                    <p>{message.suggestionChip.label}</p>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* Burbuja principal
+              {/* Burbuja principal
                 FIX (27/03/2026): User messages are always plain text.
                 Assistant messages may contain Markdown (KB responses, personalised
                 responses with lists).  We detect Markdown and use
                 dangerouslySetInnerHTML only on assistant messages where the
                 content comes from our controlled backend — never from the user.
             */}
-            <div
-              className={`${styles.bubble} ${
-                message.type === 'user'
-                  ? styles.bubbleUser
+              <div
+                className={`${styles.bubble} ${message.type === 'user'
+                  ? `${styles.bubbleUser} ${isServiceDown ? styles.bubbleInactive : ''}`
                   : message.type === 'error'
-                  ? styles.bubbleError
-                  : styles.bubbleAssistant
-              }`}       
+                    ? styles.bubbleError
+                    : `${styles.bubbleAssistant} ${isServiceDown ? styles.bubbleInactive : ''}`
+                  }`}
               >
-               
-              {message.type === 'user' || message.type === 'error' ? (
-                /*
-                 * Mensajes de usuario: siempre mostrar el texto plano.
-                 * El chip (si existe) ya se renderizó como elemento separado
-                 * encima de esta burbuja con su propia clase CSS.
-                 *
-                 * IMPORTANTE: chip.label = título del PRODUCTO (no la query).
-                 * message.content = texto de la PREGUNTA del usuario.
-                 * Son siempre distintos — no hay riesgo de duplicado.
-                 */
-                message.content || null
-              ) : containsMarkdown(message.content) ? (
-                // Markdown detected in assistant message — render as safe HTML
-                <span
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
-                />
-              ) : (
-                // Short assistant messages with no Markdown — plain text is cleaner
-                message.content
-              )}
-            </div>
 
-            {/* Botón para ver el documento KB completo */}
-            {message.kb_document && (
-              <button
-                className={styles.kbToggleBtn}
-                onClick={() =>
-                  setExpandedKbId(expandedKbId === message.id ? null : message.id)
-                }
-                aria-expanded={expandedKbId === message.id}
-              >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
+                {message.type === 'user' || message.type === 'error' ? (
+                  /*
+                   * Mensajes de usuario: siempre mostrar el texto plano.
+                   * El chip (si existe) ya se renderizó como elemento separado
+                   * encima de esta burbuja con su propia clase CSS.
+                   *
+                   * IMPORTANTE: chip.label = título del PRODUCTO (no la query).
+                   * message.content = texto de la PREGUNTA del usuario.
+                   * Son siempre distintos — no hay riesgo de duplicado.
+                   */
+                  message.content || null
+                ) : containsMarkdown(message.content) ? (
+                  // Markdown detected in assistant message — render as safe HTML
+                  <span
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+                  />
+                ) : (
+                  // Short assistant messages with no Markdown — plain text is cleaner
+                  message.content
+                )}
+              </div>
+
+              {/* Botón para ver el documento KB completo */}
+              {message.kb_document && (
+                <button
+                  className={styles.kbToggleBtn}
+                  onClick={() =>
+                    setExpandedKbId(expandedKbId === message.id ? null : message.id)
+                  }
+                  aria-expanded={expandedKbId === message.id}
                 >
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                  <polyline points="14 2 14 8 20 8" />
-                  <line x1="16" y1="13" x2="8" y2="13" />
-                  <line x1="16" y1="17" x2="8" y2="17" />
-                  <polyline points="10 9 9 9 8 9" />
-                </svg>
-                {expandedKbId === message.id ? 'Ocultar documento' : 'Ver política completa'}
-              </button>
-            )}
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="16" y1="13" x2="8" y2="13" />
+                    <line x1="16" y1="17" x2="8" y2="17" />
+                    <polyline points="10 9 9 9 8 9" />
+                  </svg>
+                  {expandedKbId === message.id ? 'Ocultar documento' : 'Ver política completa'}
+                </button>
+              )}
 
-            {/* Panel expandible con el documento KB completo
+              {/* Panel expandible con el documento KB completo
                 FIX (27/03/2026): The KB document also contains Markdown.
                 Apply the same Markdown rendering logic here. */}
-            {message.kb_document && expandedKbId === message.id && (
-              <div className={styles.kbPanel} role="region" aria-label="Documento completo">
-                <div className={styles.kbPanelHeader}>
-                  <span>Documento completo</span>
-                  <button
-                    className={styles.kbCloseBtn}
-                    onClick={() => setExpandedKbId(null)}
-                    aria-label="Cerrar documento"
-                  >
-                    ✕
-                  </button>
+              {message.kb_document && expandedKbId === message.id && (
+                <div className={styles.kbPanel} role="region" aria-label="Documento completo">
+                  <div className={styles.kbPanelHeader}>
+                    <span>Documento completo</span>
+                    <button
+                      className={styles.kbCloseBtn}
+                      onClick={() => setExpandedKbId(null)}
+                      aria-label="Cerrar documento"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className={styles.kbPanelBody}>
+                    {containsMarkdown(message.kb_document) ? (
+                      <span
+                        dangerouslySetInnerHTML={{
+                          __html: renderMarkdown(message.kb_document),
+                        }}
+                      />
+                    ) : (
+                      message.kb_document
+                    )}
+                  </div>
                 </div>
-                <div className={styles.kbPanelBody}>
-                  {containsMarkdown(message.kb_document) ? (
-                    <span
-                      dangerouslySetInnerHTML={{
-                        __html: renderMarkdown(message.kb_document),
-                      }}
-                    />
-                  ) : (
-                    message.kb_document
-                  )}
-                </div>
-              </div>
-            )}
+              )}
 
-            {/* Tarjetas de productos recomendados */}
-            {message.recommendations && message.recommendations.length > 0 && (
-              <div>
-                <span className={styles.recoLabel}>Recomendado para ti</span>
+              {/* Tarjetas de productos recomendados */}
+              {message.recommendations && message.recommendations.length > 0 && (
+                <div>
+                  <span className={styles.recoLabel}>Recomendado para ti</span>
                   <div className={`${styles.productsList} ${isExpanded ? styles.productsListExpanded : ''}`}>
                     {message.recommendations.slice(0, 8).map((product) => (
                       <ProductCard
@@ -338,12 +452,54 @@ export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onSh
                         onShowSimilar={onShowSimilar}
                       />
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Sugerencias contextuales y feedback (solo en el último mensaje del asistente) */}
+              {isLastMessage && message.type === 'assistant' && (
+                <div className={styles.postMessageActions}>
+                  {message.recommendations && message.recommendations.length > 0 && (
+                    <div className={styles.categorySuggestions}>
+                      <div className={styles.suggestionsHeader}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z" />
+                        </svg>
+                        {mlT('suggestions')}
+                      </div>
+                      <div className={styles.suggestionsList}>
+                        {generateContextualSuggestions(message.recommendations, navigator.language || 'es').map(suggestion => (
+                          <button
+                            key={suggestion}
+                            className={styles.suggestionPill}
+                            onClick={() => onSuggestionClick && onSuggestionClick(suggestion)}
+                          >
+                            {suggestion}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-              </div>
-            )}
+                  )}
+
+                  <div className={styles.feedbackSection}>
+                    <span>{mlT('wasHelpful')}</span>
+                    <button className={styles.feedbackBtn} aria-label="Helpful">
+                      <svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" >
+                        <path d="M24 14.596a2.47 2.47 0 0 0-1.256-2.145c.24-.38.384-.827.386-1.31a2.48 2.48 0 0 0-2.475-2.488H12.53a6.94 6.94 0 0 0-.134-7.589A2.6 2.6 0 0 0 10.32 0a2.536 2.536 0 0 0-2.53 2.533V4.9l-3.175 6.35H.75A.75.75 0 0 0 0 12v8.654c.001.414.337.75.75.75h3.663A3.35 3.35 0 0 0 7.672 24H19.79a2.48 2.48 0 0 0 2.48-2.48c0-.487-.145-.938-.387-1.321a2.47 2.47 0 0 0 1.247-2.135 2.46 2.46 0 0 0-.385-1.322A2.47 2.47 0 0 0 24 14.596m-3.345 4.443h-4.336a.98.98 0 1 1 .008-1.962h4.328a.98.98 0 0 1 0 1.962m.864-3.462h-5.192a.98.98 0 1 1 0-1.961h5.192a.98.98 0 1 1 0 1.961m.113-4.446a.98.98 0 0 1-.977.985H16.32a.981.981 0 1 1 .007-1.963h4.328a.98.98 0 0 1 .977.978M5.827 20.654v-.001a.75.75 0 0 0-.75-.75H1.5V12.75h3.577a.75.75 0 0 0 .671-.415l3.461-6.923a.76.76 0 0 0 .08-.335V2.533c0-.57.462-1.033 1.032-1.033.345.006.666.175.868.455 2.367 3.204-.512 6.822-.636 6.975a.75.75 0 0 0 .581 1.223h2.7c-.128 3.194-1.777 6.29-5.295 6.29a.75.75 0 0 0 0 1.5c2.268 0 4.147-1.08 5.353-2.892.091.49.325.93.658 1.272a2.47 2.47 0 0 0 .001 3.469 2.47 2.47 0 0 0-.502 2.708H7.673a1.85 1.85 0 0 1-1.846-1.846M19.79 22.5h-3.462a.98.98 0 1 1 0-1.961h3.462a.98.98 0 0 1 0 1.961"></path>
+                      </svg>
+                    </button>
+                    <button className={styles.feedbackBtn} aria-label="Not helpful">
+                      <svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor">
+                        <path d="M22.744 7.258a2.46 2.46 0 0 0 .385-1.322A2.47 2.47 0 0 0 21.882 3.8c.242-.383.387-.834.387-1.32A2.48 2.48 0 0 0 19.79 0H7.673a3.35 3.35 0 0 0-3.261 2.596H.75a.75.75 0 0 0-.75.75V12c0 .414.335.75.749.75h3.865L7.79 19.1v2.367A2.536 2.536 0 0 0 10.32 24a2.6 2.6 0 0 0 2.075-1.064 6.94 6.94 0 0 0 .134-7.59h8.125a2.48 2.48 0 0 0 2.475-2.487 2.46 2.46 0 0 0-.386-1.31A2.47 2.47 0 0 0 24 9.404a2.47 2.47 0 0 0-1.256-2.146m-1.113-1.312a.98.98 0 0 1-.976.977h-4.328a.98.98 0 1 1-.008-1.962h4.336a.98.98 0 0 1 .976.985m.869 3.457a.98.98 0 0 1-.981.981h-5.192a.98.98 0 1 1 0-1.961h5.192a.98.98 0 0 1 .98.98m-1.845 4.444h-4.328a.981.981 0 0 1-.007-1.963h4.335a.981.981 0 0 1 0 1.963M7.673 1.5h6.376a2.47 2.47 0 0 0 .502 2.708 2.47 2.47 0 0 0 0 3.469 2.47 2.47 0 0 0-.659 1.272c-1.206-1.811-3.085-2.891-5.353-2.891a.75.75 0 0 0 0 1.5c3.518 0 5.167 3.095 5.294 6.288h-2.699a.75.75 0 0 0-.581 1.224c.124.153 3.003 3.77.636 6.975-.202.28-.523.449-.868.455-.57 0-1.032-.462-1.032-1.033v-2.544a.76.76 0 0 0-.08-.336l-3.461-6.922a.75.75 0 0 0-.67-.415H1.5V4.096h3.577a.75.75 0 0 0 .75-.749c0-1.02.827-1.846 1.846-1.847m13.096.98a.98.98 0 0 1-.98.981h-3.462a.98.98 0 1 1 0-1.961h3.462a.98.98 0 0 1 .98.98"></path>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        )
+      })}
 
       {/* Indicador de escritura */}
       {isLoading && (

@@ -351,9 +351,8 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   const [showInactivityWarning, setShowInactivityWarning] = useState(false);
   // lastInteractionRef: tracks last user interaction timestamp (used in Task 7)
   const lastInteractionRef = useRef<number>(Date.now());
-  // Suppress "unused variable" lint errors for state reserved by Tasks 8–9.
+  // Suppress "unused variable" lint errors for state reserved by Task 9.
   // These will be wired up in subsequent tasks on this feature branch.
-  void isResuming; void setIsResuming;
   void sessionRecap; void setSessionRecap;
 
   // Determinar si hay conversación activa (el usuario ya envió al menos un mensaje)
@@ -759,6 +758,35 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   }, []);
 
   /**
+   * handleLetsContinue — Case 2b: resume session after service came back.
+   * Fetches the session recap, marks resuming in progress, and optimistically
+   * sets service to healthy (will be corrected by the next health-poll tick).
+   */
+  const handleLetsContinue = async () => {
+    const recap = await api.getSessionRecap();
+    setSessionRecap(recap.turns.length > 0 ? recap.turns : null);
+    setIsResuming(true);
+    setServiceStatus('healthy'); // optimistic — will be corrected by polling
+  };
+
+  /**
+   * handleStartNewChat — Case 2b: discard current session and start fresh.
+   */
+  const handleStartNewChat = () => {
+    api.resetSession();
+    setState(prev => ({ ...prev, messages: prev.messages.slice(0, 1), sessionId: '' }));
+    setServiceStatus('healthy');
+    setShowInactivityWarning(false);
+  };
+
+  /**
+   * handleCloseConversation — Case 2b: close the chat panel.
+   */
+  const handleCloseConversation = () => {
+    setIsOpen(false);
+  };
+
+  /**
    * handleImageUpload — búsqueda visual de productos por imagen.
    *
    * Flujo completo:
@@ -1075,6 +1103,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                 onChatAbout={handleChatAbout}
                 onShowSimilar={handleShowSimilar}
                 onSuggestionClick={(text) => handleSendMessage(text, undefined, undefined, true)}
+                isServiceDown={serviceStatus === 'down'}
               />
             )}
 
@@ -1083,6 +1112,36 @@ export function ChatWidget({ config }: ChatWidgetProps) {
               <div className={styles.inactivityWarning}>
                 ¿Sigues ahí? El chat entrará en reposo si no hay actividad en los próximos 5 minutos.
               </div>
+            )}
+
+            {/* Case 2b: Service-down card — shown when backend is down and user has messages */}
+            {serviceStatus === 'down' && hasUserMessages && !isResuming && (
+              <>
+                <div className={styles.divider}>mensajes anteriores inactivos</div>
+                <div className={styles.serviceDownCard}>
+                  <div className={styles.serviceDownHeader}>
+                    <span>💤</span>
+                    <span>El asistente ha entrado en reposo</span>
+                  </div>
+                  <div className={styles.serviceDownBody}>
+                    <p className={styles.serviceDownTitle}>Tu conversación está guardada</p>
+                    <p className={styles.serviceDownSub}>
+                      Puedes retomar donde lo dejaste o empezar una nueva conversación.
+                    </p>
+                    <div className={styles.coldStartActions}>
+                      <button className={styles.btnPrimary} onClick={handleLetsContinue}>
+                        Let&apos;s continue
+                      </button>
+                      <button className={styles.btnSecondary} onClick={handleStartNewChat}>
+                        Start a new chat
+                      </button>
+                      <button className={styles.btnGhost} onClick={handleCloseConversation}>
+                        Close conversation
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </>
             )}
           </div>
 
@@ -1174,7 +1233,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
               // onSendMessage={() => handleSendMessage(activeProductContext ? activeProductContext.title : '')}
               onSendMessage={(messageText) => handleSendMessage(messageText, undefined, undefined, true)}
               onImageUpload={handleImageUpload}
-              disabled={state.isLoading || isVisualSearching || showWarmingOverlay}
+              disabled={state.isLoading || isVisualSearching || showWarmingOverlay || (serviceStatus === 'down' && !isResuming)}
               placeholder={t('inputPlaceholder')}
               visualSearchEnabled={true}
             />
