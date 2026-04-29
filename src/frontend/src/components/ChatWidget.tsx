@@ -565,19 +565,9 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     return () => clearInterval(intervalId);
   }, [isResuming]);
 
-  // Case 2 & 3: Poll /health every 30s while chat is open
-  useEffect(() => {
-    if (!isOpen || serviceStatus !== 'healthy') return;
-
-    const intervalId = setInterval(async () => {
-      const result = await api.checkHealth();
-      if (result.shutdown_at !== null || result.status === 'unreachable') {
-        setServiceStatus('down');
-      }
-    }, 30_000);
-
-    return () => clearInterval(intervalId);
-  }, [isOpen, serviceStatus, api]);
+  // No background polling — polling keeps Cloud Run warm and prevents scale-to-zero.
+  // Service-down is detected reactively: on failed sendMessage (see handleSendMessage catch)
+  // and on the Case 1 health check when the chat is opened.
 
   // Case 3: Silent close if service goes down on welcome screen
   useEffect(() => {
@@ -660,6 +650,15 @@ export function ChatWidget({ config }: ChatWidgetProps) {
         sessionId: assistantMessage.metadata?.sessionId || prev.sessionId,
       }));
     } catch {
+      // Check if the service went down (Cloud Run scaled to zero between messages).
+      // This is the reactive substitute for background polling.
+      const health = await api.checkHealth();
+      if (health.status === 'unreachable' || health.shutdown_at !== null) {
+        setServiceStatus('down');
+        setState(prev => ({ ...prev, isLoading: false }));
+        return;
+      }
+
       const errorMessage: Message = {
         id: `error_${Date.now()}`,
         type: 'error',
