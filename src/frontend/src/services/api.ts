@@ -180,6 +180,7 @@ interface ConversationResponse {
   personalization_metadata?: unknown;
   metadata?: unknown;
   took_ms?: number;
+  shutdown_at?: number | null;
 }
 
 export class ConversationAPI {
@@ -281,9 +282,10 @@ export class ConversationAPI {
         recommendations,
         kb_document:     data.kb_document,
         metadata: {
-          sessionId:     this.sessionId,
+          sessionId:      this.sessionId,
           intentAnalysis: data.intent_analysis,
           marketContext:  data.market_context,
+          shutdownAt:     data.shutdown_at ?? null,
         },
       };
 

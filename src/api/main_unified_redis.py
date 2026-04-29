@@ -38,7 +38,7 @@ from datetime import datetime
 load_dotenv()
 
 # ✅ ENTERPRISE IMPORTS
-from fastapi import FastAPI, Header, Query, HTTPException, BackgroundTasks, Response, Depends
+from fastapi import FastAPI, Header, Query, HTTPException, BackgroundTasks, Response, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Any
@@ -1722,6 +1722,46 @@ instrumentator = Instrumentator(
 instrumentator.instrument(app)
 
 logger.info("✅ M2: Prometheus auto-instrumentation applied (HTTP metrics)")
+
+# ════════════════════════════════════════════════════════════════════════
+# Cold-start shutdown notification middleware
+# Injects `shutdown_at` into every POST /v1/mcp/conversation response.
+# When SIGTERM arrives during the grace period, _write_shutdown_flag() has
+# already run, so the NEXT response the user receives will carry the flag.
+# The frontend checks this field and shows Case 2b immediately after their
+# last successful message — before they try to send another.
+# ════════════════════════════════════════════════════════════════════════
+@app.middleware("http")
+async def inject_shutdown_at_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if (
+        request.method == "POST"
+        and request.url.path == "/v1/mcp/conversation"
+        and response.headers.get("content-type", "").startswith("application/json")
+    ):
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+        try:
+            data = json.loads(body)
+            data["shutdown_at"] = await _get_shutdown_at()
+            new_body = json.dumps(data).encode()
+            return Response(
+                content=new_body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type="application/json",
+            )
+        except Exception:
+            pass
+        # Fallback: return original response reconstructed from buffered body
+        return Response(
+            content=body,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type="application/json",
+        )
+    return response
 
 # Prometheus metrics endpoint (NUEVO - complementa /v1/metrics existente)
 @app.get("/metrics", include_in_schema=False, tags=["M2-Observability"])

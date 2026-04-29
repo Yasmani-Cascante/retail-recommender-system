@@ -39,6 +39,7 @@ export interface Message {
     sessionId?: string;
     intentAnalysis?: unknown;
     marketContext?: unknown;
+    shutdownAt?: number | null;
   };
 }
 

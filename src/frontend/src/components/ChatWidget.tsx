@@ -565,9 +565,25 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     return () => clearInterval(intervalId);
   }, [isResuming]);
 
-  // No background polling — polling keeps Cloud Run warm and prevents scale-to-zero.
-  // Service-down is detected reactively: on failed sendMessage (see handleSendMessage catch)
-  // and on the Case 1 health check when the chat is opened.
+  // Event-driven health check: fires once when the user returns to this tab.
+  // Covers "service scaled to zero while user was away" without background polling.
+  useEffect(() => {
+    if (!isOpen || !hasUserMessages || serviceStatus !== 'healthy') return;
+
+    const checkIfDown = async () => {
+      const result = await api.checkHealth();
+      if (result.status === 'unreachable' || result.shutdown_at !== null) {
+        setServiceStatus('down');
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') checkIfDown();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [isOpen, hasUserMessages, serviceStatus, api]);
 
   // Case 3: Silent close if service goes down on welcome screen
   useEffect(() => {
@@ -649,6 +665,12 @@ export function ChatWidget({ config }: ChatWidgetProps) {
         isLoading: false,
         sessionId: assistantMessage.metadata?.sessionId || prev.sessionId,
       }));
+      // Backend piggybacks shutdown_at on every conversation response.
+      // When SIGTERM fires during the grace period the next response carries it,
+      // so the user sees Case 2b after their last *successful* message.
+      if (assistantMessage.metadata?.shutdownAt != null) {
+        setServiceStatus('down');
+      }
     } catch {
       // Check if the service went down (Cloud Run scaled to zero between messages).
       // This is the reactive substitute for background polling.

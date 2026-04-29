@@ -367,6 +367,10 @@ class ConversationResponse(BaseModel):
     # FIX (23/03/2026): Usar validator para garantizar que took_ms sea siempre float.
     # Sin esto, un valor None o datetime causaba ResponseValidationError → HTTP 500.
     took_ms: float = 0.0
+    # Cold-start: non-null when the backend has written service:shutdown_at to Redis
+    # (i.e. SIGTERM was received during this request's grace period).
+    # Frontend uses this to show Case 2b immediately after the last successful message.
+    shutdown_at: Optional[int] = None
 
     @field_validator('took_ms', mode='before')
     @classmethod
