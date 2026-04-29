@@ -1742,23 +1742,26 @@ async def inject_shutdown_at_middleware(request: Request, call_next):
         body = b""
         async for chunk in response.body_iterator:
             body += chunk
+        # Drop Content-Length — Response() recalculates it from the new body.
+        # Keeping the original value causes RuntimeError when the injected field
+        # makes the body longer than the original Content-Length header.
+        headers = {k: v for k, v in response.headers.items() if k.lower() != "content-length"}
         try:
             data = json.loads(body)
             data["shutdown_at"] = await _get_shutdown_at()
-            new_body = json.dumps(data).encode()
             return Response(
-                content=new_body,
+                content=json.dumps(data).encode(),
                 status_code=response.status_code,
-                headers=dict(response.headers),
+                headers=headers,
                 media_type="application/json",
             )
         except Exception:
             pass
-        # Fallback: return original response reconstructed from buffered body
+        # Fallback: body unchanged, but Content-Length still needs to be correct
         return Response(
             content=body,
             status_code=response.status_code,
-            headers=dict(response.headers),
+            headers=headers,
             media_type="application/json",
         )
     return response
