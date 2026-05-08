@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Message } from '../types/widget';
 import { ProductCard } from './ProductCard';
 import styles from './MessageList.module.css';
@@ -258,9 +258,11 @@ interface MessageListProps {
   isExpanded?: boolean;
   /** isServiceDown — when true, all message bubbles are faded (Case 2b) */
   isServiceDown?: boolean;
+  /** bottomContent — rendered at the bottom of the scroll area (e.g., service-down card) */
+  bottomContent?: ReactNode;
 }
 
-export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onShowSimilar, onSuggestionClick, isServiceDown }: MessageListProps) {
+export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onShowSimilar, onSuggestionClick, isServiceDown, bottomContent }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [expandedKbId, setExpandedKbId] = useState<string | null>(null);
 
@@ -441,7 +443,7 @@ export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onSh
 
               {/* Tarjetas de productos recomendados */}
               {message.recommendations && message.recommendations.length > 0 && (
-                <div>
+                <div className={isServiceDown ? styles.bubbleInactive : ''}>
                   <span className={styles.recoLabel}>Recomendado para ti</span>
                   <div className={`${styles.productsList} ${isExpanded ? styles.productsListExpanded : ''}`}>
                     {message.recommendations.slice(0, 8).map((product) => (
@@ -539,6 +541,8 @@ export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onSh
           </div>
         </div>
       )}
+
+      {bottomContent}
 
       <div ref={messagesEndRef} aria-hidden="true" />
     </div>

@@ -89,3 +89,6 @@ sqlalchemy>=2.0.35
 # Referencia: src/api/services/shopify_kb_sync.py → _html_to_markdown()
 markdownify>=0.12.1
 beautifulsoup4>=4.12.0
+
+# python-multipart: requerido por FastAPI para procesar endpoints con File(...) y Form(...)
+python-multipart>=0.0.6

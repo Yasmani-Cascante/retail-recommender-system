@@ -332,6 +332,12 @@ export function ChatWidget({ config }: ChatWidgetProps) {
 
   const [api] = useState(() => new ConversationAPI(config));
 
+  // visualSearchAvailable — refleja el flag VISUAL_SEARCH_ENABLED del backend.
+  // Se establece en el health check al abrir el chat. Empieza en false para que
+  // el botón de cámara NO se muestre hasta que el backend confirme que está activo.
+  // Esto evita que el usuario vea el botón y reciba un error 503 al usarlo.
+  const [visualSearchAvailable, setVisualSearchAvailable] = useState(false);
+
   // isVisualSearching — true mientras se espera la respuesta del embedding-service.
   // Bloquea el botón de cámara y el textarea durante la búsqueda visual para
   // evitar que el usuario dispare múltiples peticiones en paralelo.
@@ -349,8 +355,12 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   const [sessionRecap, setSessionRecap] = useState<RecapTurn[] | null>(null);
   // showInactivityWarning: true when user has been idle (used in Task 7)
   const [showInactivityWarning, setShowInactivityWarning] = useState(false);
-  // lastInteractionRef: tracks last user interaction timestamp (used in Task 7)
-  const lastInteractionRef = useRef<number>(Date.now());
+  // lastInteractionRef: tracks last user interaction timestamp.
+  // Intentionally initialized to 0 so it's always reset on first chat open.
+  const lastInteractionRef = useRef<number>(0);
+  // Ref mirror of showInactivityWarning so the timer callback reads it without
+  // needing it in the deps array (prevents restarting the interval on state change).
+  const showInactivityWarningRef = useRef(false);
   // sessionRecap and setSessionRecap are consumed by the resuming UI (Task 9).
 
   // Determinar si hay conversación activa (el usuario ya envió al menos un mensaje)
@@ -524,9 +534,14 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     }
   }, [isExpanded]);
 
+  // Keep showInactivityWarningRef in sync so the timer callback reads current value
+  useEffect(() => { showInactivityWarningRef.current = showInactivityWarning; }, [showInactivityWarning]);
+
   // Case 1: Health check when chat opens — triggers Cloud Run warm-up
   useEffect(() => {
     if (!isOpen) return;
+    // Reset inactivity clock on every open so the warning can't fire immediately
+    lastInteractionRef.current = Date.now();
 
     let cancelled = false;
     const warmingTimer = setTimeout(() => {
@@ -540,6 +555,10 @@ export function ChatWidget({ config }: ChatWidgetProps) {
         if (result.status === 'healthy' || result.status === 'unknown') {
           setServiceStatus('healthy');
         }
+        // Leer el flag de visual search desde el health check.
+        // Si el backend no tiene el campo (monolito sin parche), default a false.
+        // No se hace una petición separada — reutiliza el health check existente.
+        setVisualSearchAvailable(result.visual_search_enabled ?? false);
       }
     });
 
@@ -572,7 +591,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
 
     const checkIfDown = async () => {
       const result = await api.checkHealth();
-      if (result.status === 'unreachable' || result.shutdown_at !== null) {
+      if (result.status !== 'healthy') {
         setServiceStatus('down');
       }
     };
@@ -592,20 +611,41 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     }
   }, [serviceStatus, hasUserMessages]);
 
-  // Case 2a: 15-minute inactivity warning
+  // Case 2a: 15-minute inactivity warning.
+  // Deps are stable (no showInactivityWarning) — the ref mirror prevents restarting
+  // the interval every time the warning state changes, which caused premature fires.
   useEffect(() => {
     if (!isOpen || !hasUserMessages) return;
 
     const checkInactivity = () => {
       const elapsed = Date.now() - lastInteractionRef.current;
-      if (elapsed >= 15 * 60 * 1000 && !showInactivityWarning) {
+      if (elapsed >= 15 * 60 * 1000 && !showInactivityWarningRef.current) {
         setShowInactivityWarning(true);
       }
     };
 
     const timerId = setInterval(checkInactivity, 60_000);
     return () => clearInterval(timerId);
-  }, [isOpen, hasUserMessages, showInactivityWarning]);
+  }, [isOpen, hasUserMessages]); // stable — showInactivityWarning read via ref
+
+  // Auto-dismiss after 5 min AND run a proactive health check.
+  // This is the only proactive detection path for idle users: Cloud Run's default
+  // idle timeout is ~15 min, so by minute 20 the service is likely scaled to zero.
+  useEffect(() => {
+    if (!showInactivityWarning) return;
+    const timer = setTimeout(async () => {
+      const health = await api.checkHealth();
+      if (health.status !== 'healthy') {
+        setServiceStatus('down');
+      } else {
+        // Service is still up — reset the 15-min window so the warning doesn't
+        // immediately re-show on the next interval tick.
+        lastInteractionRef.current = Date.now();
+      }
+      setShowInactivityWarning(false);
+    }, 5 * 60 * 1000);
+    return () => clearTimeout(timer);
+  }, [showInactivityWarning, api]);
 
   /**
    * handleSendMessage — envía un mensaje al backend.
@@ -675,7 +715,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       // Check if the service went down (Cloud Run scaled to zero between messages).
       // This is the reactive substitute for background polling.
       const health = await api.checkHealth();
-      if (health.status === 'unreachable' || health.shutdown_at !== null) {
+      if (health.status !== 'healthy') {
         setServiceStatus('down');
         setState(prev => ({ ...prev, isLoading: false }));
         return;
@@ -1139,73 +1179,80 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                 onShowSimilar={handleShowSimilar}
                 onSuggestionClick={(text) => handleSendMessage(text, undefined, undefined, true)}
                 isServiceDown={serviceStatus === 'down'}
+                bottomContent={(serviceStatus === 'down' && !isResuming) || isResuming ? (
+                  <>
+                    {serviceStatus === 'down' && !isResuming && (
+                      <>
+                        <div className={styles.divider}>mensajes anteriores inactivos</div>
+                        <div className={styles.serviceDownCard}>
+                          <div className={styles.serviceDownHeader}>
+                            <span>💤</span>
+                            <span>El asistente ha entrado en reposo</span>
+                          </div>
+                          <div className={styles.serviceDownBody}>
+                            <p className={styles.serviceDownTitle}>Tu conversación se ha cerrado por falta de actividad</p>
+                            <p className={styles.serviceDownSub}>
+                              Puedes retomar donde lo dejaste o empezar una nueva conversación.
+                            </p>
+                            <div className={styles.coldStartActions}>
+                              <button className={styles.btnPrimary} onClick={handleLetsContinue}>
+                                Let&apos;s continue
+                              </button>
+                              <button className={styles.btnSecondary} onClick={handleStartNewChat}>
+                                Start a new chat
+                              </button>
+                              <button className={styles.btnGhost} onClick={handleCloseConversation}>
+                                Close conversation
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                    {isResuming && (
+                      <>
+                        <div className={styles.divider}>reanudando conversación</div>
+                        {sessionRecap && sessionRecap.length > 0 && (
+                          <details className={styles.recapDropdown}>
+                            <summary className={styles.recapSummary}>
+                              📋 Ver resumen de conversación anterior
+                            </summary>
+                            <div className={styles.recapBody}>
+                              {sessionRecap.map((turn, i) => (
+                                <div key={i} className={styles.recapRow}>
+                                  <span className={styles.recapRole}>
+                                    {turn.role === 'user' ? 'Tú' : 'AI'}
+                                  </span>
+                                  <span className={styles.recapText}>{turn.content}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                        <div className={styles.resumingRow}>
+                          <div className={styles.spinnerSmall} />
+                          <span className={styles.resumingText}>Resumiendo conversación…</span>
+                        </div>
+                      </>
+                    )}
+                  </>
+                ) : undefined}
               />
             )}
 
             {/* Case 2a: Inactivity warning — shown after 15 min of no interaction */}
-            {showInactivityWarning && (
+            {showInactivityWarning && serviceStatus !== 'down' && (
               <div className={styles.inactivityWarning}>
-                ¿Sigues ahí? El chat entrará en reposo si no hay actividad en los próximos 5 minutos.
+                <button
+                  className={styles.inactivityWarningDismiss}
+                  onClick={() => setShowInactivityWarning(false)}
+                  aria-label="Cerrar aviso"
+                >×</button>
+                <span className={styles.inactivityWarningTitle}>¿Sigues ahí?</span>
+                <span className={styles.inactivityWarningSub}>El chat entrará en reposo si no hay actividad en los próximos 5 minutos.</span>
               </div>
             )}
 
-            {/* Case 2b: Service-down card — shown when backend is down and user has messages */}
-            {serviceStatus === 'down' && hasUserMessages && !isResuming && (
-              <>
-                <div className={styles.divider}>mensajes anteriores inactivos</div>
-                <div className={styles.serviceDownCard}>
-                  <div className={styles.serviceDownHeader}>
-                    <span>💤</span>
-                    <span>El asistente ha entrado en reposo</span>
-                  </div>
-                  <div className={styles.serviceDownBody}>
-                    <p className={styles.serviceDownTitle}>Tu conversación está guardada</p>
-                    <p className={styles.serviceDownSub}>
-                      Puedes retomar donde lo dejaste o empezar una nueva conversación.
-                    </p>
-                    <div className={styles.coldStartActions}>
-                      <button className={styles.btnPrimary} onClick={handleLetsContinue}>
-                        Let&apos;s continue
-                      </button>
-                      <button className={styles.btnSecondary} onClick={handleStartNewChat}>
-                        Start a new chat
-                      </button>
-                      <button className={styles.btnGhost} onClick={handleCloseConversation}>
-                        Close conversation
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* Case 2b: Resuming state — shown after "Let's continue" is clicked */}
-            {isResuming && (
-              <>
-                <div className={styles.divider}>reanudando conversación</div>
-                {sessionRecap && sessionRecap.length > 0 && (
-                  <details className={styles.recapDropdown}>
-                    <summary className={styles.recapSummary}>
-                      📋 Ver resumen de conversación anterior
-                    </summary>
-                    <div className={styles.recapBody}>
-                      {sessionRecap.map((turn, i) => (
-                        <div key={i} className={styles.recapRow}>
-                          <span className={styles.recapRole}>
-                            {turn.role === 'user' ? 'Tú' : 'AI'}
-                          </span>
-                          <span className={styles.recapText}>{turn.content}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                )}
-                <div className={styles.resumingRow}>
-                  <div className={styles.spinnerSmall} />
-                  <span className={styles.resumingText}>Resumiendo conversación…</span>
-                </div>
-              </>
-            )}
           </div>
 
           {/* ── Zona inferior: chip de contexto + sugerencias + input ── */}
@@ -1298,7 +1345,10 @@ export function ChatWidget({ config }: ChatWidgetProps) {
               onImageUpload={handleImageUpload}
               disabled={state.isLoading || isVisualSearching || showWarmingOverlay || (serviceStatus === 'down' && !isResuming)}
               placeholder={t('inputPlaceholder')}
-              visualSearchEnabled={true}
+              // visualSearchAvailable: controlado por el flag del backend.
+              // false (default) → botón oculto hasta que el health check confirme true.
+              // true → el flag VISUAL_SEARCH_ENABLED está activo en Cloud Run.
+              visualSearchEnabled={visualSearchAvailable}
             />
           </div>
         </div>

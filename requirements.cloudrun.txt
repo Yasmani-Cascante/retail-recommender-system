@@ -69,3 +69,5 @@ beautifulsoup4>=4.12.0
 
 # --- Liquid AI integration (agregado Fase A/B) ---
 openai>=1.50.0
+# === REQUIRED BY FASTAPI FOR FORMS/FILES ===
+python-multipart>=0.0.6

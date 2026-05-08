@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cold Start UI — Mockups</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f1f5f9; padding: 24px; }
+
+  h2 { font-size: 18px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #64748b; margin-bottom: 24px; }
+
+  .cases-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 800px) { .cases-grid { grid-template-columns: 1fr; } }
+
+  .case-label {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #2563eb; margin-bottom: 8px;
+  }
+
+  /* Chat widget shell */
+  .widget {
+    width: 100%; max-width: 340px;
+    background: white; border-radius: 16px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.12);
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .widget-header {
+    background: #18181b; color: white;
+    padding: 14px 16px; display: flex; align-items: center; gap: 10px;
+    font-size: 14px; font-weight: 600;
+  }
+  .widget-header .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
+  .widget-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; min-height: 220px; }
+  .widget-input {
+    border-top: 1px solid #f1f5f9; padding: 10px 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .widget-input input {
+    flex: 1; border: 1px solid #e2e8f0; border-radius: 20px;
+    padding: 7px 14px; font-size: 13px; color: #94a3b8;
+    outline: none; background: #f8fafc;
+  }
+  .widget-input .send-btn {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: #18181b; display: flex; align-items: center; justify-content: center;
+  }
+
+  /* Bubble messages */
+  .bubble-user {
+    align-self: flex-end; background: #18181b; color: white;
+    border-radius: 18px 18px 4px 18px; padding: 9px 14px;
+    font-size: 13px; max-width: 80%;
+  }
+  .bubble-ai {
+    align-self: flex-start; background: #f1f5f9; color: #0f172a;
+    border-radius: 18px 18px 18px 4px; padding: 9px 14px;
+    font-size: 13px; max-width: 85%;
+  }
+
+  /* CASE 1: Loading spinner */
+  .cold-start-loader {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    padding: 24px;
+  }
+  .spinner {
+    width: 36px; height: 36px; border: 3px solid #e2e8f0;
+    border-top-color: #18181b; border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loader-text { font-size: 13px; color: #64748b; text-align: center; line-height: 1.5; }
+  .loader-text strong { display: block; color: #0f172a; font-size: 14px; margin-bottom: 4px; }
+
+  /* CASE 2a: "Are you still there?" warning */
+  .inactivity-warning {
+    background: #fefce8; border: 1px solid #fde68a;
+    border-radius: 12px; padding: 12px 14px;
+    font-size: 12px; color: #78350f; line-height: 1.5;
+  }
+  .inactivity-warning strong { display: block; font-size: 13px; margin-bottom: 4px; }
+
+  /* CASE 2b: Service down inline card */
+  .service-down-card {
+    background: #f8fafc; border: 1px solid #e2e8f0;
+    border-radius: 12px; overflow: hidden;
+  }
+  .service-down-header {
+    padding: 10px 14px; font-size: 12px; color: #475569;
+    background: #f1f5f9; border-bottom: 1px solid #e2e8f0;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .service-down-header .icon { font-size: 14px; }
+  .service-down-body { padding: 12px 14px; }
+  .service-down-title { font-size: 13px; font-weight: 600; color: #0f172a; margin-bottom: 4px; }
+  .service-down-sub { font-size: 12px; color: #64748b; margin-bottom: 12px; line-height: 1.5; }
+
+  /* Recap card inside "Let's continue" */
+  .recap-card {
+    background: #f8fafc; border: 1px solid #e2e8f0;
+    border-radius: 8px; padding: 10px 12px;
+    margin-bottom: 10px; font-size: 12px;
+  }
+  .recap-label { color: #94a3b8; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+  .recap-row { display: flex; gap: 6px; margin-bottom: 4px; align-items: flex-start; }
+  .recap-role { font-weight: 600; color: #475569; min-width: 24px; font-size: 11px; margin-top: 1px; }
+  .recap-text { color: #374151; line-height: 1.4; }
+
+  /* Action buttons */
+  .action-buttons { display: flex; flex-direction: column; gap: 6px; }
+  .btn-primary {
+    background: #18181b; color: white; border: none;
+    border-radius: 8px; padding: 9px 14px; font-size: 13px;
+    font-weight: 500; cursor: pointer; width: 100%; text-align: center;
+  }
+  .btn-secondary {
+    background: white; color: #374151; border: 1px solid #d1d5db;
+    border-radius: 8px; padding: 8px 14px; font-size: 13px;
+    cursor: pointer; width: 100%; text-align: center;
+  }
+  .btn-ghost {
+    background: transparent; color: #94a3b8; border: none;
+    border-radius: 8px; padding: 7px 14px; font-size: 12px;
+    cursor: pointer; width: 100%; text-align: center;
+  }
+
+  /* Divider */
+  .divider {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; color: #94a3b8; margin: 4px 0;
+  }
+  .divider::before, .divider::after {
+    content: ''; flex: 1; height: 1px; background: #e2e8f0;
+  }
+
+  .case-wrapper { display: flex; flex-direction: column; align-items: flex-start; }
+</style>
+</head>
+<body>
+
+<h2>Sección 3 — UI States: Cold Start Widget</h2>
+<p class="subtitle">Mockups de los 3 casos de manejo de cold start en el widget</p>
+
+<div class="cases-grid">
+
+  <!-- CASE 1: Opening chat, cold start loading -->
+  <div class="case-wrapper">
+    <div class="case-label">Caso 1 — Abrir chat (warm-up en curso)</div>
+    <div class="widget">
+      <div class="widget-header">
+        <div class="dot" style="background:#f59e0b;"></div>
+        Asistente de Moda
+      </div>
+      <div class="widget-body">
+        <div class="cold-start-loader">
+          <div class="spinner"></div>
+          <div class="loader-text">
+            <strong>Despertando el asistente…</strong>
+            Esto puede tardar unos segundos.<br>
+            Tu sesión anterior está guardada.
+          </div>
+        </div>
+      </div>
+      <div class="widget-input">
+        <input placeholder="Espera un momento…" disabled>
+        <div class="send-btn">
+          <svg width="14" height="14" fill="white" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+        </div>
+      </div>
+    </div>
+    <p style="margin-top:8px;font-size:11px;color:#94a3b8;max-width:340px;">Input deshabilitado mientras el servicio levanta. El spinner desaparece cuando /health responde con status: healthy.</p>
+  </div>
+
+  <!-- CASE 2a: 15min inactivity warning -->
+  <div class="case-wrapper">
+    <div class="case-label">Caso 2a — Advertencia 15 min inactividad</div>
+    <div class="widget">
+      <div class="widget-header">
+        <div class="dot"></div>
+        Asistente de Moda
+      </div>
+      <div class="widget-body">
+        <div class="bubble-user">Busco vestidos para una boda</div>
+        <div class="bubble-ai">Te recomiendo estos modelos elegantes…</div>
+        <div style="height: 16px;"></div>
+        <div class="inactivity-warning">
+          <strong>¿Sigues ahí?</strong>
+          El chat entrará en reposo si no hay actividad en los próximos <strong>5 minutos</strong>. Escríbeme para continuar.
+        </div>
+      </div>
+      <div class="widget-input">
+        <input placeholder="Escribe un mensaje…">
+        <div class="send-btn">
+          <svg width="14" height="14" fill="white" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+        </div>
+      </div>
+    </div>
+    <p style="margin-top:8px;font-size:11px;color:#94a3b8;max-width:340px;">Aparece inline a los 15 min de inactividad. El usuario puede ignorarlo y simplemente escribir — la advertencia desaparece al enviar.</p>
+  </div>
+
+  <!-- CASE 2b: Service shutdown detected -->
+  <div class="case-wrapper">
+    <div class="case-label">Caso 2b — Servicio apagado (poll detecta flag)</div>
+    <div class="widget">
+      <div class="widget-header">
+        <div class="dot" style="background:#ef4444;"></div>
+        Asistente de Moda
+      </div>
+      <div class="widget-body">
+        <div class="bubble-user">Busco vestidos para una boda</div>
+        <div class="bubble-ai">Te recomiendo estos modelos elegantes…</div>
+        <div class="divider">mensajes anteriores inactivos</div>
+        <div class="service-down-card">
+          <div class="service-down-header">
+            <span class="icon">💤</span>
+            El asistente ha entrado en reposo
+          </div>
+          <div class="service-down-body">
+            <div class="service-down-title">Tu conversación está guardada</div>
+            <div class="service-down-sub">Puedes retomar donde lo dejaste o empezar una nueva conversación.</div>
+            <div class="recap-card">
+              <div class="recap-label">Última conversación</div>
+              <div class="recap-row">
+                <span class="recap-role">Tú</span>
+                <span class="recap-text">Busco vestidos para una boda</span>
+              </div>
+              <div class="recap-row">
+                <span class="recap-role">AI</span>
+                <span class="recap-text">Te recomendé 3 modelos elegantes…</span>
+              </div>
+            </div>
+            <div class="action-buttons">
+              <button class="btn-primary">Let's continue</button>
+              <button class="btn-secondary">Start a new chat</button>
+              <button class="btn-ghost">Close conversation</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="widget-input">
+        <input placeholder="Elige una opción arriba…" disabled>
+        <div class="send-btn">
+          <svg width="14" height="14" fill="white" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+        </div>
+      </div>
+    </div>
+    <p style="margin-top:8px;font-size:11px;color:#94a3b8;max-width:340px;">El recap C-lite muestra los últimos 2 turnos extraídos de Redis. "Let's continue" → desencadena warm-up + reanuda sesión.</p>
+  </div>
+
+  <!-- CASE 1 after recovery -->
+  <div class="case-wrapper">
+    <div class="case-label">Post "Let's continue" — Reanudando sesión</div>
+    <div class="widget">
+      <div class="widget-header">
+        <div class="dot" style="background:#f59e0b;"></div>
+        Asistente de Moda
+      </div>
+      <div class="widget-body">
+        <div class="bubble-user" style="opacity:0.5;font-size:12px;">Busco vestidos para una boda</div>
+        <div class="bubble-ai" style="opacity:0.5;font-size:12px;">Te recomendé 3 modelos elegantes…</div>
+        <div class="divider">reanudando conversación</div>
+        <div class="cold-start-loader" style="flex:unset;padding:16px 24px;">
+          <div class="spinner"></div>
+          <div class="loader-text" style="text-align:center;">
+            <strong>Conectando…</strong>
+            Retomando tu conversación anterior.
+          </div>
+        </div>
+      </div>
+      <div class="widget-input">
+        <input placeholder="Espera un momento…" disabled>
+        <div class="send-btn">
+          <svg width="14" height="14" fill="white" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+        </div>
+      </div>
+    </div>
+    <p style="margin-top:8px;font-size:11px;color:#94a3b8;max-width:340px;">Los turnos anteriores se muestran atenuados (contexto visual). Spinner hasta que /health confirma que el servicio está listo.</p>
+  </div>
+
+</div>
+
+</body>
+</html>

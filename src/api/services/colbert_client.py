@@ -1,76 +1,279 @@
 # src/api/services/colbert_client.py
 """
-Cliente HTTP para el LFM2-ColBERT embedding microservice.
-El monolito llama a este cliente cuando LFM_COLBERT_ENABLED=true.
+Cliente HTTP para el embedding-service (ColBERT + FashionSigLIP).
+
+El monolito llama a este cliente para:
+  - Búsqueda semántica textual: search(query) — ColBERT
+  - Búsqueda visual: search_by_image(image_bytes) — fashionSigLIP + FAISS
+  - Indexación: index_catalog(products) / index_images(products)
+  - Indexación incremental: index_images_incremental(new_products)
+
+Características:
+  - Circuit-breakers INDEPENDIENTES para texto y visual (30/04/2026)
+  - Autenticación IAM service-to-service (01/05/2026)
+  - Timeout conservador para búsqueda visual (8s vs 5s para texto)
+
+──────────────────────────────────────────────────────────────────
+AUTENTICACIÓN IAM SERVICE-TO-SERVICE (01/05/2026)
+──────────────────────────────────────────────────────────────────
+El embedding-service corre con --no-allow-unauthenticated.
+Este cliente añade automáticamente el header:
+  Authorization: Bearer <google-id-token>
+
+Cómo funciona en Cloud Run:
+  - En el monolito (Cloud Run): el metadata server de GCP devuelve el
+    ID token de la SA del monolito (178362262166-compute@developer...).
+    No se necesitan credenciales explícitas — ADC lo resuelve solo.
+  - En local: necesita GOOGLE_APPLICATION_CREDENTIALS o ADC configurado
+    (gcloud auth application-default login). Si ninguno está disponible,
+    el cliente falla silenciosamente con WARNING y sigue sin auth.
+  - Para desarrollo sin GCP: poner EMBEDDING_AUTH_DISABLED=true en .env.
+
+El token tiene TTL de 1h. Lo cacheamos y lo renovamos 5 minutos antes
+de que expire para evitar requests con token caducado.
+
+Permisos IAM necesarios (ejecutar una sola vez):
+  Método A — gcloud:
+    gcloud run services add-iam-policy-binding retail-embedding-service \\
+      --region us-central1 --project retail-recommendations-449216 \\
+      --member "serviceAccount:178362262166-compute@developer.gserviceaccount.com" \\
+      --role "roles/run.invoker"
+
+  Método B — Terraform (si se usa):
+    resource "google_cloud_run_service_iam_member" "monolith_invoker" {
+      service  = "retail-embedding-service"
+      location = "us-central1"
+      role     = "roles/run.invoker"
+      member   = "serviceAccount:178362262166-compute@developer.gserviceaccount.com"
+    }
+
+──────────────────────────────────────────────────────────────────
+CONTENT-TYPE Y HTTPX (fix 30/04/2026)
+──────────────────────────────────────────────────────────────────
+El cliente NO establece Content-Type en los headers base.
+POR QUÉ: este cliente hace dos tipos de requests incompatibles:
+  - JSON: search(), index_catalog(), index_images(), index_images_incremental()
+    → Requieren Content-Type: application/json
+  - Multipart: search_by_image()
+    → Requieren Content-Type: multipart/form-data; boundary=<hash>
+    → httpx genera el boundary automáticamente cuando hay files=
+    → PERO solo si el cliente base NO fuerza application/json
+
+Cada método JSON declara explícitamente Content-Type.
+search_by_image() no declara ninguno → httpx genera multipart/form-data.
+
+──────────────────────────────────────────────────────────────────
+CIRCUIT-BREAKERS SEPARADOS (01/05/2026)
+──────────────────────────────────────────────────────────────────
+Un fallo de search_by_image() NO abre el circuito de search() (texto)
+y viceversa. Dominios completamente independientes.
 """
-import os, httpx, asyncio, logging
+import os
+import asyncio
+import logging
+import time
 from typing import List, Optional
- 
+
+import httpx
+
 log = logging.getLogger(__name__)
- 
+
+
 class LFM2ColBERTClient:
     """
     Thin HTTP client para el embedding-service.
-    Incluye timeout, retry y circuit-breaker básico.
+    Incluye autenticación IAM, timeout, retry y circuit-breaker por dominio.
     """
- 
+
     def __init__(self):
         base_url = os.environ.get('COLBERT_SERVICE_URL', '')
         if not base_url:
             raise ValueError('COLBERT_SERVICE_URL env var not set')
-        # httpx.AsyncClient con timeout ajustado a latencia esperada (~30ms warm)
+
+        # URL base sin trailing slash — usada como audience del ID token IAM.
+        # El audience debe ser exactamente la URL del servicio Cloud Run.
+        self._base_url = base_url.rstrip('/')
+
+        # ── SIN Content-Type en headers base ──────────────────────────────────
+        # Cada método declara su propio Content-Type.
+        # El Authorization header se añade por método vía _auth_headers().
+        # No se añade en el cliente base porque el token es asíncrono y el
+        # constructor es síncrono.
         self._http = httpx.AsyncClient(
-            base_url=base_url,
-            timeout=httpx.Timeout(5.0),   # 5s incluye startup si hay cold start
-            headers={'Content-Type': 'application/json'}
+            base_url=self._base_url,
+            timeout=httpx.Timeout(5.0),   # default; se sobreescribe por método
         )
-        self._consecutive_failures = 0
-        self._circuit_open = False
- 
+
+        # ── Autenticación IAM — caché del ID token ────────────────────────────
+        # El token de Google Cloud ID tiene TTL de 1h.
+        # Se carga lazy en el primer request y se renueva 5 min antes de expirar.
+        # _token_expires_at = 0.0 fuerza la carga en el primer uso.
+        self._cached_token: Optional[str] = None
+        self._token_expires_at: float = 0.0
+
+        # Flag para deshabilitar auth (útil en desarrollo local sin ADC)
+        # EMBEDDING_AUTH_DISABLED=true → no añade Authorization header
+        self._auth_disabled: bool = (
+            os.environ.get('EMBEDDING_AUTH_DISABLED', 'false').lower() == 'true'
+        )
+        if self._auth_disabled:
+            log.info('ColBERT client: IAM auth DISABLED (EMBEDDING_AUTH_DISABLED=true)')
+
+        # ── Circuit-breakers INDEPENDIENTES ───────────────────────────────────
+        # Texto (search, index_catalog, index_images)
+        self._text_failures: int = 0
+        self._text_circuit_open: bool = False
+
+        # Visual (search_by_image, index_images, index_images_incremental)
+        self._visual_failures: int = 0
+        self._visual_circuit_open: bool = False
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # AUTENTICACIÓN IAM — obtención y cacheo del ID token
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _fetch_id_token_sync(self) -> Optional[str]:
+        """
+        Obtiene el ID token firmado por Google para la SA del monolito.
+        Llamado sincrónicamente desde run_in_executor para no bloquear asyncio.
+
+        En Cloud Run:
+          ADC usa el metadata server GCE (http://metadata.google.internal).
+          No se necesita ninguna credencial explícita.
+
+        En desarrollo local:
+          Requiere GOOGLE_APPLICATION_CREDENTIALS o 'gcloud auth app-default login'.
+          Si no está configurado, devuelve None y el cliente funciona sin auth.
+
+        Por qué fetch_id_token y no access_token:
+          Cloud Run IAM verifica ID tokens (JWT firmados por Google con audience
+          específico), NO access tokens de OAuth2. Los access tokens son para
+          APIs de Google (Sheets, Storage, etc.), no para Cloud Run services.
+        """
+        try:
+            from google.auth.transport.requests import Request
+            from google.oauth2.id_token import fetch_id_token
+            return fetch_id_token(Request(), self._base_url)
+        except Exception as e:
+            # Non-fatal: si no hay ADC, logueamos pero no crasheamos.
+            # En Cloud Run, esto NUNCA debería ocurrir (metadata server siempre disponible).
+            # En local sin ADC, el request al embedding-service fallará con 403,
+            # que el circuit-breaker capturará como un fallo normal.
+            log.warning(
+                'ColBERT IAM: no se pudo obtener ID token (ADC no disponible): %s. '
+                'Requests al embedding-service irán sin Authorization header.',
+                e
+            )
+            return None
+
+    async def _auth_headers(self) -> dict:
+        """
+        Devuelve el header Authorization con el ID token actual.
+        Renueva el token si faltan menos de 5 minutos para que expire.
+
+        Returns:
+            {'Authorization': 'Bearer <token>'} si auth está habilitado y el token está disponible.
+            {} si auth está deshabilitado o el token no está disponible (ADC no configurado).
+
+        Los tokens de Google ID tienen TTL de 1h exacta. Los renovamos a los 55min
+        (5min de margen) para evitar requests con token expirado en el intervalo
+        entre validación y procesamiento en el servidor destino.
+        """
+        if self._auth_disabled:
+            return {}
+
+        # Renovar si el token expira en menos de 5 minutos (o nunca se ha obtenido)
+        if time.monotonic() >= self._token_expires_at - 300:
+            loop = asyncio.get_running_loop()
+            token = await loop.run_in_executor(None, self._fetch_id_token_sync)
+            if token:
+                self._cached_token = token
+                # Los tokens de Google ID expiran exactamente a los 3600s (1h).
+                # Usamos 3540s (59min) para el TTL del caché como margen de seguridad.
+                self._token_expires_at = time.monotonic() + 3540
+                log.debug('ColBERT IAM: ID token renovado (expira en ~59min)')
+            else:
+                # Sin token disponible — volver al modo sin auth
+                self._cached_token = None
+                # Reintentar en 60s para no martillear el metadata server en caso de fallo transitorio
+                self._token_expires_at = time.monotonic() + 60
+                return {}
+
+        if self._cached_token:
+            return {'Authorization': f'Bearer {self._cached_token}'}
+        return {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # CIRCUIT BREAKERS
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _handle_text_failure(self, e: Exception) -> None:
+        self._text_failures += 1
+        log.warning('Embedding text call failed (attempt %d): %s', self._text_failures, e)
+        if self._text_failures >= 3:
+            self._text_circuit_open = True
+            log.error('ColBERT TEXT circuit OPEN. Visual search NOT affected. Recovering in 60s.')
+            asyncio.get_running_loop().call_later(60, self._reset_text_circuit)
+
+    def _reset_text_circuit(self) -> None:
+        self._text_circuit_open = False
+        self._text_failures = 0
+        log.info('ColBERT TEXT circuit CLOSED — text search resumed')
+
+    def _handle_visual_failure(self, e: Exception) -> None:
+        self._visual_failures += 1
+        log.warning('Embedding visual call failed (attempt %d): %s', self._visual_failures, e)
+        if self._visual_failures >= 3:
+            self._visual_circuit_open = True
+            log.error('ColBERT VISUAL circuit OPEN. Text search NOT affected. Recovering in 60s.')
+            asyncio.get_running_loop().call_later(60, self._reset_visual_circuit)
+
+    def _reset_visual_circuit(self) -> None:
+        self._visual_circuit_open = False
+        self._visual_failures = 0
+        log.info('ColBERT VISUAL circuit CLOSED — visual search resumed')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # MÉTODOS DE NEGOCIO
+    # ─────────────────────────────────────────────────────────────────────────
+
     async def search(self, query: str, top_k: int = 10) -> Optional[List[str]]:
         """
-        Busca productos semánticamente.
+        Busca productos semánticamente por texto.
         Returns: lista de product IDs, o None si falla (caller usa fallback TF-IDF).
         """
-        if self._circuit_open:
-            log.debug('ColBERT circuit open — skipping')
+        if self._text_circuit_open:
+            log.debug('ColBERT TEXT circuit open — text search skipped')
             return None
- 
+
         try:
+            auth = await self._auth_headers()
             resp = await self._http.post(
                 '/v1/embed/search',
-                json={'query': query, 'top_k': top_k}
+                headers={**auth, 'Content-Type': 'application/json'},
+                json={'query': query, 'top_k': top_k},
             )
             resp.raise_for_status()
             data = resp.json()
-            self._consecutive_failures = 0   # reset on success
-            log.debug('ColBERT search: %d results in %.1fms',
+            self._text_failures = 0
+            log.debug('ColBERT text search: %d results in %.1fms',
                       len(data['product_ids']), data['latency_ms'])
             return data['product_ids']
         except Exception as e:
-            self._consecutive_failures += 1
-            if self._consecutive_failures >= 3:
-                self._circuit_open = True
-                log.error('ColBERT circuit OPEN after 3 failures: %s', e)
-                # asyncio.get_running_loop() — API correcta en Python 3.10+.
-                # call_later programa el reset del circuit breaker sin bloquear.
-                asyncio.get_running_loop().call_later(
-                    60, setattr, self, '_circuit_open', False
-                )
-            log.warning('ColBERT search failed (attempt %d): %s',
-                        self._consecutive_failures, e)
-            return None   # Fallback a TF-IDF en el caller
- 
+            self._handle_text_failure(e)
+            return None
+
     async def index_catalog(self, products: List[dict]) -> bool:
         """
-        Llama al endpoint de indexación después de un catalog sync.
-        Llamar desde: ShopifyKBSyncService después de sincronizar productos.
+        Llama al endpoint de indexación de texto (ColBERT) después de un catalog sync.
         """
         try:
+            auth = await self._auth_headers()
             resp = await self._http.post(
                 '/v1/embed/index',
+                headers={**auth, 'Content-Type': 'application/json'},
                 json={'products': products},
-                timeout=120.0   # Indexar 3000 productos toma ~10s
+                timeout=120.0,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -78,5 +281,132 @@ class LFM2ColBERTClient:
                      data['indexed'], data['latency_ms'])
             return True
         except Exception as e:
-            log.error('ColBERT index failed: %s', e, exc_info=True)
+            log.error('ColBERT text index failed: %s', e, exc_info=True)
+            return False
+
+    async def search_by_image(
+        self,
+        image_bytes: bytes,
+        top_k: int = 8,
+    ) -> Optional[List[str]]:
+        """
+        Busca productos visualmente similares a la imagen proporcionada.
+
+        Por qué NO se mezcla auth con Content-Type aquí:
+          - El header Authorization se añade como dict separado via _auth_headers()
+          - NO se añade Content-Type: httpx lo genera automáticamente como
+            'multipart/form-data; boundary=<hash>' al detectar files=
+          - Si se combinasen, el merge de dicts conservaría Content-Type de auth
+            (que es {}), dejando que httpx genere el multipart correcto.
+        """
+        if self._visual_circuit_open:
+            log.debug('ColBERT VISUAL circuit open — visual search skipped')
+            return None
+
+        try:
+            auth = await self._auth_headers()
+            # SIN Content-Type: httpx genera multipart/form-data automáticamente.
+            # auth es {} o {'Authorization': 'Bearer <token>'} — no incluye Content-Type.
+            resp = await self._http.post(
+                '/v1/embed/search-image',
+                headers=auth,  # solo Authorization (o {} si auth deshabilitado)
+                files={'file': ('query.jpg', image_bytes, 'image/jpeg')},
+                data={'top_k': str(top_k)},
+                timeout=8.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self._visual_failures = 0
+            log.info(
+                'Visual search: %d results in %.1fms (visual_index_size=%d)',
+                len(data['product_ids']), data['latency_ms'],
+                data.get('visual_index_size', 0)
+            )
+            return data['product_ids']
+        except Exception as e:
+            self._handle_visual_failure(e)
+            return None
+
+    async def index_images(self, products: List[dict]) -> bool:
+        """
+        Envía el catálogo COMPLETO al embedding-service para indexar imágenes.
+        El embedding-service lanza la indexación como background task (~25 min).
+
+        Para añadir solo productos nuevos sin reconstruir el índice completo,
+        usar index_images_incremental() en su lugar.
+        """
+        try:
+            auth = await self._auth_headers()
+            resp = await self._http.post(
+                '/v1/embed/index-images',
+                headers={**auth, 'Content-Type': 'application/json'},
+                json={'products': products, 'batch_size': 16, 'mode': 'full'},
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            log.info('Image indexation (full) accepted: %s', data.get('message', ''))
+            return True
+        except Exception as e:
+            log.error('Image indexation request failed: %s', e, exc_info=True)
+            return False
+
+    async def index_images_incremental(self, new_products: List[dict]) -> bool:
+        """
+        Envía SOLO los productos nuevos al embedding-service para indexación incremental.
+        El embedding-service filtra los IDs que ya están en el índice FAISS y solo
+        procesa los que faltan. No reconstruye el índice completo.
+
+        Cuándo usar:
+          - Cuando se añaden productos nuevos al catálogo de Shopify
+          - Cuando el catalog sync detecta nuevos image_urls
+          - Para evitar los ~30 min de re-indexación completa por pocos cambios
+
+        Limitación conocida:
+          - No cubre productos ELIMINADOS (IndexFlatIP no tiene .remove())
+          - No cubre productos con imagen CAMBIADA (misma ID, nueva image_url)
+          - Para esos casos, usar index_images() (indexación completa)
+
+        Args:
+            new_products: lista [{id, title, image_url}] — solo los productos nuevos.
+                          El embedding-service descarta los IDs ya en el índice.
+
+        Returns:
+            True si el embedding-service aceptó la petición.
+            False si la petición falló o si el índice completo no existe aún
+            (en ese caso, usar index_images() primero).
+        """
+        if self._visual_circuit_open:
+            log.debug('ColBERT VISUAL circuit open — incremental index skipped')
+            return False
+
+        try:
+            auth = await self._auth_headers()
+            resp = await self._http.post(
+                '/v1/embed/index-images',
+                headers={**auth, 'Content-Type': 'application/json'},
+                json={'products': new_products, 'batch_size': 16, 'mode': 'incremental'},
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            status = data.get('status', '')
+            if status == 'no_new_products':
+                log.info(
+                    'Incremental index: no new products to index '
+                    '(all %d products already in index)',
+                    len(new_products)
+                )
+            elif status == 'no_base_index':
+                log.warning(
+                    'Incremental index skipped: no base index exists. '
+                    'Run full index first with index_images().'
+                )
+                return False
+            else:
+                log.info('Incremental image indexation accepted: %s', data.get('message', ''))
+            return True
+        except Exception as e:
+            self._handle_visual_failure(e)
+            log.error('Incremental image indexation request failed: %s', e, exc_info=True)
             return False

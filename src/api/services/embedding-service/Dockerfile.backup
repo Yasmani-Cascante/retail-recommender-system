@@ -10,22 +10,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 
-# ── Paso 1: torch + torchvision CPU-only ──────────────────────────────────────────
-# Instalar los dos juntos desde el índice de PyTorch (builds CPU-only).
+# ── Paso 1: solo torch CPU-only ────────────────────────────────────────────
+# Solo torch, sin torchvision.
 #
-# Por qué instalar torchvision CPU-only aquí (y no dejar que pip lo resuelva):
-#   open-clip-torch==3.3.0 requiere torchvision (sin versión).
-#   pip lo resuelve desde PyPI → instala torchvision==0.22.0 (build GPU/CUDA).
-#   El build GPU compila torchvision::nms como CUDA kernel.
-#   torch==2.7.0+cpu (CPU-only) no tiene ese CUDA kernel → RuntimeError.
-#   Con torchvision==0.22.0+cpu (CPU-only), el operador se maneja
-#   sin CUDA y es compatible con torch CPU-only.
+# Por qué no instalar torchvision aquí:
+#   torchvision==0.19.0+cpu (del índice PyTorch CPU) tiene en su metadata una
+#   restricción de numpy que en el contexto de resolución global fuerza a pip
+#   a bajar numpy a 1.26.4. Eso bloquea accelerate>=1.0.0 (requiere numpy 2.x)
+#   que bloquea sentence-transformers 5.1.1 que bloquea pylate 1.4.0.
+#   -> ResolutionImpossible (6 builds fallidos, 27/04/2026)
 #
-# Tabla de compatibilidad exacta (1:1 en minor version):
-#   torch==2.7.0+cpu ↔ torchvision==0.22.0+cpu  ✅
+# torchvision la instala open-clip-torch desde PyPI como dependencia transitiva.
+# La versión de PyPI es el build GPU, que produce un UserWarning sobre
+# libc10_cuda.so al arrancar (no es un error fatal y no afecta funcionalidad
+# porque visual_retriever.py no importa torchvision directamente).
 RUN pip install --no-cache-dir \
     torch==2.7.0+cpu \
-    torchvision==0.22.0+cpu \
     --index-url https://download.pytorch.org/whl/cpu
 
 # ── Paso 2: resto de dependencias ──────────────────────────────────────────

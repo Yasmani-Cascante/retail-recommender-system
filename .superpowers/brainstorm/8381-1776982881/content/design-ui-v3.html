@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cold Start UI — Mockups v3</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f1f5f9; padding: 24px; }
+
+  h2 { font-size: 18px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #64748b; margin-bottom: 24px; }
+
+  .cases-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 800px) { .cases-grid { grid-template-columns: 1fr; } }
+
+  .case-label {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #2563eb; margin-bottom: 8px;
+  }
+  .change-badge {
+    display: inline-block; background: #dcfce7; color: #15803d;
+    font-size: 10px; font-weight: 700; padding: 2px 7px;
+    border-radius: 10px; margin-left: 8px; vertical-align: middle;
+  }
+
+  .widget {
+    width: 100%; max-width: 340px; background: white;
+    border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.12);
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .widget-header {
+    background: #18181b; color: white;
+    padding: 14px 16px; display: flex; align-items: center; gap: 10px;
+    font-size: 14px; font-weight: 600;
+  }
+  .widget-header .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
+  .widget-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; min-height: 220px; }
+  .widget-input {
+    border-top: 1px solid #f1f5f9; padding: 10px 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .widget-input input {
+    flex: 1; border: 1px solid #e2e8f0; border-radius: 20px;
+    padding: 7px 14px; font-size: 13px; color: #94a3b8;
+    outline: none; background: #f8fafc;
+  }
+  .widget-input .send-btn {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: #18181b; display: flex; align-items: center; justify-content: center;
+  }
+
+  /* Bubbles — active */
+  .bubble-user {
+    align-self: flex-end; background: #18181b; color: white;
+    border-radius: 18px 18px 4px 18px; padding: 9px 14px;
+    font-size: 13px; max-width: 80%;
+  }
+  .bubble-ai {
+    align-self: flex-start; background: #f1f5f9; color: #0f172a;
+    border-radius: 18px 18px 18px 4px; padding: 9px 14px;
+    font-size: 13px; max-width: 85%;
+  }
+  /* Bubbles — inactive/faded */
+  .bubble-user-inactive {
+    align-self: flex-end; background: #d1d5db; color: #9ca3af;
+    border-radius: 18px 18px 4px 18px; padding: 9px 14px;
+    font-size: 12px; max-width: 80%;
+  }
+  .bubble-ai-inactive {
+    align-self: flex-start; background: #f1f5f9; color: #9ca3af;
+    border-radius: 18px 18px 18px 4px; padding: 9px 14px;
+    font-size: 12px; max-width: 85%;
+  }
+
+  .spinner {
+    width: 20px; height: 20px; border: 2px solid #e2e8f0;
+    border-top-color: #18181b; border-radius: 50%;
+    animation: spin 0.8s linear infinite; flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .cold-start-loader {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px; padding: 24px;
+  }
+  .spinner-lg {
+    width: 36px; height: 36px; border: 3px solid #e2e8f0;
+    border-top-color: #18181b; border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  .loader-text { font-size: 13px; color: #64748b; text-align: center; line-height: 1.5; }
+  .loader-text strong { display: block; color: #0f172a; font-size: 14px; margin-bottom: 4px; }
+
+  .inactivity-warning {
+    background: #fefce8; border: 1px solid #fde68a;
+    border-radius: 12px; padding: 12px 14px;
+    font-size: 12px; color: #78350f; line-height: 1.5;
+  }
+  .inactivity-warning strong { display: block; font-size: 13px; margin-bottom: 4px; }
+
+  .service-down-card {
+    background: #f8fafc; border: 1px solid #e2e8f0;
+    border-radius: 12px; overflow: hidden;
+  }
+  .service-down-header {
+    padding: 10px 14px; font-size: 12px; color: #475569;
+    background: #f1f5f9; border-bottom: 1px solid #e2e8f0;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .service-down-body { padding: 12px 14px; }
+  .service-down-title { font-size: 13px; font-weight: 600; color: #0f172a; margin-bottom: 6px; }
+  .service-down-sub { font-size: 12px; color: #64748b; margin-bottom: 14px; line-height: 1.5; }
+
+  .action-buttons { display: flex; flex-direction: column; gap: 6px; }
+  .btn-primary {
+    background: #18181b; color: white; border: none;
+    border-radius: 8px; padding: 9px 14px; font-size: 13px;
+    font-weight: 500; cursor: pointer; width: 100%; text-align: center;
+  }
+  .btn-secondary {
+    background: white; color: #374151; border: 1px solid #d1d5db;
+    border-radius: 8px; padding: 8px 14px; font-size: 13px;
+    cursor: pointer; width: 100%; text-align: center;
+  }
+  .btn-ghost {
+    background: transparent; color: #94a3b8; border: none;
+    border-radius: 8px; padding: 7px 14px; font-size: 12px;
+    cursor: pointer; width: 100%; text-align: center;
+  }
+
+  .divider {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; color: #94a3b8; margin: 4px 0;
+  }
+  .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: #e2e8f0; }
+
+  /* Recap dropdown — collapsed */
+  .recap-dropdown {
+    border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;
+    margin-bottom: 10px;
+  }
+  .recap-dropdown-trigger {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; background: #f8fafc; cursor: pointer;
+    font-size: 12px; color: #64748b; user-select: none;
+  }
+  .recap-dropdown-trigger .chevron {
+    font-size: 10px; color: #94a3b8; transition: transform 0.2s;
+  }
+  .recap-dropdown-body {
+    padding: 10px 12px; background: white;
+    border-top: 1px solid #e2e8f0; font-size: 12px;
+  }
+  .recap-row { display: flex; gap: 6px; margin-bottom: 4px; align-items: flex-start; }
+  .recap-role { font-weight: 600; color: #475569; min-width: 24px; font-size: 11px; margin-top: 1px; }
+  .recap-text { color: #374151; line-height: 1.4; }
+
+  .resuming-row {
+    display: flex; align-items: center; gap: 8px; padding: 6px 0;
+  }
+
+  .case-wrapper { display: flex; flex-direction: column; align-items: flex-start; }
+</style>
+</head>
+<body>
+
+<h2>Cold Start UI — v3 <span style="font-size:13px;font-weight:400;color:#64748b;">2 cambios aplicados</span></h2>
+<p class="subtitle">Recap como dropdown oculto · Mensajes previos inactivos también en Caso 2b</p>
+
+<div class="cases-grid">
+
+  <!-- CASE 1 -->
+  <div class="case-wrapper">
+    <div class="case-label">Caso 1 — Abrir chat (warm-up)</div>
+    <div class="widget">
+      <div class="widget-header">
+        <div class="dot" style="background:#f59e0b;"></div>
+        Asistente de Moda
+      </div>
+      <div class="widget-body">
+        <div class="cold-start-loader">
+          <div class="spinner-lg"></div>
+          <div class="loader-text">
+            <strong>Despertando el asistente…</strong>
+            Esto puede tardar unos segundos.<br>Tu sesión anterior está guardada.
+          </div>
+        </div>
+      </div>
+      <div class="widget-input">
+        <input placeholder="Espera un momento…" disabled>
+        <div class="send-btn"><svg width="14" height="14" fill="white" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CASE 2a -->
+  <div class="case-wrapper">
+    <div class="case-label">Caso 2a — Advertencia 15 min</div>
+    <div class="widget">
+      <div class="widget-header">
+        <div class="dot"></div>
+        Asistente de Moda
+      </div>
+      <div class="widget-body">
+        <div class="bubble-user">Busco vestidos para una boda</div>
+        <div class="bubble-ai">Te recomiendo estos modelos elegantes…</div>
+        <div style="height:12px;"></div>
+        <div class="inactivity-warning">
+          <strong>¿Sigues ahí?</strong>
+          El chat entrará en reposo si no hay actividad en los próximos <strong>5 minutos</strong>.
+        </div>
+      </div>
+      <div class="widget-input">
+        <input placeholder="Escribe un mensaje…">
+        <div class="send-btn"><svg width="14" height="14" fill="white" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CASE 2b — mensajes inactivos + sin recap -->
+  <div class="case-wrapper">
+    <div class="case-label">Caso 2b — Servicio apagado <span class="change-badge">✓ v3</span></div>
+    <div class="widget">
+      <div class="widget-header">
+        <div class="dot" style="background:#ef4444;"></div>
+        Asistente de Moda
+      </div>
+      <div class="widget-body">
+        <!-- mensajes previos ahora inactivos/faded -->
+        <div class="bubble-user-inactive">Busco vestidos para una boda</div>
+        <div class="bubble-ai-inactive">Te recomiendo estos modelos elegantes…</div>
+        <div class="divider">mensajes anteriores inactivos</div>
+        <div class="service-down-card">
+          <div class="service-down-header">
+            <span>💤</span>
+            El asistente ha entrado en reposo
+          </div>
+          <div class="service-down-body">
+            <div class="service-down-title">Tu conversación está guardada</div>
+            <div class="service-down-sub">Puedes retomar donde lo dejaste o empezar una nueva conversación.</div>
+            <div class="action-buttons">
+              <button class="btn-primary">Let's continue</button>
+              <button class="btn-secondary">Start a new chat</button>
+              <button class="btn-ghost">Close conversation</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="widget-input">
+        <input placeholder="Elige una opción arriba…" disabled>
+        <div class="send-btn"><svg width="14" height="14" fill="white" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg></div>
+      </div>
+    </div>
+    <p style="margin-top:8px;font-size:11px;color:#94a3b8;max-width:340px;">Los burbujas previas se muestran en gris inactivo — misma apariencia que en el estado post-resume.</p>
+  </div>
+
+  <!-- Post "Let's continue" — recap dropdown oculto -->
+  <div class="case-wrapper">
+    <div class="case-label">Post "Let's continue" <span class="change-badge">✓ v3</span></div>
+    <div class="widget">
+      <div class="widget-header">
+        <div class="dot" style="background:#f59e0b;"></div>
+        Asistente de Moda
+      </div>
+      <div class="widget-body">
+        <!-- mensajes previos inactivos -->
+        <div class="bubble-user-inactive">Busco vestidos para una boda</div>
+        <div class="bubble-ai-inactive">Te recomendé 3 modelos elegantes…</div>
+        <div class="divider">reanudando conversación</div>
+
+        <!-- Recap como dropdown colapsado -->
+        <div class="recap-dropdown">
+          <div class="recap-dropdown-trigger">
+            <span>📋 Ver resumen de conversación anterior</span>
+            <span class="chevron">▸</span>
+          </div>
+          <!-- body oculto por defecto — se expande al hacer click -->
+          <div class="recap-dropdown-body" style="display:none;">
+            <div class="recap-row">
+              <span class="recap-role">Tú</span>
+              <span class="recap-text">Busco vestidos para una boda</span>
+            </div>
+            <div class="recap-row">
+              <span class="recap-role">AI</span>
+              <span class="recap-text">Te recomendé 3 modelos elegantes…</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Estado de reconexión -->
+        <div class="resuming-row">
+          <div class="spinner"></div>
+          <span style="font-size:12px;color:#64748b;">Resumiendo conversación…</span>
+        </div>
+      </div>
+      <div class="widget-input">
+        <input placeholder="Espera un momento…" disabled>
+        <div class="send-btn"><svg width="14" height="14" fill="white" viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg></div>
+      </div>
+    </div>
+    <p style="margin-top:8px;font-size:11px;color:#94a3b8;max-width:340px;">Dropdown colapsado — el usuario puede expandirlo si quiere ver el recap, pero no se le impone.</p>
+  </div>
+
+</div>
+
+<script>
+  // Toggle dropdown en el mockup para que sea interactivo
+  document.querySelectorAll('.recap-dropdown-trigger').forEach(trigger => {
+    trigger.addEventListener('click', () => {
+      const body = trigger.nextElementSibling;
+      const chevron = trigger.querySelector('.chevron');
+      if (body.style.display === 'none') {
+        body.style.display = 'block';
+        chevron.style.transform = 'rotate(90deg)';
+      } else {
+        body.style.display = 'none';
+        chevron.style.transform = '';
+      }
+    });
+  });
+</script>
+</body>
+</html>

@@ -493,7 +493,18 @@ export class ConversationAPI {
     this.config = { ...this.config, ...newConfig };
   }
 
-  async checkHealth(): Promise<{ status: string; shutdown_at: number | null }> {
+  async checkHealth(): Promise<{
+    status: string;
+    shutdown_at: number | null;
+    /**
+     * visual_search_enabled — refleja el flag VISUAL_SEARCH_ENABLED del monolito.
+     * El backend lo expone en /health para que el widget pueda mostrar u ocultar
+     * el botón de cámara en el mismo health check que ya hace al abrir el chat,
+     * sin necesidad de una petición adicional.
+     * Default: false (botón oculto si el backend no confirma el flag).
+     */
+    visual_search_enabled: boolean;
+  }> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 35_000);
     try {
@@ -503,12 +514,18 @@ export class ConversationAPI {
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      if (!response.ok) return { status: 'unhealthy', shutdown_at: null };
+      if (!response.ok) return { status: 'unhealthy', shutdown_at: null, visual_search_enabled: false };
       const data = await response.json();
-      return { status: data.status ?? 'unknown', shutdown_at: data.shutdown_at ?? null };
+      return {
+        status: data.status ?? 'unknown',
+        shutdown_at: data.shutdown_at ?? null,
+        // El backend devuelve boolean; si el campo no existe (monolito sin parche),
+        // default a false → botón oculto por seguridad.
+        visual_search_enabled: data.visual_search_enabled === true,
+      };
     } catch {
       clearTimeout(timeoutId);
-      return { status: 'unreachable', shutdown_at: null };
+      return { status: 'unreachable', shutdown_at: null, visual_search_enabled: false };
     }
   }
 

@@ -1,32 +1,54 @@
 # services/embedding-service/main.py
 """
-LFM2-ColBERT Embedding Service
-================================
-Microservicio FastAPI que expone el modelo LFM2-ColBERT-350M
-para búsqueda semántica de productos.
+Embedding Service — búsqueda semántica + búsqueda visual
+==========================================================
+Microservicio FastAPI con dos capacidades independientes:
 
-Endpoints:
-  POST /v1/embed/index   — indexar catálogo de productos
-  POST /v1/embed/search  — buscar productos por query
-  GET  /health           — health check
+  [Texto — ColBERT, ya existente]
+  POST /v1/embed/index         — indexar catálogo (PLAID index)
+  POST /v1/embed/search        — buscar por query textual
+
+  [Visual — fashionSigLIP + FAISS, añadido Opción A]
+  POST /v1/embed/index-images  — indexar imágenes (full o incremental)
+  POST /v1/embed/search-image  — buscar por imagen (multipart)
+
+  GET  /health                 — estado de ambos modelos e índices
+
+Cambios:
+  01/05/2026 — IndexImagesRequest.mode: 'full' | 'incremental'
+               El endpoint /v1/embed/index-images rutea al método correcto
+               según el campo mode. El modo incremental añade solo los
+               productos nuevos sin reconstruir el índice completo.
+
+  01/05/2026 — Autenticación IAM: el servicio solo acepta requests con
+               Authorization: Bearer <google-id-token> de la SA del monolito.
+               Configurado en el deploy con --no-allow-unauthenticated.
+               El header lo añade automáticamente colbert_client.py.
 """
 import os
 import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from typing import List, Literal, Optional
+
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
-from typing import List, Optional
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+)
 log = logging.getLogger(__name__)
-colbert_retriever = None  # Singleton — se carga en startup
+
+colbert_retriever = None
+visual_retriever  = None
 
 
-# ── Pydantic models ─────────────────────────────────────────────────
+# ── Pydantic models ─────────────────────────────────────────────────────────
 
 class IndexRequest(BaseModel):
-    products: List[dict]  # [{id, title, description, tags}, ...]
+    products: List[dict]
 
 
 class SearchRequest(BaseModel):
@@ -39,63 +61,236 @@ class SearchResponse(BaseModel):
     latency_ms: float
 
 
-# ── Startup / shutdown ──────────────────────────────────────────────
+class IndexImagesRequest(BaseModel):
+    """
+    Solicitud de indexación de imágenes del catálogo.
+
+    mode:
+      'full'        — Reconstruye el índice completo desde cero (~25-30 min
+                      para 3000+ productos). Usar en primer deploy y cuando
+                      hay productos eliminados o imágenes cambiadas.
+
+      'incremental' — Solo indexa productos nuevos (IDs no en el índice actual).
+                      El índice base debe existir previamente.
+                      Típico: <1 min para pocos productos nuevos.
+                      Limitación: no elimina productos borrados del índice.
+    """
+    products:   List[dict]
+    batch_size: int = 16
+    mode:       Literal['full', 'incremental'] = 'full'
+
+
+class SearchImageResponse(BaseModel):
+    product_ids: List[str]
+    latency_ms: float
+    visual_index_size: int
+
+
+# ── Startup / shutdown ─────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global colbert_retriever
-    log.info('Loading LFM2-ColBERT-350M...')
+    global colbert_retriever, visual_retriever
+
+    log.info('[startup] Loading LFM2-ColBERT-350M...')
     t0 = time.time()
-    from colbert_retriever import LFM2ColBERTRetriever
-    colbert_retriever = LFM2ColBERTRetriever()
-    await colbert_retriever.warmup()
-    log.info('ColBERT ready in %.1fs', time.time() - t0)
+    try:
+        from colbert_retriever import LFM2ColBERTRetriever
+        colbert_retriever = LFM2ColBERTRetriever()
+        await colbert_retriever.warmup()
+        log.info('[startup] ColBERT ready in %.1fs', time.time() - t0)
+    except Exception as e:
+        log.error('[startup] FATAL: ColBERT failed: %s', e, exc_info=True)
+        raise
+
+    log.info('[startup] Loading Marqo/marqo-fashionSigLIP (HF_HUB_OFFLINE=%s)...',
+             os.environ.get('HF_HUB_OFFLINE', 'not set'))
+    t1 = time.time()
+    try:
+        from visual_retriever import FashionSigLIPRetriever
+        visual_retriever = FashionSigLIPRetriever()
+        await visual_retriever.warmup()
+        loaded = visual_retriever.try_load_from_disk()
+        log.info('[startup] FashionSigLIP ready in %.1fs | visual_index_size=%d (disk_loaded=%s)',
+                 time.time() - t1, visual_retriever.index_size(), loaded)
+    except Exception as e:
+        log.error('[startup] WARNING: FashionSigLIP failed in %.1fs: %s',
+                  time.time() - t1, e, exc_info=True)
+        visual_retriever = None
+
+    log.info('[startup] Embedding service ready. ColBERT=%s FashionSigLIP=%s',
+             'OK' if colbert_retriever else 'FAILED',
+             'OK' if visual_retriever else 'UNAVAILABLE')
     yield
-    log.info('Embedding service shutdown')
+    log.info('[shutdown] Embedding service shutdown')
 
 
-app = FastAPI(title='LFM2-ColBERT Embedding Service', lifespan=lifespan)
+app = FastAPI(
+    title='Embedding Service — ColBERT + FashionSigLIP',
+    lifespan=lifespan,
+)
 
 
-# ── Routes ──────────────────────────────────────────────────────────
+# ── Routes ──────────────────────────────────────────────────────────────────
 
 @app.get('/health')
 async def health():
     return {
         'status': 'ok',
-        'model': 'LFM2-ColBERT-350M',
+        'models': {
+            'colbert': 'LFM2-ColBERT-350M',
+            'visual':  'Marqo/marqo-fashionSigLIP',
+        },
         'index_size': colbert_retriever.index_size() if colbert_retriever else 0,
+        'visual_index_size': visual_retriever.index_size() if visual_retriever else 0,
+        'visual_index_ready': visual_retriever.is_ready() if visual_retriever else False,
     }
 
 
 @app.post('/v1/embed/index')
 async def build_index(req: IndexRequest):
-    """
-    Recibe el catálogo de productos y construye el PLAID index.
-    Se llama durante el KB sync / catalog update del monolito.
-    Con 3000 productos: ~5-10 segundos.
-    """
     if not colbert_retriever:
         raise HTTPException(503, 'Model not ready')
     t0 = time.time()
     count = await colbert_retriever.build_index(req.products)
-    return {
-        'indexed': count,
-        'latency_ms': round((time.time() - t0) * 1000, 1),
-    }
+    return {'indexed': count, 'latency_ms': round((time.time() - t0) * 1000, 1)}
 
 
 @app.post('/v1/embed/search', response_model=SearchResponse)
 async def search(req: SearchRequest):
-    """
-    Busca los productos más relevantes para una query.
-    Soporta queries en español, inglés, francés, alemán nativamente.
-    Latencia warm: 20-40ms.
-    """
     if not colbert_retriever:
-        raise HTTPException(503, 'Model not ready')
+        raise HTTPException(503, 'ColBERT model not ready')
     t0 = time.time()
     ids = await colbert_retriever.search(req.query, req.top_k)
-    return SearchResponse(
-        product_ids=ids,
-        latency_ms=round((time.time() - t0) * 1000, 1))
+    return SearchResponse(product_ids=ids, latency_ms=round((time.time() - t0) * 1000, 1))
+
+
+@app.post('/v1/embed/index-images')
+async def build_image_index(
+    req: IndexImagesRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Indexa imágenes del catálogo en modo full o incremental.
+
+    modo='full' (default):
+      Reconstruye el índice completo. Tarda ~25-30 min para 3000+ productos.
+      Usar en: primer deploy, productos eliminados, imágenes cambiadas.
+
+    modo='incremental':
+      Solo indexa productos nuevos (IDs no presentes en el índice actual).
+      Tarda proporcional a los nuevos productos (típico: <1 min para <50 prods).
+      Requiere que exista un índice base (si no, devuelve status='no_base_index').
+      Limitación: no elimina del índice los productos borrados del catálogo.
+      Para eso, usar mode='full'.
+
+    Ambos modos usan batch size adaptativo:
+      El batch_size inicial se ajusta tras el primer batch según velocidad
+      de descarga observada del CDN de Shopify.
+    """
+    if not visual_retriever:
+        raise HTTPException(503, 'Visual retriever not ready')
+
+    if visual_retriever.is_indexing():
+        return {
+            'status': 'already_running',
+            'message': 'Indexation already in progress. Check GET /health.',
+            'visual_index_size': visual_retriever.index_size(),
+        }
+
+    products_snapshot = list(req.products)
+    batch_size        = req.batch_size
+    mode              = req.mode
+
+    # ── Validación específica del modo incremental ─────────────────────────
+    if mode == 'incremental' and not visual_retriever.is_ready():
+        return {
+            'status': 'no_base_index',
+            'message': (
+                'Incremental indexation requires an existing base index. '
+                'Run mode=full first.'
+            ),
+        }
+
+    async def _run_full():
+        t_start = time.time()
+        try:
+            indexed, failed = await visual_retriever.build_image_index(
+                products_snapshot, batch_size=batch_size,
+            )
+            log.info('[visual-index] Job complete (full): indexed=%d failed=%d elapsed=%.0fs',
+                     indexed, failed, time.time() - t_start)
+        except Exception as e:
+            log.error('[visual-index] Job failed (full) after %.0fs: %s',
+                      time.time() - t_start, e, exc_info=True)
+
+    async def _run_incremental():
+        t_start = time.time()
+        try:
+            status, indexed, skipped = await visual_retriever.build_image_index_incremental(
+                products_snapshot, batch_size=batch_size,
+            )
+            log.info('[visual-index] Job complete (incremental): status=%s indexed=%d skipped=%d elapsed=%.0fs',
+                     status, indexed, skipped, time.time() - t_start)
+        except Exception as e:
+            log.error('[visual-index] Job failed (incremental) after %.0fs: %s',
+                      time.time() - t_start, e, exc_info=True)
+
+    if mode == 'full':
+        background_tasks.add_task(_run_full)
+    else:
+        background_tasks.add_task(_run_incremental)
+
+    products_with_url = sum(
+        1 for p in products_snapshot
+        if p.get('image_url') and str(p.get('image_url', '')).startswith('http')
+    )
+    return {
+        'status': 'accepted',
+        'mode': mode,
+        'message': (
+            f'{mode.capitalize()} indexation of {products_with_url} products '
+            f'with image_url started in background.'
+        ),
+        'products_submitted':  len(products_snapshot),
+        'products_with_image': products_with_url,
+    }
+
+
+@app.post('/v1/embed/search-image', response_model=SearchImageResponse)
+async def search_by_image(
+    file: UploadFile = File(..., description='Imagen JPEG/PNG/WebP (max 5MB)'),
+    top_k: int = Form(default=8, description='Número máximo de resultados'),
+):
+    if not visual_retriever:
+        raise HTTPException(503, 'Visual retriever not ready')
+    if not visual_retriever.is_ready():
+        raise HTTPException(503, 'Visual index not built. Call POST /v1/embed/index-images first.')
+
+    content_type = file.content_type or ''
+    if content_type and not content_type.startswith('image/'):
+        raise HTTPException(400, detail=f'Expected image file, got: {content_type}')
+
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(400, 'Empty file')
+
+    max_bytes = 5 * 1024 * 1024
+    if len(image_bytes) > max_bytes:
+        raise HTTPException(
+            413,
+            detail=f'Image too large: {len(image_bytes)//1024}KB. Maximum allowed: {max_bytes//1024//1024}MB.'
+        )
+
+    t0 = time.time()
+    product_ids = await visual_retriever.search_by_image(image_bytes, top_k=top_k)
+    latency_ms  = round((time.time() - t0) * 1000, 1)
+
+    log.info('visual_search: found=%d top_k=%d latency=%.1fms size=%dKB',
+             len(product_ids), top_k, latency_ms, len(image_bytes) // 1024)
+
+    return SearchImageResponse(
+        product_ids=product_ids,
+        latency_ms=latency_ms,
+        visual_index_size=visual_retriever.index_size(),
+    )

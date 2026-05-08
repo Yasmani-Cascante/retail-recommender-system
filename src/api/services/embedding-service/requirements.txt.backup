@@ -22,10 +22,7 @@ pydantic==2.8.2
 #   que se ignora en comparaciones de versión.
 #
 # Instalado en Dockerfile Step 5 desde el índice de PyTorch ANTES que este archivo.
-# El pin de torchvision es crítico: evita que pip sobreescriba con la versión
-# GPU de PyPI (0.22.0 CUDA) que falla con RuntimeError en torch CPU-only.
 torch==2.7.0+cpu
-torchvision==0.22.0+cpu
 
 # ── PINES EXACTOS — eliminan backtracking ────────────────────────────────────
 # Versiones derivadas del único pip install exitoso (build #2) + torch 2.7.0
@@ -41,17 +38,3 @@ faiss-cpu>=1.7.4
 Pillow>=10.0.0
 httpx>=0.27.0
 python-multipart>=0.0.6
-
-# ── GCS persistence — índice FAISS sobrevive deploys y reinicios ───────────────
-# Sin esto, cada deploy/restart de Cloud Run borra /tmp y el índice se pierde.
-# La indexación dura ~30 min — inaceptable repetirla en cada deploy.
-#
-# La SA de Cloud Run (178362262166-compute@developer.gserviceaccount.com) ya
-# tiene Storage Object Admin en el proyecto por defecto → ADC funciona sin
-# credenciales explícitas.
-#
-# Flujo:
-#   startup → intenta cargar desde /tmp/ (rápido, mismo container)
-#           → si vacío, descarga desde GCS (~5-15s según tamaño)
-#   indexación completa → guarda en /tmp/ Y sube a GCS
-google-cloud-storage>=2.10.0

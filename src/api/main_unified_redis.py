@@ -1834,7 +1834,12 @@ async def enterprise_health_check():
                 "redis_status": "initializing" if not redis_initialized and redis_error is None else ("ready" if redis_initialized else "failed"),
                 "redis_error": redis_error,
                 "lifespan_pattern": "modern_contextmanager",
-                "shutdown_at": shutdown_at
+                "shutdown_at": shutdown_at,
+                # visual_search_enabled: leído por el frontend en el health check
+                # para mostrar/ocultar el botón de cámara sin request adicional.
+                "visual_search_enabled": __import__("os").environ.get(
+                    "VISUAL_SEARCH_ENABLED", "false"
+                ).lower() == "true",
             }
         
         # Fallback: If startup not yet complete, do comprehensive check

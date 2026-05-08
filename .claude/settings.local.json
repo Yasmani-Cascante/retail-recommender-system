@@ -1,7 +1,25 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \"from src.api.main_unified_redis import app\")"
+      "Bash(python -c \"from src.api.main_unified_redis import app\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(pip show *)",
+      "Bash(python -m pytest --co -q tests/unit/test_cold_start_shutdown_flag.py)",
+      "Bash(python -m pytest tests/unit/test_cold_start_shutdown_flag.py::test_write_shutdown_flag_sets_redis_key -v -s)",
+      "Bash(python -m pytest tests/unit/test_cold_start_shutdown_flag.py -v)",
+      "Bash(python -c ' *)",
+      "Bash(python -m pytest tests/unit/ --timeout=30 -x)",
+      "Bash(python -m pytest tests/unit/test_cold_start_health_endpoint.py -v)",
+      "Bash(python -m pytest tests/unit/ -v --timeout=30 -x --no-cov)",
+      "Bash(python -m pytest tests/unit/ -v --no-cov -x)",
+      "Bash(python -m pytest tests/unit/ -v --no-cov --ignore=tests/unit/test_mcp_personalization_engine.py)",
+      "Bash(python -m pytest tests/unit/test_cold_start_recap_endpoint.py -v)",
+      "Bash(npx tsc *)",
+      "Bash(python -m pytest tests/unit/ -v --timeout=30 -m \"not debug\")",
+      "Bash(python -m pytest tests/unit/test_mcp_personalization_engine.py -v -m \"not debug\")",
+      "Bash(python -m pytest tests/unit/ -v -m \"not debug\" --ignore=tests/unit/test_mcp_personalization_engine.py)",
+      "Bash(python -m pytest tests/unit/test_cold_start_health_endpoint.py tests/unit/test_cold_start_recap_endpoint.py tests/unit/test_cold_start_shutdown_flag.py -v -m \"not debug\")"
     ]
   }
 }

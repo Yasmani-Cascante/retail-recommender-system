@@ -56,7 +56,7 @@
    ═══════════════════════════════════════════════════════════════ */
 .panel {
   position: fixed;
-  bottom: 8vh;
+  bottom: 6vh;
   right: 20px;
   width: 420px;
   height: 850px;
@@ -89,17 +89,20 @@
 /* dejando un margen decorativo. En móvil ya es full-screen por defecto.*/
 .panelExpanded {
   /* width: calc(100vw - 12px); */
-  width: 99vw;
+  width: 100vw;
   /* width: 1440px; */
-  height: calc(100vh - 125px);
+  height: calc(100vh - 60px);
   margin: 0 auto;
-  bottom: 12px;
+  bottom: 0;
   right: 6px;
-  border-radius: 12px;
+  border-radius: 0;
+  border: 0;
+  box-shadow: none;
   /* Sombra más pronunciada en modo expandido */
-  box-shadow:
+  /* box-shadow:
     0 32px 80px rgba(0, 0, 0, 0.2),
-    0 8px 24px rgba(0, 0, 0, 0.1);
+    0 8px 24px rgba(0, 0, 0, 0.1); */
+
 }
 
 
@@ -342,6 +345,7 @@
   /* Si comentamos estas propiedades Flex el header se oculta */
   display: flex;
   justify-content: center;
+  flex-direction: column;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -832,16 +836,44 @@
 
 /* Cold start: inactivity warning */
 .inactivityWarning {
+  position: relative;
   background: #fefce8;
-  border: 1px solid #fde68a;
-  border-radius: 12px;
-  padding: 12px 14px;
+  /* border: 1px solid #fde68a; */
+  /* border-radius: 12px; */
+  padding: 22px 28px;
   font-size: 12px;
   color: #78350f;
   line-height: 1.5;
-  margin: 4px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: small;
+  max-width: 660px;
+  margin: 0 auto;
 }
-
+.inactivityWarningTitle {
+  font-size: 16px;
+  font-weight: 600;
+}
+.inactivityWarningSub {
+  font-size: 13px;
+}
+.inactivityWarningDismiss {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  color: #78350f;
+  opacity: 0.5;
+  padding: 2px 4px;
+}
+.inactivityWarningDismiss:hover {
+  opacity: 1;
+}
 /* Cold start: divider */
 .divider {
   display: flex;
@@ -863,38 +895,41 @@
 /* Cold start: service-down card */
 .serviceDownCard {
   background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  /* border: 1px solid #e2e8f0; */
+  /* border-radius: 12px; */
   overflow: hidden;
   margin: 4px 0;
+  max-width: 660px;
+  margin: 0 auto;
 }
 
 .serviceDownHeader {
-  padding: 10px 14px;
-  font-size: 12px;
+  padding: 12px 28px;
+  font-size: 13px;
   color: #475569;
   background: #f1f5f9;
-  border-bottom: 1px solid #e2e8f0;
+  /* border-bottom: 1px solid #e2e8f0; */
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
 .serviceDownBody {
-  padding: 12px 14px;
+  padding: 24px 32px;
+  
 }
 
 .serviceDownTitle {
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 600;
   color: #0f172a;
-  margin: 0 0 4px 0;
+  margin: 0 0 6px 0;
 }
 
 .serviceDownSub {
-  font-size: 12px;
+  font-size: 13px;
   color: #64748b;
-  margin: 0 0 14px 0;
+  margin: 0 0 24px 0;
   line-height: 1.5;
 }
 

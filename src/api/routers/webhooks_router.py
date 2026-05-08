@@ -495,7 +495,7 @@ async def handle_products_webhook(
 
     # ── 3. Validar topic ─────────────────────────────────────────────
     topic = x_shopify_topic or ""
-    SUPPORTED_TOPICS = {"products/update", "products/delete"}
+    SUPPORTED_TOPICS = {"products/create", "products/update", "products/delete"}
 
     if topic not in SUPPORTED_TOPICS:
         # ACK sin procesar — evita reintentos de Shopify por topics no gestionados
@@ -524,12 +524,25 @@ async def handle_products_webhook(
 
     product_id = str(product_id_raw)
 
+    # ── Extraer image_url para indexación visual ────────────────────
+    # Shopify incluye el array "images" en los payloads de products/create
+    # y products/update. La imagen principal es images[0]["src"].
+    # Para products/delete el array puede estar vacío o ausente.
+    #
+    # Por qué extraer aquí y no en el handler:
+    #   El handler recibe los argumentos del dispatcher (ya parseados).
+    #   El payload JSON solo está disponible en el router, antes del dispatch.
+    #   Extraer aquí mantiene el handler desacoplado del formato de Shopify.
+    images = payload.get("images", [])
+    image_url = images[0].get("src", "") if images else ""
+
     # ── 5. Métrica de recepción ─────────────────────────────────────────
     _inc_received(topic)
     logger.info(
         "products_webhook_accepted",
         product_id=product_id,
         product_handle=product_handle,
+        image_url_present=bool(image_url),
         topic=topic,
         shop=x_shopify_shop_domain,
     )
@@ -539,6 +552,7 @@ async def handle_products_webhook(
         _dispatch_product_event,
         product_id=product_id,
         product_handle=product_handle,
+        image_url=image_url,
         topic=topic,
     )
 
@@ -547,13 +561,14 @@ async def handle_products_webhook(
         "product_id": product_id,
         "product_handle": product_handle,
         "topic": topic,
-        "message": "Product webhook received, cache invalidation queued",
+        "message": "Product webhook received, processing queued",
     }
 
 
 async def _dispatch_product_event(
     product_id: str,
     product_handle: str,
+    image_url: str,
     topic: str,
 ) -> None:
     """
@@ -561,19 +576,22 @@ async def _dispatch_product_event(
 
     Delega a ShopifyWebhookHandler.handle_product_event() que implementa:
       - Idempotencia via Redis SET NX
-      - Invalidación de cache 'mcp:product:context:{handle}:{market_id}'
-        para todos los mercados activos (CL, CH, MX, ES)
+      - Invalidación de cache de contexto de producto (todos los mercados)
+      - Indexación visual incremental en FAISS (products/create y update)
       - Logging estructurado con duración
 
     Args:
         product_id:     ID numérico del producto como string.
         product_handle: Handle/slug del producto.
-        topic:          'products/update' o 'products/delete'.
+        image_url:      URL de la imagen principal extraída del payload de Shopify.
+                        Vacía para products/delete (Shopify no incluye images en delete).
+        topic:          'products/create', 'products/update' o 'products/delete'.
     """
     handler = ShopifyWebhookHandler()
     await handler.handle_product_event(
         product_id=product_id,
         product_handle=product_handle,
+        image_url=image_url,
         topic=topic,
     )
 
@@ -601,6 +619,7 @@ async def verify_webhook_endpoint():
             "translations/update",
             "customers/update",
             "customers/purchasing_summary",
+            "products/create",
             "products/update",
             "products/delete",
         ],

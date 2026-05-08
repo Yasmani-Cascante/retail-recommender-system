@@ -538,65 +538,110 @@ class ShopifyWebhookHandler:
         product_id: str,
         product_handle: str,
         topic: str,
+        image_url: str = "",
     ) -> None:
-        """Invalida el cache de contexto de producto cuando Shopify notifica un cambio.
+        """Procesa un evento de producto de Shopify: invalida cache + actualiza índice visual.
 
-        Cuando llega products/update o products/delete, el contexto de producto
-        cacheado en Redis bajo 'mcp:product:context:{handle}:{market_id}' puede
-        estar desactualizado. Este handler lo elimina para que el próximo request
-        del chat haga un fetch fresco desde Shopify (ProductContextService).
+        ── CACHE DE CONTEXTO (F-01) ────────────────────────────────────────────
+        Invalida 'mcp:product:context:{handle}:{market_id}' en todos los mercados
+        para que el próximo request del chat use datos frescos desde Shopify.
 
-        Por qué invalidar TODOS los mercados:
-            La cache key incluye market_id (CL, CH, MX, ES) como sufijo para
-            permitir futuros contextos por mercado. Como el handle es el mismo
-            para todos los mercados, un cambio de producto afecta a todas las
-            claves. Usamos SCAN con patrón glob para invalidarlas en batch.
+        ── ÍNDICE VISUAL FAISS (02/05/2026) ────────────────────────────────────
+        Estrategia LSM (Log-Structured Merge) para el índice FAISS:
 
-        Idempotency: mismo patrón SET NX que customers/update.
+          products/create:
+            Llama index_images_incremental() con el nuevo producto.
+            El embedding-service lo añade al índice solo si el ID no existe.
+            Latencia: el nuevo producto aparece en búsquedas visuales en <1 min.
+
+          products/update:
+            Llama index_images_incremental() también.
+            Si el ID YA está en el índice FAISS: el embedding-service lo ignora
+            (modo incremental solo añade, no sobreescribe).
+            Esto es correcto porque en e-commerce de moda, >90% de los
+            products/update son cambios de precio/descripción/stock, no de imagen.
+            Si la imagen cambió: el embedding antiguo persiste hasta el próximo
+            rebuild completo (comportamiento documentado — ver DCT DT2).
+
+          products/delete:
+            NO toca el índice FAISS.
+            FAISS IndexFlatIP no tiene .remove() — el vector permanece como
+            "fantasma" hasta el próximo rebuild completo.
+            El monolito lo filtra automáticamente: cuando el visual search
+            devuelve el ID, el router busca en tfidf_recommender.id_index.
+            Si el producto fue eliminado de Shopify, no estará en id_index
+            y se descarta silenciosamente del resultado.
+
+        ── REBUILD PERIÓDICO (mantenimiento) ────────────────────────────────────
+        Semanal o tras cambios masivos de catálogo:
+          POST /v1/mcp/visual-search/index
+          → reconstruye el índice completo desde cero
+          → limpia vectores fantasma
+          → actualiza embeddings de productos con imagen cambiada
+
+        ── IDEMPOTENCY ──────────────────────────────────────────────────────────
+        Redis SET NX previene doble procesamiento del mismo webhook.
+        Shopify garantiza at-least-once delivery — idempotency es obligatoria.
 
         Args:
             product_id:     ID numérico del producto en Shopify (str).
             product_handle: Handle del producto (ej. 'vestido-corto-emma').
-                            Si viene vacío, intentamos extraerlo del cache key.
-            topic:          'products/update' o 'products/delete'.
+            topic:          'products/create', 'products/update' o 'products/delete'.
+            image_url:      URL de la imagen principal extraída del payload de Shopify.
+                            images[0]["src"] para create/update, "" para delete.
         """
         start_time = time.time()
 
         try:
-            # ── Idempotency check ──────────────────────────────────────
+            # ── Idempotency check ──────────────────────────────────────────
             if await self.is_duplicate_event(int(product_id), topic):
                 return
 
             logger.info(
-                "webhook_product_invalidating_cache",
+                "webhook_product_processing",
                 product_id=product_id,
                 product_handle=product_handle,
                 topic=topic,
+                has_image=bool(image_url),
             )
 
-            # ── Invalidar cache via ProductContextService ────────────────
-            # Invalidamos todos los mercados activos porque el handle es único
-            # y el contexto de producto es el mismo independientemente del mercado.
-            # Si en el futuro el contexto incluye datos por mercado (precio,
-            # disponibilidad), esta lista ya cubrirá todos los casos.
-            invalidated = 0
+            # ── 1. Invalidar cache de contexto de producto ─────────────────
+            # Invalida todos los mercados activos. El handle es el mismo para
+            # todos los mercados → un cambio de producto afecta a todas las claves.
+            invalidated_markets = 0
             if product_handle:
                 from src.api.factories.service_factory import ServiceFactory
                 pcs = await ServiceFactory.get_product_context_service()
                 for market_id in ("CL", "CH", "MX", "ES"):
                     await pcs.invalidate(handle=product_handle, market_id=market_id)
-                    invalidated += 1
+                    invalidated_markets += 1
             else:
-                # Handle no disponible en el payload — usar SCAN directo por ID.
-                # Este caso ocurre con productos recien creados (handle generado
-                # después del webhook) o si Shopify no lo incluye.
-                # En estos casos no hay nada que invalidar porque el cache nunca
-                # se creó sin handle, pero logueamos para visibilidad.
                 logger.warning(
-                    "webhook_product_no_handle_skip",
+                    "webhook_product_no_handle_cache_skip",
                     product_id=product_id,
                     topic=topic,
                     reason="product_handle_empty_cannot_build_cache_key",
+                )
+
+            # ── 2. Actualizar índice visual FAISS ──────────────────────────
+            # Solo para create/update con imagen disponible.
+            # delete: el vector fantasma se filtra en el monolito (ver docstring).
+            if topic in ("products/create", "products/update") and image_url:
+                await self._handle_visual_index_update(
+                    product_id=product_id,
+                    product_handle=product_handle,
+                    image_url=image_url,
+                    topic=topic,
+                )
+            elif topic == "products/delete":
+                # No tocar FAISS. El vector fantasma se limpia en el rebuild.
+                # El monolito filtra el ID en visual_search_router.py:
+                #   product = tfidf_recommender.id_index.get(str(pid))
+                #   if product:  ← el producto eliminado no llega aquí
+                logger.debug(
+                    "webhook_product_delete_faiss_skipped",
+                    product_id=product_id,
+                    reason="IndexFlatIP_no_remove_support_filtered_by_monolith",
                 )
 
             elapsed_ms = (time.time() - start_time) * 1000
@@ -605,7 +650,7 @@ class ShopifyWebhookHandler:
                 product_id=product_id,
                 product_handle=product_handle,
                 topic=topic,
-                markets_invalidated=invalidated,
+                markets_invalidated=invalidated_markets,
                 duration_ms=round(elapsed_ms, 2),
             )
 
@@ -621,3 +666,91 @@ class ShopifyWebhookHandler:
             )
             # No re-raise: la invalidación de cache no es crítica.
             # El contexto stale expira en 5 min por TTL.
+            # El embedding stale persiste hasta el rebuild semanal.
+
+    async def _handle_visual_index_update(
+        self,
+        product_id: str,
+        product_handle: str,
+        image_url: str,
+        topic: str,
+    ) -> None:
+        """
+        Actualiza el índice FAISS con el embedding del producto.
+
+        Para products/create: añade el nuevo producto al índice.
+        Para products/update: intenta añadir. Si el ID ya existe en el índice
+          FAISS (modo incremental = append-only), el embedding-service lo ignora.
+          El embedding antiguo persiste hasta el próximo rebuild completo.
+
+        Por qué no actualizamos el embedding en products/update:
+          IndexFlatIP no tiene operaciones de update/remove. Para actualizar
+          un embedding habría que reconstruir todo el índice (~30 min).
+          En e-commerce de moda, >90% de products/update son cambios de
+          precio/descripción, no de imagen. La frecuencia de cambio de imagen
+          es baja (sesiones fotográficas estacionales) y el degradation del
+          embedding antiguo es mínimo (mismo producto, misma categoría visual).
+
+        Non-fatal: un fallo en la indexación visual NO debe bloquear
+          la invalidación de cache, que es la operación principal.
+          El producto seguirá siendo buscable por texto y visible en el catálogo.
+          Solo la búsqueda por imagen usará el embedding antiguo (o no estará
+          indexado si products/create falla).
+
+        Args:
+            product_id:     ID del producto como string.
+            product_handle: Handle del producto (para logging).
+            image_url:      URL de la imagen principal del producto.
+            topic:          'products/create' o 'products/update'.
+        """
+        try:
+            # Importación lazy para evitar circular imports y para que el cliente
+            # sea inicializado en el contexto del proceso, no al importar el módulo.
+            from src.api.services.colbert_client import LFM2ColBERTClient
+
+            client = LFM2ColBERTClient()
+            product_for_index = [
+                {
+                    "id": product_id,
+                    "title": product_handle.replace("-", " ").title(),  # aproximación
+                    "image_url": image_url,
+                }
+            ]
+
+            accepted = await client.index_images_incremental(product_for_index)
+
+            if accepted:
+                logger.info(
+                    "webhook_product_visual_index_queued",
+                    product_id=product_id,
+                    product_handle=product_handle,
+                    topic=topic,
+                    note="embedding_service_will_skip_if_id_already_in_index",
+                )
+            else:
+                # Dos causas posibles:
+                # a) El índice base no existe → lanzar indexación completa primero
+                # b) El visual circuit-breaker está abierto → reintentará en 60s
+                logger.warning(
+                    "webhook_product_visual_index_rejected",
+                    product_id=product_id,
+                    product_handle=product_handle,
+                    topic=topic,
+                    note=(
+                        "incremental index rejected — "
+                        "base index may not exist yet or circuit-breaker open. "
+                        "Run POST /v1/mcp/visual-search/index to build base index."
+                    ),
+                )
+
+        except Exception as e:
+            # Non-fatal: no propagar la excepción. El cache ya fue invalidado.
+            # El producto seguirá siendo buscable por texto.
+            logger.error(
+                "webhook_product_visual_index_failed",
+                product_id=product_id,
+                product_handle=product_handle,
+                topic=topic,
+                error=str(e),
+                note="non_fatal_product_still_searchable_by_text",
+            )

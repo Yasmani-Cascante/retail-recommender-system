@@ -114,3 +114,48 @@
   color: #bbb;
   letter-spacing: 0.02em;
 }
+
+/* ── Botón icónico genérico (cámara, futura voz, etc.) ──────────────────
+ *
+ * Base compartida para botones de acción secundaria dentro del inputRow.
+ * Mismas dimensiones (34×34 px) que .sendBtn para alineamiento flex exacto.
+ *
+ * Nota: opacity en :disabled es intencional — cursor:not-allowed no funciona
+ * de forma consistente en Safari/iOS cuando el elemento está disabled.
+ */
+.iconBtn {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: color 0.15s ease, background 0.15s ease;
+  -webkit-appearance: none;
+}
+
+.iconBtn:hover:not(:disabled) {
+  color: #444;
+  background: #f0f0f0;
+}
+
+.iconBtn:active:not(:disabled) {
+  transform: scale(0.93);
+  transition: transform 0.08s ease;
+}
+
+.iconBtn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+/* .cameraBtn — clase separada para futura diferenciación visual
+ * (ej. color de acento o spinner cuando la búsqueda visual está en progreso). */
+.cameraBtn {
+  /* reservado */
+}

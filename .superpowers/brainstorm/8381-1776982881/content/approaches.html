@@ -1,0 +1,78 @@
+<h2>Cold Start UX — 3 Enfoques</h2>
+<p class="subtitle">¿Cómo detecta el frontend que el servicio está dormido?</p>
+
+<div class="options">
+
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>SSE — Push en tiempo real</h3>
+      <p>El widget mantiene una conexión <strong>Server-Sent Events</strong> abierta mientras el chat está activo. Durante el SHUTDOWN, el backend empuja un evento <code>service_shutdown</code> al frontend al instante.</p>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>✓ Pros</h4><ul>
+          <li>Notificación instantánea (0s lag)</li>
+          <li>Fiel a "backend envía señal"</li>
+          <li>Reutilizable para futuros eventos</li>
+        </ul></div>
+        <div class="cons"><h4>✗ Cons</h4><ul>
+          <li>Nueva infraestructura SSE en FastAPI</li>
+          <li>Conexión persistente por cada chat abierto</li>
+          <li>Mayor complejidad en Cloud Run (timeouts)</li>
+        </ul></div>
+      </div>
+      <p style="margin-top:8px;font-size:12px;color:#666;">⏱ Detección: &lt;1s · Complejidad: Alta</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Redis Flag + Polling liviano ⭐ Recomendado</h3>
+      <p>SHUTDOWN escribe <code>service:shutdown_at</code> en Redis. El widget, cuando <code>hasUserMessages === true</code>, hace un poll cada <strong>30s</strong> a <code>/v1/health/status</code>. Si el flag existe o la request falla → muestra el UI inline.</p>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>✓ Pros</h4><ul>
+          <li>Sin nueva infraestructura de conexión</li>
+          <li>Backend ya tiene Redis — solo escribir un key</li>
+          <li>30s lag es aceptable (shutdown tarda minutos)</li>
+          <li>Funciona incluso si SSE falla</li>
+        </ul></div>
+        <div class="cons"><h4>✗ Cons</h4><ul>
+          <li>Polling cada 30s mientras chat abierto</li>
+          <li>Hasta 30s de lag post-shutdown</li>
+        </ul></div>
+      </div>
+      <p style="margin-top:8px;font-size:12px;color:#666;">⏱ Detección: &lt;30s · Complejidad: Baja</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Híbrido: Timer frontend + Fallo reactivo</h3>
+      <p>El frontend gestiona todo: timer de inactividad de <strong>15 min</strong> → "¿Sigues ahí?" (preventivo). A los <strong>20 min</strong> o si el mensaje falla con 503 → muestra los 3 botones. Sin comunicación backend extra.</p>
+      <div class="pros-cons" style="margin-top:10px">
+        <div class="pros"><h4>✓ Pros</h4><ul>
+          <li>Cero overhead de red adicional</li>
+          <li>Implementación más simple (solo frontend)</li>
+          <li>Patrón idéntico al de Zalando</li>
+        </ul></div>
+        <div class="cons"><h4>✗ Cons</h4><ul>
+          <li>No hay señal real del backend</li>
+          <li>El timer (20min) puede no coincidir con el timeout real de Cloud Run</li>
+          <li>Caso reactivo: el usuario ya intentó enviar un mensaje</li>
+        </ul></div>
+      </div>
+      <p style="margin-top:8px;font-size:12px;color:#666;">⏱ Detección: basada en timer · Complejidad: Muy baja</p>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:24px;padding:16px;background:#f0f7ff;border-radius:8px;border-left:4px solid #2563eb;">
+  <strong>💡 En los 3 enfoques se mantiene:</strong>
+  <ul style="margin:8px 0 0 0;padding-left:18px;font-size:14px;">
+    <li>Timer preventivo 15min → "¿Sigues ahí?" (como Zalando)</li>
+    <li>Cold start detection al abrir el chat (case 1)</li>
+    <li>"Let's continue" → recap C-lite desde Redis (últimos 2 turnos)</li>
+  </ul>
+</div>
