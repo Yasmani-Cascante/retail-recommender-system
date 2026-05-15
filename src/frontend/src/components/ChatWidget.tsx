@@ -3,7 +3,7 @@ import { ChatBubble } from './ChatBubble';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { ConversationAPI } from '../services/api';
-import type { WidgetConfig, Message, ConversationState, ActiveProductContext, ProductRecommendation, RecapTurn, ServiceStatus } from '../types/widget';
+import type { WidgetConfig, Message, ConversationState, ActiveProductContext, ProductRecommendation, RecapTurn, ServiceStatus, OutfitResult } from '../types/widget';
 import styles from './ChatWidget.module.css';
 import stylesmessage from './MessageList.module.css';
 
@@ -339,10 +339,10 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   const [visualSearchAvailable, setVisualSearchAvailable] = useState(false);
 
   // isVisualSearching — true mientras se espera la respuesta del embedding-service.
-  // Bloquea el botón de cámara y el textarea durante la búsqueda visual para
-  // evitar que el usuario dispare múltiples peticiones en paralelo.
-  // Es independiente de state.isLoading (que cubre la búsqueda conversacional).
   const [isVisualSearching, setIsVisualSearching] = useState(false);
+  // S1 FASE 4: isOutfitSearching — true mientras se espera la respuesta del outfit search.
+  // Separado de isVisualSearching para que los dos botones sean independientes.
+  const [isOutfitSearching, setIsOutfitSearching] = useState(false);
 
   // ── Cold Start UX state ─────────────────────────────────────────────────
   // serviceStatus: tracks whether the backend is healthy, warming up, or down
@@ -966,6 +966,91 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     }
   }, [api, config.marketId, isVisualSearching, state.isLoading]);
 
+  /**
+   * handleOutfitSearch — S1 FASE 4: búsqueda de outfit completo por imagen.
+   *
+   * Flujo idéntico a handleImageUpload pero llama searchOutfitByImage() y
+   * guarda el resultado en message.outfitResult (no en recommendations).
+   * El renderizado categorizado lo hace MessageList cuando detecta outfitResult.
+   */
+  const handleOutfitSearch = useCallback(async (file: File) => {
+    if (isOutfitSearching || state.isLoading) return;
+    setIsOutfitSearching(true);
+
+    const previewUrl = URL.createObjectURL(file);
+    const lc = (navigator.language || 'es').split('-')[0].toLowerCase();
+    const chipLabel = lc === 'en' ? 'Complete the outfit' : 'Completar outfit';
+
+    // Mensaje del usuario: burbuja con chip que muestra la imagen de referencia
+    const userMsg: Message = {
+      id: `outfit_user_${Date.now()}`,
+      type: 'user',
+      content: '',
+      timestamp: Date.now(),
+      suggestionChip: { label: chipLabel, image_url: previewUrl },
+    };
+
+    setState(prev => ({ ...prev, messages: [...prev.messages, userMsg], isLoading: true }));
+
+    try {
+      const result: OutfitResult = await api.searchOutfitByImage(
+        file,
+        config.marketId,
+        2,   // top_k_per_category
+        0.7, // alpha
+      );
+
+      const categoriesFound = Object.keys(result.outfit ?? {});
+      const totalProducts   = categoriesFound.reduce(
+        (acc, cat) => acc + (result.outfit[cat]?.length ?? 0), 0
+      );
+
+      const hasResults = totalProducts > 0;
+      const replyText  = hasResults
+        ? (lc === 'en'
+            ? `Here are suggestions to complete your outfit (${categoriesFound.length} categories):`
+            : `Aquí tienes sugerencias para completar tu outfit (${categoriesFound.length} categorías):`)
+        : (lc === 'en'
+            ? 'No suggestions found for this outfit. Try with another photo.'
+            : 'No encontré sugerencias para este outfit. Prueba con otra foto.');
+
+      const assistantMsg: Message = {
+        id: `outfit_assistant_${Date.now()}`,
+        type: 'assistant',
+        content: replyText,
+        timestamp: Date.now(),
+        // outfitResult lleva el mapa categorizado completo para que
+        // MessageList lo renderice como un panel de outfits
+        outfitResult: hasResults ? result : undefined,
+      };
+
+      setState(prev => ({
+        ...prev,
+        messages: [...prev.messages, assistantMsg],
+        isLoading: false,
+      }));
+
+    } catch (error) {
+      const raw = error instanceof Error ? error.message : '';
+      const friendly = raw || (
+        lc === 'en'
+          ? 'Outfit search is not available right now. Please try again.'
+          : 'La búsqueda de outfit no está disponible ahora. Inténtalo de nuevo.'
+      );
+      const errorMsg: Message = {
+        id: `outfit_error_${Date.now()}`,
+        type: 'error',
+        content: friendly,
+        timestamp: Date.now(),
+      };
+      setState(prev => ({ ...prev, messages: [...prev.messages, errorMsg], isLoading: false }));
+
+    } finally {
+      URL.revokeObjectURL(previewUrl);
+      setIsOutfitSearching(false);
+    }
+  }, [api, config.marketId, isOutfitSearching, state.isLoading]);
+
   const handleToggle = useCallback(() => {
     const willOpen = !isOpen;
     setIsOpen(willOpen);
@@ -1340,14 +1425,11 @@ export function ChatWidget({ config }: ChatWidgetProps) {
 
             {/* ── Input de texto ── */}
             <MessageInput
-              // onSendMessage={() => handleSendMessage(activeProductContext ? activeProductContext.title : '')}
               onSendMessage={(messageText) => handleSendMessage(messageText, undefined, undefined, true)}
               onImageUpload={handleImageUpload}
-              disabled={state.isLoading || isVisualSearching || showWarmingOverlay || (serviceStatus === 'down' && !isResuming)}
+              onOutfitSearch={visualSearchAvailable ? handleOutfitSearch : undefined}
+              disabled={state.isLoading || isVisualSearching || isOutfitSearching || showWarmingOverlay || (serviceStatus === 'down' && !isResuming)}
               placeholder={t('inputPlaceholder')}
-              // visualSearchAvailable: controlado por el flag del backend.
-              // false (default) → botón oculto hasta que el health check confirme true.
-              // true → el flag VISUAL_SEARCH_ENABLED está activo en Cloud Run.
               visualSearchEnabled={visualSearchAvailable}
             />
           </div>

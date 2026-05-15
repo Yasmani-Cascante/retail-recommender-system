@@ -62,6 +62,24 @@ RUN HF_HUB_DOWNLOAD_TIMEOUT=300 HF_HUB_ETAG_TIMEOUT=60 \
 RUN HF_HUB_DOWNLOAD_TIMEOUT=300 HF_HUB_ETAG_TIMEOUT=60 \
     python -c "import open_clip; print('Pre-downloading Marqo/marqo-fashionSigLIP...'); open_clip.create_model_and_transforms('hf-hub:Marqo/marqo-fashionSigLIP'); print('FashionSigLIP pre-downloaded')"
 
+# S1 (12/05/2026): Pre-descargar el tokenizador de FashionSigLIP.
+#
+# PROBLEMA: open_clip.create_model_and_transforms() descarga los pesos del
+# modelo y las transforms de imagen, pero NO los archivos del tokenizador.
+# open_clip.get_tokenizer() es un paso separado que descarga:
+#   - El config del tokenizador desde hf-hub:Marqo/marqo-fashionSigLIP
+#   - Los archivos de vocabulary desde timm/ViT-B-16-SigLIP (fuente del tokenizer):
+#       tokenizer_config.json, spiece.model, tokenizer.json
+#
+# Sin este RUN, el startup falla en runtime con HF_HUB_OFFLINE=1:
+#   LocalEntryNotFoundError: Cannot find the requested files in the disk cache
+#   and outgoing traffic has been disabled.
+#
+# Este step descarga ~1MB de archivos de vocabulary. Debe ejecutarse ANTES
+# de ENV HF_HUB_OFFLINE=1 para tener acceso a red durante el build.
+RUN HF_HUB_DOWNLOAD_TIMEOUT=300 HF_HUB_ETAG_TIMEOUT=60 \
+    python -c "import open_clip; open_clip.get_tokenizer('hf-hub:Marqo/marqo-fashionSigLIP'); print('FashionSigLIP tokenizer pre-downloaded successfully')"
+
 # ── Modo offline para HuggingFace en runtime ──────────────────────────────────
 # Los dos modelos (ColBERT + fashionSigLIP) fueron pre-descargados en los pasos
 # anteriores y están cacheados en /root/.cache/huggingface/hub/ dentro de la imagen.

@@ -1,4 +1,4 @@
-import type { WidgetConfig, Message, ProductRecommendation, RecapTurn } from '../types/widget';
+import type { WidgetConfig, Message, ProductRecommendation, RecapTurn, OutfitResult } from '../types/widget';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS — defensive normalization of backend responses
@@ -386,6 +386,61 @@ export class ConversationAPI {
     return (data.recommendations ?? [])
       .filter((r): r is Record<string, unknown> => r != null && typeof r === 'object')
       .map(normalizeRecommendation);
+  }
+
+  /**
+   * searchOutfitByImage — S1 FASE 4: Búsqueda de outfit completo por imagen.
+   *
+   * Envía la imagen al backend (POST /v1/mcp/visual-search/outfit, multipart).
+   * El backend usa FashionSigLIP + Composite Embedding para encontrar productos
+   * en cada categoría de prenda (vestido, top, zapatos, accesorios...).
+   *
+   * Diferencia con searchByImage():
+   *   searchByImage()      → lista plana de productos similares
+   *   searchOutfitByImage() → mapa {categoría → [productos]} para completar el outfit
+   *
+   * @param imageFile  Foto del outfit (JPEG/PNG/WebP, max 5MB)
+   * @param marketId   Mercado para precios (CL, CH, MX, ES)
+   * @param topK       Máx productos por categoría (default: 2)
+   * @param alpha      Peso imagen vs texto (0.7 = 70% imagen, 30% texto)
+   */
+  async searchOutfitByImage(
+    imageFile: File,
+    marketId?: string,
+    topK: number = 2,
+    alpha: number = 0.7,
+  ): Promise<OutfitResult> {
+    const formData = new FormData();
+    formData.append('file', imageFile);
+    formData.append('market_id', marketId ?? this.config.marketId ?? 'ES');
+    formData.append('top_k_per_category', String(topK));
+    formData.append('alpha', String(alpha));
+
+    const response = await fetch(
+      `${this.config.apiUrl}/v1/mcp/visual-search/outfit`,
+      {
+        method: 'POST',
+        headers: {
+          // Sin Content-Type: fetch lo genera automáticamente con boundary correcto
+          'X-API-Key': this.config.apiKey,
+        },
+        body: formData,
+      },
+    );
+
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const err = await response.json();
+        detail = typeof err.detail === 'string'
+          ? err.detail
+          : JSON.stringify(err.detail ?? '');
+      } catch { /* body no es JSON */ }
+      throw new Error(detail || `Outfit search failed: HTTP ${response.status}`);
+    }
+
+    // El backend devuelve OutfitResult directamente
+    return (await response.json()) as OutfitResult;
   }
 
   private generateSessionId(): string {

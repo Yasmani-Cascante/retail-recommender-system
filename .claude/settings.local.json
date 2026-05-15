@@ -21,5 +21,8 @@
       "Bash(python -m pytest tests/unit/ -v -m \"not debug\" --ignore=tests/unit/test_mcp_personalization_engine.py)",
       "Bash(python -m pytest tests/unit/test_cold_start_health_endpoint.py tests/unit/test_cold_start_recap_endpoint.py tests/unit/test_cold_start_shutdown_flag.py -v -m \"not debug\")"
     ]
+  },
+  "enabledPlugins": {
+    "skill-creator@claude-plugins-official": true
   }
 }

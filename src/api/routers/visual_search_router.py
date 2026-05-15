@@ -211,7 +211,13 @@ async def trigger_visual_indexation(api_key: str = Depends(get_api_key)):
     client = _get_colbert_client()
 
     products_for_indexation = [
-        {'id': str(p.get('id', '')), 'title': p.get('title', ''), 'image_url': p.get('image_url', '')}
+        {
+            'id':           str(p.get('id', '')),
+            'title':        p.get('title', ''),
+            'image_url':    p.get('image_url', ''),
+            # S1: product_type necesario para construir el category_map de outfit search
+            'product_type': p.get('product_type', ''),
+        }
         for p in tfidf_recommender.product_data
         if p.get('image_url')
     ]
@@ -247,7 +253,13 @@ async def trigger_incremental_indexation(api_key: str = Depends(get_api_key)):
     client = _get_colbert_client()
 
     all_products = [
-        {'id': str(p.get('id', '')), 'title': p.get('title', ''), 'image_url': p.get('image_url', '')}
+        {
+            'id':           str(p.get('id', '')),
+            'title':        p.get('title', ''),
+            'image_url':    p.get('image_url', ''),
+            # S1: product_type necesario para category_map en indexación incremental
+            'product_type': p.get('product_type', ''),
+        }
         for p in tfidf_recommender.product_data
         if p.get('image_url')
     ]
@@ -264,4 +276,150 @@ async def trigger_incremental_indexation(api_key: str = Depends(get_api_key)):
         'mode': 'incremental',
         'products_submitted': len(all_products),
         'message': 'Incremental indexation started. Only new products will be processed.',
+    }
+
+
+# ── S1 FASE 2 (13/05/2026): Búsqueda por outfit completo ──────────────────────────
+
+@router.post('/v1/mcp/visual-search/outfit')
+async def visual_search_outfit(
+    file:               UploadFile = File(..., description='Foto del outfit (JPEG/PNG/WebP, max 5MB)'),
+    market_id:          str        = Form(default='ES', description='Mercado: CL, CH, MX, ES'),
+    top_k_per_category: int        = Form(default=3, description='Máx productos por categoría'),
+    alpha:              float      = Form(default=0.7, description='Peso imagen vs texto (0.7 = 70% imagen)'),
+    api_key:            str        = Depends(get_api_key),
+):
+    """
+    Dado un outfit completo, devuelve productos similares para cada categoría de prenda.
+
+    El sistema usa FashionSigLIP con Composite Embedding:
+      query_categoria = normalize(alpha * image_embed + (1-alpha) * text_embed(categoria))
+
+    Cada categoría usa el mismo embedding de imagen pero combinado con un
+    texto diferente ('dress', 'top', 'shoes'...) para orientar la búsqueda.
+
+    Respuesta:
+      {
+        "outfit": {
+          "dress":     [{product_id, title, image_url, price, currency, ...}],
+          "top":       [{...}],
+          "shoes":     [{...}],
+          "accessory": [{...}]
+        },
+        "outfit_mode":       "composite_category_filtered",
+        "market_id":         "ES",
+        "latency_ms":        487.3,
+        "category_map_size": 3028
+      }
+    """
+    t_start = time.time()
+
+    # ─ Guard: feature flag ────────────────────────────────────────────────────
+    if not _visual_search_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail={'error': 'visual_search_disabled',
+                    'message': 'Set VISUAL_SEARCH_ENABLED=true to enable outfit search.'}
+        )
+
+    # ─ Guard: validar imagen ────────────────────────────────────────────────
+    if file.content_type and not file.content_type.startswith('image/'):
+        raise HTTPException(400, detail=f'Expected image, got: {file.content_type}')
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(400, 'Empty file')
+    if len(image_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(413, detail=f'Image too large ({len(image_bytes)//1024}KB). Max 5MB.')
+
+    logger.info('outfit_search_request', market_id=market_id,
+                image_size_kb=round(len(image_bytes)/1024, 1),
+                top_k_per_category=top_k_per_category, alpha=alpha)
+
+    # ─ Llamar al embedding-service ─────────────────────────────────────────────
+    # Reutiliza el singleton del cliente (mismo circuit-breaker y token IAM
+    # que visual_search). Todas las categorías del catálogo real de Shopify:
+    ALL_OUTFIT_CATEGORIES = [
+        "dress", "enterito", "top", "bottom",
+        "conjunto", "shoes", "bag", "accessory", "outerwear"
+    ]
+    colbert    = _get_colbert_client()
+    raw_outfit = await colbert.search_outfit_by_image(
+        image_bytes=image_bytes,
+        target_categories=ALL_OUTFIT_CATEGORIES,
+        top_k_per_category=top_k_per_category,
+        alpha=alpha,
+    )
+
+    if raw_outfit is None:
+        raise HTTPException(503, detail='Outfit search unavailable (circuit breaker open).')
+
+    # ─ Resolver IDs → productos completos con precio de mercado ────────────
+    tfidf_rec = _get_tfidf_recommender()
+    META_KEYS = {'outfit_mode', 'latency_ms', 'visual_index_size', 'category_map_size'}
+
+    # FIX (13/05/2026): El endpoint /v1/embed/search-outfit del embedding-service
+    # retorna la respuesta envuelta en un campo 'outfit' por el modelo Pydantic
+    # OutfitSearchResponse:
+    #   {"outfit": {"dress": [...], "top": [...]}, "outfit_mode": ..., ...}
+    #
+    # El router esperaba categorías planas al nivel raíz:
+    #   {"dress": [...], "top": [...], "outfit_mode": ..., ...}
+    #
+    # Bug: el loop ve category='outfit', product_ids=dict (no lista) → skip → outfit={}
+    # Fix: extraer el dict anidado si existe; fallback a formato plano si no.
+    if 'outfit' in raw_outfit and isinstance(raw_outfit.get('outfit'), dict):
+        categories_to_resolve = raw_outfit['outfit']   # formato anidado (embedding-service actual)
+    else:
+        categories_to_resolve = {                       # formato plano (backward compat)
+            k: v for k, v in raw_outfit.items() if k not in META_KEYS
+        }
+
+    logger.info(
+        'outfit_resolving_products',
+        categories=list(categories_to_resolve.keys()),
+        raw_keys=list(raw_outfit.keys()),
+        id_index_size=len(tfidf_rec.id_index),
+    )
+
+    outfit_resolved: dict = {}
+    for category, product_ids in categories_to_resolve.items():
+        if not isinstance(product_ids, list) or not product_ids:
+            continue
+
+        cat_products = []
+        for pid in product_ids:
+            prod = tfidf_rec.id_index.get(str(pid))
+            if not prod:
+                logger.debug('outfit_product_not_found', pid=pid, category=category)
+                continue
+            mkt = prod.get('market_prices', {}).get(market_id, {})
+            cat_products.append({
+                'product_id':   str(pid),
+                'title':        prod.get('title', ''),
+                'image_url':    prod.get('image_url', ''),
+                'product_type': prod.get('product_type', ''),
+                'handle':       prod.get('handle', ''),
+                'price':        mkt.get('price') or prod.get('price'),
+                'currency':     mkt.get('currency', 'CLP'),
+                'category':     category,
+            })
+        if cat_products:
+            outfit_resolved[category] = cat_products
+
+    # ─ Respuesta ────────────────────────────────────────────────────────────────────
+    total_ms = round((time.time() - t_start) * 1000, 1)
+    logger.info(
+        'outfit_search_complete',
+        market_id=market_id,
+        categories_found=list(outfit_resolved.keys()),
+        total_products=sum(len(v) for v in outfit_resolved.values()),
+        outfit_mode=raw_outfit.get('outfit_mode', 'unknown'),
+        total_latency_ms=total_ms,
+    )
+    return {
+        'outfit':            outfit_resolved,
+        'outfit_mode':       raw_outfit.get('outfit_mode', 'unknown'),
+        'market_id':         market_id,
+        'latency_ms':        total_ms,
+        'category_map_size': raw_outfit.get('category_map_size', 0),
     }

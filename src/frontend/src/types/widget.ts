@@ -41,6 +41,14 @@ export interface Message {
     marketContext?: unknown;
     shutdownAt?: number | null;
   };
+  /**
+   * outfitResult — resultado de una búsqueda de outfit completo (S1 FASE 4).
+   * Cuando el usuario sube una foto de outfit, el backend devuelve productos
+   * agrupados por categoría de prenda. Este campo almacena esa estructura
+   * para que MessageList lo renderice como un panel de outfits categorizado.
+   * Undefined para mensajes normales o de búsqueda visual simple.
+   */
+  outfitResult?: OutfitResult;
 }
 
 export interface ProductRecommendation {
@@ -105,3 +113,46 @@ export interface RecapTurn {
 }
 
 export type ServiceStatus = 'healthy' | 'warming' | 'down';
+
+/**
+ * OutfitResult — respuesta del endpoint POST /v1/mcp/visual-search/outfit (S1 FASE 4).
+ *
+ * El backend agrupa los productos encontrados por categoría de prenda.
+ * El widget los renderiza como un panel horizontal con una columna por categoría.
+ *
+ * Categorías posibles (del catálogo ai-shoppings.myshopify.com):
+ *   dress, enterito, top, bottom, conjunto, shoes, bag, accessory, outerwear
+ *
+ * Ejemplo:
+ *   {
+ *     outfit: {
+ *       dress:     [{ product_id, title, image_url, price, currency, ... }],
+ *       top:       [...],
+ *       accessory: [...],
+ *     },
+ *     outfit_mode:       "composite_category_filtered",
+ *     market_id:         "ES",
+ *     latency_ms:        487.3,
+ *     category_map_size: 3028,
+ *   }
+ */
+export interface OutfitProduct {
+  product_id:   string;
+  title:        string;
+  image_url?:   string;
+  price?:       number;
+  currency?:    string;
+  product_type?: string;
+  handle?:      string;
+  category?:    string;
+  url?:         string;
+}
+
+export interface OutfitResult {
+  /** Mapa de categoría → lista de productos. Las categorías son dinámicas. */
+  outfit:            Record<string, OutfitProduct[]>;
+  outfit_mode:       string;   // 'composite_category_filtered' | 'degraded_no_category_map'
+  market_id:         string;
+  latency_ms:        number;
+  category_map_size: number;
+}

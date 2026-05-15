@@ -141,9 +141,12 @@ async def health():
             'colbert': 'LFM2-ColBERT-350M',
             'visual':  'Marqo/marqo-fashionSigLIP',
         },
-        'index_size': colbert_retriever.index_size() if colbert_retriever else 0,
-        'visual_index_size': visual_retriever.index_size() if visual_retriever else 0,
-        'visual_index_ready': visual_retriever.is_ready() if visual_retriever else False,
+        'index_size':           colbert_retriever.index_size() if colbert_retriever else 0,
+        'visual_index_size':    visual_retriever.index_size() if visual_retriever else 0,
+        'visual_index_ready':   visual_retriever.is_ready() if visual_retriever else False,
+        # S1: category_map_size > 0 indica que el outfit search está listo
+        'category_map_size':    visual_retriever.category_map_size() if visual_retriever else 0,
+        'outfit_search_ready':  (visual_retriever.category_map_size() > 0) if visual_retriever else False,
     }
 
 
@@ -255,6 +258,81 @@ async def build_image_index(
         'products_submitted':  len(products_snapshot),
         'products_with_image': products_with_url,
     }
+
+
+# ── S1: Endpoint de búsqueda de outfit completo ──────────────────────────────
+
+class OutfitSearchResponse(BaseModel):
+    outfit:            dict   # {category: [product_id, ...]}
+    outfit_mode:       str    # 'composite_category_filtered' | 'degraded_no_category_map'
+    latency_ms:        float
+    visual_index_size: int
+    category_map_size: int
+
+
+@app.post('/v1/embed/search-outfit', response_model=OutfitSearchResponse)
+async def search_outfit(
+    file:       UploadFile = File(..., description='Foto del outfit (JPEG/PNG/WebP, max 5MB)'),
+    categories: str        = Form(
+        default='["dress","top","bottom","shoes"]',
+        description='JSON array con categorías objetivo'
+    ),
+    top_k:      int        = Form(default=3, description='Máx resultados por categoría'),
+    alpha:      float      = Form(default=0.7, description='Peso imagen vs texto (0-1)'),
+):
+    """
+    S1: Búsqueda de outfit completo.
+
+    Dado un outfit, devuelve product_ids para cada categoría solicitada
+    usando Composite Embedding: alpha × imagen + (1-alpha) × texto_categoría.
+
+    Modo degradado: si category_map está vacío (índice pre-S1), devuelve
+    candidatos sin filtro de categoría. Rebuild para activar modo completo.
+    """
+    if not visual_retriever:
+        raise HTTPException(503, 'Visual retriever not ready')
+    if not visual_retriever.is_ready():
+        raise HTTPException(503, 'Visual index not built — call POST /v1/embed/index-images first')
+
+    content_type = file.content_type or ''
+    if content_type and not content_type.startswith('image/'):
+        raise HTTPException(400, f'Expected image file, got: {content_type}')
+
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(400, 'Empty file')
+    if len(image_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(413, f'Image too large: {len(image_bytes)//1024}KB. Max 5MB.')
+
+    import json as _json
+    try:
+        target_cats = _json.loads(categories)
+        if not isinstance(target_cats, list):
+            raise ValueError('categories must be a JSON array')
+    except Exception:
+        target_cats = ['dress', 'top', 'bottom', 'shoes']
+
+    t0     = time.time()
+    outfit = await visual_retriever.search_outfit_by_image(
+        image_bytes,
+        target_categories=target_cats,
+        top_k_per_category=top_k,
+        alpha=alpha,
+    )
+
+    outfit_mode = outfit.pop('outfit_mode', 'unknown')
+    latency_ms  = round((time.time() - t0) * 1000, 1)
+
+    log.info('outfit_search: categories=%s found=%s mode=%s latency=%.1fms',
+             target_cats, list(outfit.keys()), outfit_mode, latency_ms)
+
+    return OutfitSearchResponse(
+        outfit=outfit,
+        outfit_mode=outfit_mode,
+        latency_ms=latency_ms,
+        visual_index_size=visual_retriever.index_size(),
+        category_map_size=visual_retriever.category_map_size(),
+    )
 
 
 @app.post('/v1/embed/search-image', response_model=SearchImageResponse)

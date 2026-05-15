@@ -171,13 +171,18 @@ class LFM2ColBERTClient:
         Devuelve el header Authorization con el ID token actual.
         Renueva el token si faltan menos de 5 minutos para que expire.
 
-        Returns:
-            {'Authorization': 'Bearer <token>'} si auth está habilitado y el token está disponible.
-            {} si auth está deshabilitado o el token no está disponible (ADC no configurado).
+        FIX (13/05/2026): Añadido asyncio.wait_for(timeout=10s) en la
+        obtención del token. Sin este timeout, _fetch_id_token_sync() puede
+        bloquear el event loop por hasta 135 segundos en el PRIMER request
+        a un singleton recién creado (observado en producción 13/05/2026).
 
-        Los tokens de Google ID tienen TTL de 1h exacta. Los renovamos a los 55min
-        (5min de margen) para evitar requests con token expirado en el intervalo
-        entre validación y procesamiento en el servidor destino.
+        Causa probable: google-auth intenta múltiples estrategias de autenticación
+        antes de llegar al metadata server de GCP, cada una con su propio timeout.
+        El timeout de 10s garantiza que el primer request nunca se bloquea > 10s.
+
+        Si el token no se obtiene en 10s, el request procede SIN Authorization.
+        El embedding-service retornará 403, que el circuit-breaker captura.
+        En el segundo request (token ya cacheado), funciona instantáneamente.
         """
         if self._auth_disabled:
             return {}
@@ -185,17 +190,30 @@ class LFM2ColBERTClient:
         # Renovar si el token expira en menos de 5 minutos (o nunca se ha obtenido)
         if time.monotonic() >= self._token_expires_at - 300:
             loop = asyncio.get_running_loop()
-            token = await loop.run_in_executor(None, self._fetch_id_token_sync)
-            if token:
-                self._cached_token = token
-                # Los tokens de Google ID expiran exactamente a los 3600s (1h).
-                # Usamos 3540s (59min) para el TTL del caché como margen de seguridad.
-                self._token_expires_at = time.monotonic() + 3540
-                log.debug('ColBERT IAM: ID token renovado (expira en ~59min)')
-            else:
-                # Sin token disponible — volver al modo sin auth
-                self._cached_token = None
-                # Reintentar en 60s para no martillear el metadata server en caso de fallo transitorio
+            try:
+                # FIX: timeout de 10s para evitar el bloqueo de 135s en primer request
+                token = await asyncio.wait_for(
+                    loop.run_in_executor(None, self._fetch_id_token_sync),
+                    timeout=10.0
+                )
+                if token:
+                    self._cached_token    = token
+                    self._token_expires_at = time.monotonic() + 3540
+                    log.debug('ColBERT IAM: ID token renovado (expira en ~59min)')
+                else:
+                    self._cached_token    = None
+                    self._token_expires_at = time.monotonic() + 60
+                    return {}
+            except asyncio.TimeoutError:
+                # La obtención del token tarda > 10s.
+                # Logueamos WARNING y continuamos sin auth para no bloquear el request.
+                # El embedding-service retornará 403 → circuit-breaker lo captura.
+                # En el siguiente ciclo (60s) se reintenta.
+                log.warning(
+                    'ColBERT IAM: token fetch timeout (>10s) — proceeding without auth. '
+                    'Retry in 60s. Check GCP metadata server availability.'
+                )
+                self._cached_token    = None
                 self._token_expires_at = time.monotonic() + 60
                 return {}
 
@@ -410,3 +428,93 @@ class LFM2ColBERTClient:
             self._handle_visual_failure(e)
             log.error('Incremental image indexation request failed: %s', e, exc_info=True)
             return False
+
+    async def search_outfit_by_image(
+        self,
+        image_bytes: bytes,
+        target_categories: Optional[List[str]] = None,
+        top_k_per_category: int = 3,
+        alpha: float = 0.7,
+    ) -> Optional[dict]:
+        """
+        S1 FASE 2 (13/05/2026): Búsqueda de outfit completo por imagen.
+
+        Dado un outfit foto, devuelve product_ids para cada categoría solicitada
+        usando Composite Embedding (alpha * image_embed + (1-alpha) * text_embed).
+
+        El embedding-service aplica FashionSigLIP para:
+          1. Encodear la imagen del outfit
+          2. Encodear texto por categoría (dress/top/shoes/...)
+          3. Combinar embeddings con factor alpha
+          4. Buscar en FAISS y filtrar por category_map
+
+        Por qué NO se mezcla auth con Content-Type:
+          - Igual que search_by_image() — httpx genera multipart/form-data
+            automáticamente cuando hay files=
+          - auth es {} o {'Authorization': 'Bearer ...'} — sin Content-Type
+
+        Args:
+            image_bytes:          Bytes de la imagen del outfit (JPEG/PNG)
+            target_categories:    Categorías a buscar. Default: dress, top, shoes, accessory
+            top_k_per_category:   Máx productos por categoría en el resultado
+            alpha:                Peso imagen vs texto (0.7 = 70% imagen, 30% texto)
+
+        Returns:
+            Dict con estructura:
+              {
+                "dress":      ["pid1", "pid2"],
+                "top":        ["pid3"],
+                "shoes":      ["pid4"],
+                "outfit_mode": "composite_category_filtered" | "degraded_no_category_map",
+                "latency_ms": 487.3,
+                "category_map_size": 3028
+              }
+            None si el circuit-breaker visual está abierto o hay error de red.
+        """
+        if self._visual_circuit_open:
+            log.debug('ColBERT VISUAL circuit open — outfit search skipped')
+            return None
+
+        if target_categories is None:
+            target_categories = ["dress", "top", "shoes", "accessory"]
+
+        try:
+            import json as _json
+            auth = await self._auth_headers()
+
+            # SIN Content-Type: httpx genera multipart/form-data con boundary correcto.
+            # Patrón idéntico a search_by_image() — ver comentario en su docstring.
+            resp = await self._http.post(
+                '/v1/embed/search-outfit',
+                headers=auth,
+                files={'file': ('outfit.jpg', image_bytes, 'image/jpeg')},
+                data={
+                    'categories':  _json.dumps(target_categories),
+                    'top_k':       str(top_k_per_category),
+                    'alpha':       str(alpha),
+                },
+                # Más generoso que search_by_image (8s): N categorías × encode_text
+                # (~15ms cada una) + encode_image (~400ms) + N × FAISS search (<1ms)
+                timeout=12.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self._visual_failures = 0
+
+            # Extraer métricas para logging sin contaminar el return
+            outfit_mode  = data.get('outfit_mode', 'unknown')
+            latency_ms   = data.get('latency_ms', 0)
+            found_cats   = [k for k in data
+                            if k not in ('outfit_mode', 'latency_ms',
+                                         'visual_index_size', 'category_map_size')]
+            log.info(
+                'outfit_search_completed: mode=%s latency=%.0fms categories=%s cat_map=%d',
+                outfit_mode, latency_ms, found_cats,
+                data.get('category_map_size', 0)
+            )
+            return data
+
+        except Exception as e:
+            self._handle_visual_failure(e)
+            log.error('Outfit search request failed: %s', e, exc_info=True)
+            return None

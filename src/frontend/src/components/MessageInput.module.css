@@ -15,6 +15,7 @@
 .inputRow {
   display: flex;
   align-items: flex-end;
+  flex-direction: column;
   gap: 8px;
   max-width: 660px;
   margin: 0 auto;
@@ -27,7 +28,15 @@
   box-shadow: none
   /* box-shadow: rgba(14, 63, 126, 0.06) 0px 0px 0px 1px, rgba(42, 51, 69, 0.06) 0px 1px 1px -0.5px, rgba(42, 51, 70, 0.06) 0px 3px 3px -1.5px, rgba(42, 51, 70, 0.06) 0px 6px 6px -3px, rgba(14, 63, 126, 0.06) 0px 12px 12px -6px, rgba(14, 63, 126, 0.06) 0px 24px 24px -12px; */
 }
-
+.inputGroup {
+  width: 100%;
+  display: flex
+}
+.iconGroup {
+  display: flex;
+  margin-right: 0;
+  width: 100%;
+}
 .inputRow:focus-within {
   border-color: #777777;
   /* border: 1px solid #1c1c1c; */

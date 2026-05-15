@@ -202,8 +202,6 @@ from src.api.integrations.ai.optimized_conversation_manager import OptimizedConv
 try:
     from src.api.integrations.shopify_kb_client import create_shopify_kb_client
     from src.api.services.shopify_kb_sync import ShopifyKBSyncService, KBBackgroundSyncJob
-    # OPM-1: Visual index reconciliation job
-    from src.api.services.visual_index_sync_job import run_visual_index_sync_job
     from src.api.core.knowledge_base_v2 import create_shopify_knowledge_base
     import asyncpg  # For PostgreSQL connection pool
     SHOPIFY_KB_AVAILABLE = True
@@ -1399,85 +1397,6 @@ async def lifespan(app: FastAPI):
                 else:
                     logger.info("ℹ️ Background sync disabled by configuration")
                     app.state.kb_background_sync = None
-
-                # ── OPM-1: Visual Index Incremental Sync Job ─────────────────────────
-                # Reconciliación periódica del índice FAISS con el catálogo TF-IDF.
-                # Complementa los webhooks products/create y products/update.
-                # Solo arranca si VISUAL_SEARCH_ENABLED=true y hay catálogo en memoria.
-                # Ver src/api/services/visual_index_sync_job.py para documentación completa.
-                if (
-                    os.environ.get("VISUAL_SEARCH_ENABLED", "false").lower() == "true"
-                    and tfidf_recommender
-                    and getattr(tfidf_recommender, "loaded", False)
-                    and tfidf_recommender.product_data
-                ):
-                    app.state.visual_index_sync_task = asyncio.create_task(
-                        run_visual_index_sync_job(tfidf_recommender.product_data)
-                    )
-                    logger.info(
-                        "opm1_visual_sync_job_scheduled",
-                        interval_hours=os.getenv("PRODUCT_VISUAL_SYNC_INTERVAL_HOURS", "6"),
-                        initial_delay_seconds=os.getenv("PRODUCT_VISUAL_SYNC_INITIAL_DELAY_S", "120"),
-                        catalog_products=len(tfidf_recommender.product_data),
-                        note="FAISS gap reconciliation active — complements webhooks",
-                    )
-                else:
-                    app.state.visual_index_sync_task = None
-                    logger.info(
-                        "opm1_visual_sync_job_skipped",
-                        visual_search_enabled=os.environ.get("VISUAL_SEARCH_ENABLED", "false"),
-                        has_catalog=bool(
-                            tfidf_recommender
-                            and getattr(tfidf_recommender, "loaded", False)
-                            and tfidf_recommender.product_data
-                        ),
-                        note="enable VISUAL_SEARCH_ENABLED=true to activate OPM-1",
-                    )
-
-                # ── PASO 10.6: Pre-calentar colbert_client singleton para outfit search ────────
-                # FIX (13/05/2026): El primer request al endpoint /v1/mcp/visual-search/outfit
-                # tardó 135s porque _auth_headers() bloqueaba esperando el ID token IAM.
-                #
-                # Root cause: el singleton del visual_search_router se inicializa LAZY
-                # (en el primer request de usuario). Su _cached_token está vacío y
-                # _fetch_id_token_sync() tarda ~135s en el primer intento en algunas
-                # instancias Cloud Run (detectado 13/05/2026, autoscaling instance).
-                #
-                # Solución: inicializar el singleton Y pre-fetchear el token IAM AHORA,
-                # durante el lifespan startup, donde el delay de 135s no afecta al usuario.
-                # Para el primer request real, el token ya está en caché (~0ms).
-                #
-                # NOTA: _auth_headers() ya tiene asyncio.wait_for(timeout=10s) como
-                # segunda línea de defensa (FIX en colbert_client.py).
-                if os.environ.get('VISUAL_SEARCH_ENABLED', 'false').lower() == 'true':
-                    try:
-                        from src.api.routers.visual_search_router import _get_colbert_client
-                        _vs_client = _get_colbert_client()  # inicializa singleton
-
-                        async def _prefetch_iam_token():
-                            """Pre-fetchea el token IAM para el colbert singleton."""
-                            try:
-                                await _vs_client._auth_headers()  # ya tiene timeout=10s
-                                logger.info(
-                                    'visual_search_iam_prefetch_ok',
-                                    note='colbert singleton ready — first outfit request will be fast'
-                                )
-                            except Exception as _e:
-                                logger.warning(
-                                    'visual_search_iam_prefetch_error', error=str(_e)
-                                )
-
-                        # Fire-and-forget: no bloqueamos el startup si el prefetch tarda
-                        asyncio.create_task(_prefetch_iam_token())
-                        logger.info(
-                            'visual_search_colbert_warmup_started',
-                            note='IAM token prefetch in background — eliminates 135s first-request delay'
-                        )
-                    except Exception as _warmup_err:
-                        logger.warning(
-                            'visual_search_colbert_warmup_error',
-                            error=str(_warmup_err)
-                        )
                 
                 # 6. Initial Sync (optional - comment out if not needed)
                 if hasattr(settings, 'KB_SYNC_ON_STARTUP') and settings.KB_SYNC_ON_STARTUP:
@@ -1749,15 +1668,6 @@ async def lifespan(app: FastAPI):
                     logger.info("✅ KB background sync stopped")
                 except Exception as e:
                     logger.warning(f"⚠️ KB background sync shutdown warning: {e}")
-
-            # OPM-1: Cancel visual index sync job
-            if hasattr(app.state, 'visual_index_sync_task') and app.state.visual_index_sync_task:
-                try:
-                    app.state.visual_index_sync_task.cancel()
-                    await asyncio.gather(app.state.visual_index_sync_task, return_exceptions=True)
-                    logger.info("✅ OPM-1 visual index sync job stopped cleanly")
-                except Exception as e:
-                    logger.warning(f"⚠️ OPM-1 visual index sync job shutdown warning: {e}")
             
             # Close PostgreSQL pool
             if hasattr(app.state, 'db_pool') and app.state.db_pool:

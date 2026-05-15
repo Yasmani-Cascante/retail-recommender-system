@@ -2,17 +2,30 @@
 Hybrid Intent Detector
 =======================
 
-Combina rule-based intent detection con ML fallback para
-máxima accuracy con mínima latencia.
+Combina rule-based intent detection + ML fallback + MiniLM semantico
+para maxima accuracy con minima latencia.
 
-Estrategia:
-1. Siempre ejecutar rule-based primero (rápido, 1-5ms)
-2. Si confidence >= threshold → usar resultado
-3. Si confidence < threshold → fallback a ML
-4. Si ML falla → usar rule-based de todos modos
+Arquitectura de 3 capas:
+  Capa 1: RuleBasedIntentDetector  — < 1ms, determinista, 0 dependencias
+  Capa 2: sklearn TF-IDF + LR     — 0.16ms, 96.26% acc, lightweight
+  Capa 3: MiniLM multilingual     — ~10ms, semantica cross-lingual
 
-Autor: AI Assistant  
-Fecha: 09 Enero 2026 - FIXED: ML intent lowercase conversion
+Flujo de despacho:
+  rule_conf >= 0.8        -> usar rule-based (fast path)
+  rule_conf < 0.8         -> sklearn ML (capa 2)
+    ml_conf >= 0.60       -> usar ML result
+    ml_conf < 0.60        -> MiniLM semantico (capa 3)  [NUEVO]
+      miniml_conf >= 0.50 -> usar MiniLM result
+      miniml_conf < 0.50  -> degradar a ML result (graceful)
+
+La capa 3 resuelve misclasificaciones por:
+  - Slang LATAM ("mandar" vs "enviar", "regresar" vs "devolver")
+  - Typos e informalidades sin keywords exactas
+  - Intents implicitos ("esto me quedo grande" -> sizing/return)
+  - Queries cross-lingual ("I want to return this vestido")
+
+Autor: Retail Recommender Engineering
+Fecha: 09 Enero 2026 | Capa 3 agregada: Mayo 2026
 """
 
 import os
@@ -46,7 +59,7 @@ class HybridIntentResult:
     product_context: dict
     
     # Campos adicionales para híbrido
-    method_used: str  # "rule_based" | "ml_fallback"
+    method_used: str  # "rule_based" | "ml_fallback" | "miniml_semantic"
     rule_based_confidence: float  # Confidence del rule-based
     ml_confidence: Optional[float] = None  # Confidence del ML (si se usó)
     total_time_ms: float = 0.0  # Tiempo total de detección
@@ -102,24 +115,42 @@ class HybridIntentDetector:
         # Rule-based detector (siempre activo)
         self.rule_based = get_intent_detector()
         
-        # ML classifier (lazy load)
+        # ML classifier capa 2 (lazy load)
         self.ml_classifier = None
         
-        # Configuración
+        # MiniLM classifier capa 3 (lazy load) [NUEVO]
+        # Solo se instancia si MINILM_INTENT_ENABLED=true
+        self.miniml_classifier = None
+        
+        # Configuración capas 1+2 (sin cambios)
         self.ml_enabled = os.getenv("ML_INTENT_ENABLED", "false").lower() == "true"
         self.confidence_threshold = float(os.getenv("ML_CONFIDENCE_THRESHOLD", "0.8"))
         
-        # Estadísticas (para análisis)
+        # Configuración capa 3 [NUEVO]
+        # MINILM_INTENT_ENABLED: activa la capa 3 (default: off)
+        # MINILM_TRIGGER_THRESHOLD: umbral de ml_conf bajo el cual se invoca MiniLM
+        # MINILM_MIN_CONFIDENCE: minimo cosine similarity para aceptar resultado MiniLM
+        self.miniml_enabled = os.getenv("MINILM_INTENT_ENABLED", "false").lower() == "true"
+        self.miniml_trigger_threshold = float(os.getenv("MINILM_TRIGGER_THRESHOLD", "0.60"))
+        self.miniml_min_confidence = float(os.getenv("MINILM_MIN_CONFIDENCE", "0.50"))
+        
+        # Estadísticas (para análisis y monitoreo)
         self.stats = {
             "total_queries": 0,
             "rule_based_used": 0,
             "ml_used": 0,
-            "ml_failed": 0
+            "ml_failed": 0,
+            "miniml_used": 0,    # [NUEVO] queries resueltas por capa 3
+            "miniml_skipped": 0, # [NUEVO] capa 3 invocada pero conf < miniml_min_confidence
+            "miniml_failed": 0,  # [NUEVO] errores en capa 3 (exception)
         }
         
         logger.info(
             f"HybridIntentDetector initialized "
-            f"(ML enabled: {self.ml_enabled}, threshold: {self.confidence_threshold})"
+            f"(ML enabled: {self.ml_enabled}, threshold: {self.confidence_threshold}, "
+            f"MiniLM enabled: {self.miniml_enabled}, "
+            f"trigger: {self.miniml_trigger_threshold}, "
+            f"min_conf: {self.miniml_min_confidence})"
         )
     
     def _ensure_ml_loaded(self) -> bool:
@@ -142,6 +173,41 @@ class HybridIntentDetector:
                 logger.warning("ML classifier failed to load, will use rule-based only")
                 return False
         
+        return True
+
+    def _ensure_miniml_loaded(self) -> bool:
+        """
+        Asegura que MiniLM classifier (capa 3) esta cargado (lazy load).
+
+        Sigue el mismo patron que _ensure_ml_loaded() pero para la
+        capa semantica. Si MINILM_INTENT_ENABLED=false o la carga
+        falla, retorna False sin lanzar excepciones.
+
+        El primer llamado con ML_INTENT_ENABLED=true puede tardar
+        ~3-5s (carga del modelo + precomputo de centroides).
+        Los llamados subsecuentes son instantaneos (is_loaded()=True).
+
+        Returns:
+            True si MiniLM esta disponible, False si no (degradacion graceful).
+        """
+        # Verificar feature flag primero (cero overhead si esta apagado)
+        if not self.miniml_enabled:
+            return False
+
+        # Instanciar singleton solo cuando realmente se necesita
+        if self.miniml_classifier is None:
+            from src.api.ml.miniml_classifier import get_miniml_classifier  # noqa: PLC0415
+            self.miniml_classifier = get_miniml_classifier()
+
+        # Cargar modelo si todavia no esta cargado
+        if not self.miniml_classifier.is_loaded():
+            success = self.miniml_classifier.load()
+            if not success:
+                logger.warning(
+                    "MiniLM classifier failed to load, will use ML-only result"
+                )
+                return False
+
         return True
     
     async def detect(self, query: str, user_id: Optional[str] = None) -> HybridIntentResult:
@@ -374,6 +440,77 @@ class HybridIntentDetector:
                     f"over ML confidence {ml_prediction.confidence:.2f}"
                 )
 
+            # ===========================================================
+            # CAPA 3: MiniLM semantico (NUEVO — Mayo 2026)
+            # ===========================================================
+            # Se activa cuando ml_confidence < miniml_trigger_threshold
+            # (default 0.60), lo que indica que sklearn tambien tiene
+            # baja certeza y el query puede ser slang/typo/cross-lingual.
+            #
+            # Importante: se evalua DESPUES del calculo de final_confidence
+            # (intents_agree + max()) para usar el mejor valor disponible
+            # de sklearn como referencia de comparacion. Si final_confidence
+            # ya supero el threshold, MiniLM no se invoca.
+            # ===========================================================
+            if (
+                final_confidence < self.miniml_trigger_threshold
+                and self._ensure_miniml_loaded()
+            ):
+                try:
+                    miniml_pred = self.miniml_classifier.predict(query)
+
+                    if (
+                        miniml_pred is not None
+                        and miniml_pred.confidence >= self.miniml_min_confidence
+                    ):
+                        # MiniLM tiene confianza suficiente -> usar su resultado
+                        self.stats["miniml_used"] += 1
+                        total_time = (time.time() - start_time) * 1000
+
+                        logger.info(
+                            f"MINIML: capa 3 activa "
+                            f"label={miniml_pred.full_label} "
+                            f"conf={miniml_pred.confidence:.3f} "
+                            f"(ml fue {ml_intent_lowercase}@{ml_prediction.confidence:.3f}, "
+                            f"rule fue {rule_result.primary_intent}@{rule_confidence:.3f})"
+                        )
+
+                        return HybridIntentResult(
+                            primary_intent=miniml_pred.primary_intent,
+                            sub_intent=miniml_pred.sub_intent or "unknown",
+                            confidence=miniml_pred.confidence,
+                            reasoning=(
+                                f"MiniLM semantic layer-3 "
+                                f"(label={miniml_pred.full_label}, "
+                                f"cosine={miniml_pred.confidence:.2f}, "
+                                f"rule={rule_confidence:.2f}, "
+                                f"ml={ml_prediction.confidence:.2f})"
+                            ),
+                            matched_patterns=rule_result.matched_patterns,
+                            product_context=rule_result.product_context,
+                            method_used="miniml_semantic",
+                            rule_based_confidence=rule_confidence,
+                            ml_confidence=ml_prediction.confidence,
+                            total_time_ms=total_time,
+                        )
+                    else:
+                        # MiniLM invocado pero confianza insuficiente
+                        # -> dejar que el flujo continue al return de ML
+                        self.stats["miniml_skipped"] += 1
+                        logger.debug(
+                            f"MINIML: confianza insuficiente "
+                            f"({miniml_pred.confidence if miniml_pred else 'None':.3f} "
+                            f"< {self.miniml_min_confidence}), usando resultado ML"
+                        )
+
+                except Exception as miniml_exc:
+                    # Degradacion graceful: fallo en capa 3 no bloquea la respuesta
+                    self.stats["miniml_failed"] += 1
+                    logger.error(
+                        f"MINIML: exception en capa 3: {miniml_exc}",
+                        exc_info=True,
+                    )
+
             # Usar intent ML con sub_intent compatible
             return HybridIntentResult(
                 primary_intent=ml_intent_lowercase,  # ✅ FIXED: lowercase
@@ -410,9 +547,10 @@ class HybridIntentDetector:
     
     def get_stats(self) -> dict:
         """
-        Retorna estadísticas de uso
+        Retorna estadísticas de uso por capa.
         
-        Útil para analizar qué método se usa más
+        Útil para monitorear qué porcentaje de queries requiere cada capa
+        y detectar si la capa 3 se activa más de lo esperado.
         """
         if self.stats["total_queries"] == 0:
             return self.stats
@@ -423,16 +561,21 @@ class HybridIntentDetector:
             **self.stats,
             "rule_based_percentage": (self.stats["rule_based_used"] / total) * 100,
             "ml_percentage": (self.stats["ml_used"] / total) * 100,
-            "ml_failure_rate": (self.stats["ml_failed"] / total) * 100 if self.stats["ml_failed"] > 0 else 0.0
+            "miniml_percentage": (self.stats["miniml_used"] / total) * 100,
+            "ml_failure_rate": (self.stats["ml_failed"] / total) * 100 if self.stats["ml_failed"] > 0 else 0.0,
+            "miniml_skip_rate": (self.stats["miniml_skipped"] / max(1, self.stats["miniml_used"] + self.stats["miniml_skipped"])) * 100,
         }
     
     def reset_stats(self):
-        """Resetea estadísticas"""
+        """Resetea estadísticas de todas las capas."""
         self.stats = {
             "total_queries": 0,
             "rule_based_used": 0,
             "ml_used": 0,
-            "ml_failed": 0
+            "ml_failed": 0,
+            "miniml_used": 0,
+            "miniml_skipped": 0,
+            "miniml_failed": 0,
         }
 
 

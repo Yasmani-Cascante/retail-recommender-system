@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Message, OutfitProduct } from '../types/widget';
 import { ProductCard } from './ProductCard';
 import styles from './MessageList.module.css';
@@ -261,64 +261,12 @@ function getOutfitLabel(category: string): string {
 }
 
 /**
- * outfitToReco — convierte OutfitProduct a ProductRecommendation para los callbacks
- * del actionBar (onChatAbout / onShowSimilar).
- * OutfitProduct viene del backend con campos ligeramente distintos (product_id vs id).
+ * OutfitCategoryColumn - columna de una categoria dentro del panel de outfit.
+ * Muestra hasta 2 productos con imagen, titulo y precio.
  */
-function outfitToReco(p: OutfitProduct): import('../types/widget').ProductRecommendation {
-  return {
-    id:          p.product_id,
-    title:       p.title,
-    description: '',
-    price:       p.price ?? 0,
-    currency:    p.currency ?? 'CLP',
-    category:    p.category ?? '',
-    vendor:      '',
-    score:       0,
-    image_url:   p.image_url,
-    url:         p.url || (p.handle ? `/products/${p.handle}` : undefined),
-  };
-}
-
-/**
- * OutfitCardSlider — S1 FASE 4 (rework 14/05/2026).
- *
- * Muestra los productos de una categoría de outfit como un slider tipo "card deck":
- *   • Una carta visible a la vez (el slide activo)
- *   • Cartas fantasma detrás creando efecto de mazo (puro CSS, sin librerías)
- *   • Navegación: tap en mitad izquierda = anterior, mitad derecha = siguiente
- *   • Dots indicadores de posición debajo del mazo
- *   • ActionBar idéntica a ProductCard: Añadir al carrito + Ver similares + Hablar sobre
- *
- * Compatibilidad con la arquitectura:
- *   OutfitProduct → outfitToReco() → ProductRecommendation para los callbacks.
- */
-function OutfitCardSlider({
-  category,
-  products,
-  onChatAbout,
-  onShowSimilar,
-}: {
-  category:      string;
-  products:      OutfitProduct[];
-  onChatAbout?:  (product: import('../types/widget').ProductRecommendation) => void;
-  onShowSimilar?: (product: import('../types/widget').ProductRecommendation) => void;
-}) {
-  const [activeIdx, setActiveIdx] = useState(0);
-  const [dir, setDir]             = useState<1 | -1>(1);
-  const [animating, setAnimating] = useState(false);
-  // Altura medida de la carta activa: los ghost cards la necesitan porque son
-  // divs vacíos y position:absolute sin height explícito = height:0 cuando el
-  // contenedor es height:auto.
-  const activeCardRef = useRef<HTMLDivElement>(null);
-  const [ghostH, setGhostH] = useState(280);
-
+function OutfitCategoryColumn({ category, products }: { category: string; products: OutfitProduct[] }) {
   const label = getOutfitLabel(category);
   const lc    = (navigator.language || 'es').split('-')[0].toLowerCase();
-  const total = products.length;
-  const active = products[activeIdx];
-
-  // Formatear precio con Intl.NumberFormat (locale-aware)
   const formatPrice = (price?: number, currency?: string) => {
     if (!price) return null;
     try {
@@ -327,438 +275,66 @@ function OutfitCardSlider({
       }).format(price);
     } catch { return `${price} ${currency || ''}`.trim(); }
   };
-
-  // Mide el alto de la carta activa tras cada render para pasárselo a los ghost cards.
-  // Los ghost cards son divs vacíos; sin height explícito tienen height:0 en
-  // contenedores con height:auto.
-  useEffect(() => {
-    if (activeCardRef.current) {
-      setGhostH(activeCardRef.current.offsetHeight);
-    }
-  });
-
-  // Navegar al producto en Shopify al hacer click en la carta
-  const handleCardClick = useCallback((e: React.MouseEvent) => {
-    // Ignorar clicks en los botones del actionBar (tienen stopPropagation)
-    const target = e.target as HTMLElement;
-    if (target.closest('button')) return;
-    if (active.handle) {
-      const url = active.url || `/products/${active.handle}`;
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
-  }, [active]);
-
-  const navigate = useCallback((newDir: 1 | -1) => {
-    if (animating || total <= 1) return;
-    setDir(newDir);
-    setAnimating(true);
-    // Breve delay para animar la salida antes de cambiar el índice
-    setTimeout(() => {
-      setActiveIdx(i => (i + newDir + total) % total);
-      setAnimating(false);
-    }, 150);
-  }, [animating, total]);
-
-  // Touch swipe: deslizar horizontalmente para navegar
-  const touchStartX = useRef<number | null>(null);
-  const handleTouchStart = (e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0].clientX;
-  };
-  const handleTouchEnd = (e: React.TouchEvent) => {
-    if (touchStartX.current === null) return;
-    const delta = e.changedTouches[0].clientX - touchStartX.current;
-    if (Math.abs(delta) > 30) {
-      navigate(delta < 0 ? 1 : -1);  // deslizar izquierda = siguiente
-    }
-    touchStartX.current = null;
-  };
-
-  // ── Estilos de la carta activa con transición ───────────────────────────────
-  const cardTransitionStyle: React.CSSProperties = {
-    transform:  animating
-      ? `translateX(${dir * -18}px) scale(0.95)`
-      : 'translateX(0) scale(1)',
-    opacity:    animating ? 0.4 : 1,
-    transition: 'transform 0.15s ease, opacity 0.15s ease',
-  };
-
-  // ── Estilos de las cartas fantasma del mazo ──────────────────────────────────
-  // Enfoque: réplicas de altura completa de la carta activa, posicionadas con
-  // top/bottom relativo al paddingBox del contenedor (paddingBottom: 22px).
-  // overflow:hidden en el contenedor las recorta mostrando solo el "borde inferior"
-  // que sobresale de la carta activa → efecto de mazo real.
-  //
-  // Matemática con paddingBottom=22px (H = alto de la carta activa):
-  //   element_height = container_height - top - bottom = (H+22) - top - bottom
-  //   element_bottom  = H + 22 - bottom
-  //   peek            = element_bottom - H = 22 - bottom
-  //
-  // Ghost 1 (más cercana):  top:6  bottom:16 → peek=6px,  inset=5px
-  // Ghost 2 (media):        top:12 bottom:10 → peek=12px, inset=10px
-  // Ghost 3 (más lejana):   top:18 bottom:4  → peek=18px, inset=15px
-  // Ghost cards: réplicas de altura completa de la carta activa, con top/bottom
-  // calculados para que exactamente X px sobresalgan por debajo de la carta activa.
-  // Sin overflow:hidden en el contenedor → viven dentro del paddingBottom (22px).
-  //
-  // Matemática (paddingBottom=22, H=alto carta activa):
-  //   ghost_bottom_edge = H + 22 - bottom_value
-  //   peek              = ghost_bottom_edge - H = 22 - bottom_value
-  //   ghost_height      = H + 22 - top - bottom  = H  (siempre que top+bottom=22)
-  //
-  // Ghost cards con altura explícita medida desde la carta activa.
-  // peek = top offset → ghost_bottom = top + ghostH → sobresale (top)px bajo la carta activa.
-  const ghostStyle1: React.CSSProperties = {
-    position: 'absolute',
-    top: '6px', left: '5px', right: '5px',
-    height: `${ghostH}px`,
-    background: '#dfe0e2',
-    border: '1px solid rgba(0,0,0,0.12)',
-    borderRadius: '10px',
-    boxShadow: '0 1px 4px rgba(0,0,0,0.10)',
-    zIndex: 2,
-  };
-  const ghostStyle2: React.CSSProperties = {
-    position: 'absolute',
-    top: '-4px', left: '10px', right: '10px',
-    height: `${ghostH}px`,
-    background: '#d3d5d7',
-    border: '1px solid rgba(0,0,0,0.11)',
-    borderRadius: '10px',
-    boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-    zIndex: 1,
-    display: total > 2 ? 'block' : 'none',  // ghost 2 solo si hay 3+ productos
-  };
-  const ghostStyle3: React.CSSProperties = {
-    position: 'absolute',
-    top: '-6px', left: '15px', right: '15px',
-    height: `${ghostH}px`,
-    background: '#c7c9cb',
-    border: '1px solid rgba(0,0,0,0.10)',
-    borderRadius: '10px',
-    zIndex: 0,
-    display: total > 3 ? 'block' : 'none',  // ghost 3 solo si hay 4+ productos
-  };
-
   return (
-    <div style={{
-      minWidth: '148px',
-      maxWidth: '148px',
-      display:  'flex',
-      flexDirection: 'column',
-      gap: '8px',
-      userSelect: 'none',
-    }}>
-
-      {/* ─ Cabecera de categoría ───────────────────────────────── */}
-      <div style={{
-        fontSize: '10px',
-        fontWeight: 700,
-        textTransform: 'uppercase',
-        letterSpacing: '0.07em',
-        color: 'var(--text-secondary, #6b7280)',
-        paddingBottom: '4px',
-        borderBottom: '2px solid var(--primary, #ec4899)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-      }}>
-        <span>{label}</span>
-        {total > 1 && (
-          <span style={{ fontSize: '9px', fontWeight: 400, opacity: 0.6 }}>
-            {total}
-          </span>
-        )}
+    <div style={{ minWidth: '130px', maxWidth: '150px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
+        color: 'var(--text-secondary, #6b7280)', paddingBottom: '4px', borderBottom: '1px solid var(--border, #e5e7eb)' }}>
+        {label}
       </div>
-
-      {/* ─ Área de la carta con efecto de mazo ──────────────────── */}
-      {/* Sin overflow:hidden — los ghost cards viven dentro del paddingBottom */}
-      <div style={{ position: 'relative', paddingBottom: total > 1 ? '12px' : '0' }}>
-
-        {/* Cartas fantasma — réplicas de altura completa, recortadas por overflow:hidden */}
-        {total > 2 && <div style={ghostStyle3} />}
-        {total > 1 && <div style={ghostStyle2} />}
-        {total > 1 && <div style={ghostStyle1} />}
-
-        {/* Carta activa — toda la lógica de interacción */}
-        <div
-          role={active.handle ? 'button' : 'article'}
-          tabIndex={active.handle ? 0 : undefined}
-          aria-label={active.handle ? `Ver ${active.title}` : active.title}
-          onKeyDown={e => e.key === 'Enter' && handleCardClick(e as any)}
-          onClick={handleCardClick}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-          style={{
-            position: 'relative',
-            zIndex:   3,
-            background: 'var(--surface, #fff)',
-            borderRadius: '10px',
-            border:  '1px solid var(--border, #e5e7eb)',
-            overflow: 'hidden',
-            cursor:  active.handle ? 'pointer' : 'default',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-            display: 'flex',
-            flexDirection: 'column',
-            ...cardTransitionStyle,
-          }}
+      {products.slice(0, 3).map((product, idx) => (
+        <div key={product.product_id ?? idx} style={{ background: 'var(--surface, #fff)', borderRadius: '8px',
+          overflow: 'hidden', border: '1px solid var(--border, #e5e7eb)',
+          cursor: product.handle ? 'pointer' : 'default', transition: 'box-shadow 0.15s' }}
+          onClick={() => { if (product.handle) { const url = product.url || `/products/${product.handle}`; window.open(url, '_blank', 'noopener,noreferrer'); } }}
+          onMouseEnter={e => (e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.12)')}
+          onMouseLeave={e => (e.currentTarget.style.boxShadow = 'none')}
+          role={product.handle ? 'button' : undefined}
+          tabIndex={product.handle ? 0 : undefined}
+          aria-label={product.handle ? `Ver ${product.title}` : undefined}
         >
-          {/* Imagen */}
-          {active.image_url ? (
-            <img
-              src={active.image_url}
-              alt={active.title}
-              loading="lazy"
-              style={{
-                width: '100%',
-                height: '175px',
-                objectFit: 'cover',
-                display: 'block',
-              }}
-            />
+          {product.image_url ? (
+            <img src={product.image_url} alt={product.title}
+              style={{ width: '100%', aspectRatio: '1', objectFit: 'cover', display: 'block' }}
+              loading="lazy" />
           ) : (
-            <div style={{
-              width: '100%', height: '175px',
-              background: 'linear-gradient(135deg, #f3ede6, #e8ddd4)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '32px',
-            }}>
-              {category === 'shoes' ? '👠' : category === 'bag' ? '👜'
-                : category === 'accessory' ? '✨' : category === 'outerwear' ? '🧥' : '👗'}
+            <div style={{ width: '100%', aspectRatio: '1', background: 'var(--surface-alt, #f3f4f6)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '28px' }}>
+              {category === 'shoes' ? '👠' : category === 'bag' ? '👜' : category === 'accessory' ? '✨' : '👗'}
             </div>
           )}
-
-          {/* Info: título + precio — altura fija para que todas las cartas sean iguales */}
-          <div style={{ padding: '8px 10px 4px', flex: 1, minHeight: '60px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-            <div style={{
-              fontSize: '11.5px',
-              fontWeight: 600,
-              lineHeight: 1.3,
-              color: 'var(--text-primary, #1c1c1c)',
-              overflow: 'hidden',
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              marginBottom: '4px',
-            }}>
-              {active.title}
+          <div style={{ padding: '6px 8px' }}>
+            <div style={{ fontSize: '11px', fontWeight: 500, lineHeight: 1.3, overflow: 'hidden',
+              display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+              color: 'var(--text-primary, #111827)' }}>
+              {product.title}
             </div>
-            {active.price != null && active.price > 0 && (
-              <div style={{
-                fontSize: '12px',
-                fontWeight: 700,
-                color: 'var(--primary, #ec4899)',
-              }}>
-                {formatPrice(active.price, active.currency)}
+            {product.price != null && (
+              <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--primary, #ec4899)', marginTop: '3px' }}>
+                {formatPrice(product.price, product.currency)}
               </div>
             )}
           </div>
-
-          {/* ActionBar — idéntica a ProductCard (3 botones) */}
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-              display:    'flex',
-              borderTop:  '1px solid rgba(0,0,0,0.06)',
-              marginTop:  '4px',
-            }}
-          >
-            {/* Añadir al carrito (deshabilitado) */}
-            <button
-              disabled
-              title={lc === 'en' ? 'Add to cart (coming soon)' : 'Añadir al carrito (próximamente)'}
-              aria-label={lc === 'en' ? 'Add to cart (coming soon)' : 'Añadir al carrito'}
-              style={{
-                flex: 1,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                padding: '7px 4px',
-                border: 'none',
-                background: '#2b2b2be5',
-                color: '#747474',
-                cursor: 'not-allowed',
-              }}
-            >
-              <svg viewBox="0 0 24 24" width="18" fill="currentColor" aria-hidden="true">
-                <path d="M21.193 8.712a2.984 2.984 0 0 0-2.986-2.726h-.952v-.751a5.255 5.255 0 0 0-10.51 0v.75h-.951a2.983 2.983 0 0 0-2.986 2.727L1.715 20.73q-.012.135-.012.27A3 3 0 0 0 4.7 24h.005l14.599-.026q.133 0 .265-.012a3 3 0 0 0 2.715-3.258zM8.246 5.235a3.754 3.754 0 0 1 7.508 0v.75H8.246zm11.056 17.238-14.599.025h-.002q-.067 0-.135-.006a1.496 1.496 0 0 1-1.355-1.625l1.093-12.02a1.49 1.49 0 0 1 1.49-1.36h.95V9.74a.75.75 0 0 0 1.502 0V7.487h7.508V9.74c0 .415.336.75.75.75h.002a.75.75 0 0 0 .75-.75V7.487h.951a1.49 1.49 0 0 1 1.49 1.361l1.092 11.993q.006.067.007.133a1.496 1.496 0 0 1-1.494 1.499"></path>
-              </svg>
-            </button>
-
-            {/* Ver productos similares */}
-            {onShowSimilar && (
-              <button
-                title={lc === 'en' ? 'Show similar products' : 'Ver productos similares'}
-                aria-label={`${lc === 'en' ? 'Similar products to' : 'Similares a'} ${active.title}`}
-                onClick={e => { e.stopPropagation(); onShowSimilar(outfitToReco(active)); }}
-                style={{
-                  flex: 1,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  padding: '7px 4px',
-                  border: 'none', borderLeft: '1px solid rgba(0,0,0,0.06)',
-                  background: 'transparent',
-                  color: '#7c7c7c',
-                  cursor: 'pointer',
-                  transition: 'background 0.15s, color 0.15s',
-                }}
-                onMouseEnter={e => {
-                  (e.currentTarget as HTMLElement).style.background = '#f4f4f4';
-                  (e.currentTarget as HTMLElement).style.color = '#1c1c1c';
-                }}
-                onMouseLeave={e => {
-                  (e.currentTarget as HTMLElement).style.background = 'transparent';
-                  (e.currentTarget as HTMLElement).style.color = '#7c7c7c';
-                }}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="17"
-                  fill="currentColor" aria-hidden="true">
-                  <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0" />
-                </svg>
-              </button>
-            )}
-
-            {/* Hablar sobre este producto */}
-            {onChatAbout && (
-              <button
-                title={lc === 'en' ? 'Chat about this item' : 'Hablar sobre este producto'}
-                aria-label={`${lc === 'en' ? 'Chat about' : 'Hablar sobre'} ${active.title}`}
-                onClick={e => { e.stopPropagation(); onChatAbout(outfitToReco(active)); }}
-                style={{
-                  flex: 1,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  padding: '7px 4px',
-                  border: 'none', borderLeft: '1px solid rgba(0,0,0,0.06)',
-                  background: 'transparent',
-                  color: '#7c7c7c',
-                  cursor: 'pointer',
-                  transition: 'background 0.15s, color 0.15s',
-                }}
-                onMouseEnter={e => {
-                  (e.currentTarget as HTMLElement).style.background = '#1c1c1c';
-                  (e.currentTarget as HTMLElement).style.color = '#fff';
-                }}
-                onMouseLeave={e => {
-                  (e.currentTarget as HTMLElement).style.background = 'transparent';
-                  (e.currentTarget as HTMLElement).style.color = '#7c7c7c';
-                }}
-              >
-                <svg height="18" viewBox="0 0 24 24" width="18" fill="currentColor"
-                  xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                  <path d="M16 2H4a3 3 0 00-3 3v8a3 3 0 003 3h1v2.14a.8.8 0 001.188.7L11.3 16H16a3 3 0 003-3V5a3 3 0 00-3-3ZM4 4h12a1 1 0 011 1v8a1 1 0 01-1 1h-5.218l-.452.252L7 16.1V14H4a1 1 0 01-1-1V5a1 1 0 011-1Zm17 2.174A3 3 0 0123 9v8a3 3 0 01-2.846 2.996L20 20v2.14a.8.8 0 01-1.189.7L13.701 20H8.216l3.6-2h2.402l.453.252L18 20.101V18.05l1.95-.05.113-.003A1 1 0 0021 17V6.174Z" />
-                </svg>
-              </button>
-            )}
-          </div>
-
         </div>
+      ))}
+      <div style={{ fontSize: '10px', color: 'var(--text-secondary, #9ca3af)', textAlign: 'center' }}>
+        {lc === 'en' ? 'Tap to view' : 'Toca para ver'}
       </div>
-
-      {/* ─ Navegación con flechas ───────────────────────────────── */}
-      {total > 1 && (
-        <div style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          gap: '6px',
-          marginTop: '2px',
-        }}>
-          <button
-            onClick={() => navigate(-1)}
-            aria-label={lc === 'en' ? 'Previous' : 'Anterior'}
-            style={{
-              width: '28px', height: '28px',
-              borderRadius: '6px',
-              background: 'var(--surface, #fff)',
-              border: '1px solid var(--border, #e5e7eb)',
-              cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: '#6b7280',
-              padding: 0,
-              fontSize: '16px',
-              lineHeight: 1,
-              // boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-              transition: 'background 0.15s, color 0.15s',
-            }}
-            onMouseEnter={e => {
-              (e.currentTarget as HTMLElement).style.background = '#f3f4f6';
-              (e.currentTarget as HTMLElement).style.color = '#1c1c1c';
-            }}
-            onMouseLeave={e => {
-              (e.currentTarget as HTMLElement).style.background = 'var(--surface, #fff)';
-              (e.currentTarget as HTMLElement).style.color = '#6b7280';
-            }}
-          >
-            ‹
-          </button>
-          <span style={{ fontSize: '11px', color: '#6b7280', minWidth: '28px', textAlign: 'center' }}>
-            {activeIdx + 1}/{total}
-          </span>
-          <button
-            onClick={() => navigate(1)}
-            aria-label={lc === 'en' ? 'Next' : 'Siguiente'}
-            style={{
-              width: '28px', height: '28px',
-              borderRadius: '6px',
-              background: 'var(--surface, #fff)',
-              border: '1px solid var(--border, #e5e7eb)',
-              cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: '#6b7280',
-              padding: 0,
-              fontSize: '16px',
-              lineHeight: 1,
-              boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-              transition: 'background 0.15s, color 0.15s',
-            }}
-            onMouseEnter={e => {
-              (e.currentTarget as HTMLElement).style.background = '#f3f4f6';
-              (e.currentTarget as HTMLElement).style.color = '#1c1c1c';
-            }}
-            onMouseLeave={e => {
-              (e.currentTarget as HTMLElement).style.background = 'var(--surface, #fff)';
-              (e.currentTarget as HTMLElement).style.color = '#6b7280';
-            }}
-          >
-            ›
-          </button>
-        </div>
-      )}
     </div>
   );
 }
 
 /**
- * OutfitPanel — S1 FASE 4: Panel horizontal de outfit con scroll.
- * Renderiza un OutfitCardSlider por cada categoría encontrada.
- * Recibe los callbacks de acción para propagarlos a cada carta.
+ * OutfitPanel - S1 FASE 4: Panel de outfit con scroll horizontal.
+ * Renderiza una columna por cada categoria de prenda encontrada.
  */
-function OutfitPanel({
-  outfitResult,
-  onChatAbout,
-  onShowSimilar,
-}: {
-  outfitResult:  NonNullable<Message['outfitResult']>;
-  onChatAbout?:  (product: import('../types/widget').ProductRecommendation) => void;
-  onShowSimilar?: (product: import('../types/widget').ProductRecommendation) => void;
-}) {
-  const categories = Object.entries(outfitResult.outfit ?? {})
-    .filter(([, prods]) => prods.length > 0);
+function OutfitPanel({ outfitResult }: { outfitResult: NonNullable<Message['outfitResult']> }) {
+  const categories = Object.entries(outfitResult.outfit ?? {}).filter(([, prods]) => prods.length > 0);
   if (categories.length === 0) return null;
-
   return (
-    <div style={{
-      marginTop: '10px',
-      overflowX: 'auto',
-      paddingBottom: '8px',
-      WebkitOverflowScrolling: 'touch',
-      scrollbarWidth: 'thin',
-    }}>
-      <div style={{ display: 'flex', gap: '12px', width: 'max-content', alignItems: 'flex-start', paddingBottom: '4px' }}>
+    <div style={{ marginTop: '8px', overflowX: 'auto', paddingBottom: '4px', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'thin' }}>
+      <div style={{ display: 'flex', gap: '10px', width: 'max-content' }}>
         {categories.map(([category, products]) => (
-          <OutfitCardSlider
-            key={category}
-            category={category}
-            products={products}
-            onChatAbout={onChatAbout}
-            onShowSimilar={onShowSimilar}
-          />
+          <OutfitCategoryColumn key={category} category={category} products={products} />
         ))}
       </div>
     </div>
@@ -982,13 +558,9 @@ export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onSh
                 </div>
               )}
 
-              {/* S1 FASE 4: Panel de outfit categorizado con slider por categoría */}
+              {/* S1 FASE 4: Panel de outfit categorizado */}
               {message.outfitResult && (
-                <OutfitPanel
-                  outfitResult={message.outfitResult}
-                  onChatAbout={onChatAbout}
-                  onShowSimilar={onShowSimilar}
-                />
+                <OutfitPanel outfitResult={message.outfitResult} />
               )}
 
               {/* Sugerencias contextuales y feedback (solo en el último mensaje del asistente) */}

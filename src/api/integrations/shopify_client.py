@@ -1117,82 +1117,82 @@ def _calculate_stock_status(variant_inventory: dict) -> str:
 # GRAPHQL RETRY LOGIC
 # ==========================================================================
 
-    async def _graphql_query_with_retry(
-        self, 
-        query: str, 
-        variables: Dict = None,
-        max_retries: int = 3,
-        retry_delay: float = 1.0
-    ) -> Dict:
-        """
-        Execute GraphQL query with retry logic for transient network errors.
-        
-        Retries ONLY for: network timeouts, connection errors, 5xx server errors.
-        Does NOT retry for: GraphQL logical errors, 4xx client errors.
-        """
-        import asyncio
-        from requests.exceptions import RequestException, Timeout, ConnectionError
-        
-        url = f"https://{self.shop_url}/admin/api/2025-01/graphql.json"
-        payload = {"query": query}
-        if variables:
-            payload["variables"] = variables
-        
-        headers = {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": self.access_token
-        }
-        
-        retries = 0
-        
-        while retries <= max_retries:
-            try:
-                response = await asyncio.to_thread(
-                    requests.post, url, json=payload, headers=headers, timeout=30
-                )
-                
-                if response.status_code >= 500:
-                    raise RequestException(f"Shopify server error: {response.status_code}")
-                
-                response.raise_for_status()
-                data = response.json()
-                
-                if "errors" in data:
-                    error_msgs = [err.get("message", str(err)) for err in data["errors"]]
-                    raise Exception(f"GraphQL errors: {'; '.join(error_msgs)}")
-                
-                return data.get("data", {})
-                
-            except Timeout as e:
-                retries += 1
-                if retries <= max_retries:
-                    wait_time = retry_delay * (2 ** (retries - 1))
-                    logger.warning(f"GraphQL timeout. Retry {retries}/{max_retries} in {wait_time}s. Error: {e}")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error(f"Max retries ({max_retries}) reached. Giving up.")
-                    raise
-                    
-            except ConnectionError as e:
-                retries += 1
-                if retries <= max_retries:
-                    wait_time = retry_delay * (2 ** (retries - 1))
-                    logger.warning(f"GraphQL connection error. Retry {retries}/{max_retries} in {wait_time}s. Error: {e}")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error(f"Max retries ({max_retries}) reached. Giving up.")
-                    raise
-                    
-            except RequestException as e:
-                if "5" in str(e) and retries < max_retries:
-                    retries += 1
-                    wait_time = retry_delay * (2 ** (retries - 1))
-                    logger.warning(f"GraphQL request failed (retriable). Retry {retries}/{max_retries} in {wait_time}s. Error: {e}")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error(f"GraphQL request failed (non-retriable): {e}")
-                    raise
-                    
-            except Exception as e:
-                logger.error(f"GraphQL query failed: {e}")
+async def _graphql_query_with_retry(
+    self, 
+    query: str, 
+    variables: Dict = None,
+    max_retries: int = 3,
+    retry_delay: float = 1.0
+) -> Dict:
+    """
+    Execute GraphQL query with retry logic for transient network errors.
+    
+    Retries ONLY for: network timeouts, connection errors, 5xx server errors.
+    Does NOT retry for: GraphQL logical errors, 4xx client errors.
+    """
+    import asyncio
+    from requests.exceptions import RequestException, Timeout, ConnectionError
+    
+    url = f"https://{self.shop_url}/admin/api/2025-01/graphql.json"
+    payload = {"query": query}
+    if variables:
+        payload["variables"] = variables
+    
+    headers = {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": self.access_token
+    }
+    
+    retries = 0
+    
+    while retries <= max_retries:
+        try:
+            response = await asyncio.to_thread(
+                requests.post, url, json=payload, headers=headers, timeout=30
+            )
+            
+            if response.status_code >= 500:
+                raise RequestException(f"Shopify server error: {response.status_code}")
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            if "errors" in data:
+                error_msgs = [err.get("message", str(err)) for err in data["errors"]]
+                raise Exception(f"GraphQL errors: {'; '.join(error_msgs)}")
+            
+            return data.get("data", {})
+            
+        except Timeout as e:
+            retries += 1
+            if retries <= max_retries:
+                wait_time = retry_delay * (2 ** (retries - 1))
+                logger.warning(f"GraphQL timeout. Retry {retries}/{max_retries} in {wait_time}s. Error: {e}")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error(f"Max retries ({max_retries}) reached. Giving up.")
                 raise
+                
+        except ConnectionError as e:
+            retries += 1
+            if retries <= max_retries:
+                wait_time = retry_delay * (2 ** (retries - 1))
+                logger.warning(f"GraphQL connection error. Retry {retries}/{max_retries} in {wait_time}s. Error: {e}")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error(f"Max retries ({max_retries}) reached. Giving up.")
+                raise
+                
+        except RequestException as e:
+            if "5" in str(e) and retries < max_retries:
+                retries += 1
+                wait_time = retry_delay * (2 ** (retries - 1))
+                logger.warning(f"GraphQL request failed (retriable). Retry {retries}/{max_retries} in {wait_time}s. Error: {e}")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error(f"GraphQL request failed (non-retriable): {e}")
+                raise
+                
+        except Exception as e:
+            logger.error(f"GraphQL query failed: {e}")
+            raise
