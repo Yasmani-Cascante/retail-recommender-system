@@ -1,9 +1,52 @@
 from asyncio.log import logger
 import requests
+import httpx as _httpx
 from typing import List, Dict, Optional
 import logging
 from base64 import b64encode
 import time
+
+
+# ============================================================================
+# httpx SINGLETON compartido para todos los metodos async de ShopifyIntegration
+# ============================================================================
+# Un unico AsyncClient = un unico pool TCP compartido entre:
+#   - get_prices_for_products       (lazy-price por turno)
+#   - get_product_context_by_handle (F-01 product context)
+#   - _graphql_query y _graphql_query_with_retry (queries genericas)
+#
+# Por que singleton y no 'async with httpx.AsyncClient()' dentro de cada funcion:
+#   - 'async with' crea y destruye el cliente (y su pool TCP) en cada llamada.
+#     Cada llamada seria una conexion fria (~10s desde Cloud Run).
+#   - El singleton mantiene el pool TCP vivo entre llamadas (~2.3s warm).
+#
+# Por que httpx y no asyncio.to_thread(requests.post):
+#   - asyncio.to_thread no se puede cancelar limpiamente. Cuando asyncio.wait_for
+#     dispara, el thread sigue corriendo y deja la conexion en estado indeterminado.
+#   - httpx es nativo async: la cancelacion libera correctamente la conexion al
+#     pool. La siguiente llamada la reutiliza como warm connection.
+#
+# Diagnostico confirmado (21/05/2026):
+#   cold connection: ~10.5s | warm connection: ~820ms (httpx) vs 10.5s (requests)
+# ============================================================================
+_shopify_httpx_client: "_httpx.AsyncClient | None" = None
+
+
+def _get_shopify_httpx_client() -> "_httpx.AsyncClient":
+    """Retorna (creando si no existe) el singleton httpx.AsyncClient para Shopify."""
+    global _shopify_httpx_client
+    if _shopify_httpx_client is None:
+        _shopify_httpx_client = _httpx.AsyncClient(
+            # connect: handshake TCP/TLS; read: respuesta Shopify warm (~820ms).
+            # 12s de margen en read para cubrir variabilidad de red Cloud Run.
+            timeout=_httpx.Timeout(connect=5.0, read=12.0, write=5.0, pool=5.0),
+            limits=_httpx.Limits(
+                max_keepalive_connections=5,
+                max_connections=10,
+                keepalive_expiry=30.0,  # mantener TCP vivo 30s de inactividad
+            ),
+        )
+    return _shopify_httpx_client
 
 class ShopifyIntegration:
     def __init__(self, shop_url: str, access_token: str):
@@ -265,9 +308,8 @@ class ShopifyIntegration:
         }
         
         try:
-            response = await asyncio.to_thread(
-                requests.post, url, json=payload, headers=headers, timeout=30
-            )
+            _hclient = _get_shopify_httpx_client()
+            response = await _hclient.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
             
@@ -277,10 +319,10 @@ class ShopifyIntegration:
             
             return data.get("data", {})
             
-        except requests.exceptions.Timeout:
-            logging.error(f"GraphQL query timeout after 30s")
+        except _httpx.TimeoutException:
+            logging.error(f"GraphQL query timeout")
             raise Exception("GraphQL query timeout")
-        except requests.exceptions.RequestException as e:
+        except _httpx.RequestError as e:
             logging.error(f"GraphQL HTTP request failed: {e}")
             raise
         except Exception as e:
@@ -627,12 +669,16 @@ class ShopifyIntegration:
         )
 
         try:
-            response = await asyncio.to_thread(
-                requests.post,
+            # httpx singleton: mantiene el pool TCP entre llamadas.
+            # Cuando asyncio.wait_for cancela a los 5s, httpx libera la conexion
+            # correctamente. La siguiente llamada reutiliza el pool warm (~2.3s).
+            # Con asyncio.to_thread(requests.post) el thread seguia corriendo
+            # tras la cancelacion, dejando el pool en estado indeterminado.
+            _hclient = _get_shopify_httpx_client()
+            response = await _hclient.post(
                 gql_url,
                 json={"query": bulk_query},
                 headers=gql_headers,
-                timeout=10,  # timeout ajustado: pocos productos, debe ser rapido
             )
             response.raise_for_status()
             resp_data = response.json()
@@ -740,12 +786,13 @@ class ShopifyIntegration:
             f"?handle={handle}&fields=id,title,product_type,tags,vendor,variants,handle"
         )
         try:
-            # asyncio.to_thread envuelve la llamada síncrona
-            # _make_request_with_retry en el executor del event loop,
-            # evitando bloquear el thread principal.
-            response = await asyncio.to_thread(
-                self._make_request_with_retry, products_url
-            )
+            # httpx nativo async: cancela limpiamente, mantiene pool TCP warm.
+            # La causa del product_context_fetch_timeout (10s con F-01) era
+            # asyncio.to_thread(_make_request_with_retry): el thread no se
+            # cancelaba limpiamente, forzando esperar el socket timeout completo.
+            _hclient = _get_shopify_httpx_client()
+            response = await _hclient.get(products_url, headers=self.headers)
+            response.raise_for_status()
             products_data = response.json().get("products", [])
         except Exception as e:
             logging.warning(
@@ -834,12 +881,11 @@ class ShopifyIntegration:
                     "Content-Type": "application/json",
                     "X-Shopify-Access-Token": self.access_token,
                 }
-                gql_response = await asyncio.to_thread(
-                    requests.post,
+                _hclient = _get_shopify_httpx_client()
+                gql_response = await _hclient.post(
                     gql_url,
                     json={"query": gql_query, "variables": gql_variables},
                     headers=gql_headers,
-                    timeout=5,
                 )
                 gql_response.raise_for_status()
                 gql_data = gql_response.json()
@@ -1131,7 +1177,6 @@ async def _graphql_query_with_retry(
     Does NOT retry for: GraphQL logical errors, 4xx client errors.
     """
     import asyncio
-    from requests.exceptions import RequestException, Timeout, ConnectionError
     
     url = f"https://{self.shop_url}/admin/api/2025-01/graphql.json"
     payload = {"query": query}
@@ -1144,15 +1189,18 @@ async def _graphql_query_with_retry(
     }
     
     retries = 0
+    _hclient = _get_shopify_httpx_client()
     
     while retries <= max_retries:
         try:
-            response = await asyncio.to_thread(
-                requests.post, url, json=payload, headers=headers, timeout=30
-            )
+            # httpx nativo async: cancela limpiamente, mantiene pool TCP warm.
+            response = await _hclient.post(url, json=payload, headers=headers)
             
             if response.status_code >= 500:
-                raise RequestException(f"Shopify server error: {response.status_code}")
+                raise _httpx.HTTPStatusError(
+                    f"Shopify server error: {response.status_code}",
+                    request=response.request, response=response
+                )
             
             response.raise_for_status()
             data = response.json()
@@ -1163,7 +1211,7 @@ async def _graphql_query_with_retry(
             
             return data.get("data", {})
             
-        except Timeout as e:
+        except _httpx.TimeoutException as e:
             retries += 1
             if retries <= max_retries:
                 wait_time = retry_delay * (2 ** (retries - 1))
@@ -1173,7 +1221,7 @@ async def _graphql_query_with_retry(
                 logger.error(f"Max retries ({max_retries}) reached. Giving up.")
                 raise
                 
-        except ConnectionError as e:
+        except _httpx.ConnectError as e:
             retries += 1
             if retries <= max_retries:
                 wait_time = retry_delay * (2 ** (retries - 1))
@@ -1183,11 +1231,11 @@ async def _graphql_query_with_retry(
                 logger.error(f"Max retries ({max_retries}) reached. Giving up.")
                 raise
                 
-        except RequestException as e:
-            if "5" in str(e) and retries < max_retries:
+        except _httpx.HTTPStatusError as e:
+            if e.response.status_code >= 500 and retries < max_retries:
                 retries += 1
                 wait_time = retry_delay * (2 ** (retries - 1))
-                logger.warning(f"GraphQL request failed (retriable). Retry {retries}/{max_retries} in {wait_time}s. Error: {e}")
+                logger.warning(f"GraphQL server error (retriable). Retry {retries}/{max_retries} in {wait_time}s. Error: {e}")
                 await asyncio.sleep(wait_time)
             else:
                 logger.error(f"GraphQL request failed (non-retriable): {e}")

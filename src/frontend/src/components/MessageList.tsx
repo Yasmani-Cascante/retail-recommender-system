@@ -409,24 +409,25 @@ function OutfitCardSlider({
   // peek = top offset → ghost_bottom = top + ghostH → sobresale (top)px bajo la carta activa.
   const ghostStyle1: React.CSSProperties = {
     position: 'absolute',
-    top: '6px', left: '5px', right: '5px',
+    top: '-4px', left: '5px', right: '5px',
     height: `${ghostH}px`,
     background: '#dfe0e2',
     border: '1px solid rgba(0,0,0,0.12)',
     borderRadius: '10px',
     boxShadow: '0 1px 4px rgba(0,0,0,0.10)',
     zIndex: 2,
+    display: "block",  // ghost 1 siempre visible si hay al menos 1 producto
   };
   const ghostStyle2: React.CSSProperties = {
     position: 'absolute',
-    top: '-4px', left: '10px', right: '10px',
+    top: '-6px', left: '10px', right: '10px',
     height: `${ghostH}px`,
     background: '#d3d5d7',
     border: '1px solid rgba(0,0,0,0.11)',
     borderRadius: '10px',
     boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
     zIndex: 1,
-    display: total > 2 ? 'block' : 'none',  // ghost 2 solo si hay 3+ productos
+    display: total > 1 ? 'block' : 'none',  // ghost 2 solo si hay 3+ productos
   };
   const ghostStyle3: React.CSSProperties = {
     position: 'absolute',
@@ -436,7 +437,7 @@ function OutfitCardSlider({
     border: '1px solid rgba(0,0,0,0.10)',
     borderRadius: '10px',
     zIndex: 0,
-    display: total > 3 ? 'block' : 'none',  // ghost 3 solo si hay 4+ productos
+    display: total > 2 ? 'block' : 'none',  // ghost 3 solo si hay 4+ productos
   };
 
   return (
@@ -477,7 +478,7 @@ function OutfitCardSlider({
         {/* Cartas fantasma — réplicas de altura completa, recortadas por overflow:hidden */}
         {total > 2 && <div style={ghostStyle3} />}
         {total > 1 && <div style={ghostStyle2} />}
-        {total > 1 && <div style={ghostStyle1} />}
+        {total > 0 && <div style={ghostStyle1} />}
 
         {/* Carta activa — toda la lógica de interacción */}
         <div

@@ -1,7 +1,5 @@
 # DCT — S1 Outfit Complete Search + OPMs — Cierre 14/05/2026
 
-# DCT — S1 Outfit Complete Search + OPMs — Cierre 14/05/2026
-
 > **Sesión:** 12–14 mayo 2026
 > 
 

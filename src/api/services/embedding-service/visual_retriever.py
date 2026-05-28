@@ -865,7 +865,7 @@ class FashionSigLIPRetriever:
         # Con 150: E[zapatos] = 150 × 0.022 = 3.3 → se encuentran con alta probabilidad.
         # Impacto en latencia: FAISS InnerProduct es O(n·d). 150 vs 40 añade
         # microsegundos sobre 3056 vectores × 768 dims. Negligible.
-        alpha: float                 = 0.5,
+        alpha: float                 = 0.6,
     ) -> Dict[str, List[str]]:
         """
         Busca productos para cada categoría de un outfit a partir de una imagen.

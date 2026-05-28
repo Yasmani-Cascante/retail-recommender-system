@@ -1317,18 +1317,17 @@ async def get_mcp_conversation_recommendations(
                     # - 3.0s: calibrado para Sonnet ~1.6-1.7s (dashboards GCP)
                     #         → pero genera timeouts constantes en primera request
                     #           post-startup y en smoke tests (observado 20/03/2026)
-                    # - 8.0s: valor actual
+                    # - 8.0s: valor intermedio (el label en el except fue heredado)
+                    # - 12.0s: valor actual (21/03/2026) — outer safety valve que cubre
+                    #          el peor caso de Claude o LFM con margen real.
                     #
-                    # POR QUÉ 8s:
-                    # Los logs de producción muestran que keep-alive #2 tarda 2196ms
-                    # (primera llamada post-startup) y #3 tarda 1201ms (estado caliente).
-                    # generate_personalized_response hace UNA llamada a Claude con un
-                    # prompt complejo (contexto + recomendaciones + historial).
-                    # En el peor caso razonable (primera request, conexión semi-fría,
-                    # contención de CPU durante arranque): ~4-5s.
-                    # 8s cubre ese peor caso con margen sin comprometer UX — el
-                    # timeout del handler HTTP de Cloud Run es 300s, por lo que 8s
-                    # no causa problemas a nivel de plataforma.
+                    # POR QUÉ 12s:
+                    # Claude API tarda ~7.5s en condiciones normales (warm TCP).
+                    # LFM warm tarda ~440ms, pero el inner timeout de LFM (10s desde
+                    # LFM start = ~10.6s desde este outer) actua como primera linea
+                    # de defensa. El outer de 12s actua como safety valve externo
+                    # por si el inner no dispara antes (ej. ruta solo-Claude sin LFM).
+                    # Diagnostico confirmado 26/05/2026: warm flow = 1.973s (80.3% mejora).
                     personalization_result = await asyncio.wait_for(
                         mcp_engine.generate_personalized_response(
                             mcp_context=mcp_context,
@@ -1397,7 +1396,7 @@ async def get_mcp_conversation_recommendations(
                     logger.info("✅ MCP personalization completed and cached successfully")
                     
             except asyncio.TimeoutError:
-                logger.warning("⏰ MCP personalization timeout (8.0s) - using base recommendations")
+                logger.warning("⏰ MCP personalization timeout (12.0s) - using base recommendations")
                 # NOTA: Si este mensaje aparece en logs, significa que generate_personalized_response
                 # tardó más de 8s. El ParallelTask de mcp_recommendations tiene timeout=10s
                 # y el de personalization=5s. Si cualquiera de ellos expira antes, este

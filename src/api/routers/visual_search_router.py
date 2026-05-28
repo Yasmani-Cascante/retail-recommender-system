@@ -357,6 +357,19 @@ async def visual_search_outfit(
     tfidf_rec = _get_tfidf_recommender()
     META_KEYS = {'outfit_mode', 'latency_ms', 'visual_index_size', 'category_map_size'}
 
+    # Tasas de conversion CLP → moneda del mercado.
+    # Deben coincidir con las usadas en mcp_conversation_handler.py.
+    # Fuente: logs de produccion 2026-05-18: rate 0.00089 para CHF.
+    # Se usan cuando market_prices no esta pre-computado en el catalogo
+    # (tfidf_rec.id_index solo tiene precio base en CLP).
+    _CLP_MARKET_RATES: dict = {
+        'CL': {'rate': 1.0,     'currency': 'CLP'},
+        'CH': {'rate': 0.00089, 'currency': 'CHF'},   # verificado en produccion
+        'MX': {'rate': 0.18,    'currency': 'MXN'},
+        'ES': {'rate': 0.00088, 'currency': 'EUR'},
+        'US': {'rate': 0.00104, 'currency': 'USD'},   # 1/961 CLP/USD
+    }
+
     # FIX (13/05/2026): El endpoint /v1/embed/search-outfit del embedding-service
     # retorna la respuesta envuelta en un campo 'outfit' por el modelo Pydantic
     # OutfitSearchResponse:
@@ -381,6 +394,91 @@ async def visual_search_outfit(
         id_index_size=len(tfidf_rec.id_index),
     )
 
+    # ── PARTE D (Sprint lazy-price 21/05/2026): Obtener Redis para lookup de precios ─────
+    # Comparte el cache price:{product_id} que escribe _enrich_recommendations_lazy().
+    # Si Redis falla o no está disponible, el fallback a CLP_RATES sigue activo.
+    # La variable es local al request: sin estado compartido entre requests.
+    import json as _json_vs
+    import asyncio as _asyncio
+    _outfit_redis = None
+    _outfit_shopify = None
+    try:
+        from src.api.factories.service_factory import ServiceFactory
+        _outfit_redis = await ServiceFactory.get_redis_service()
+    except Exception:
+        pass
+    try:
+        # ShopifyIntegration reutiliza el singleton httpx (_get_shopify_httpx_client),
+        # por lo que crear una instancia aqui NO crea una nueva conexion TCP.
+        # El pool TCP ya esta caliente de los requests de conversacion previos.
+        from src.api.integrations.shopify_client import ShopifyIntegration
+        import os as _os
+        _outfit_shopify = ShopifyIntegration(
+            shop_url=_os.environ.get("SHOPIFY_SHOP_URL", ""),
+            access_token=_os.environ.get("SHOPIFY_ACCESS_TOKEN", ""),
+        )
+    except Exception:
+        pass
+
+    # ── FASE 1: Colectar todos los PIDs del outfit y verificar Redis ──────────────
+    # Un solo recorrido para determinar que productos necesitan Shopify.
+    _all_outfit_pids = []
+    for _cat, _pids in categories_to_resolve.items():
+        if isinstance(_pids, list):
+            for _pid in _pids:
+                _spid = str(_pid)
+                if _spid not in _all_outfit_pids:
+                    _all_outfit_pids.append(_spid)
+
+    _outfit_redis_prices: dict = {}   # pid -> {market_id: {price, currency}}
+    _ids_for_shopify: list = []
+
+    if _outfit_redis:
+        for _pid in _all_outfit_pids:
+            try:
+                _raw = await _outfit_redis.get(f'price:{_pid}')
+                if _raw:
+                    _outfit_redis_prices[_pid] = _json_vs.loads(_raw)
+                    continue
+            except Exception:
+                pass
+            _ids_for_shopify.append(_pid)
+    else:
+        _ids_for_shopify = list(_all_outfit_pids)
+
+    # ── FASE 2: Shopify para los productos sin precio en Redis ────────────────────
+    # httpx warm pool: ~300-600ms para todos los productos del outfit.
+    # Timeout 5s: si Shopify no responde, se usa CLP_RATES como fallback.
+    _outfit_shopify_prices: dict = {}
+    if _ids_for_shopify and _outfit_shopify:
+        try:
+            _outfit_shopify_prices = await _asyncio.wait_for(
+                _outfit_shopify.get_prices_for_products(_ids_for_shopify),
+                timeout=5.0
+            )
+            # Escribir en Redis para proximos requests (TTL 1h)
+            if _outfit_redis and _outfit_shopify_prices:
+                for _pid, _price_by_mkt in _outfit_shopify_prices.items():
+                    try:
+                        await _outfit_redis.set(
+                            f'price:{_pid}',
+                            _json_vs.dumps(_price_by_mkt),
+                            ttl=3600
+                        )
+                    except Exception:
+                        pass
+                logger.info(
+                    'outfit_prices_from_shopify',
+                    products=len(_outfit_shopify_prices),
+                    market_id=market_id,
+                    cached_in_redis=bool(_outfit_redis)
+                )
+        except _asyncio.TimeoutError:
+            logger.warning('outfit_shopify_timeout', timeout_s=5.0,
+                           fallback='CLP_RATES')
+        except Exception as _e:
+            logger.warning('outfit_shopify_error', error=str(_e))
+
     outfit_resolved: dict = {}
     for category, product_ids in categories_to_resolve.items():
         if not isinstance(product_ids, list) or not product_ids:
@@ -392,15 +490,41 @@ async def visual_search_outfit(
             if not prod:
                 logger.debug('outfit_product_not_found', pid=pid, category=category)
                 continue
+            # DESPUÉS — FIX Mayo 2026: conversión local CLP→mercado
             mkt = prod.get('market_prices', {}).get(market_id, {})
+
+            # market_prices no está pre-computado en tfidf_rec.id_index.
+            # El flujo de conversación lo obtiene via lazy-price (~10s de Shopify),
+            # pero el outfit endpoint no puede asumir esa latencia.
+            # Solución: conversión local CLP→mercado cuando mkt está vacío.
+            if mkt:
+                price    = mkt.get('price') or prod.get('price')
+                currency = mkt.get('currency', 'CLP')
+            else:
+                # Prioridad 1: Redis cache (precio real de Shopify, < 1ms)
+                _redis_price = _outfit_redis_prices.get(str(pid), {}).get(market_id)
+                # Prioridad 2: Shopify directo (obtenido en Fase 2, warm pool)
+                _shopify_price = _outfit_shopify_prices.get(str(pid), {}).get(market_id)
+                _real_price = _redis_price or _shopify_price
+
+                if _real_price:
+                    price    = _real_price.get('price', 0)
+                    currency = _real_price.get('currency', 'CLP')
+                else:
+                    # Prioridad 3: Conversión local (fallback si Shopify no respondió)
+                    market_cfg = _CLP_MARKET_RATES.get(market_id, _CLP_MARKET_RATES['CL'])
+                    base_clp   = float(prod.get('price') or 0)
+                    price      = round(base_clp * market_cfg['rate'], 2)
+                    currency   = market_cfg['currency']
+
             cat_products.append({
                 'product_id':   str(pid),
                 'title':        prod.get('title', ''),
                 'image_url':    prod.get('image_url', ''),
                 'product_type': prod.get('product_type', ''),
                 'handle':       prod.get('handle', ''),
-                'price':        mkt.get('price') or prod.get('price'),
-                'currency':     mkt.get('currency', 'CLP'),
+                'price':        price,
+                'currency':     currency,
                 'category':     category,
             })
         if cat_products:

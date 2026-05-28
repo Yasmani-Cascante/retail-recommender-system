@@ -47,6 +47,7 @@ Date: 04/04/2026
 
 from typing import Optional, Dict, Any
 
+import os
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -220,7 +221,20 @@ class ProductContextService:
           - GET /custom_collections/{id}.json + /smart_collections/{id}.json → títulos
 
         Este método solo delega y maneja la degradación graceful.
+
+        TIMEOUT (fix Mayo 2026):
+          Shopify puede tardar >2 minutos en responder si hay SSL errors con retries.
+          Sin timeout, el request completo queda bloqueado 132s+ (observado en prod).
+          Con asyncio.wait_for(10s), si Shopify no responde en 10s → retorna None
+          y el handler continua sin contexto de producto (F-01 no aplica boost
+          pero la respuesta llega en tiempo normal).
         """
+        import asyncio  # noqa: PLC0415 — import local por convención del módulo
+
+        # Timeout configurable via env var para flexibilidad en distintos entornos
+        # PRODUCT_CONTEXT_TIMEOUT_S: default 10s, suficiente para Shopify en condiciones normales
+        timeout_s = float(os.getenv("PRODUCT_CONTEXT_TIMEOUT_S", "10"))
+
         if not self._shopify:
             logger.warning(
                 "product_context_no_shopify_client",
@@ -229,7 +243,18 @@ class ProductContextService:
             return None
 
         try:
-            return await self._shopify.get_product_context_by_handle(handle=handle)
+            return await asyncio.wait_for(
+                self._shopify.get_product_context_by_handle(handle=handle),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "product_context_fetch_timeout",
+                handle=handle,
+                timeout_s=timeout_s,
+                note="proceeding without product context — F-01 boost not applied",
+            )
+            return None
         except Exception as e:
             logger.error(
                 "product_context_fetch_error",

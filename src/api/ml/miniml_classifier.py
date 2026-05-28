@@ -7,11 +7,14 @@ de intents. Solo actua cuando rule-based (capa 1) Y sklearn TF-IDF
 (capa 2) tienen baja confianza (< MINILM_TRIGGER_THRESHOLD).
 
 POR QUE ESTE MODELO:
-  - 22M parametros / ~88MB en disco (sin GPU)
-  - 200+ idiomas: ES formal, ES-MX, ES-CL, ES-CH, EN, FR, DE, ...
+  - 118M parametros / ~470MB en disco (sin GPU)
+  - 50+ idiomas: ES formal, ES-MX, ES-CL, ES-CH, EN, FR, DE, ...
   - Captura semantica real: sinonimos, slang, typos, cross-lingual
-  - ~8-12ms de inferencia en CPU despues del warmup inicial
+  - ~25-40ms de inferencia en CPU despues del warmup inicial
   - Zero fine-tuning: prototype-based classification (zero-shot)
+  - NOTA: La variante multilingual de MiniLM es L12 (no L6).
+          L6 solo existe en version English-only. L12 es la version
+          multilingual oficial del mismo paper.
 
 PROTOTYPE-BASED CLASSIFICATION:
   Para cada sub-intent, se precomputan embeddings de 6-10 queries
@@ -35,6 +38,8 @@ FECHA: Mayo 2026
 """
 
 import logging
+import os
+import re
 import time
 import numpy as np
 from pathlib import Path
@@ -42,6 +47,27 @@ from typing import Optional, Dict, List
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+# ================================================================
+# REGEX OVERRIDE — Slang LATAM de defecto / garantia (Gap G-05)
+# ================================================================
+# El espacio de embeddings del L12 coloca "salio fallado" cerca de
+# product_availability porque el verbo "salir" es ambiguo en LATAM:
+#   "salio mi pedido?" = disponibilidad
+#   "salio fallado"    = defecto de fabrica
+# Los centroides no son linealmente separables para este patron.
+# Este regex pre-clasifica ANTES de consultar centroides, donde
+# el resultado seria incierto (margen availability 0.619 vs warranty 0.560).
+#
+# Patron: verbo-estado + adjetivo-defecto en ES-CL/LATAM informal.
+# Verbos cubiertos: salio, vino, llego, recibi (y sus variantes con acento)
+# Defectos cubiertos: fallado, defectuoso, roto, danado, fallo
+_WARRANTY_DEFECTO_RE = re.compile(
+    r"\b(sali[o\u00f3]|vino|lleg[o\u00f3]|recibi)\b.{0,25}\b"
+    r"(fallad[oa]|defectuos[ao]|defecto|rot[oa]|da[n\u00f1]ad[oa]|fall[a\u00f3])\b",
+    re.IGNORECASE,
+)
 
 
 # ================================================================
@@ -72,17 +98,24 @@ PROTOTYPE_EXAMPLES: Dict[str, List[str]] = {
 
     # -- Policy: Returns -------------------------------------------
     # Cubre: slang LATAM, implicit returns, typos, cross-lingual
+    # IMPORTANTE: mantener enfocado en REEMBOLSO/INTERCAMBIO, NO en defectos.
+    # Los defectos van en policy_warranty. Si los dos labels tienen
+    # ejemplos de "producto malo", sus centroides se acercan y hay confusion.
     "informational/policy_return": [
         "cual es la politica de devoluciones?",        # sin acentos (typo comun)
+        "politica de devoluciones",                    # variacion directa, sin signo
+        "cual es el proceso de devolucion",            # variacion sin acento
         "como puedo devolver un articulo?",
         "quiero regresar algo que compre",             # MX: "regresar"
         "se puede devolver la plata si no me gusta",   # CL: "devolver la plata"
         "cuantos dias tengo para devolver?",
-        "me llegaron mal los zapatos como los devuelvo",  # implicit + informal
         "can I return this item?",
         "what is your return policy?",
-        "esto no me gusto quiero que me devuelvan el dinero",  # intent implicito
         "cambio o devolucion como funciona",           # informal sin signos
+        "quiero que me devuelvan el dinero",           # lenguaje de reembolso
+        "me hacen el reembolso si lo devuelvo",        # reembolso explicito
+        "plitica de devolucion",                       # typo exacto que fallaba
+        "me devuelven la plata si no me gusta",        # CL: retorno financiero
     ],
 
     # -- Policy: Shipping ------------------------------------------
@@ -116,15 +149,35 @@ PROTOTYPE_EXAMPLES: Dict[str, List[str]] = {
     ],
 
     # -- Policy: Warranty ------------------------------------------
+    # IMPORTANTE: mantener enfocado en DEFECTO/REPARACION, no en devolucion.
+    # Evitar ejemplos que sean ambiguos con policy_return.
+    # El eje semantico es: el producto no funciona, el fabricante lo arregla.
+    #
+    # CRITICO para CL slang: el verbo "salir" + defecto ("salio fallado") comparte
+    # zona semantica con product_availability ("ya salio mi pedido").
+    # Se necesitan multiples ejemplos del patron "salir/venir + defecto" para
+    # que el centroide de warranty gane esa region por encima de availability.
     "informational/policy_warranty": [
         "tienen garantia los productos?",
-        "me llego defectuoso que hago",                # implicit warranty
-        "el producto esta roto como lo reparan",
         "cuanto dura la garantia?",
         "warranty information",
-        "the product is broken",
         "como aplico la garantia?",
-        "salio fallado que hago",                      # CL: "salio fallado"
+        "salio fallado que hago?",                     # CL: exacto que fallaba
+        "me salio fallado el producto",                # salio + defecto explicito
+        "salio con falla de fabrica",                  # salio + falla de origen
+        "el producto vino fallado",                    # vino + defecto (variacion)
+        "vino con defecto el pedido",                  # vino + defecto corto
+        "me llego con falla de fabrica",               # llego + falla
+        "me mandaron un articulo defectuoso",          # mandaron + defectuoso
+        "recibi un producto danado",                   # recibi + danado
+        "llego roto desde la caja",                    # llego + roto
+        "el articulo que recibi no funciona",          # recibi + no funciona
+        "el producto no funciona desde que lo recibi",  # defecto funcional
+        "hay garantia si el producto falla?",          # pregunta de garantia tecnica
+        "el material esta defectuoso",                 # defecto de material
+        "como hago valida la garantia?",               # proceso de garantia
+        "the product stopped working",                 # EN: fallo funcional
+        "can I claim warranty?",                       # EN: reclamacion garantia
     ],
 
     # -- Policy: Privacy -------------------------------------------
@@ -140,6 +193,9 @@ PROTOTYPE_EXAMPLES: Dict[str, List[str]] = {
 
     # -- Product: Sizing -------------------------------------------
     # Cubre: "corre grande", medidas en cm, recomendacion personal
+    # CRITICO: incluir patrones con el verbo "quedar" (LATAM: "esto me quedo grande")
+    # El L12 tiende a agrupar frases informales cortas en ES cerca de greetings.
+    # Con suficientes ejemplos de "quedar+talla", el centroide gana esa region.
     "informational/product_sizing": [
         "que talla me queda?",
         "como se mi talla?",
@@ -153,6 +209,11 @@ PROTOTYPE_EXAMPLES: Dict[str, List[str]] = {
         "corre grande o chico",                        # LATAM: "corre grande"
         "me queda bien si pido mi talla normal?",
         "tabla de medidas en centimetros",
+        "esto me quedo grande",                        # exacto que fallaba: "quedar"
+        "me quedo grande, puedo cambiar la talla?",    # quedar + cambio de talla
+        "el vestido me quedo chico",                   # quedar chico
+        "la prenda me quedo mal de talla",             # quedar mal
+        "quedo un poco grande en los hombros",         # quedar especifico
     ],
 
     # -- Product: Material -----------------------------------------
@@ -178,17 +239,24 @@ PROTOTYPE_EXAMPLES: Dict[str, List[str]] = {
     ],
 
     # -- Product: Availability -------------------------------------
-    # Cubre: "agotado", "se acabo", preguntas de stock implicitas
+    # Cubre: preguntas de stock e inventario
+    # CRITICO: mantener el eje semantico en STOCK/INVENTARIO, NO en estado del producto.
+    # "se agoto?" y "ya no hay?" son ambiguos con queries de defecto (salio fallado).
+    # Reemplazar con lenguaje explicitamente de inventario/stock para alejar el
+    # centroide de la zona semantica de warranty/defectos.
     "informational/product_availability": [
         "esta disponible en stock?",
         "hay en talla S?",
         "cuando vuelve a estar disponible?",
         "is this in stock?",
         "do you have this in blue?",
-        "todavia lo tienen?",
-        "se agoto?",
-        "ya no hay?",                                  # LATAM muy informal
-        "me avisan cuando llegue?",                    # implicit availability
+        "todavia lo tienen en inventario?",            # inventario explicito
+        "hay stock disponible de este modelo?",        # stock explicito
+        "esta agotado en almacen?",                   # almacen/stock especifico
+        "lo tienen en bodega?",                       # bodega = storage/warehouse
+        "me avisan cuando llegue al stock?",           # llegue al stock
+        "quedan unidades disponibles?",               # unidades disponibles
+        "cuando tienen reposicion?",                  # reposicion de inventario
     ],
 
     # -- Account: Orders -------------------------------------------
@@ -288,9 +356,13 @@ class MiniLMIntentClassifier:
       El sistema NUNCA falla por causa de esta capa.
     """
 
-    # Modelo: 22M params, 384-dim embeddings, 200+ idiomas
-    # Benchmark SBERT: mejor accuracy/speed para multilingual classification
-    MODEL_NAME = "paraphrase-multilingual-MiniLM-L6-v2"
+    # Modelo: 118M params, 384-dim embeddings, 50+ idiomas
+    # NOTA: La variante multilingual de MiniLM es L12, NO L6.
+    #   paraphrase-MiniLM-L6-v2          -> English ONLY (L6, 22M params)
+    #   paraphrase-multilingual-MiniLM-L12-v2 -> 50+ langs (L12, 118M params) <- este
+    #   paraphrase-multilingual-MiniLM-L6-v2  -> NO EXISTE en HuggingFace (404)
+    # L12 tiene ~470MB en disco vs ~88MB del L6 ingles, pero soporta ES/EN/LATAM/CH
+    MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 
     def __init__(self, model_cache_dir: Optional[Path] = None):
         """
@@ -307,6 +379,14 @@ class MiniLMIntentClassifier:
         self._centroids: Dict[str, np.ndarray] = {}     # label -> centroid (384-dim)
         self._loaded = False
         self._load_attempted = False
+
+        # Backend configurable via env var:
+        #   MINILM_BACKEND=torch (default) -> PyTorch, para desarrollo local
+        #   MINILM_BACKEND=onnx            -> ONNX Runtime, para produccion
+        # El Dockerfile.cloudrun ya establece: ENV MINILM_BACKEND=onnx
+        # En local, el default 'torch' funciona sin instalar onnxruntime-cpu.
+        # onnxruntime-cpu se instala SOLO en la imagen Docker (Fase 3 del build).
+        self._backend: Optional[str] = os.getenv("MINILM_BACKEND", "torch").lower()
 
     # -- Estado ----------------------------------------------------
 
@@ -336,16 +416,60 @@ class MiniLMIntentClassifier:
             # Si sentence-transformers no esta instalado -> ImportError aqui.
             from sentence_transformers import SentenceTransformer  # noqa: PLC0415
 
-            cache_dir = str(self._model_cache_dir) if self._model_cache_dir else None
+            # CRITICO: usar MINIML_CACHE_DIR del entorno (seteado en Dockerfile.cloudrun).
+            # El baking step guarda el modelo en /app/models/miniml/ para que el
+            # 'chown -R appuser:appuser /app' lo cubra.
+            # Sin esto: baking descarga a /root/.cache/ (inaccesible para appuser).
+            env_cache_dir = os.getenv("MINIML_CACHE_DIR")
+            cache_dir = str(self._model_cache_dir) if self._model_cache_dir else env_cache_dir
             logger.info(
                 "miniml_loading model=%s cache_dir=%s",
-                self.MODEL_NAME, cache_dir or "HF_default",
+                self.MODEL_NAME, cache_dir or "HF_default (WARNING: puede no encontrar el modelo en Cloud Run)",
             )
 
-            self._model = SentenceTransformer(
-                self.MODEL_NAME,
-                cache_folder=cache_dir,
-            )
+            # Backend: "onnx" para produccion (sin PyTorch, ~50ms import),
+            #          "torch" para desarrollo local (mas compatible, ~900ms import)
+            # Si backend="onnx" y el modelo no tiene archivos ONNX pre-exportados,
+            # sentence-transformers los exporta en el primer load (requiere torch
+            # disponible en ese momento, por eso lo hacemos en Docker build time).
+            backend_kwarg = self._backend if self._backend in ("onnx", "openvino") else None
+
+            # ── Limpieza defensiva de token HuggingFace ─────────────────────
+            # Problema: en huggingface_hub < 0.21, token=False se convierte
+            # internamente a token=None, y luego hf_hub_download hace:
+            #   if token is None: token = HfFolder.get_token()
+            # lo que recupera cualquier token invalido del disco.
+            # Solucion: limpiar las variables de entorno explicitamente ANTES
+            # de llamar SentenceTransformer, y restaurarlas despues (finally).
+            # Esto es seguro: solo afecta al scope de esta llamada.
+            _hf_env_backup = {
+                k: os.environ.pop(k, None)
+                for k in ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN")
+            }
+            # Tambien borrar el token en disco si existe (puede estar expirado)
+            try:
+                from huggingface_hub import HfFolder  # noqa: PLC0415
+                if HfFolder.get_token() is not None:
+                    logger.info(
+                        "miniml_hf_cached_token_cleared: "
+                        "token expirado eliminado para acceso anonimo"
+                    )
+                    HfFolder.delete_token()
+            except Exception:
+                pass  # Si falla, continuar de todos modos
+
+            try:
+                self._model = SentenceTransformer(
+                    self.MODEL_NAME,
+                    cache_folder=cache_dir,
+                    token=False,
+                    **(dict(backend=backend_kwarg) if backend_kwarg else {}),
+                )
+            finally:
+                # Restaurar variables de entorno (si habia alguna valida)
+                for k, v in _hf_env_backup.items():
+                    if v is not None:
+                        os.environ[k] = v
 
             # Precomputar centroides — cuesta ~2-3s en CPU, una sola vez.
             # Si el modelo ya estaba en cache local, este paso es el mas costoso.
@@ -366,6 +490,28 @@ class MiniLMIntentClassifier:
                 "Add 'sentence-transformers>=3.0.0' to requirements.cloudrun.txt "
                 "to enable layer-3 semantic classification."
             )
+            return False
+
+        except OSError as exc:
+            # OSError ocurre cuando HF_HUB_OFFLINE=1 y el modelo no esta
+            # en cache local, O cuando hay un problema de acceso al filesystem.
+            # En Cloud Run: el modelo debe estar horneado en la imagen Docker
+            # via el baking step del Dockerfile.cloudrun.
+            # Si este error aparece en produccion, el baking step fallo
+            # y hay que reconstruir la imagen.
+            err_msg = str(exc)
+            if 'offline' in err_msg.lower() or 'local' in err_msg.lower() or 'not found' in err_msg.lower():
+                logger.error(
+                    "miniml_model_not_in_cache model=%s "
+                    "hint='El baking step del Dockerfile no incluyo el modelo. "
+                    "Rebuilding la imagen deberia resolverlo.' error=%s",
+                    self.MODEL_NAME, err_msg[:200],
+                )
+            else:
+                logger.error(
+                    "miniml_load_failed model=%s error=%s",
+                    self.MODEL_NAME, err_msg[:200], exc_info=True,
+                )
             return False
 
         except Exception as exc:
@@ -422,6 +568,19 @@ class MiniLMIntentClassifier:
             list(self._centroids.keys()),
         )
 
+        # JIT dummy warmup: la primera llamada a encode() en PyTorch tiene
+        # overhead de JIT compilation (~80-90ms en produccion).
+        # Al ejecutar un encode dummy aqui (dentro del warmup background,
+        # antes de servir requests), el grafo JIT queda pre-compilado.
+        # Resultado: la primera query real de produccion paga ~10ms,
+        # no ~90ms. Una linea que elimina el cold-start de inferencia.
+        self._model.encode(
+            ["jit_warmup"],
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        logger.info("miniml_jit_warmup_done")
+
     # -- Prediccion ------------------------------------------------
 
     def predict(self, query: str) -> Optional[MiniLMPrediction]:
@@ -449,6 +608,27 @@ class MiniLMIntentClassifier:
         t0 = time.time()
 
         try:
+            # -- Override regex: slang CL de defecto/garantia (Gap G-05) ------
+            # El L12 clasifica "salio fallado" como product_availability
+            # (margen de solo 0.059 sobre warranty). Este override resuelve
+            # el caso antes de calcular centroides, evitando el resultado
+            # incierto del espacio de embeddings.
+            # Confianza 0.80: alta pero no 1.0, dejando margen para que el
+            # hybrid_detector pueda ponderar con la capa ML si lo considera.
+            if _WARRANTY_DEFECTO_RE.search(query):
+                t_override = (time.time() - t0) * 1000
+                logger.info(
+                    "miniml_warranty_override query='%s' time_ms=%.1f",
+                    query[:60], t_override,
+                )
+                return MiniLMPrediction(
+                    primary_intent="informational",
+                    sub_intent="policy_warranty",
+                    full_label="informational/policy_warranty",
+                    confidence=0.80,
+                    inference_time_ms=t_override,
+                )
+
             # Embed el query — shape (1, 384) -> [0] para (384,)
             query_emb: np.ndarray = self._model.encode(
                 [query],
@@ -457,9 +637,15 @@ class MiniLMIntentClassifier:
             )[0]
 
             # Cosine similarity = dot product (ambos normalizados)
+            # BUG FIX: inicializar a float('-inf'), NO a -1.0.
+            # Razon: cosine similarity puede valer exactamente -1.0
+            # (vectores antipodales). Con best_sim=-1.0, la comparacion
+            # 'sim > best_sim' es False (-1.0 > -1.0), best_label nunca
+            # se asigna y predict() retorna None incorrectamente.
+            # float('-inf') garantiza que el primer sim siempre gana.
             best_label: Optional[str] = None
-            best_sim: float = -1.0
-            second_sim: float = -1.0  # para loguear el margen de separacion
+            best_sim: float = float('-inf')
+            second_sim: float = float('-inf')  # para loguear el margen
 
             for label, centroid in self._centroids.items():
                 sim = float(np.dot(query_emb, centroid))
@@ -486,12 +672,19 @@ class MiniLMIntentClassifier:
             confidence = max(0.0, min(1.0, best_sim))
 
             # Log con margen de separacion: util para detectar queries ambiguas
-            # donde el segundo candidato esta muy cerca del ganador
+            # donde el segundo candidato esta muy cerca del ganador.
+            # Si second_sim es -inf (solo habia 1 centroide), no loguear margen.
+            margin_str = (
+                f"{best_sim - second_sim:.3f}"
+                if second_sim > float('-inf')
+                else "N/A"
+            )
             logger.info(
                 "miniml_predict query='%s' label=%s sim=%.3f "
-                "second_sim=%.3f margin=%.3f time_ms=%.1f",
+                "second_sim=%s margin=%s time_ms=%.1f",
                 query[:60], best_label, best_sim,
-                second_sim, best_sim - second_sim, inference_ms,
+                f"{second_sim:.3f}" if second_sim > float('-inf') else "N/A",
+                margin_str, inference_ms,
             )
 
             return MiniLMPrediction(

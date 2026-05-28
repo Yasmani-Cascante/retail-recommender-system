@@ -245,6 +245,129 @@ from src.api.routers.health_kb import router as health_kb_router
 # ✅ CLOUD RUN FIX: Async helper for non-blocking Redis initialization
 # ============================================================================
 
+async def _warmup_shopify_prices_connection() -> None:
+    """
+    Calienta la conexion TCP/TLS con Shopify contextualPricing API.
+
+    PROBLEMA: La primera llamada a contextualPricing desde Cloud Run tarda ~11s
+    (cold TCP + TLS + Shopify cache cold). Las llamadas subsecuentes toman ~2-3s
+    (conexion warm, pool TCP reutilizado). Nuestro timeout de lazy-price es 5s:
+    la primera llamada siempre falla en frio, el cache Redis nunca se calienta.
+
+    SOLUCION: Query de warmup al startup con timeout=15s (acepta los ~11s de
+    cold start). Una vez warm, las queries de produccion caen dentro de los 5s.
+    Mismo patron que _warmup_miniml_in_background y Claude API warmup.
+
+    Datos de diagnostico (21/05/2026):
+      - Cold connection (primera llamada): ~11.4s
+      - Warm connection (misma sesion):    ~2.3s
+    """
+    import json as _json_warmup
+
+    try:
+        # Buffer para que Redis, ShopifyClient y tfidf_recommender esten listos
+        await asyncio.sleep(5.0)
+
+        # Verificar que los componentes esten disponibles
+        _shopify = None
+        try:
+            from src.api.core.store import get_shopify_client as _get_sc
+            _shopify = _get_sc()
+        except Exception:
+            pass
+
+        if not _shopify:
+            logger.warning("shopify_prices_warmup_skipped",
+                           reason="shopify_client not available")
+            return
+
+        # Tomar productos de las categorias mas consultadas (CONJUNTOS).
+        # Con 63 productos en 'Conjuntos de dos piezas' y 8 por request,
+        # cachear 6 pre-calienta el pool Y popula los productos mas frecuentes.
+        _WARMUP_CATEGORIES = {
+            'CONJUNTOS FALDAS', 'CONJUNTOS PANTALONES',
+            'CONJUNTOS', 'VESTIDOS LARGOS',
+        }
+        _warmup_ids = []
+        try:
+            if tfidf_recommender and hasattr(tfidf_recommender, 'product_data'):
+                _warmup_ids = [
+                    str(p.get('id', ''))
+                    for p in tfidf_recommender.product_data
+                    if p.get('product_type') in _WARMUP_CATEGORIES and p.get('id')
+                ][:6]  # 6 productos: 3 por categoria, suficiente para calentar
+        except Exception:
+            pass
+
+        # Fallback: si no hay conjuntos, usar los primeros disponibles
+        if not _warmup_ids:
+            try:
+                if tfidf_recommender and hasattr(tfidf_recommender, 'product_data'):
+                    _warmup_ids = [
+                        str(p.get('id', ''))
+                        for p in tfidf_recommender.product_data[:10]
+                        if p.get('id')
+                    ][:3]
+            except Exception:
+                pass
+
+        if not _warmup_ids:
+            logger.warning("shopify_prices_warmup_skipped",
+                           reason="no product IDs from catalog")
+            return
+
+        logger.info("shopify_prices_warmup_started",
+                    product_count=len(_warmup_ids),
+                    note="cold connection may take ~11s")
+        _t0 = time.time()
+
+        # Timeout generoso (15s) — suficiente para cold connection (~11s).
+        # En produccion normal, las queries subsecuentes toman ~2.3s.
+        _price_map = await asyncio.wait_for(
+            _shopify.get_prices_for_products(_warmup_ids),
+            timeout=15.0
+        )
+        _elapsed_ms = (time.time() - _t0) * 1000
+
+        if _price_map:
+            # Escribir en Redis: mismo key format que _enrich_recommendations_lazy Parte B.
+            # La conexion queda warm Y el cache se pre-popula para los primeros requests.
+            _redis_written = 0
+            try:
+                _rs = await ServiceFactory.get_redis_service()
+                for _pid, _prices in _price_map.items():
+                    await _rs.set(f"price:{_pid}", _json_warmup.dumps(_prices), ttl=3600)
+                    _redis_written += 1
+            except Exception as _re:
+                logger.warning("shopify_prices_warmup_redis_error", error=str(_re))
+
+            logger.info(
+                "shopify_prices_warmup_complete",
+                elapsed_ms=round(_elapsed_ms),
+                products_warmed=len(_price_map),
+                redis_written=_redis_written,
+                note="Shopify connection warm — lazy-price encaja en 5s timeout"
+            )
+        else:
+            # Shopify respondio pero sin datos — la conexion igual quedo warm
+            logger.info("shopify_prices_warmup_connected_no_data",
+                        elapsed_ms=round(_elapsed_ms),
+                        note="connection warm, no prices cached")
+
+    except asyncio.TimeoutError:
+        logger.warning(
+            "shopify_prices_warmup_timeout",
+            timeout_s=15.0,
+            note="cold connection >15s — inusual; lazy-price puede seguir timeando"
+        )
+    except Exception as _e:
+        logger.warning(
+            "shopify_prices_warmup_error",
+            error=str(_e),
+            note="no critico — sistema continua normalmente"
+        )
+
+
 async def _initialize_redis_in_background():
     """
     Background task que valida la conexion Redis sin bloquear el startup.
@@ -366,6 +489,97 @@ async def _get_shutdown_at() -> Optional[int]:
         return None
 
 
+async def _warmup_miniml_in_background() -> None:
+    """
+    Pre-carga el clasificador MiniLM (capa 3 del HybridIntentDetector) durante el startup.
+
+    PROBLEMA SIN WARMUP:
+      El primer request que active capa 3 espera ~28s mientras se carga el modelo L12
+      (470MB PyTorch/ONNX + calculo de 14 centroides de prototipos).
+      Eso es inaceptable como cold start de usuario.
+
+    SOLUCION:
+      Este task carga el modelo en un ThreadPoolExecutor durante el startup de FastAPI.
+      El servidor responde en puerto 8080 inmediatamente mientras el modelo carga.
+      Los requests que lleguen antes de que MiniLM este listo degradan gracefully
+      a la capa 2 (sklearn ML) — exactamente el comportamiento de fallback esperado.
+
+    PATRON:
+      Identico al de _initialize_redis_in_background() — asyncio.create_task() no
+      bloqueante + run_in_executor() para no freezar el event loop con I/O sincrono.
+
+    FEATURE FLAG:
+      MINILM_INTENT_ENABLED=true  -> activa la carga en background
+      MINILM_INTENT_ENABLED=false -> retorna inmediatamente (cero overhead)
+
+      CRITICO: usar os.getenv() DIRECTO, no settings (pydantic @lru_cache congela
+      antes de que Cloud Run inyecte las env vars en el proceso).
+    """
+    # Verificar feature flag via os.environ DIRECTO (no settings/@lru_cache)
+    if os.getenv("MINILM_INTENT_ENABLED", "false").lower() != "true":
+        logger.info(
+            "miniml_warmup_skipped",
+            reason="MINILM_INTENT_ENABLED is not true"
+        )
+        return
+
+    # Timeout configurable para entornos con disco lento (default 120s)
+    timeout_s = float(os.getenv("MINILM_WARMUP_TIMEOUT_S", "120"))
+
+    logger.info(
+        "miniml_warmup_started",
+        timeout_s=timeout_s,
+        note="loading model in background thread — event loop unblocked"
+    )
+
+    t0 = time.time()
+    loop = asyncio.get_event_loop()
+
+    def _load_blocking() -> bool:
+        """
+        Carga sincronica del modelo L12 + precomputo de centroides.
+        Se ejecuta en ThreadPoolExecutor para no bloquear el event loop.
+        SentenceTransformer.__init__() es CPU-bound/blocking I/O — no es async.
+        """
+        try:
+            from src.api.ml.miniml_classifier import get_miniml_classifier  # noqa: PLC0415
+            clf = get_miniml_classifier()
+            if clf.is_loaded():
+                return True  # ya precargado por otro path
+            return clf.load()
+        except Exception:
+            return False  # logging ocurre en el scope async de abajo
+
+    try:
+        success = await asyncio.wait_for(
+            loop.run_in_executor(None, _load_blocking),
+            timeout=timeout_s
+        )
+        elapsed_ms = round((time.time() - t0) * 1000)
+
+        if success:
+            logger.info(
+                "miniml_warmup_complete",
+                elapsed_ms=elapsed_ms,
+                status="ready — capa 3 disponible desde el primer request"
+            )
+        else:
+            logger.warning(
+                "miniml_warmup_load_failed",
+                elapsed_ms=elapsed_ms,
+                note="capa 3 no disponible, sistema degrada a sklearn (capa 2) automaticamente"
+            )
+
+    except asyncio.TimeoutError:
+        elapsed_ms = round((time.time() - t0) * 1000)
+        logger.warning(
+            "miniml_warmup_timeout",
+            elapsed_ms=elapsed_ms,
+            timeout_s=timeout_s,
+            note="MiniLM cargara lazily en el primer request que active capa 3"
+        )
+
+
 # ============================================================================
 # 🚀 FASTAPI LIFESPAN CONTEXT MANAGER (MODERN PATTERN) - CÓDIGO COMPLETO PRESERVADO
 # ============================================================================
@@ -423,6 +637,12 @@ async def lifespan(app: FastAPI):
         # The server will listen on port 8080 immediately while Redis validates in background
         redis_bg_task = asyncio.create_task(_initialize_redis_in_background())
         logger.info("✅ Redis initialization started in background (non-blocking)")
+
+        # ✅ MiniLM Layer-3: Pre-carga en background para eliminar cold start de ~28s.
+        # Cuando MINILM_INTENT_ENABLED=false, la funcion retorna inmediatamente sin overhead.
+        # Los requests que lleguen antes de que cargue degradan a capa 2 (sklearn) gracefully.
+        asyncio.create_task(_warmup_miniml_in_background())
+        logger.info("✅ MiniLM Layer-3 warmup started in background (non-blocking)")
         
         # ✅ Initialize Shopify integration (independent of Redis)
         shopify_client = None
@@ -1119,8 +1339,56 @@ async def lifespan(app: FastAPI):
             # logger.warning("⚠️ PASO 8.5: CLAUDE API CONNECTION WARM-UP (if condition COMMENTED OUT for testing)")
             logger.warning("⚠️ Claude API warm-up skipped — MCP recommender or claude client not available")
 
-        # ════════════════════════════════════════════════════════════════════
-        # 🆕 PASO 8.6: CLAUDE API KEEP-ALIVE PERIÓDICO (background task)
+        # ── PASO 8.5b: SHOPIFY contextualPricing WARM-UP (background) ──────────────
+        # Por que: primera llamada a contextualPricing desde Cloud Run tarda ~11s
+        # (cold TCP + TLS). Timeout lazy-price es 5s -> siempre falla en frio.
+        # Este warmup acepta los ~11s de cold start (timeout=15s) y deja la
+        # conexion warm para produccion (~2.3s -> encaja dentro de los 5s).
+        # Diagnostico confirmado 21/05/2026: cold=11408ms, warm=2330ms.
+        asyncio.create_task(_warmup_shopify_prices_connection())
+        logger.info("Shopify prices warm-up started in background (non-blocking)")
+
+        # ── PASO 8.5c: LFM WARM-UP (background) ─────────────────────────────────
+        # Por que: Together.ai (via OpenRouter) tiene cold-start de ~11-12s.
+        # Primera llamada post-startup sin warmup -> timeout (>10s inner) ->
+        # fallback a respuesta generica. Este warmup acepta el cold-start
+        # completo (timeout=14s) y deja el modelo caliente para el primer
+        # usuario real.
+        # Complementado por PASO 8.7 (LFM keep-alive cada 5 min), que mantiene
+        # el modelo warm durante toda la vida del servidor en produccion.
+        # Diagnostico confirmado 26/05/2026: cold=11.34s, warm=440ms.
+        async def _warmup_lfm_connection() -> None:
+            """Calienta la conexion con OpenRouter LFM para evitar cold-start."""
+            try:
+                await asyncio.sleep(8.0)  # Esperar a que el startup termine
+                
+                from src.api.factories.service_factory import ServiceFactory
+                engine = await ServiceFactory.get_mcp_recommender()
+                if not (engine and hasattr(engine, '_lfm_mcp_enabled') and engine._lfm_mcp_enabled
+                        and hasattr(engine, '_lfm_client') and engine._lfm_client):
+                    logger.info("lfm_warmup_skipped: LFM not enabled or client not ready")
+                    return
+
+                logger.info("lfm_warmup_started")
+                resp = await asyncio.wait_for(
+                    engine._lfm_client.complete(
+                        "Eres un asistente util.",
+                        "Responde hola.",
+                    ),
+                    timeout=14.0  # Acepta el cold-start completo (~10-11s)
+                )
+                logger.info("lfm_warmup_complete model=%s tokens_out=%d",
+                            resp.model, resp.output_tokens)
+            except asyncio.TimeoutError:
+                logger.warning("lfm_warmup_timeout: cold-start > 14s")
+            except Exception as _e:
+                logger.warning("lfm_warmup_error: %s", _e)
+
+        asyncio.create_task(_warmup_lfm_connection())
+        logger.info("LFM warm-up started in background (non-blocking)")
+
+        # ================================================================================
+        # PASO 8.6: CLAUDE API KEEP-ALIVE PERIODICO (background task)
         # ════════════════════════════════════════════════════════════════════
         # POR QUÉ ES NECESARIO:
         # El PASO 8.5 (warm-up) establece la conexión TCP durante el startup.
@@ -1217,6 +1485,92 @@ async def lifespan(app: FastAPI):
         #         "⚠️ Claude keep-alive task NOT started — "
         #         "MCP recommender or claude client not available"
         #     )
+
+        #==============================================================================
+        # PASO 8.7: LFM KEEP-ALIVE PERIÓDICO (background task)
+        # ════════════════════════════════════════════════════════════════════
+        # POR QUÉ ES NECESARIO:
+        # PASO 8.5c (warmup) calienta el modelo en Together.ai al startup.
+        # Sin embargo, Together.ai descarga el modelo de GPU tras ~10-30 min de
+        # inactividad: el siguiente usuario paga un cold-start de ~11-12s que
+        # supera el inner timeout (10s) y recibe la respuesta genérica de fallback.
+        # Esta tarea hace un ping mínimo a LFM cada 5 minutos, manteniendo el
+        # modelo cargado en la GPU de Together.ai indefinidamente mientras el
+        # servidor esté activo.
+        #
+        # COSTE: ~$0.000026 USD por ping (model=liquid/lfm-2-24b-a2b, ~80 tokens).
+        #        12 pings/hora x 24h x $0.000026 = ~$0.0075/día.
+        # INTERVALO: 300s (5 min) — bien por debajo del TTL de inactividad de Together.ai.
+        # IMPACTO EN LATENCIA DE REQUESTS: ninguno — corre en background task.
+        # DIAGNÓSTICO: 26/05/2026 — cold-start=11.34s, warm=440ms (Turn14=1.973s total).
+        # ════════════════════════════════════════════════════════════════════
+        lfm_keepalive_task = None
+
+        async def _lfm_keepalive_loop(engine) -> None:
+            # Background task que mantiene el modelo LFM cargado en Together.ai,
+            #previniendo cold-starts de ~11-12s en requests reales.
+
+            # Intervalo: 300s (5 min) — mantiene el modelo caliente en GPU.
+            # Se cancela limpiamente cuando el lifespan hace shutdown.
+            LFM_KEEPALIVE_INTERVAL_S = 300  # 5 minutos entre pings
+            lfm_ping_count = 0
+
+            while True:
+                try:
+                    await asyncio.sleep(LFM_KEEPALIVE_INTERVAL_S)
+                    lfm_ping_count += 1
+
+                    if not (engine and
+                            hasattr(engine, '_lfm_mcp_enabled') and engine._lfm_mcp_enabled and
+                            hasattr(engine, '_lfm_client') and engine._lfm_client):
+                        logger.warning("⚠️ LFM keep-alive: client not available, stopping loop")
+                        break
+
+                    ping_start = time.time()
+                    await asyncio.wait_for(
+                        engine._lfm_client.complete(
+                            "Eres un asistente util.",
+                            "k",  # prompt minimo para mantener el modelo caliente
+                        ),
+                        timeout=15.0  # Acepta un cold-start inesperado sin romper el loop
+                    )
+                    ping_ms = (time.time() - ping_start) * 1000
+                    logger.info(
+                        f"🔄 LFM keep-alive #{lfm_ping_count} OK in {ping_ms:.0f}ms — Together.ai model stays warm"
+                    )
+
+                except asyncio.CancelledError:
+                    logger.info(f"✅ LFM keep-alive loop cancelled after {lfm_ping_count} pings (clean shutdown)")
+                    break
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"⚠️ LFM keep-alive #{lfm_ping_count} timeout (15s) — "
+                        f"model may have been unloaded; next real request may be slow"
+                    )
+                    # Continuar el loop; el siguiente ping intentará renovar
+                except Exception as lfm_ka_err:
+                    logger.warning(
+                        f"⚠️ LFM keep-alive #{lfm_ping_count} error: "
+                        f"{type(lfm_ka_err).__name__}: {lfm_ka_err} — "
+                        f"will retry in {LFM_KEEPALIVE_INTERVAL_S}s"
+                    )
+
+        # Arrancar LFM keep-alive si el cliente LFM está disponible
+        try:
+            from src.api.factories.service_factory import ServiceFactory as _SF_lfmka
+            _lfm_ka_engine = await _SF_lfmka.get_mcp_recommender()
+            if (_lfm_ka_engine and
+                    hasattr(_lfm_ka_engine, '_lfm_mcp_enabled') and _lfm_ka_engine._lfm_mcp_enabled and
+                    hasattr(_lfm_ka_engine, '_lfm_client') and _lfm_ka_engine._lfm_client):
+                lfm_keepalive_task = asyncio.create_task(_lfm_keepalive_loop(_lfm_ka_engine))
+                logger.info(
+                    f"✅ LFM keep-alive background task started "
+                    f"(interval=300s) — Together.ai model will stay warm indefinitely"
+                )
+            else:
+                logger.info(f"ℹ️ LFM keep-alive NOT started — LFM not enabled or client not ready")
+        except Exception as _lfm_ka_err:
+            logger.warning(f"⚠️ LFM keep-alive task setup failed: {_lfm_ka_err}")
 
         # ============================================================================
         # 🎯 PASO 9: COMPREHENSIVE HEALTH CHECK
@@ -1705,7 +2059,18 @@ async def lifespan(app: FastAPI):
         #         logger.info("✅ Claude keep-alive background task stopped cleanly")
         #     except Exception as e:
         #         logger.warning(f"⚠️ Claude keep-alive task shutdown warning: {e}")
-        
+
+        # ════════════════════════════════════════════════════════════════════
+        # PASO 8.7 SHUTDOWN: Cancelar LFM keep-alive background task
+        # ════════════════════════════════════════════════════════════════════
+        if lfm_keepalive_task is not None and not lfm_keepalive_task.done():
+            try:
+                lfm_keepalive_task.cancel()
+                await asyncio.gather(lfm_keepalive_task, return_exceptions=True)
+                logger.info(f"✅ LFM keep-alive background task stopped cleanly")
+            except Exception as e:
+                logger.warning(f"⚠️ LFM keep-alive task shutdown warning: {e}")
+
         # ════════════════════════════════════════════════════════════════════
         # M3: SHUTDOWN GCP METRICS EXPORTER — cancela el background task
         # ════════════════════════════════════════════════════════════════════

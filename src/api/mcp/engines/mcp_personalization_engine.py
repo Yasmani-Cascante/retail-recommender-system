@@ -1426,19 +1426,52 @@ class MCPPersonalizationEngine:
             )
 
         # ── RUTA LFM (si flag activo) ──────────────────────────────────────────
+        _lfm_failed = False  # flag para saber si LFM fallo y necesitamos el fallback
         if self._lfm_mcp_enabled and self._lfm_client:
             try:
                 resp = await asyncio.wait_for(
                     self._lfm_client.complete(system_prompt, user_prompt),
-                    timeout=8.0  # LFM-24B puede ser más lento que Haiku en primer request
+                    timeout=10.0
+                    # ── DISEÑO DEL TIMEOUT INNER LFM ───────────────────────────────────────
+                    # Valor: 10s (inner). El outer timeout en mcp_conversation_handler.py
+                    # es 12.0s desde que generate_personalized_response() inicia.
+                    # Lazy-price tarda ~0.6s antes de que LFM empiece; por tanto:
+                    #   inner dispara a: 0.6 + 10.0 = 10.6s desde el inicio del outer
+                    #   outer dispara a: 12.0s desde el inicio del outer
+                    # El inner (10.6s) dispara ANTES que el outer (12.0s), garantizando
+                    # que _lfm_failed=True se ejecute y se omita la ruta Claude.
+                    #
+                    # Cold-start Together.ai: ~11-12s — supera este timeout.
+                    # El PASO 8.5c (warmup al startup) y el PASO 8.7 (LFM keep-alive
+                    # periódico cada 5 min) pre-calientan el modelo en Together.ai,
+                    # eliminando cold starts en tráfico normal de producción.
+                    # Warm: ~440ms — muy dentro del presupuesto de 10s.
+                    #
+                    # Diagnóstico confirmado 26/05/2026:
+                    #   Turn 11 (cold):       11.34s → timeout | Turn 13 (semi-warm): 6.11s → ok
+                    #   Turn 14 (fully warm):  0.44s → ok      | Mejora: 80.3% (1.973s total)
                 )
                 logger.info('LFM MCP response: model=%s in=%d out=%d',
                         resp.model, resp.input_tokens, resp.output_tokens)
                 return resp.content
             except Exception as e:
-                # Fallback automático a Claude si LFM falla
                 logger.warning('LFM MCP call failed, falling back to Claude: %s', e)
-                # La ejecución continúa hacia la ruta Claude a continuación
+                _lfm_failed = True
+
+        # ── RUTA CLAUDE (default o fallback) ──────────────────────────────────────
+        # ⚠️ TODO TEMPORAL (Sprint httpx 24/05/2026):
+        # Cuando LFM falla, el flujo llega aqui para usar Claude como fallback.
+        # Con credito Anthropic agotado (HTTP 400), Claude ejecuta 3 retries
+        # que acumulan ~580ms sin resultado util.
+        # FIX TEMPORAL: si LFM fallo, retornar respuesta por defecto directamente.
+        # CUANDO ELIMINAR: al integrar el modelo de reemplazo para Claude,
+        # configurar las nuevas credenciales y eliminar el bloque marcado TEMPORAL.
+        if _lfm_failed:  # TEMPORAL
+            logger.info(
+                "lfm_failed_claude_skipped: LFM timeout + Claude sin credito (400). "
+                "TEMPORAL: eliminar cuando se integre el modelo de reemplazo."
+            )
+            return "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"  # TEMPORAL
 
         # ── RUTA CLAUDE (default o fallback) ─────────────────────────────────
         model_config = self.claude_config.get_model_config()
@@ -1519,8 +1552,17 @@ class MCPPersonalizationEngine:
                         
                 except Exception as api_error:
                     logger.warning(f"Claude API error on attempt {attempt + 1}: {api_error}")
+                    # Error 400 (billing) es permanente: reintentar no lo resuelve.
+                    # Sin este check se desperdician ~580ms en 3 retries inutiles.
+                    # Un 429 (rate-limit) o 5xx (server error) SI merece reintento.
+                    if hasattr(api_error, 'status_code') and api_error.status_code == 400:
+                        logger.warning(
+                            "Claude billing error (400) — skipping remaining retries. "
+                            "Add credits at console.anthropic.com/settings/billing."
+                        )
+                        break  # Salir del loop inmediatamente
                     if attempt < max_retries:
-                        await asyncio.sleep(0.05)  # ← FIX: 1s→50ms; mismo razonamiento
+                        await asyncio.sleep(0.05)  # ← FIX: 1s→50ms; libera socket sin consumir presupuesto
             
             # FIX (27/03/2026): Extraer el string de texto plano de la respuesta.
             # Claude fue instruido a responder sin JSON ("Respuesta directa sin JSON"),
@@ -2094,7 +2136,6 @@ class MCPPersonalizationEngine:
         ]
 
         if not products_to_enrich:
-            # Todos los productos ya tienen market_prices (enriquecidos en startup)
             logger.debug(
                 "[lazy-price] Todos los productos ya tienen market_prices — "
                 "sin query a Shopify necesaria."
@@ -2110,16 +2151,74 @@ class MCPPersonalizationEngine:
         if not product_ids:
             return
 
+        # ── PARTE C (Sprint lazy-price 21/05/2026): Redis lookup antes de Shopify ──────────
+        # Reduce llamadas a Shopify: productos con hit en Redis (< 1ms) no van a Shopify.
+        # Comparte el cache con el outfit endpoint y con otras instancias de Cloud Run.
+        # Key: "price:{shopify_product_id}" → JSON con precios de los 4 mercados.
+        # API Redis en este archivo: redis_client.set(key, value, ttl=3600)
+        #   ← usa ttl= (no ex=) porque es RedisService enterprise, no cliente raw.
+        redis_client = self.redis_service or self.redis
+        ids_for_shopify = []  # productos que NO tienen cache en Redis
+
+        if redis_client:
+            for pid in product_ids:
+                redis_hit = False
+                try:
+                    cached_raw = await redis_client.get(f"price:{pid}")
+                    if cached_raw:
+                        price_all_markets = json.loads(cached_raw)
+                        # Inyectar en el rec correspondiente por product_id
+                        for rec in products_to_enrich:
+                            if str(rec.get("id", "")) == pid:
+                                rec["market_prices"] = price_all_markets
+                                redis_hit = True
+                                logger.debug(
+                                    "[lazy-price] lazy_price_redis_hit product_id=%s",
+                                    pid
+                                )
+                                break
+                except Exception:
+                    pass  # Redis error no critico — continuar a Shopify
+                if not redis_hit:
+                    ids_for_shopify.append(pid)
+        else:
+            # Redis no disponible — todos los productos van a Shopify
+            ids_for_shopify = list(product_ids)
+
+        if not ids_for_shopify:
+            logger.info(
+                "[lazy-price] %d/%d productos cargados desde Redis. Sin query a Shopify.",
+                len(product_ids), len(product_ids)
+            )
+            return
+
         logger.info(
             "[lazy-price] Consultando Shopify para %d producto(s) sin market_prices "
             "(mercado actual: %s)...",
-            len(product_ids), market_id
+            len(ids_for_shopify), market_id
         )
 
         t0 = __import__("time").time()
 
-        # Una sola query GraphQL con todos los productos y los 4 mercados.
-        price_map = await self.shopify_client.get_prices_for_products(product_ids)
+        # ── PARTE A (Sprint lazy-price 21/05/2026): Timeout en la llamada a Shopify ───────
+        # Sin timeout: SSL retries de Shopify bloqueaban hasta 12s, agotando el
+        # budget de personalizacion (8s). LAZY_PRICE_TIMEOUT_S configurable via env.
+        # 5s es suficiente para Shopify en condiciones normales; los SSL retries
+        # exceden ese umbral, por lo que el fallback a CLP_RATES se activa solo
+        # cuando Shopify tiene problemas reales.
+        lazy_price_timeout = float(os.environ.get("LAZY_PRICE_TIMEOUT_S", "5.0"))
+        try:
+            price_map = await asyncio.wait_for(
+                self.shopify_client.get_prices_for_products(ids_for_shopify),
+                timeout=lazy_price_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[lazy-price] Timeout (%.0fs) consultando Shopify para %d producto(s). "
+                "_format_price_for_market usara CLP_RATES fallback.",
+                lazy_price_timeout, len(ids_for_shopify)
+            )
+            return
 
         elapsed_ms = (__import__("time").time() - t0) * 1000
 
@@ -2130,10 +2229,8 @@ class MCPPersonalizationEngine:
             )
             return
 
-        # Inyectar market_prices en los objetos en memoria.
-        # Los builders sincrónicos (_build_advanced_personalization_prompt,
-        # _build_personalized_user_prompt) encontraran market_prices en el
-        # campo y usaran Prioridad 1 de _format_price_for_market.
+        # Inyectar market_prices en los objetos en memoria Y persistir en Redis.
+        # Los builders sincrónicos encontraran market_prices en Prioridad 1.
         enriched_count = 0
         for rec in products_to_enrich:
             pid = str(rec.get("id", ""))
@@ -2141,9 +2238,24 @@ class MCPPersonalizationEngine:
                 rec["market_prices"] = price_map[pid]
                 enriched_count += 1
 
+                # ── PARTE B (Sprint lazy-price 21/05/2026): Escribir en Redis ────────────
+                # TTL 1h: suficiente para trafico diario sin datos stale.
+                # Webhook products/update invalida el cache cuando Shopify cambia
+                # el precio (Fase 3 del plan lazy-price).
+                # Comparte el mismo key que lee el outfit endpoint (Parte D).
+                if redis_client:
+                    try:
+                        await redis_client.set(
+                            f"price:{pid}",
+                            json.dumps(price_map[pid]),
+                            ttl=3600
+                        )
+                    except Exception:
+                        pass  # Redis write failure es no-critico
+
         logger.info(
             "[lazy-price] %d/%d productos enriquecidos con precios Shopify en %.0fms.",
-            enriched_count, len(product_ids), elapsed_ms
+            enriched_count, len(ids_for_shopify), elapsed_ms
         )
 
     def _detect_user_language(self, text: str) -> str:

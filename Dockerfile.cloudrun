@@ -1,7 +1,7 @@
 # ============================================================================
 # DOCKERFILE PARA CLOUD RUN - RETAIL RECOMMENDER v2.1.0
 # ============================================================================
-FROM python:3.9-slim
+FROM python:3.11-slim
 
 # Metadata
 LABEL maintainer="Retail Recommender Team"
@@ -46,6 +46,40 @@ COPY static/ /app/static/
 # y el sistema degrada a rule-based sin error visible.
 # Tamaño total: ~131 KB (model.pkl 24KB + vectorizer.pkl 107KB).
 COPY models/ /app/models/
+
+# ============================================================================
+# FASE 3.5: MINIML LAYER-3 — PRE-DESCARGA DEL MODELO EN IMAGEN
+# ============================================================================
+# sentence-transformers ya esta instalado en FASE 2 (requirements.cloudrun.txt)
+# y torch llega como dependencia suya. No se necesita un pip install adicional.
+#
+# Este paso descarga y cachea paraphrase-multilingual-MiniLM-L12-v2 (~470MB)
+# dentro de la imagen Docker (~/.cache/huggingface/hub/).
+# En runtime, el modelo carga desde disco sin acceso a red.
+#
+# CRÍTICO: debe bakearse en /app/ para que el chown de appuser lo cubra.
+# Baking en /root/.cache/ → appuser no puede leerlo en runtime.
+ENV MINIML_CACHE_DIR=/app/models/miniml
+
+RUN mkdir -p /app/models/miniml && \
+    TOKENIZERS_PARALLELISM=false python -c "\
+from sentence_transformers import SentenceTransformer; \
+m = SentenceTransformer(\
+    'paraphrase-multilingual-MiniLM-L12-v2', \
+    token=False, \
+    cache_folder='/app/models/miniml'\
+); \
+m.encode(['warmup'], show_progress_bar=False); \
+print('MiniLM L12 baked to /app/models/miniml OK')"
+
+# Offline mode: impide que transformers/hf_hub contacte HuggingFace en runtime.
+# El modelo ya está en /root/.cache/huggingface/hub/ (baking anterior).
+# Sin esto, hf_hub hace requests de verificación XET aunque el modelo esté local.
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+# Backend: torch (sentence-transformers + torch ya instalados en FASE 2)
+ENV MINILM_BACKEND=torch
 
 # ============================================================================
 # FASE 4: CONFIGURACIÓN DE RUNTIME
