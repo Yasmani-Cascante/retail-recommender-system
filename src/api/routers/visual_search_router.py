@@ -170,15 +170,133 @@ async def visual_search(
         return VisualSearchResponse(recommendations=[], total_found=0,
                                     latency_ms=round((time.time() - t_start) * 1000, 1))
 
+    # ── Market price resolution (mismo patron que /outfit — Mayo 2026) ────────
+    # FIX (28/05/2026): El endpoint /v1/mcp/visual-search recibía market_id
+    # pero lo ignoraba: devolvía precios CLP con símbolo € (default de
+    # sanitize_rec_for_frontend). Ahora aplica el mismo flujo de 3 fases
+    # que el endpoint /outfit: Redis → Shopify → CLP_RATES fallback.
+    import json as _json_vs
+    import asyncio as _asyncio
+
+    # Tasas de conversión CLP → moneda del mercado (fallback si Shopify no responde).
+    # Fuente: logs de producción 2026-05-18. Coincidir con las de /outfit.
+    _VS_CLP_RATES: dict = {
+        'CL': {'rate': 1.0,     'currency': 'CLP'},
+        'CH': {'rate': 0.00089, 'currency': 'CHF'},   # verificado en produccion
+        'MX': {'rate': 0.18,    'currency': 'MXN'},
+        'ES': {'rate': 0.00088, 'currency': 'EUR'},
+        'US': {'rate': 0.00104, 'currency': 'USD'},
+    }
+
+    # Obtener Redis y Shopify (singleton httpx — pool TCP ya caliente).
+    _vs_redis   = None
+    _vs_shopify = None
+    try:
+        from src.api.factories.service_factory import ServiceFactory
+        _vs_redis = await ServiceFactory.get_redis_service()
+    except Exception:
+        pass
+    try:
+        from src.api.integrations.shopify_client import ShopifyIntegration
+        import os as _os_vs
+        _vs_shopify = ShopifyIntegration(
+            shop_url=_os_vs.environ.get('SHOPIFY_SHOP_URL', ''),
+            access_token=_os_vs.environ.get('SHOPIFY_ACCESS_TOKEN', ''),
+        )
+    except Exception:
+        pass
+
+    # Fase 1: Redis lookup — comparte cache 'price:{pid}' con /outfit y lazy-price.
+    _all_vs_pids: list       = [str(pid) for pid in product_ids]
+    _vs_redis_prices: dict   = {}   # pid -> {market_id: {price, currency}}
+    _ids_for_shopify_vs: list = []
+
+    if _vs_redis:
+        for _pid in _all_vs_pids:
+            try:
+                _raw = await _vs_redis.get(f'price:{_pid}')
+                if _raw:
+                    _vs_redis_prices[_pid] = _json_vs.loads(_raw)
+                    continue
+            except Exception:
+                pass
+            _ids_for_shopify_vs.append(_pid)
+    else:
+        _ids_for_shopify_vs = list(_all_vs_pids)
+
+    # Fase 2: Shopify para productos sin precio en Redis (warm pool ~300-600ms).
+    # Timeout 5s: si Shopify no responde, se usa CLP_RATES como fallback.
+    _vs_shopify_prices: dict = {}
+    if _ids_for_shopify_vs and _vs_shopify:
+        try:
+            _vs_shopify_prices = await _asyncio.wait_for(
+                _vs_shopify.get_prices_for_products(_ids_for_shopify_vs),
+                timeout=5.0,
+            )
+            # Escribir en Redis para próximos requests (TTL 1h, comparte key con /outfit)
+            if _vs_redis and _vs_shopify_prices:
+                for _pid, _price_by_mkt in _vs_shopify_prices.items():
+                    try:
+                        await _vs_redis.set(
+                            f'price:{_pid}',
+                            _json_vs.dumps(_price_by_mkt),
+                            ttl=3600,
+                        )
+                    except Exception:
+                        pass
+                logger.info(
+                    'visual_search_prices_from_shopify',
+                    products=len(_vs_shopify_prices),
+                    market_id=market_id,
+                    cached_in_redis=bool(_vs_redis),
+                )
+        except _asyncio.TimeoutError:
+            logger.warning(
+                'visual_search_shopify_timeout',
+                timeout_s=5.0,
+                fallback='CLP_RATES',
+            )
+        except Exception as _vs_e:
+            logger.warning('visual_search_shopify_error', error=str(_vs_e))
+
+    # Fase 3: Resolver productos con precio de mercado correcto.
+    # Prioridades (misma jerarquía que /outfit):
+    #   1. market_prices pre-computado en catálogo (startup Shopify bulk)
+    #   2. Redis cache   (~1ms, escrito por lazy-price y por esta Fase 2)
+    #   3. Shopify directo (obtenido en Fase 2, pool warm)
+    #   4. CLP_RATES   (fallback si todo lo anterior falla)
     tfidf_recommender = _get_tfidf_recommender()
     resolved = []
     for pid in product_ids:
-        product = tfidf_recommender.id_index.get(str(pid))
-        if product:
+        prod = tfidf_recommender.id_index.get(str(pid))
+        if prod:
+            _spid = str(pid)
+            mkt = prod.get('market_prices', {}).get(market_id, {})
+            if mkt:
+                # Prioridad 1: precio pre-computado en el catálogo
+                price    = mkt.get('price') or prod.get('price')
+                currency = mkt.get('currency', 'CLP')
+            else:
+                _redis_p  = _vs_redis_prices.get(_spid, {}).get(market_id)
+                _shopify_p = _vs_shopify_prices.get(_spid, {}).get(market_id)
+                _real_price = _redis_p or _shopify_p
+
+                if _real_price:
+                    # Prioridad 2/3: precio real de Shopify (Redis o directo)
+                    price    = _real_price.get('price', 0)
+                    currency = _real_price.get('currency', 'CLP')
+                else:
+                    # Prioridad 4: conversión local CLP → mercado
+                    _mkt_cfg = _VS_CLP_RATES.get(market_id, _VS_CLP_RATES['CL'])
+                    price    = round(float(prod.get('price') or 0) * _mkt_cfg['rate'], 2)
+                    currency = _mkt_cfg['currency']
+
             resolved.append({
-                **product,
-                'score': 1.0 - (len(resolved) * 0.05),
-                'source': 'visual_search',
+                **prod,
+                'price':    price,     # override precio CLP del catálogo
+                'currency': currency,  # garantiza moneda correcta en sanitize_rec_for_frontend
+                'score':    1.0 - (len(resolved) * 0.05),
+                'source':   'visual_search',
             })
 
     from src.api.routers.mcp_router import sanitize_rec_for_frontend

@@ -407,7 +407,7 @@ export class ConversationAPI {
   async searchOutfitByImage(
     imageFile: File,
     marketId?: string,
-    topK: number = 2,
+    topK: number = 3,
     alpha: number = 0.7,
   ): Promise<OutfitResult> {
     const formData = new FormData();

@@ -823,9 +823,10 @@ async def get_mcp_conversation_recommendations(
                         try:
                             # from src.recommenders.improved_fallback_exclude_seen import ImprovedFallbackStrategies
                             from src.recommenders.improved_fallback_exclude_seen import (
-                                ImprovedFallbackStrategies, 
-                                extract_categories_from_query, 
-                                get_concrete_categories
+                                ImprovedFallbackStrategies,
+                                extract_categories_from_query,
+                                get_concrete_categories,
+                                get_parent_categories,  # NUEVO: expansion a categorias hermanas
                             )
                             # Obtener todos los productos disponibles
                             all_products = main_unified_redis.hybrid_recommender.content_recommender.product_data
@@ -892,6 +893,37 @@ async def get_mcp_conversation_recommendations(
                                         "source": "f01_product_context"
                                     })
                                 
+                                # FIX (28/05/2026 — diversificacion): Expansion a categorias hermanas.
+                                # Cuando la categoria actual (ej. CONJUNTOS FALDAS) se agota por
+                                # exclusiones en Turn 2+, las hermanas (ej. CONJUNTOS PANTALONES)
+                                # actuan como siguiente preferencia en get_personalized_fallback
+                                # PRIORIDAD 2 -- en lugar de accesorios baratos de otras familias.
+                                # Sin queries externas: usa get_parent_categories() del mismo modulo.
+                                try:
+                                    parent_map = get_parent_categories()
+                                    for _parent_name, _subcats in parent_map.items():
+                                        if _product_type.upper() in [s.upper() for s in _subcats]:
+                                            for _sibling in _subcats:
+                                                if _sibling.upper() != _product_type.upper():
+                                                    user_events.append({
+                                                        "productId": None,
+                                                        "product_info": {
+                                                            "product_type": _sibling,
+                                                            "source": "parent_category_expansion"
+                                                        },
+                                                        "eventType": "view",
+                                                        "source": "f01_sibling_expansion"
+                                                    })
+                                            logger.info(
+                                                f"FIX diversification: siblings of '{_product_type}' "
+                                                f"under parent '{_parent_name}' added to user_events: {_subcats}"
+                                            )
+                                            break
+                                except Exception as _sib_e:
+                                    logger.warning(
+                                        f"FIX diversification: sibling expansion failed (non-critical): {_sib_e}"
+                                    )
+
                                 logger.info(
                                     f"FIX #1 v2: user_events built from current_product_context "
                                     f"(type={_product_type!r}, collections={_collections}) "

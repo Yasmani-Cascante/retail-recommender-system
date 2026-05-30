@@ -305,18 +305,15 @@ function OutfitCardSlider({
   onShowSimilar?: (product: import('../types/widget').ProductRecommendation) => void;
 }) {
   const [activeIdx, setActiveIdx] = useState(0);
-  const [dir, setDir]             = useState<1 | -1>(1);
-  const [animating, setAnimating] = useState(false);
   // Altura medida de la carta activa: los ghost cards la necesitan porque son
   // divs vacíos y position:absolute sin height explícito = height:0 cuando el
   // contenedor es height:auto.
-  const activeCardRef = useRef<HTMLDivElement>(null);
-  const [ghostH, setGhostH] = useState(280);
 
   const label = getOutfitLabel(category);
   const lc    = (navigator.language || 'es').split('-')[0].toLowerCase();
-  const total = products.length;
-  const active = products[activeIdx];
+  const deckProducts = products.slice(0, 3);
+  const total = deckProducts.length;
+  const active = deckProducts[activeIdx];
 
   // Formatear precio con Intl.NumberFormat (locale-aware)
   const formatPrice = (price?: number, currency?: string) => {
@@ -332,10 +329,10 @@ function OutfitCardSlider({
   // Los ghost cards son divs vacíos; sin height explícito tienen height:0 en
   // contenedores con height:auto.
   useEffect(() => {
-    if (activeCardRef.current) {
-      setGhostH(activeCardRef.current.offsetHeight);
+    if (activeIdx >= total) {
+      setActiveIdx(0);
     }
-  });
+  }, [activeIdx, total]);
 
   // Navegar al producto en Shopify al hacer click en la carta
   const handleCardClick = useCallback((e: React.MouseEvent) => {
@@ -349,15 +346,10 @@ function OutfitCardSlider({
   }, [active]);
 
   const navigate = useCallback((newDir: 1 | -1) => {
-    if (animating || total <= 1) return;
-    setDir(newDir);
-    setAnimating(true);
+    if (total <= 1) return;
     // Breve delay para animar la salida antes de cambiar el índice
-    setTimeout(() => {
-      setActiveIdx(i => (i + newDir + total) % total);
-      setAnimating(false);
-    }, 150);
-  }, [animating, total]);
+    setActiveIdx(i => (i + newDir + total) % total);
+  }, [total]);
 
   // Touch swipe: deslizar horizontalmente para navegar
   const touchStartX = useRef<number | null>(null);
@@ -374,13 +366,18 @@ function OutfitCardSlider({
   };
 
   // ── Estilos de la carta activa con transición ───────────────────────────────
-  const cardTransitionStyle: React.CSSProperties = {
-    transform:  animating
-      ? `translateX(${dir * -18}px) scale(0.95)`
-      : 'translateX(0) scale(1)',
-    opacity:    animating ? 0.4 : 1,
-    transition: 'transform 0.15s ease, opacity 0.15s ease',
-  };
+  const visibleStack = deckProducts
+    .map((product, index) => ({
+      product,
+      offset: (index - activeIdx + total) % total,
+    }))
+    .filter(({ offset }) => offset < 3)
+    .sort((a, b) => b.offset - a.offset);
+
+  const cardTransitionStyle: React.CSSProperties = { display: 'none' };
+  const ghostStyle1: React.CSSProperties = { display: 'none' };
+  const ghostStyle2: React.CSSProperties = { display: 'none' };
+  const ghostStyle3: React.CSSProperties = { display: 'none' };
 
   // ── Estilos de las cartas fantasma del mazo ──────────────────────────────────
   // Enfoque: réplicas de altura completa de la carta activa, posicionadas con
@@ -407,37 +404,186 @@ function OutfitCardSlider({
   //
   // Ghost cards con altura explícita medida desde la carta activa.
   // peek = top offset → ghost_bottom = top + ghostH → sobresale (top)px bajo la carta activa.
-  const ghostStyle1: React.CSSProperties = {
-    position: 'absolute',
-    top: '-4px', left: '5px', right: '5px',
-    height: `${ghostH}px`,
-    background: '#dfe0e2',
-    border: '1px solid rgba(0,0,0,0.12)',
-    borderRadius: '10px',
-    boxShadow: '0 1px 4px rgba(0,0,0,0.10)',
-    zIndex: 2,
-    display: "block",  // ghost 1 siempre visible si hay al menos 1 producto
-  };
-  const ghostStyle2: React.CSSProperties = {
-    position: 'absolute',
-    top: '-6px', left: '10px', right: '10px',
-    height: `${ghostH}px`,
-    background: '#d3d5d7',
-    border: '1px solid rgba(0,0,0,0.11)',
-    borderRadius: '10px',
-    boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-    zIndex: 1,
-    display: total > 1 ? 'block' : 'none',  // ghost 2 solo si hay 3+ productos
-  };
-  const ghostStyle3: React.CSSProperties = {
-    position: 'absolute',
-    top: '-6px', left: '15px', right: '15px',
-    height: `${ghostH}px`,
-    background: '#c7c9cb',
-    border: '1px solid rgba(0,0,0,0.10)',
-    borderRadius: '10px',
-    zIndex: 0,
-    display: total > 2 ? 'block' : 'none',  // ghost 3 solo si hay 4+ productos
+
+  const renderStackCard = (product: OutfitProduct, offset: number) => {
+    const isActive = offset === 0;
+    const translate = offset * 8;
+    const scale = 1 - offset * 0.045;
+
+    return (
+      <div
+        key={product.product_id || `${category}-${offset}`}
+        role={isActive && product.handle ? 'button' : 'article'}
+        tabIndex={isActive && product.handle ? 0 : undefined}
+        aria-hidden={!isActive}
+        aria-label={isActive && product.handle ? `Ver ${product.title}` : product.title}
+        onKeyDown={isActive ? e => e.key === 'Enter' && handleCardClick(e as any) : undefined}
+        onClick={isActive ? handleCardClick : undefined}
+        onTouchStart={isActive ? handleTouchStart : undefined}
+        onTouchEnd={isActive ? handleTouchEnd : undefined}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 10 - offset,
+          background: 'var(--surface, #fff)',
+          borderRadius: '10px',
+          border: '1px solid var(--border, #e5e7eb)',
+          overflow: 'hidden',
+          cursor: isActive && product.handle ? 'pointer' : 'default',
+          boxShadow: isActive
+            ? '0 8px 18px rgba(0,0,0,0.12)'
+            : `0 ${4 + offset * 2}px ${12 + offset * 4}px rgba(0,0,0,${0.10 - offset * 0.015})`,
+          display: 'flex',
+          flexDirection: 'column',
+          pointerEvents: isActive ? 'auto' : 'none',
+          transform: `translate3d(${translate}px, ${translate}px, ${-offset * 80}px) rotate(${offset * 2}deg) scale(${scale})`,
+          transformOrigin: 'center bottom',
+          transition: 'transform 280ms cubic-bezier(.22,.61,.36,1), opacity 280ms cubic-bezier(.22,.61,.36,1), box-shadow 280ms cubic-bezier(.22,.61,.36,1)',
+          opacity: 1 - offset * 0.12,
+          willChange: 'transform, opacity',
+        }}
+      >
+        {product.image_url ? (
+          <img
+            src={product.image_url}
+            alt={product.title}
+            loading="lazy"
+            style={{
+              width: '100%',
+              height: '175px',
+              objectFit: 'cover',
+              display: 'block',
+            }}
+          />
+        ) : (
+          <div style={{
+            width: '100%', height: '175px',
+            background: 'linear-gradient(135deg, #f3ede6, #e8ddd4)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '32px',
+          }}>
+            {category === 'shoes' ? 'ðŸ‘ ' : category === 'bag' ? 'ðŸ‘œ'
+              : category === 'accessory' ? 'âœ¨' : category === 'outerwear' ? 'ðŸ§¥' : 'ðŸ‘—'}
+          </div>
+        )}
+
+        <div style={{ padding: '8px 10px 4px', flex: 1, minHeight: '60px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+          <div style={{
+            fontSize: '11.5px',
+            fontWeight: 600,
+            lineHeight: 1.3,
+            color: 'var(--text-primary, #1c1c1c)',
+            overflow: 'hidden',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            marginBottom: '4px',
+          }}>
+            {product.title}
+          </div>
+          {product.price != null && product.price > 0 && (
+            <div style={{
+              fontSize: '12px',
+              fontWeight: 700,
+              color: 'var(--primary, #ec4899)',
+            }}>
+              {formatPrice(product.price, product.currency)}
+            </div>
+          )}
+        </div>
+
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            display: 'flex',
+            borderTop: '1px solid rgba(0,0,0,0.06)',
+            marginTop: '4px',
+            opacity: isActive ? 1 : 0.55,
+          }}
+        >
+          <button
+            disabled
+            title={lc === 'en' ? 'Add to cart (coming soon)' : 'AÃ±adir al carrito (prÃ³ximamente)'}
+            aria-label={lc === 'en' ? 'Add to cart (coming soon)' : 'AÃ±adir al carrito'}
+            style={{
+              flex: 1,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: '7px 4px',
+              border: 'none',
+              background: '#2b2b2be5',
+              color: '#747474',
+              cursor: 'not-allowed',
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="18" fill="currentColor" aria-hidden="true">
+              <path d="M21.193 8.712a2.984 2.984 0 0 0-2.986-2.726h-.952v-.751a5.255 5.255 0 0 0-10.51 0v.75h-.951a2.983 2.983 0 0 0-2.986 2.727L1.715 20.73q-.012.135-.012.27A3 3 0 0 0 4.7 24h.005l14.599-.026q.133 0 .265-.012a3 3 0 0 0 2.715-3.258zM8.246 5.235a3.754 3.754 0 0 1 7.508 0v.75H8.246zm11.056 17.238-14.599.025h-.002q-.067 0-.135-.006a1.496 1.496 0 0 1-1.355-1.625l1.093-12.02a1.49 1.49 0 0 1 1.49-1.36h.95V9.74a.75.75 0 0 0 1.502 0V7.487h7.508V9.74c0 .415.336.75.75.75h.002a.75.75 0 0 0 .75-.75V7.487h.951a1.49 1.49 0 0 1 1.49 1.361l1.092 11.993q.006.067.007.133a1.496 1.496 0 0 1-1.494 1.499"></path>
+            </svg>
+          </button>
+
+          {onShowSimilar && (
+            <button
+              title={lc === 'en' ? 'Show similar products' : 'Ver productos similares'}
+              aria-label={`${lc === 'en' ? 'Similar products to' : 'Similares a'} ${product.title}`}
+              onClick={e => { e.stopPropagation(); onShowSimilar(outfitToReco(product)); }}
+              style={{
+                flex: 1,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: '7px 4px',
+                border: 'none', borderLeft: '1px solid rgba(0,0,0,0.06)',
+                background: 'transparent',
+                color: '#7c7c7c',
+                cursor: 'pointer',
+                transition: 'background 0.15s, color 0.15s',
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLElement).style.background = '#f4f4f4';
+                (e.currentTarget as HTMLElement).style.color = '#1c1c1c';
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLElement).style.background = 'transparent';
+                (e.currentTarget as HTMLElement).style.color = '#7c7c7c';
+              }}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="17"
+                fill="currentColor" aria-hidden="true">
+                <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0" />
+              </svg>
+            </button>
+          )}
+
+          {onChatAbout && (
+            <button
+              title={lc === 'en' ? 'Chat about this item' : 'Hablar sobre este producto'}
+              aria-label={`${lc === 'en' ? 'Chat about' : 'Hablar sobre'} ${product.title}`}
+              onClick={e => { e.stopPropagation(); onChatAbout(outfitToReco(product)); }}
+              style={{
+                flex: 1,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                padding: '7px 4px',
+                border: 'none', borderLeft: '1px solid rgba(0,0,0,0.06)',
+                background: 'transparent',
+                color: '#7c7c7c',
+                cursor: 'pointer',
+                transition: 'background 0.15s, color 0.15s',
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLElement).style.background = '#1c1c1c';
+                (e.currentTarget as HTMLElement).style.color = '#fff';
+              }}
+              onMouseLeave={e => {
+                (e.currentTarget as HTMLElement).style.background = 'transparent';
+                (e.currentTarget as HTMLElement).style.color = '#7c7c7c';
+              }}
+            >
+              <svg height="18" viewBox="0 0 24 24" width="18" fill="currentColor"
+                xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M16 2H4a3 3 0 00-3 3v8a3 3 0 003 3h1v2.14a.8.8 0 001.188.7L11.3 16H16a3 3 0 003-3V5a3 3 0 00-3-3ZM4 4h12a1 1 0 011 1v8a1 1 0 01-1 1h-5.218l-.452.252L7 16.1V14H4a1 1 0 01-1-1V5a1 1 0 011-1Zm17 2.174A3 3 0 0123 9v8a3 3 0 01-2.846 2.996L20 20v2.14a.8.8 0 01-1.189.7L13.701 20H8.216l3.6-2h2.402l.453.252L18 20.101V18.05l1.95-.05.113-.003A1 1 0 0021 17V6.174Z" />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -446,7 +592,7 @@ function OutfitCardSlider({
       maxWidth: '148px',
       display:  'flex',
       flexDirection: 'column',
-      gap: '8px',
+      gap: '16px',
       userSelect: 'none',
     }}>
 
@@ -473,7 +619,18 @@ function OutfitCardSlider({
 
       {/* ─ Área de la carta con efecto de mazo ──────────────────── */}
       {/* Sin overflow:hidden — los ghost cards viven dentro del paddingBottom */}
-      <div style={{ position: 'relative', paddingBottom: total > 1 ? '12px' : '0' }}>
+      <div style={{
+        position: 'relative',
+        height: '286px',
+        paddingRight: total > 1 ? '18px' : 0,
+        paddingBottom: total > 1 ? '18px' : 0,
+        perspective: '1000px',
+        perspectiveOrigin: 'top right',
+
+      }}>
+        {visibleStack.map(({ product, offset }) => renderStackCard(product, offset))}
+      </div>
+      <div style={{ display: 'none' }}>
 
         {/* Cartas fantasma — réplicas de altura completa, recortadas por overflow:hidden */}
         {total > 2 && <div style={ghostStyle3} />}
@@ -751,7 +908,7 @@ function OutfitPanel({
       WebkitOverflowScrolling: 'touch',
       scrollbarWidth: 'thin',
     }}>
-      <div style={{ display: 'flex', gap: '12px', width: 'max-content', alignItems: 'flex-start', paddingBottom: '4px' }}>
+      <div style={{ display: 'flex', gap: '24px', width: 'max-content', alignItems: 'flex-start', paddingBottom: '4px' }}>
         {categories.map(([category, products]) => (
           <OutfitCardSlider
             key={category}

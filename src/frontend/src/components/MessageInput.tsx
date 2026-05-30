@@ -7,6 +7,8 @@ interface MessageInputProps {
    *  El componente sólo valida tamaño (5 MB) y tipo; la lógica de
    *  búsqueda visual vive en ChatWidget.handleImageUpload. */
   onImageUpload?: (file: File) => void;
+  /** Callback invocado cuando el usuario selecciona una imagen para completar outfit. */
+  onOutfitSearch?: (file: File) => void;
   disabled?: boolean;
   placeholder?: string;
   /** Cuando false (default) el botón de cámara no se renderiza.

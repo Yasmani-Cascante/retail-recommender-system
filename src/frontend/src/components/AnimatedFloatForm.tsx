@@ -1,13 +1,16 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
 const AnimatedFloatFormEnhanced = () => {
-  const canvasRef = useRef(null);
-  const animationRef = useRef(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animationRef = useRef<number | null>(null);
   const timeRef = useRef(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
+    if (!canvas) return;
+
     const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
     const setCanvasDimensions = () => {
       canvas.width = 200;
@@ -15,9 +18,7 @@ const AnimatedFloatFormEnhanced = () => {
     };
     setCanvasDimensions();
 
-    const draw = (timestamp) => {
-      if (!ctx) return;
-      
+    const draw = () => {
       timeRef.current += 0.016;
       const time = timeRef.current;
       

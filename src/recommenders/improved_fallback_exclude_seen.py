@@ -590,15 +590,7 @@ CATEGORY_KEYWORDS = {
             "bundle", "bundles",
         ]
     },
-    
-    "SNOWBOARD": {
-        "type": "concrete",
-        "keywords": [
-            "snowboard", "snowboards",
-            "tabla nieve",
-            "snow board",
-        ]
-    },
+
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -717,6 +709,25 @@ def extract_categories_from_query(
                         
                         logger.debug(f"🎯 Detected concrete '{category}' (keyword: '{keyword}', specificity: {specificity})")
     
+    # FIX (28/05/2026 — diversificacion): Si una subcategoria fue detectada
+    # explicitamente en la query (specificity > 0.5 = keyword concreto de 2+ palabras),
+    # suprimir las hermanas que solo entraron por expansion del padre (specificity = 0.5).
+    # Ejemplo: "vestidos cortos" -> mantener solo VESTIDOS CORTOS, quitar
+    # VESTIDOS LARGOS / VESTIDOS MIDIS que entraron via parent VESTIDOS.
+    # Sin este filtro: reparto 3:3:2 aunque el usuario pidio explicitamente vestidos cortos.
+    if detected_categories:
+        for _par_name, _par_cfg in CATEGORY_KEYWORDS.items():
+            if _par_cfg.get("type") != "parent":
+                continue
+            _subcats = _par_cfg.get("subcategories", [])
+            # Subcategorias con deteccion concreta alta (detectadas directamente, no via padre)
+            _concrete_high = [s for s in _subcats if detected_categories.get(s, 0) > 0.5]
+            if _concrete_high:
+                # Eliminar hermanas que solo entraron via expansion del padre (specificity = 0.5)
+                for _sibling in _subcats:
+                    if _sibling not in _concrete_high and detected_categories.get(_sibling, 0) <= 0.5:
+                        detected_categories.pop(_sibling, None)
+
     # 4. Si no se detectó nada, retornar lista vacía
     if not detected_categories:
         logger.debug(f"🔍 No category detected in query: '{query[:50]}...'")
@@ -1397,7 +1408,36 @@ class ImprovedFallbackStrategies:
             
             # Detectar TODAS las categorías mencionadas en la query
             query_categories = extract_categories_from_query(user_query, available_categories)
-            
+
+            # FIX (28/05/2026 — diversificacion): En queries "similares a este/esta",
+            # anclar las categorias detectadas al producto que el usuario esta viendo.
+            # Semantica: "este" = el producto actual → su categoria es la fuente de verdad.
+            # Ejemplo: usuario en VESTIDOS CORTOS + "vestidos similares a este" →
+            # query_categories original = ['VESTIDOS LARGOS', 'VESTIDOS CORTOS', 'VESTIDOS MIDIS']
+            # despues del anchor = ['VESTIDOS CORTOS'] (desde user_events primary)
+            # Guarda: solo ancla si el contexto confirma una categoria ya detectada;
+            # si el usuario pide una categoria DISTINTA (ej. "vestidos largos similares"),
+            # la Change 1 ya habra filtrado a esa categoria y el anchor no cambia nada.
+            if query_categories and user_events:
+                _SIMILAR_THIS_RE = re.compile(
+                    r'similar(?:es)?\s+a\s+(?:este|esta|esto|estos|estas)\b|'
+                    r'parecido[sa]?\s+a\s+(?:este|esta)\b|'
+                    r'\bcomo\s+(?:este|esta)\b',
+                    re.IGNORECASE
+                )
+                if _SIMILAR_THIS_RE.search(user_query):
+                    _primary_upper = {
+                        e.get("product_info", {}).get("product_type", "").upper()
+                        for e in user_events
+                        if e.get("product_info", {}).get("source") == "current_product_context"
+                    }
+                    _anchored = [c for c in query_categories if c.upper() in _primary_upper]
+                    if _anchored:
+                        query_categories = _anchored
+                        logger.info(
+                            f"FIX anchor: 'similar a este' anchored to context: {query_categories}"
+                        )
+
             if query_categories:
                 logger.info(f"🎯 MULTI-CATEGORY QUERY-DRIVEN: Detected {len(query_categories)} categories")
                 logger.info(f"   Categories: {query_categories}")
@@ -1511,7 +1551,14 @@ class ImprovedFallbackStrategies:
 
                     # FIX (21/04/2026 — BUG-NREC-3 cont.): Top-up garantizado.
                     # Si las categorias preferidas tienen pocos productos tras exclusiones,
-                    # rellenar con cualquier disponible para siempre retornar n.
+                    # rellenar con disponibles priorizando categorias afines primero.
+                    #
+                    # FIX (28/05/2026 — diversificacion): Top-up afinado.
+                    # ANTES: remaining = todos los disponibles → accesorios 0.01 CHF rellenaban
+                    # los slots cuando CONJUNTOS FALDAS se agotaba.
+                    # AHORA: preferred_remaining = productos de las mismas preferred_categories
+                    # (expandidas con hermanas via get_parent_categories en el handler).
+                    # Solo va broad cuando preferred_categories se agotan completamente.
                     if len(personalized_products) < n:
                         needed = n - len(personalized_products)
                         used_ids = {str(p.get("id", "")) for p in personalized_products}
@@ -1520,12 +1567,28 @@ class ImprovedFallbackStrategies:
                             if str(p.get("id", "")) not in used_ids
                         ]
                         if remaining:
-                            extra = random.sample(remaining, min(needed, len(remaining)))
+                            # Prioridad 1 del top-up: productos de las mismas categorias preferidas
+                            preferred_remaining = [
+                                p for p in remaining
+                                if p.get("product_type", "").upper() in preferred_categories_upper
+                            ]
+                            if preferred_remaining:
+                                extra = random.sample(
+                                    preferred_remaining, min(needed, len(preferred_remaining))
+                                )
+                                logger.info(
+                                    f"   Top-up P2 (preferred): {len(extra)} products "
+                                    f"from preferred categories (pool={len(preferred_remaining)})"
+                                )
+                            else:
+                                # Prioridad 2 del top-up: categorias preferidas agotadas,
+                                # diversificar al catalogo completo
+                                extra = random.sample(remaining, min(needed, len(remaining)))
+                                logger.info(
+                                    f"   Top-up P2 (broad): {len(extra)} products "
+                                    f"(preferred exhausted, pool={len(remaining)})"
+                                )
                             personalized_products.extend(extra)
-                            logger.info(
-                                f"   Top-up P2: added {len(extra)} products from other"
-                                f" categories (needed {needed}, pool={len(remaining)})"
-                            )
 
                     # Agregar scores
                     recommendations = []

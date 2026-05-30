@@ -996,7 +996,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       const result: OutfitResult = await api.searchOutfitByImage(
         file,
         config.marketId,
-        2,   // top_k_per_category
+        3,   // top_k_per_category
         0.7, // alpha
       );
 

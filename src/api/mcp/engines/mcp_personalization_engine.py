@@ -1357,10 +1357,53 @@ class MCPPersonalizationEngine:
             if hasattr(context.mcp_context, 'current_market_id')
             else "CL"
         )
+
+        # F-01 FIX (28/05/2026 — price_clp=10): Enriquecer el producto actual junto
+        # con los recomendados en una sola llamada lazy-price (cero overhead HTTP si
+        # ya esta en Redis — cache hit ~1ms).
+        #
+        # Problema: ref_price_clp se calculaba desde top_recs[0], que tras
+        # diversificacion puede ser un accesorio barato (ej. 10 CLP).
+        # Solucion: fetch del precio del producto que el usuario ESTA VIENDO
+        # (product_ctx.id), fuente semanticamente correcta para el tier de upsell.
+        # Principio arquitectonico: precio Shopify autorizado (lazy-price) como
+        # fuente primaria; conversion interna solo como ultimo fallback.
+        _ctx_price_holder: Optional[Dict] = None
+        _product_ctx_for_price = getattr(
+            context.mcp_context, "current_product_context", None
+        )
+        if _product_ctx_for_price and _product_ctx_for_price.get("id"):
+            # Holder minimo: solo necesitamos "id" para que _enrich_recommendations_lazy
+            # lo incluya en el batch de Shopify. Tras la llamada tendra "market_prices".
+            _ctx_price_holder = {"id": str(_product_ctx_for_price["id"])}
+
+        # Construir lista de enriquecimiento: recs + producto actual (si aplica).
+        # list() crea copia superficial para no mutar la lista original de recs.
+        _recs_for_enrich = list(personalization_result.get("recommendations", []))
+        if _ctx_price_holder is not None:
+            _recs_for_enrich.append(_ctx_price_holder)
+
         await self._enrich_recommendations_lazy(
-            recommendations=personalization_result.get("recommendations", []),
+            recommendations=_recs_for_enrich,
             market_id=_market_id_for_enrich,
         )
+
+        # Extraer precio CLP del producto actual (Shopify-autorizado, no conversion interna).
+        # Si fallo (timeout / producto sin precios CL en Shopify), _ctx_ref_price_clp
+        # queda en 0.0 y _build_advanced_personalization_prompt usa el fallback (top_recs[0]).
+        _ctx_ref_price_clp: float = 0.0
+        if _ctx_price_holder and "market_prices" in _ctx_price_holder:
+            _mp_ctx = _ctx_price_holder["market_prices"]
+            if "CL" in _mp_ctx:
+                try:
+                    _ctx_ref_price_clp = float(_mp_ctx["CL"].get("price", 0))
+                except (TypeError, ValueError):
+                    _ctx_ref_price_clp = 0.0
+            logger.info(
+                "F-01 ctx_product_price_clp=%.0f product_id=%s (fuente: Shopify lazy-price)",
+                _ctx_ref_price_clp,
+                _product_ctx_for_price.get("id", "?"),
+            )
 
         # FIX (20/04/2026 — BUG-LANG-LFM): Calcular user_language ANTES de los builders
         # para que TANTO la ruta LFM como la ruta Claude usen el idioma correcto.
@@ -1397,7 +1440,9 @@ class MCPPersonalizationEngine:
                 context, user_language=_pre_user_language
             )
             user_prompt = self._build_advanced_personalization_prompt(
-                context, personalization_result, user_language=_pre_user_language
+                context, personalization_result,
+                user_language=_pre_user_language,
+                ctx_ref_price_clp=_ctx_ref_price_clp,
             )
         except Exception as _prompt_build_err:
             logger.error(
@@ -1502,7 +1547,9 @@ class MCPPersonalizationEngine:
                             user_language, user_query_for_lang[:50])
 
             personalization_prompt = self._build_advanced_personalization_prompt(
-                context, personalization_result, user_language=user_language
+                context, personalization_result,
+                user_language=user_language,
+                ctx_ref_price_clp=_ctx_ref_price_clp,
             )
 
             # CLAUDE CALL con retry controlado por presupuesto de tiempo.
@@ -2517,7 +2564,8 @@ class MCPPersonalizationEngine:
         self,
         context: PersonalizationContext,
         personalization_result: Dict[str, Any],
-        user_language: str = ""
+        user_language: str = "",
+        ctx_ref_price_clp: float = 0.0,
     ) -> str:
         """Construye prompt de personalizacion para Claude.
 
@@ -2636,11 +2684,22 @@ class MCPPersonalizationEngine:
         product_ctx      = getattr(mcp_context, "current_product_context", None)
         top_recs         = personalization_result["recommendations"][:3]
 
-        # Extraer precio de referencia del turno actual (Opcion A):
-        # usamos el precio CLP del primer recomendado como proxy del rango
-        # de precio del producto que el usuario esta viendo.
-        ref_price_clp = 0.0
-        if top_recs:
+        # F-01 FIX (28/05/2026 — price_clp=10): Precio de referencia para el tier de upsell.
+        #
+        # ANTES: precio de top_recs[0] — incorrecto tras diversificacion:
+        # el primer rec puede ser accesorio barato (ej. 10 CLP) → tier "bajo" erroneo.
+        #
+        # AHORA: precio del producto que el usuario ESTA VIENDO (ctx_ref_price_clp),
+        # inyectado por _generate_claude_personalized_response() via lazy-price.
+        # Fuente: market_prices["CL"]["price"] del producto actual (Shopify-autorizado).
+        # Fallback: top_recs[0] si ctx_ref_price_clp no esta disponible
+        # (ej. homepage, search, o timeout de Shopify).
+        ref_price_clp: float = 0.0
+        if ctx_ref_price_clp > 0:
+            # Prioridad 1: precio Shopify del producto actual (fuente autoritativa)
+            ref_price_clp = ctx_ref_price_clp
+        elif top_recs:
+            # Prioridad 2: fallback al primer recomendado (sin product_ctx)
             first_rec = top_recs[0]
             mp = first_rec.get("market_prices") or {}
             if "CL" in mp:
