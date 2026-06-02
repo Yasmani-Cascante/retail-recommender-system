@@ -32,7 +32,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import List, Literal, Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 logging.basicConfig(
@@ -366,6 +366,36 @@ async def search_by_image(
 
     log.info('visual_search: found=%d top_k=%d latency=%.1fms size=%dKB',
              len(product_ids), top_k, latency_ms, len(image_bytes) // 1024)
+
+    return SearchImageResponse(
+        product_ids=product_ids,
+        latency_ms=latency_ms,
+        visual_index_size=visual_retriever.index_size(),
+    )
+
+
+@app.get('/v1/embed/search-by-id', response_model=SearchImageResponse)
+async def search_by_product_id(
+    product_id: str  = Query(..., description='Shopify product ID numerico'),
+    top_k:      int  = Query(default=8, description='Numero maximo de resultados'),
+):
+    """
+    Busca productos visualmente similares a uno ya indexado, usando su vector
+    FAISS almacenado. Evita el fetch del CDN y el encode FashionSigLIP.
+
+    Latencia tipica: ~50ms (vs ~635ms de search-image con CDN fetch).
+    Devuelve [] si el product_id no esta en el indice (producto no indexado aun).
+    El llamante debe usar /v1/embed/search-image como fallback en ese caso.
+    """
+    if not visual_retriever or not visual_retriever.is_ready():
+        raise HTTPException(503, 'Visual index not ready')
+
+    t0 = time.time()
+    product_ids = await visual_retriever.search_by_product_id(product_id, top_k=top_k)
+    latency_ms  = round((time.time() - t0) * 1000, 1)
+
+    log.info('search_by_product_id: product_id=%s found=%d latency=%.1fms',
+             product_id, len(product_ids), latency_ms)
 
     return SearchImageResponse(
         product_ids=product_ids,

@@ -302,6 +302,41 @@ class LFM2ColBERTClient:
             log.error('ColBERT text index failed: %s', e, exc_info=True)
             return False
 
+    async def search_by_product_id(
+        self,
+        product_id: str,
+        top_k: int = 8,
+    ) -> Optional[List[str]]:
+        """
+        Busca visualmente similares usando el vector FAISS existente del producto.
+
+        Mas rapido que search_by_image (elimina fetch CDN ~200ms + encode ~435ms).
+        Latencia tipica: ~50ms. Devuelve None si circuit breaker abierto,
+        [] si el producto no esta en el indice FAISS todavia.
+        """
+        if self._visual_circuit_open:
+            log.debug('ColBERT VISUAL circuit open — search_by_product_id skipped')
+            return None
+        try:
+            auth = await self._auth_headers()
+            resp = await self._http.get(
+                '/v1/embed/search-by-id',
+                headers=auth,
+                params={'product_id': str(product_id), 'top_k': str(top_k)},
+                timeout=8.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self._visual_failures = 0
+            log.info(
+                'search_by_product_id: %d results in %.1fms for product_id=%s',
+                len(data['product_ids']), data['latency_ms'], product_id,
+            )
+            return data['product_ids']
+        except Exception as e:
+            self._handle_visual_failure(e)
+            return None
+
     async def search_by_image(
         self,
         image_bytes: bytes,

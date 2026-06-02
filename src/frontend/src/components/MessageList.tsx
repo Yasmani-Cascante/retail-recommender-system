@@ -624,7 +624,7 @@ function OutfitCardSlider({
         height: '286px',
         paddingRight: total > 1 ? '18px' : 0,
         paddingBottom: total > 1 ? '18px' : 0,
-        perspective: '1000px',
+        perspective: '700px',
         perspectiveOrigin: 'top right',
 
       }}>

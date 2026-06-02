@@ -424,6 +424,22 @@ class IntentPatterns:
                 r"\b(checkout|finalizar.*compra|pay)\b",
             ],
         },
+
+        # F-08 Fase B: Detectar peticiones de outfit/complementos.
+        # Alta precisión: solo activa cuando la intención es combinar prendas,
+        # no cuando pide "similares" (eso sigue siendo PRODUCT_SEARCH).
+        # El handler solo ejecuta visual search si product_ctx está disponible.
+        TransactionalSubIntent.OUTFIT_COMPLETION: {
+            "keywords": [
+                r"\b(complet(?:a|ar|o).*(?:outfit|look|estilo))\b",
+                r"\b(armar.*(?:outfit|look)|outfit.*completo|look.*completo)\b",
+                r"\b(combin[ao](?:r|s)?.*(?:con|esto|esta)|qu[eé].*combin[ao])\b",
+                r"\b(qu[eé].*(?:va|poner|usar).*con|what.*(?:goes|wear).*with)\b",
+                r"\b(complementar|complemento|complementa.*(?:con|esto|esta))\b",
+                r"\b(complemento.*(?:para|de)|un.*complemento)\b",
+                r"\b(accesorio.*(?:para|que.*combine)|bolso.*que.*combine)\b",
+            ],
+        },
     }
 
     # ───────────────────────────────────────────────────────────

@@ -82,11 +82,14 @@ class InformationalSubIntent(str, Enum):
 class TransactionalSubIntent(str, Enum):
     """
     Sub-types for transactional intents.
-    Currently not used but defined for future expansion.
     """
-    PRODUCT_SEARCH  = "product_search"
-    PRODUCT_VIEW    = "product_view"
-    PURCHASE_INTENT = "purchase_intent"
+    PRODUCT_SEARCH   = "product_search"
+    PRODUCT_VIEW     = "product_view"
+    PURCHASE_INTENT  = "purchase_intent"
+    # F-08 Fase B: Completar outfit usando FashionSigLIP composite embedding.
+    # Activa search_outfit_by_image cuando el usuario pide complementos/combinaciones
+    # y hay product_ctx disponible con imagen indexada en FAISS.
+    OUTFIT_COMPLETION = "outfit_completion"
 
 
 # ═══════════════════════════════════════════════════════════════

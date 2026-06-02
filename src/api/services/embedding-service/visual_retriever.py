@@ -850,6 +850,47 @@ class FashionSigLIPRetriever:
             ]
         return await loop.run_in_executor(None, _encode_and_search, image_bytes)
 
+    async def search_by_product_id(self, product_id: str, top_k: int = 8) -> List[str]:
+        """
+        Busca productos visualmente similares usando el vector FAISS ya almacenado
+        del producto, sin necesidad de re-encodear su imagen desde el CDN.
+
+        Ventaja vs search_by_image: elimina el fetch del CDN (~200ms) y el
+        encode FashionSigLIP (~435ms). Solo hace reconstruct() + FAISS search
+        (~50ms total). Requiere que el producto este en el indice FAISS.
+
+        Fallback natural: si product_id no esta en _id_map (producto nuevo aun
+        no indexado), devuelve [] y el llamante puede usar search_by_image.
+        """
+        if self._faiss_index is None or not self._id_map:
+            log.warning('[search_by_product_id] Index not ready — returning empty.')
+            return []
+
+        pid = str(product_id)
+        try:
+            position = self._id_map.index(pid)
+        except ValueError:
+            log.debug('[search_by_product_id] product_id=%s not in FAISS index', pid)
+            return []
+
+        loop = asyncio.get_running_loop()
+
+        def _reconstruct_and_search(pos):
+            import numpy as _np
+            # IndexFlatIP.reconstruct(i) devuelve el vector normalizado en posicion i.
+            # Esto es O(1) — es una lectura directa del buffer interno de FAISS.
+            vec = self._faiss_index.reconstruct(pos)
+            vec = _np.array(vec, dtype=_np.float32).reshape(1, -1)
+            # Buscar top_k+1 vecinos (el primero sera el propio producto, sim=1.0)
+            _, indices = self._faiss_index.search(vec, top_k + 1)
+            return [
+                self._id_map[idx]
+                for idx in indices[0]
+                if 0 <= idx < len(self._id_map) and self._id_map[idx] != pid
+            ][:top_k]
+
+        return await loop.run_in_executor(None, _reconstruct_and_search, position)
+
     # ─────────────────────────────────────────────────────────────────────────
     # S1: SEARCH — búsqueda de outfit completo (nuevo)
     # ─────────────────────────────────────────────────────────────────────────

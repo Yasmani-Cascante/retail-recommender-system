@@ -19,6 +19,7 @@ Date: 2025-09-01
 """
 
 import os
+import re
 import time
 import logging
 import asyncio
@@ -39,6 +40,34 @@ from src.api.core.parallel_processor import (
 # Ahora se importa lazy dentro del bloque try de intent detection.
 
 logger = logging.getLogger(__name__)
+
+
+# ── F-08: Detector de intención de similitud visual ─────────────────────────
+# Activa la búsqueda visual en Turn 1 cuando el usuario pide productos
+# similares al producto que está viendo (product_ctx con image_url disponible).
+# Diseño: regex simple y rápido (<0.1ms) — sin IO, sin dependencias externas.
+_F08_VISUAL_SIMILARITY_RE = re.compile(
+    r'\b(similar(?:es)?|parecido[sa]?|como.*este|como.*esta|like.*this)\b',
+    re.IGNORECASE,
+)
+
+
+def _is_visual_similarity_query(query: str) -> bool:
+    """
+    Devuelve True si la query expresa una petición de similitud visual.
+
+    Usado por F-08 Fase A para decidir si reemplazar TF-IDF con
+    FashionSigLIP en Turn 1 cuando product_ctx tiene image_url disponible.
+
+    Patrones activadores:
+      - "similares", "similar"        → productos similares a este
+      - "parecido", "parecida", ...   → parecidos a este
+      - "como este / esta"            → como este producto
+      - "like this"                   → english support
+    """
+    if not query:
+        return False
+    return bool(_F08_VISUAL_SIMILARITY_RE.search(query))
 
 
 async def get_mcp_conversation_recommendations(
@@ -818,6 +847,140 @@ async def get_mcp_conversation_recommendations(
                 from src.api import main_unified_redis
                 if hasattr(main_unified_redis, 'hybrid_recommender') and main_unified_redis.hybrid_recommender:
                     
+                    # ── F-08 Fase B: Outfit Completion ────────────────────────────────
+                    # Trigger: sub_intent == OUTFIT_COMPLETION + VISUAL_SEARCH_ENABLED
+                    #          + product_ctx con id disponible.
+                    # Llama a search_outfit_by_image con composite embedding (alpha=0.5)
+                    # para encontrar prendas que complementen visualmente el producto.
+                    # Resultado: lista interleaved de categorias outfit (top, acc, bolso...).
+                    # Activa en cualquier turn (Turn 1 y Turn 2+) si las condiciones se cumplen.
+                    # Fallback silencioso: cualquier error retoma el flujo normal.
+                    _b08_sub_intent = getattr(intent_result, "sub_intent", "") if intent_result else ""
+                    if (
+                        _b08_sub_intent == "outfit_completion"
+                        and os.environ.get("VISUAL_SEARCH_ENABLED", "false").lower() == "true"
+                        and mcp_context
+                        and getattr(mcp_context, "current_product_context", None)
+                        and mcp_context.current_product_context.get("id")
+                    ):
+                        try:
+                            from src.api.routers.visual_search_router import _get_colbert_client
+                            _b08_colbert = _get_colbert_client()
+                            _b08_tfidf   = getattr(
+                                main_unified_redis.hybrid_recommender, "content_recommender", None,
+                            )
+                            _b08_pid   = str(mcp_context.current_product_context["id"])
+                            _b08_ptype = mcp_context.current_product_context.get("product_type", "").lower()
+
+                            # Obtener imagen del producto desde id_index
+                            _b08_image_url = None
+                            if _b08_tfidf and hasattr(_b08_tfidf, "id_index"):
+                                _b08_prod = _b08_tfidf.id_index.get(_b08_pid)
+                                if _b08_prod:
+                                    _b08_image_url = _b08_prod.get("image_url")
+
+                            if _b08_image_url:
+                                import httpx as _httpx_b08
+                                async with _httpx_b08.AsyncClient(timeout=4.0) as _http_b08:
+                                    _img_r = await _http_b08.get(_b08_image_url)
+                                    _img_r.raise_for_status()
+                                    _img_bytes_b08 = _img_r.content
+
+                                # Excluir la categoria propia del producto visto.
+                                # SHOPIFY_TYPE_TO_OUTFIT_CATEGORY mapping (subset relevante).
+                                _B08_TYPE_TO_CAT = {
+                                    "vestidos cortos": "dress", "vestidos largos": "dress",
+                                    "vestidos midis":  "dress", "enteritos":       "enterito",
+                                    "blusas":   "top",       "polos":    "top",
+                                    "tops":     "top",       "accesorios": "accessory",
+                                    "bolsos":   "bag",       "calzado":   "bottom",
+                                    "pantalones": "bottom",  "faldas":   "bottom",
+                                }
+                                _b08_own_cat    = _B08_TYPE_TO_CAT.get(_b08_ptype, "")
+                                _b08_target_cats = [
+                                    c for c in ["dress", "top", "accessory", "bag",
+                                                "enterito", "outerwear"]
+                                    if c != _b08_own_cat
+                                ]
+
+                                # Composite embedding: alpha=0.5 (imagen y texto con igual peso)
+                                # Evita que vestidos dominen todas las categorias (issue S1).
+                                _b08_outfit = await asyncio.wait_for(
+                                    _b08_colbert.search_outfit_by_image(
+                                        image_bytes=_img_bytes_b08,
+                                        target_categories=_b08_target_cats,
+                                        top_k_per_category=3,
+                                        alpha=0.5,
+                                    ),
+                                    timeout=5.0,
+                                )
+
+                                if _b08_outfit:
+                                    # Interleave round-robin por categoria:
+                                    # [top_1, acc_1, bolso_1, top_2, acc_2, ...].
+                                    # Preserva outfit_category en product_data para LFM.
+                                    _b08_recs  = []
+                                    # FIX: search_outfit_by_image devuelve el dict completo
+                                    # {"outfit":{...}, "outfit_mode":"...", "latency_ms":473.0}
+                                    # Los resultados reales estan bajo la clave "outfit".
+                                    # Iterar .items() directamente causaba
+                                    # 'float' object is not iterable al llegar a latency_ms.
+                                    _b08_outfit_cats = _b08_outfit.get("outfit", {})
+                                    _b08_pools = {
+                                        cat: [pid for pid in pids if str(pid) != _b08_pid]
+                                        for cat, pids in _b08_outfit_cats.items()
+                                        if isinstance(pids, list) and pids
+                                    }
+                                    _b08_rank = 0
+                                    while (
+                                        len(_b08_recs) < n_recommendations
+                                        and any(_b08_pools.values())
+                                    ):
+                                        for _b08_cat, _b08_pool in list(_b08_pools.items()):
+                                            if not _b08_pool or len(_b08_recs) >= n_recommendations:
+                                                break
+                                            _b08_vid   = _b08_pool.pop(0)
+                                            _b08_vprod = (
+                                                _b08_tfidf.id_index.get(str(_b08_vid))
+                                                if _b08_tfidf else None
+                                            )
+                                            if _b08_vprod:
+                                                _b08_score = round(1.0 - _b08_rank * 0.04, 4)
+                                                _b08_recs.append({
+                                                    "id":               str(_b08_vid),
+                                                    "title":            _b08_vprod.get("title", ""),
+                                                    "similarity_score": _b08_score,
+                                                    "score":            _b08_score,
+                                                    "handle":           _b08_vprod.get("handle", ""),
+                                                    "image_url":        _b08_vprod.get("image_url"),
+                                                    "product_data": {
+                                                        **_b08_vprod,
+                                                        # outfit_category expuesto para LFM:
+                                                        # permite generar respuesta como
+                                                        # "este top combina perfectamente..."
+                                                        "outfit_category": _b08_cat,
+                                                    },
+                                                    "source": f"outfit_completion_f08_{_b08_cat}",
+                                                })
+                                                _b08_rank += 1
+                                            if not _b08_pool:
+                                                del _b08_pools[_b08_cat]
+                                                break
+
+                                    if _b08_recs:
+                                        logger.info(
+                                            f"F-08B outfit_completion: {len(_b08_recs)} productos "
+                                            f"(categories={list(_b08_outfit_cats.keys())}, "
+                                            f"pid={_b08_pid!r})"
+                                        )
+                                        return _b08_recs
+
+                        except asyncio.TimeoutError:
+                            logger.warning("F-08B outfit_completion timeout — fallback a flujo normal")
+                        except Exception as _b08_err:
+                            logger.warning(f"F-08B outfit_completion fallback: {_b08_err}")
+                    # ── Fin F-08 Fase B ───────────────────────────────────────────────
+
                     if use_diversification:
                         # ✅ NUEVO: Usar fallback inteligente con exclusión de productos ya vistos
                         try:
@@ -969,6 +1132,112 @@ async def get_mcp_conversation_recommendations(
                             else:
                                 logger.debug("FIX #1 v2: no context available, user_events remains empty")
                             
+                            # ── F-08 Fase C: Diversificación visual coherente (Turn 2+) ────────
+                            # Trigger: use_diversification=True + product_ctx + query similar
+                            #          + VISUAL_SEARCH_ENABLED=true.
+                            # Usa search_by_product_id (vector FAISS existente, ~50ms) para
+                            # construir un pool visualmente coherente con el producto visto.
+                            # Filtra el pool a las categorias deseadas por la query.
+                            # Si hay suficientes resultados visuales (>= n_recs): early-return.
+                            # Si no: cae al smart_fallback normal (comportamiento actual).
+                            if (
+                                os.environ.get("VISUAL_SEARCH_ENABLED", "false").lower() == "true"
+                                and mcp_context
+                                and getattr(mcp_context, "current_product_context", None)
+                                and mcp_context.current_product_context.get("id")
+                                and _is_visual_similarity_query(conversation_query)
+                            ):
+                                try:
+                                    from src.api.routers.visual_search_router import _get_colbert_client
+                                    _c08_colbert = _get_colbert_client()
+                                    _c08_tfidf   = getattr(
+                                        main_unified_redis.hybrid_recommender,
+                                        "content_recommender", None,
+                                    )
+                                    _c08_pid = str(mcp_context.current_product_context["id"])
+
+                                    # pool visual: top_k=50 para tener margen tras filtrado
+                                    _c08_visual_ids = await asyncio.wait_for(
+                                        _c08_colbert.search_by_product_id(_c08_pid, top_k=50),
+                                        timeout=3.0,
+                                    )
+
+                                    if _c08_visual_ids and _c08_tfidf and hasattr(_c08_tfidf, "id_index"):
+                                        # Categorias deseadas: intentar detectar desde el query
+                                        # usando el catalogo completo de tipos (no un sample).
+                                        # all_products esta disponible en este scope.
+                                        _c08_all_types = set(
+                                            p.get("product_type", "")
+                                            for p in all_products if p.get("product_type")
+                                        )
+                                        _c08_query_cats = extract_categories_from_query(
+                                            conversation_query,
+                                            available_categories=_c08_all_types,
+                                        ) or []
+
+                                        # Fallback: si la query no menciona una categoria
+                                        # explicita (ej. "similares a este"), usar la
+                                        # categoria del producto actual como filtro.
+                                        # Esto evita cross-category contamination (9 CHF
+                                        # accessories en resultados de vestidos).
+                                        if not _c08_query_cats:
+                                            _c08_ctx_type = mcp_context.current_product_context.get(
+                                                "product_type", ""
+                                            ) if mcp_context and getattr(
+                                                mcp_context, "current_product_context", None
+                                            ) else ""
+                                            if _c08_ctx_type:
+                                                _c08_query_cats = [_c08_ctx_type]
+
+                                        # Filtrar pool: excluir vistos + filtrar por categoria
+                                        _c08_candidates = [
+                                            pid for pid in _c08_visual_ids
+                                            if pid not in shown_products
+                                            and pid != _c08_pid
+                                            and (
+                                                not _c08_query_cats
+                                                or _c08_tfidf.id_index.get(str(pid), {})
+                                                   .get("product_type", "").upper()
+                                                   in [c.upper() for c in _c08_query_cats]
+                                            )
+                                        ]
+
+                                        # Solo usar visual pool si tiene suficientes candidatos
+                                        if len(_c08_candidates) >= n_recommendations:
+                                            _c08_recs = []
+                                            for _c08_rank, _c08_vid in enumerate(
+                                                _c08_candidates[:n_recommendations]
+                                            ):
+                                                _c08_vprod = _c08_tfidf.id_index.get(str(_c08_vid))
+                                                if _c08_vprod:
+                                                    _c08_score = round(1.0 - _c08_rank * 0.02, 4)
+                                                    _c08_recs.append({
+                                                        "id":               str(_c08_vid),
+                                                        "title":            _c08_vprod.get("title", ""),
+                                                        "similarity_score": _c08_score,
+                                                        "score":            _c08_score,
+                                                        "handle":           _c08_vprod.get("handle", ""),
+                                                        "image_url":        _c08_vprod.get("image_url"),
+                                                        "product_data":     _c08_vprod,
+                                                        "source":           "visual_diversification_f08c",
+                                                    })
+
+                                            if _c08_recs:
+                                                logger.info(
+                                                    f"F-08C visual_diversification: "
+                                                    f"{len(_c08_recs)} productos "
+                                                    f"(pool={len(_c08_visual_ids)}, "
+                                                    f"cats={_c08_query_cats}, "
+                                                    f"candidates={len(_c08_candidates)})"
+                                                )
+                                                return _c08_recs
+
+                                except asyncio.TimeoutError:
+                                    logger.debug("F-08C visual timeout — fallback a smart_fallback")
+                                except Exception as _c08_err:
+                                    logger.debug(f"F-08C visual fallback: {_c08_err}")
+                            # ── Fin F-08 Fase C ───────────────────────────────────────
+
                             # ✨ MEJORADO: Pasar query del usuario Y user_events poblado
                             recommendations = await ImprovedFallbackStrategies.smart_fallback(
                                 user_id=validated_user_id,
@@ -1013,6 +1282,108 @@ async def get_mcp_conversation_recommendations(
                             f"handle={validated_product_id!r} → "
                             f"numeric_id={tfidf_product_id!r}"
                         )
+
+                    # ── F-08 Fase A + A.5: Similitud visual en Turn 1 ───────────────
+                    # Trigger: VISUAL_SEARCH_ENABLED=true + patrón de similitud en query
+                    #          + product_ctx con id disponible.
+                    #
+                    # A.5 (primario, ~50ms): search_by_product_id usa el vector FAISS
+                    #   ya almacenado — sin fetch del CDN ni re-encode.
+                    # A   (fallback, ~635ms): si el producto no está en el índice FAISS
+                    #   (nuevo, no indexado aún), cae a CDN fetch + search_by_image.
+                    #
+                    # Fallback silencioso a TF-IDF: cualquier excepción o timeout.
+                    if (
+                        not use_diversification
+                        and os.environ.get("VISUAL_SEARCH_ENABLED", "false").lower() == "true"
+                        and mcp_context
+                        and getattr(mcp_context, "current_product_context", None)
+                        and mcp_context.current_product_context.get("id")
+                        and _is_visual_similarity_query(conversation_query)
+                    ):
+                        try:
+                            from src.api.routers.visual_search_router import _get_colbert_client
+                            _f08_colbert = _get_colbert_client()
+                            _f08_tfidf   = getattr(
+                                main_unified_redis.hybrid_recommender,
+                                "content_recommender", None,
+                            )
+                            _f08_pid   = str(mcp_context.current_product_context["id"])
+                            _f08_ptype = mcp_context.current_product_context.get("product_type", "")
+
+                            # A.5: buscar por ID (usa vector FAISS existente, ~50ms)
+                            _f08_visual_ids = await asyncio.wait_for(
+                                _f08_colbert.search_by_product_id(_f08_pid, top_k=30),
+                                timeout=3.0,
+                            )
+
+                            # Fallback CDN: solo si producto no está en índice FAISS
+                            if not _f08_visual_ids:
+                                _f08_image_url = None
+                                if _f08_tfidf and hasattr(_f08_tfidf, "id_index"):
+                                    _f08_prod = _f08_tfidf.id_index.get(_f08_pid)
+                                    if _f08_prod:
+                                        _f08_image_url = _f08_prod.get("image_url")
+                                if _f08_image_url:
+                                    import httpx as _httpx_f08
+                                    async with _httpx_f08.AsyncClient(timeout=3.0) as _http_f08:
+                                        _img_resp = await _http_f08.get(_f08_image_url)
+                                        _img_resp.raise_for_status()
+                                        _img_bytes = _img_resp.content
+                                    _f08_visual_ids = await asyncio.wait_for(
+                                        _f08_colbert.search_by_image(_img_bytes, top_k=30),
+                                        timeout=3.0,
+                                    )
+
+                            if _f08_visual_ids:
+                                # Fase 3: filtrar a la misma categoría del producto visto.
+                                # Excluir siempre el propio producto del resultado.
+                                _f08_type_upper = _f08_ptype.upper()
+                                _f08_same_cat = [
+                                    pid for pid in _f08_visual_ids
+                                    if str(pid) != _f08_pid
+                                    and (
+                                        not _f08_ptype
+                                        or _f08_tfidf.id_index.get(str(pid), {})
+                                           .get("product_type", "").upper() == _f08_type_upper
+                                    )
+                                ]
+                                # Si quedan menos de 3 del mismo tipo, usar pool sin filtro
+                                _f08_ids_to_use = _f08_same_cat if len(_f08_same_cat) >= 3 else [
+                                    pid for pid in _f08_visual_ids if str(pid) != _f08_pid
+                                ]
+
+                                # Fase 4: construir dicts compatibles con formato TF-IDF
+                                _f08_recs = []
+                                for _f08_rank, _f08_vid in enumerate(_f08_ids_to_use[:n_recommendations]):
+                                    _f08_vprod = _f08_tfidf.id_index.get(str(_f08_vid))
+                                    if _f08_vprod:
+                                        _f08_score = round(1.0 - _f08_rank * 0.03, 4)
+                                        _f08_recs.append({
+                                            "id":               str(_f08_vid),
+                                            "title":            _f08_vprod.get("title", ""),
+                                            "similarity_score": _f08_score,
+                                            "score":            _f08_score,
+                                            "handle":           _f08_vprod.get("handle", ""),
+                                            "image_url":        _f08_vprod.get("image_url"),
+                                            "product_data":     _f08_vprod,
+                                            "source":           "visual_search_f08",
+                                        })
+
+                                if _f08_recs:
+                                    logger.info(
+                                        f"F-08 visual_similarity: {len(_f08_recs)} productos "
+                                        f"(cat={_f08_type_upper!r}, "
+                                        f"pool={len(_f08_visual_ids)}, "
+                                        f"filtered={len(_f08_same_cat)})"
+                                    )
+                                    return _f08_recs  # early-return: bypass TF-IDF
+
+                        except asyncio.TimeoutError:
+                            logger.warning("F-08 visual_search timeout (>3s) — fallback a TF-IDF")
+                        except Exception as _f08_err:
+                            logger.warning(f"F-08 visual_search fallback a TF-IDF: {_f08_err}")
+                    # ── Fin F-08 Fase A+A.5 ──────────────────────────────────────────
 
                     recommendations = await main_unified_redis.hybrid_recommender.get_recommendations(
                         user_id=validated_user_id,
