@@ -1097,6 +1097,14 @@ export function ChatWidget({ config }: ChatWidgetProps) {
           >
             
             <div className={styles.headerLeft}>
+                {/* <div className={`${isExpanded ? styles.h_hidden : styles.aiBubbleWrapperHeader}`}
+                > 
+                  <AiBubble 
+                  size={22} 
+                  blur={0}
+                  />
+                </div> */}
+            
               <div className={styles.headerAvatar} aria-hidden="true">
                 {/* Icono del asistente — mismo SVG que el ChatBubble */}
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"

@@ -616,7 +616,7 @@ async def get_mcp_conversation_recommendations(
 
                             if needs_contextualisation or intent_result.sub_intent == "product_sizing":
                                 logger.info(
-                                    "🎯 Query has specific entities — contextualising KB answer via Claude "
+                                    "🎯 Query has specific entities — contextualising KB answer "
                                     "(sub_intent=%s, query='%s')",
                                     intent_result.sub_intent,
                                     conversation_query[:60],

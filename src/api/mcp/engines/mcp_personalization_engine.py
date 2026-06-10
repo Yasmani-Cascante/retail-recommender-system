@@ -52,7 +52,7 @@ from src.api.mcp.models.mcp_models import (
 # Liquid AI integration
 import os
 from src.api.core.llm_client import UnifiedLLMClient, LLMResponse
-from src.api.core.claude_config import LFM_MCP_CONFIG
+from src.api.core.claude_config import LFM_MCP_CONFIG, GPT4O_MINI_FALLBACK_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +133,23 @@ class MCPPersonalizationEngine:
         else:
             self._lfm_client = None
             logger.info('LFM MCP personalisation disabled — using Claude')
+
+        # ─── GPT-4o-mini fallback (reemplaza Claude Haiku cuando LFM falla) ───────────
+        # Se activa con GPT4O_MINI_FALLBACK_ENABLED=true en Cloud Run.
+        # Patron identico al bloque LFM_MCP_ENABLED de arriba.
+        # Prerequisito: OPENROUTER_API_KEY configurado (compartido con LFM).
+        self._gpt4o_mini_fallback_enabled = os.environ.get('GPT4O_MINI_FALLBACK_ENABLED', 'false').lower() == 'true'
+        if self._gpt4o_mini_fallback_enabled:
+            self._gpt4o_mini_client = UnifiedLLMClient(
+                provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
+                model=GPT4O_MINI_FALLBACK_CONFIG['model'],
+                max_tokens=GPT4O_MINI_FALLBACK_CONFIG['max_tokens'],
+                temperature=GPT4O_MINI_FALLBACK_CONFIG['temperature'],
+            )
+            logger.info('GPT-4o-mini fallback enabled: model=%s', GPT4O_MINI_FALLBACK_CONFIG['model'])
+        else:
+            self._gpt4o_mini_client = None
+            logger.info('GPT-4o-mini fallback disabled — generic response on LFM failure')
         
         # ✅ ENTERPRISE: Support both service and client approaches
         self.redis_service = redis_service
@@ -1420,7 +1437,7 @@ class MCPPersonalizationEngine:
         if detected_language:
             _pre_user_language = detected_language
             logger.info(
-                "[lang] LFM path: using router-detected language='%s'",
+                "[lang] Using router-detected language='%s'",
                 _pre_user_language,
             )
         else:
@@ -1431,7 +1448,7 @@ class MCPPersonalizationEngine:
             )
             _pre_user_language = self._detect_user_language(_query_for_pre_lang)
             logger.info(
-                "[lang] LFM path: re-detected language='%s' for query='%s' (legacy fallback)",
+                "[lang] Re-detected language='%s' for query='%s' (legacy fallback)",
                 _pre_user_language, _query_for_pre_lang[:50],
             )
 
@@ -1471,8 +1488,15 @@ class MCPPersonalizationEngine:
             )
 
         # ── RUTA LFM (si flag activo) ──────────────────────────────────────────
-        _lfm_failed = False  # flag para saber si LFM fallo y necesitamos el fallback
-        if self._lfm_mcp_enabled and self._lfm_client:
+        # DEBUG FLAG: FORCE_GPT4O_MINI_FALLBACK=true simula fallo de LFM para testear
+        # el path de GPT-4o-mini sin deshabilitar LFM ni modificar credenciales.
+        # SOLO para desarrollo/testing. Nunca activar en produccion.
+        _lfm_failed = os.environ.get('FORCE_GPT4O_MINI_FALLBACK', 'false').lower() == 'true'
+        if _lfm_failed:
+            logger.info(
+                'FORCE_GPT4O_MINI_FALLBACK=true: skipping LFM, routing to GPT-4o-mini fallback'
+            )
+        if not _lfm_failed and self._lfm_mcp_enabled and self._lfm_client:
             try:
                 resp = await asyncio.wait_for(
                     self._lfm_client.complete(system_prompt, user_prompt),
@@ -1500,23 +1524,53 @@ class MCPPersonalizationEngine:
                         resp.model, resp.input_tokens, resp.output_tokens)
                 return resp.content
             except Exception as e:
-                logger.warning('LFM MCP call failed, falling back to Claude: %s', e)
+                logger.warning('LFM MCP call failed, falling back to GPT-4o-mini: %s', e)
                 _lfm_failed = True
 
-        # ── RUTA CLAUDE (default o fallback) ──────────────────────────────────────
-        # ⚠️ TODO TEMPORAL (Sprint httpx 24/05/2026):
-        # Cuando LFM falla, el flujo llega aqui para usar Claude como fallback.
-        # Con credito Anthropic agotado (HTTP 400), Claude ejecuta 3 retries
-        # que acumulan ~580ms sin resultado util.
-        # FIX TEMPORAL: si LFM fallo, retornar respuesta por defecto directamente.
-        # CUANDO ELIMINAR: al integrar el modelo de reemplazo para Claude,
-        # configurar las nuevas credenciales y eliminar el bloque marcado TEMPORAL.
-        if _lfm_failed:  # TEMPORAL
-            logger.info(
-                "lfm_failed_claude_skipped: LFM timeout + Claude sin credito (400). "
-                "TEMPORAL: eliminar cuando se integre el modelo de reemplazo."
-            )
-            return "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"  # TEMPORAL
+        # -- RUTA GPT-4o-mini: reemplazo de Claude Haiku como modelo activo ----------
+        # Se dispara en DOS escenarios:
+        #
+        #   1. LFM fallo (_lfm_failed=True): LFM activo pero timeout/error.
+        #   2. LFM inactivo (not self._lfm_mcp_enabled): LFM_MCP_ENABLED=false en .env
+        #      o Cloud Run. GPT-4o-mini actua como modelo principal alternativo.
+        #
+        # FIX 09/06/2026: condicion anterior era solo 'if _lfm_failed:', lo que causaba
+        # que con LFM desactivado el flujo saltara GPT-4o-mini y cayera a Claude.
+        # Solucion: 'if _lfm_failed or not self._lfm_mcp_enabled:'
+        #
+        # Graceful degradation:
+        #   LFM fallo + GPT-4o-mini falla -> respuesta generica (evita HTTP 500)
+        #   LFM desactivado + GPT-4o-mini falla -> cae a Claude (legacy path)
+        # Timeout: 8.0s (< outer 12s). Latencia tipica GPT-4o-mini: ~700ms.
+        if _lfm_failed or not self._lfm_mcp_enabled:
+            if self._gpt4o_mini_fallback_enabled and self._gpt4o_mini_client:
+                try:
+                    nano_resp = await asyncio.wait_for(
+                        self._gpt4o_mini_client.complete(system_prompt, user_prompt),
+                        timeout=8.0,
+                    )
+                    logger.info(
+                        'gpt4o_mini_fallback_ok: model=%s in=%d out=%d lfm_was_active=%s',
+                        nano_resp.model, nano_resp.input_tokens, nano_resp.output_tokens,
+                        self._lfm_mcp_enabled,
+                    )
+                    return nano_resp.content
+                except asyncio.TimeoutError:
+                    logger.warning('gpt4o_mini_fallback_timeout_8s -- lfm_was_active=%s', self._lfm_mcp_enabled)
+                except Exception as _gpt4o_mini_e:
+                    logger.warning('gpt4o_mini_fallback_error: %s -- lfm_was_active=%s', _gpt4o_mini_e, self._lfm_mcp_enabled)
+            else:
+                logger.info(
+                    'gpt4o_mini_disabled: LFM_MCP_ENABLED=%s lfm_failed=%s. '
+                    'Activar GPT4O_MINI_FALLBACK_ENABLED=true para habilitar.',
+                    self._lfm_mcp_enabled, _lfm_failed,
+                )
+            # Graceful degradation SOLO si LFM realmente fallo.
+            # Si LFM solo estaba desactivado y GPT-4o-mini tambien fallo/disabled,
+            # el flujo cae al bloque Claude (legacy path) para no perder la respuesta.
+            if _lfm_failed:
+                return "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
+            # LFM disabled + GPT-4o-mini off/failed -> continuar a ruta Claude
 
         # ── RUTA CLAUDE (default o fallback) ─────────────────────────────────
         model_config = self.claude_config.get_model_config()
@@ -2664,7 +2718,7 @@ class MCPPersonalizationEngine:
             last_query = "\n".join(history_lines)
         else:
             last_query = "(primera consulta del usuario)"
-            logger.warning("No conversation turns found in context; using default query text.")
+            logger.info("No conversation turns found in context; using default query text.")
         
         tone = market_config.localization.get(
             "cultural_preferences", {}

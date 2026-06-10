@@ -34,7 +34,11 @@
   animation: showBubble 0.7s ease-in-out;
   /* transition: all 0.3s ease-in-out; */
 }
-
+.aiBubbleWrapperHeader {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
 @keyframes showBubble {
   from {
     opacity: 0;
@@ -176,8 +180,8 @@
    ═══════════════════════════════════════════════════════════════ */
 .header {
   /* background: #292929; */
-  background: #1c1c1ce5;
-  box-shadow: 0 6px 8px rgb(0 0 0 / 21%);
+  /* background: #1c1c1ce5; */
+  /* box-shadow: 0 6px 8px rgb(0 0 0 / 21%); */
   padding: 14px 16px;
   display: flex;
   align-items: center;
@@ -191,6 +195,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  padding-left: 12px;
 }
 
 .headerAvatar {
@@ -201,29 +206,33 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  display: none;
 }
 
 .headerName {
-  color: #fff;
+  display: none;
+  /* color: #fff; */
   font-size: 14px;
   font-weight: 600;
   line-height: 1.2;
 }
 
 .headerStatus {
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 11px;
+  /* color: rgba(255, 255, 255, 0.6); */
+  color: #2e2e2e;
+  font-size: 12px;
+  font-weight: 500;
   margin-top: 2px;
 }
 
 .headerStatus::before {
   content: '';
   display: inline-block;
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   background: #4ade80;
   border-radius: 50%;
-  margin-right: 4px;
+  margin-right: 8px;
   vertical-align: middle;
   animation: statusPulse 2s ease-in-out infinite;
 }
@@ -237,10 +246,11 @@
 
 /* Botón expandir/comprimir */
 .expandBtn {
-  background: rgba(255, 255, 255, 0.1);
+  /* background: rgba(255, 255, 255, 0.1); */
   border: none;
   cursor: pointer;
-  color: rgba(255, 255, 255, 0.75);
+  /* color: rgba(255, 255, 255, 0.75); */
+  color: black;
   border-radius: 6px;
   width: 28px;
   height: 28px;
@@ -252,16 +262,17 @@
 }
 
 .expandBtn:hover {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: rgba(0, 0, 0, 0.15);
+  /* color: #fff; */
 }
 
 /* Botón cerrar */
 .closeBtn {
-  background: rgba(255, 255, 255, 0.1);
+  /* background: rgba(255, 255, 255, 0.1); */
   border: none;
   cursor: pointer;
-  color: rgba(255, 255, 255, 0.75);
+  /* color: rgba(255, 255, 255, 0.75); */
+  color: black;
   border-radius: 6px;
   width: 28px;
   height: 28px;
@@ -273,8 +284,8 @@
 }
 
 .closeBtn:hover {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: rgba(0, 0, 0, 0.15);
+  /* color: #fff; */
 }
 
 /* ── Header en modo expandido ──────────────────────────────── */

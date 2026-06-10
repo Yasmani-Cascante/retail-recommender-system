@@ -66,7 +66,7 @@ if TYPE_CHECKING:
     from src.api.mcp_services.size_profile.service import SizeProfile
 
 from src.api.core.llm_client import UnifiedLLMClient
-from src.api.core.claude_config import LFM_KB_CONFIG
+from src.api.core.claude_config import LFM_KB_CONFIG, GPT4O_MINI_FALLBACK_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -918,24 +918,21 @@ async def generate_contextual_answer(
         logger.warning("⚠️ KB Contextualizer: No Anthropic client available — skipping contextualisation")
         return None
 
-    # Read model config from centralised service
-    try:
-        from src.api.core.claude_config import get_claude_config_service
-        claude_config = get_claude_config_service()
-        model_config = claude_config.get_model_config()
-        model_name = model_config.model_name
-        # Cap at 250 for this use-case regardless of global max_tokens setting.
-        # This endpoint needs a focused 2-3 sentence answer, not a full document.
-        max_tokens = min(model_config.max_tokens, 250)
-    except Exception as cfg_e:
-        logger.warning("⚠️ KB Contextualizer: Could not read claude_config, using Haiku defaults: %s", cfg_e)
-        model_name = "claude-3-haiku-20240307"
-        max_tokens = 250
-    
-    # FIX (19/04/2026): Para product_sizing, aumentar max_tokens para que LFM/Haiku
-    # pueda presentar la tabla de medidas completa en lugar de truncarla.
-    if sub_intent == "product_sizing":
-        max_tokens = min(model_config.max_tokens, 500)  # hasta 500 para tablas de tallas
+    # FIX (10/06/2026): max_tokens se define aqui solo para controlar la longitud
+    # del system/user prompt compartido entre LFM, GPT-4o-mini y Claude.
+    # claude_config ya NO se inicializa al inicio de la funcion porque dispara
+    # claude_config_effective en cada request aunque Claude nunca sea invocado
+    # (GPT-4o-mini o LFM ya habrán retornado antes de llegar al bloque Claude).
+    #
+    # Regla: 250 tokens para respuestas conversacionales; 500 para product_sizing
+    # (tablas de medidas necesitan más espacio para presentar tallas completas).
+    # Estos valores son constantes independientes del modelo activo.
+    max_tokens = 500 if sub_intent == "product_sizing" else 250
+
+    # model_name y model_config se resuelven mas abajo, dentro del bloque Claude
+    # (legacy path), solo si LFM y GPT-4o-mini no pudieron responder.
+    model_name = None   # asignado dentro del bloque Claude si se llega a el
+    model_config = None  # idem — evita NameError si el bloque Claude no se ejecuta
 
     # System prompt — short, role-focused, language-locked
     # Kept under ~80 tokens to minimise time-to-first-token.
@@ -1086,7 +1083,13 @@ async def generate_contextual_answer(
     # el secret llega después del import y el flag quedaría siempre False.
     # Patrón idéntico al usado en mcp_personalization_engine.py (21/03/2026).
     _lfm_kb_enabled = os.environ.get('LFM_KB_ENABLED', 'false').lower() == 'true'
-    if _lfm_kb_enabled:
+    # DEBUG FLAG: cuando FORCE_GPT4O_MINI_FALLBACK=true, salta LFM en ambas rutas
+    # (MCP + KB) para testear el fallback GPT-4o-mini con el stack completo activo.
+    # Patron identico al implementado en mcp_personalization_engine.py (10/06/2026).
+    _force_gpt_fallback_kb = os.environ.get('FORCE_GPT4O_MINI_FALLBACK', 'false').lower() == 'true'
+    if _force_gpt_fallback_kb:
+        logger.info('FORCE_GPT4O_MINI_FALLBACK=true: skipping LFM KB, routing to GPT-4o-mini fallback')
+    elif _lfm_kb_enabled:
         try:
             # Se crea una instancia de UnifiedLLMClient en cada llamada.
             # Esto es deliberado: el client es un objeto ligero (AsyncOpenAI wrapper).
@@ -1109,15 +1112,59 @@ async def generate_contextual_answer(
             )
             return resp.content
         except Exception as lfm_e:
-            # Cualquier fallo de LFM (timeout, API error, etc.) cae aquí.
-            # El sistema continúa hacia Claude Haiku sin interrumpir al usuario.
+            # Cualquier fallo de LFM (timeout, API error, etc.) cae aqui.
+            # El sistema continua hacia GPT-4o-mini (si activo) o Claude sin interrumpir.
             logger.warning(
-                "⚠️ KB Contextualizer: LFM call failed, falling back to Claude Haiku: %s", lfm_e
+                "KB Contextualizer: LFM call failed, falling back to GPT-4o-mini / Claude: %s", lfm_e
             )
-            # La ejecución continúa hacia el bloque Claude a continuación
+            # La ejecucion continua hacia el bloque GPT-4o-mini a continuacion
+
+    # -- RUTA GPT-4o-mini (fallback KB cuando LFM falla, Fase B) ------------------
+    # Lee la variable directamente de os.environ (patron identico a LFM_KB_ENABLED).
+    # Prerequisito: OPENROUTER_API_KEY configurado (compartido con LFM).
+    _gpt4o_mini_kb_enabled = os.environ.get('GPT4O_MINI_FALLBACK_ENABLED', 'false').lower() == 'true'
+    if _gpt4o_mini_kb_enabled:
+        try:
+            # UnifiedLLMClient es ligero (AsyncOpenAI wrapper). Instancia por llamada,
+            # mismo razonamiento que el bloque LFM de arriba.
+            _gpt4o_mini_kb_client = UnifiedLLMClient(
+                provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
+                model=GPT4O_MINI_FALLBACK_CONFIG['model'],
+                max_tokens=min(GPT4O_MINI_FALLBACK_CONFIG['max_tokens'], max_tokens),
+                temperature=0.3,   # temperatura baja: respuesta KB factual y determinista
+            )
+            resp = await asyncio.wait_for(
+                _gpt4o_mini_kb_client.complete(system_prompt, user_prompt),
+                timeout=5.0,  # mismo que LFM; GPT-4o-mini tipicamente <500ms
+            )
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.info(
+                "KB Contextualizer (GPT-4o-mini): answer in %.0fms (%d chars) model=%s sub_intent=%s",
+                elapsed_ms, len(resp.content), resp.model, sub_intent,
+            )
+            return resp.content
+        except Exception as gpt4o_mini_e:
+            # Fallo de GPT-4o-mini: cae hacia Claude Haiku como ultimo recurso.
+            logger.warning(
+                "KB Contextualizer: GPT-4o-mini call failed, falling back to Claude: %s", gpt4o_mini_e
+            )
+
+    # ── RUTA CLAUDE (legacy — solo si LFM y GPT-4o-mini no pudieron responder) ──
+    # Se resuelve el modelo Claude solo aqui, no al inicio de la funcion,
+    # para evitar que claude_config_effective se dispare en cada KB request
+    # cuando Claude nunca llega a ser invocado.
+    try:
+        from src.api.core.claude_config import get_claude_config_service
+        _kb_claude_config = get_claude_config_service()
+        _kb_model_config = _kb_claude_config.get_model_config()
+        model_name = _kb_model_config.model_name
+        # Respetar el max_tokens ya calculado arriba (250 o 500 segun sub_intent)
+    except Exception as _cfg_e:
+        logger.warning("KB Contextualizer: Could not read claude_config, using Haiku: %s", _cfg_e)
+        model_name = "claude-3-haiku-20240307"
 
     logger.info(
-        "🤖 KB Contextualizer: calling %s for sub_intent=%s, lang=%s",
+        "🤖 KB Contextualizer (Claude legacy): calling %s for sub_intent=%s, lang=%s",
         model_name, sub_intent, lang_key,
     )
 

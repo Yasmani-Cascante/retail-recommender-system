@@ -77,10 +77,11 @@ interface AiBubbleProps {
 
 export function AiBubble({
   size = 280,
-  blur = 5,
+  blur = 0,
   rotationSpeed = 20,
   breatheDuration = 7,
-  floatDistance = 14,
+  // floatDistance = 14,
+  floatDistance = 0,
 }: AiBubbleProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
