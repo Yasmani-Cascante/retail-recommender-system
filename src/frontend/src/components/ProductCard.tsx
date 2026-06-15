@@ -3,6 +3,26 @@ import type { ProductRecommendation } from '../types/widget';
 // import styles from './ProductCard.module.css';
 import styles from './ProductCard_V.module.css';
 
+// ── Tooltips multilingüe para la barra de acciones (15/06/2026) ──────────────
+// navigator.language detecta el idioma real del navegador del usuario.
+// Así el tooltip hover refleja el idioma correcto en mercado CH (FR/DE/IT).
+const _ACTION_TOOLTIPS: Record<string, {
+  showSimilar: string;
+  chatAbout: string;
+  addToCart: string;
+  comingSoon: string;
+}> = {
+  es: { showSimilar: 'Ver productos similares',      chatAbout: 'Hablar sobre este producto',    addToCart: 'Añadir al carrito',    comingSoon: 'próximamente'   },
+  fr: { showSimilar: 'Voir des produits similaires', chatAbout: 'Parler de ce produit',          addToCart: 'Ajouter au panier',   comingSoon: 'prochainement'  },
+  de: { showSimilar: 'Ähnliche Produkte',            chatAbout: 'Über dieses Produkt sprechen',  addToCart: 'In den Warenkorb',    comingSoon: 'demnächst'      },
+  it: { showSimilar: 'Vedi prodotti simili',         chatAbout: 'Parla di questo prodotto',      addToCart: 'Aggiungi al carrello', comingSoon: 'prossimamente'  },
+  en: { showSimilar: 'Show similar products',        chatAbout: 'Chat about this item',          addToCart: 'Add to cart',          comingSoon: 'coming soon'    },
+};
+// Resolved once at module load — navigator is always available in the browser.
+const _navLang = (typeof navigator !== 'undefined' ? navigator.language : 'es')
+  .split('-')[0].toLowerCase();
+const _T = _ACTION_TOOLTIPS[_navLang] ?? _ACTION_TOOLTIPS['es'];
+
 interface ProductCardProps {
   product: ProductRecommendation;
   /**
@@ -107,8 +127,8 @@ export function ProductCard({ product, onChatAbout, onShowSimilar }: ProductCard
           <button
             className={`${styles.actionBtn} ${styles.actionBtnDisabled}`}
             disabled
-            aria-label="Añadir al carrito (próximamente)"
-            title="Anadir al carrito"
+            aria-label={`${_T.addToCart} (${_T.comingSoon})`}
+            title={_T.addToCart}
           >
             {/* Icono bolsa de compras */}
             <svg viewBox="0 0 24 24" width="20" fill="currentColor" strokeWidth="0.1" aria-hidden="true">
@@ -122,8 +142,8 @@ export function ProductCard({ product, onChatAbout, onShowSimilar }: ProductCard
               // className={`${styles.actionBtn} ${styles.actionBtnSimilar}`}
               className={`${styles.actionBtn} ${styles.actionBtnChat}`}
               onClick={handleShowSimilar}
-              aria-label={`Ver productos similares a ${product.title}`}
-              title="Ver productos similares"
+              aria-label={`${_T.showSimilar}: ${product.title}`}
+              title={_T.showSimilar}
             >
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="20" fill="currentColor" stroke="currentColor"  strokeWidth="0.1" aria-hidden="true">
                 <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0"/>
@@ -136,8 +156,8 @@ export function ProductCard({ product, onChatAbout, onShowSimilar }: ProductCard
             <button
               className={`${styles.actionBtn} ${styles.actionBtnChat}`}
               onClick={handleChatAbout}
-              aria-label={`Hablar sobre ${product.title}`}
-              title="Hablar sobre este producto"
+              aria-label={`${_T.chatAbout}: ${product.title}`}
+              title={_T.chatAbout}
             >
               {/* Icono burbuja de chat */}
               <svg viewBox="0 0 24 24" width="21" fill="currentColor" aria-hidden="true"

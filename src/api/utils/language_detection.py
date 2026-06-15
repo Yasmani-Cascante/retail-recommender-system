@@ -57,12 +57,40 @@ _ES_PATTERNS = [
 _EN_PATTERNS = [
     # Very high-frequency English function words absent in Spanish
     re.compile(r"\b(what|how|where|when|why|who|which|whose)\b", re.IGNORECASE),
-    re.compile(r"\b(is|are|was|were|have|has|had|will|would|could|should|does|do|did)\b", re.IGNORECASE),
+    re.compile(r"\b(is|are|was|were|have|has|had|will|would|could|should|does|do|did|it|its)\b", re.IGNORECASE),
     re.compile(r"\b(the|this|that|these|those|with|from|for|about|into|through)\b", re.IGNORECASE),
     re.compile(r"\b(looking|searching|need|want|show|find|help|please|thanks|hello|hi)\b", re.IGNORECASE),
     # Common retail-domain English words
     re.compile(r"\b(size|price|shipping|return|payment|store|dress|shirt|jacket|order)\b", re.IGNORECASE),
     re.compile(r"\b(can\s+I|do\s+you|I\s+want|I\s+need)\b", re.IGNORECASE),
+    # FIX (15/06/2026 — EN override for CH market): short EN retail queries like
+    # "It's available?" and "Is it in stock?" had EN=0 because 'available' and
+    # 'stock' were missing from EN patterns. Without these, the router fell back
+    # to the body language ('fr'), making LFM respond in French for EN queries.
+    re.compile(r"\b(available|availability|in\s+stock|out\s+of\s+stock)\b", re.IGNORECASE),
+]
+
+# French indicators — mercado CH (fr-CH).
+# Objetivo: detectar FR incluso cuando el body POST dice 'es'/'en'
+# porque validate_language ignoraba FR anteriormente.
+# Patrones discriminantes: contracciones con apostrofe (d', l', j'),
+# inversion interrogativa (est-il, est-elle), preposiciones exclusivas FR,
+# y acentos tipicos del frances (ê, û, ô, œ) ausentes en espanol.
+_FR_PATTERNS = [
+    # Inversion interrogativa — construccion exclusivamente francesa
+    re.compile(r"\best-(il|elle|ce|on)\b", re.IGNORECASE),
+    # Contracciones frances + vocal — 'd\'autres', 'l\'article', 'qu\'il'
+    re.compile(r"\b(d'|l'|j'|n'|qu'|s'|m'|t'|c')[aeiouéèêëàâùûôœhæ]", re.IGNORECASE),
+    # Preposiciones/conjunciones exclusivas del frances (no compartidas con ES)
+    re.compile(r"\b(dans|chez|après|avant|depuis|pendant|donc|alors|aussi)\b", re.IGNORECASE),
+    # Acentos tipicos del frances ausentes en espanol (ê û ô œ æ)
+    re.compile(r"[êûôœæÊÛÔŒÆ]"),
+    # Pronombres sujeto franceses no presentes en espanol con este uso
+    re.compile(r"\b(je|tu|nous|vous|ils|elles)\b", re.IGNORECASE),
+    # Determinantes y palabras comunes exclusivas del frances
+    re.compile(r"\b(autres?|notre|votre|leur|leurs|encore|toujours|jamais)\b", re.IGNORECASE),
+    # Terminos retail comunes en FR
+    re.compile(r"\b(livraison|retour|paiement|boutique|commande|produit|taille)\b", re.IGNORECASE),
 ]
 
 # Minimum number of pattern matches required to declare a language.
@@ -73,7 +101,7 @@ _MIN_SCORE_THRESHOLD = 2
 
 def detect_language_from_text(
     text: str,
-    supported_languages: set = {"es", "en"},
+    supported_languages: set = {"es", "en", "fr", "de", "it"},
 ) -> Optional[str]:
     """
     Detect language from the actual text content of a query.
@@ -109,7 +137,10 @@ def detect_language_from_text(
     if not text or len(text.strip()) < 3:
         return None
 
-    scores: dict = {"es": 0, "en": 0}
+    # Idiomas soportados actualmente: ES (mercados CL/MX/España), EN (internacional),
+    # FR/DE/IT (mercado CH). DE e IT añadidos como extensión futura;
+    # patrones activos solo para ES, EN y FR en esta versión.
+    scores: dict = {"es": 0, "en": 0, "fr": 0}
 
     if "es" in supported_languages:
         for pattern in _ES_PATTERNS:
@@ -120,6 +151,11 @@ def detect_language_from_text(
         for pattern in _EN_PATTERNS:
             if pattern.search(text):
                 scores["en"] += 1
+
+    if "fr" in supported_languages:
+        for pattern in _FR_PATTERNS:
+            if pattern.search(text):
+                scores["fr"] += 1
 
     # FIX (19/04/2026 — BUG-LANG-KB): Asymmetric threshold.
     # Old logic: require score >= 2 for BOTH languages (strict symmetric threshold).
@@ -148,8 +184,8 @@ def detect_language_from_text(
     if best_lang is None or best_score == 0:
         return None
 
-    # Check other language score
-    other_score = scores["en"] if best_lang == "es" else scores["es"]
+    # Check competing language score (highest among non-winners)
+    other_score = max(v for k, v in scores.items() if k != best_lang)
 
     if best_score >= 2:
         # High confidence: winner clear (handles tied case above)
@@ -164,7 +200,7 @@ def detect_language_from_text(
 
 def detect_language_from_request(
     request: Request,
-    supported_languages: set = {"es", "en"},
+    supported_languages: set = {"es", "en", "fr", "de", "it"},
     default_language: str = "es",
     query_text: Optional[str] = None,
 ) -> str:
@@ -225,7 +261,7 @@ def detect_language_from_request(
 
 def validate_language(
     language: str,
-    supported_languages: set = {"es", "en"},
+    supported_languages: set = {"es", "en", "fr", "de", "it"},
     default_language: str = "es",
 ) -> str:
     """

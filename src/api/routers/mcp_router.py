@@ -614,25 +614,34 @@ async def process_conversation(
     start_time = time.time()
 
     try:
-        # ✅ NUEVO: Detección automática de idioma
-        if conversation.language and conversation.language != "en":
-            # Usuario especificó idioma explícitamente
-            detected_language = validate_language(conversation.language)
+        # ✅ Detección de idioma — texto del query siempre tiene prioridad
+        # FIX (13/06/2026 — lang-text-priority): text detection corre SIEMPRE primero.
+        # PROBLEMA anterior: si body tenía lang != "en", el bloque else (text detection)
+        # se saltaba completamente. Escenario que fallaba:
+        #   Usuario CH con browser FR escribe en EN ("Show me more like this")
+        #   → body = "fr", condicional anterior → validate_language("fr") → detected="fr"
+        #   → LFM recibía lang="fr" pero query era EN → respondía en ES (default del store)
+        # SOLUCIÓN: detect_language_from_text SIEMPRE corre primero.
+        #   Jerarquía real: TEXTO > BODY > HEADER > DEFAULT
+        _CH_SUPPORTED = {"es", "en", "fr", "de", "it"}
+        from src.api.utils.language_detection import detect_language_from_text as _dlt
+        _text_lang = _dlt(conversation.query, supported_languages=_CH_SUPPORTED)
+        if _text_lang is not None:
+            detected_language = _text_lang
+            detection_method = "text_content"
+        elif conversation.language:
+            detected_language = validate_language(
+                conversation.language,
+                supported_languages=_CH_SUPPORTED,
+            )
             detection_method = "explicit_request_body"
         else:
-            # Auto-detectar: texto del mensaje (prioridad 1) > Accept-Language header (prioridad 2).
-            # FIX (09/04/2026): detect_language_from_request ahora acepta query_text.
-            # Sin esto, un usuario con navegador en-US que escribe en espanol recibe
-            # respuestas de Claude en ingles aunque el query sea 100% espanol.
-            from src.api.utils.language_detection import detect_language_from_text as _dlt
-            _text_lang = _dlt(conversation.query)
             detected_language = detect_language_from_request(
                 request,
+                supported_languages=_CH_SUPPORTED,
                 query_text=conversation.query,
             )
-            if _text_lang is not None:
-                detection_method = "text_content"
-            elif request.headers.get("Accept-Language"):
+            if request.headers.get("Accept-Language"):
                 detection_method = "accept_language_header"
             else:
                 detection_method = "default"
@@ -2500,4 +2509,3 @@ async def session_recap_endpoint(
     clicks 'Let's continue', to show context before resuming.
     """
     return await get_session_recap(session_id)
-    

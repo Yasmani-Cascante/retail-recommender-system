@@ -257,6 +257,20 @@ PROTOTYPE_EXAMPLES: Dict[str, List[str]] = {
         "me avisan cuando llegue al stock?",           # llegue al stock
         "quedan unidades disponibles?",               # unidades disponibles
         "cuando tienen reposicion?",                  # reposicion de inventario
+        # FIX (13/06/2026 — miniml-multilang): Ejemplos FR/DE/IT.
+        # El modelo MiniLM ES multilingüe pero los centroides estaban construidos
+        # solo con ES/EN — el centroide estaba sesgado. Añadir ejemplos en los
+        # idiomas del mercado CH mueve el centroide al espacio semántico correcto.
+        # Efecto: FR/DE/IT queries alcanzan cosine sim >= 0.60 sin reglas manuales.
+        "est-il disponible dans d'autres tailles?",   # FR: tallas disponibles
+        "avez-vous cette robe en taille M?",          # FR: talla específica
+        "est-ce encore disponible?",                  # FR: disponibilidad general
+        "ist das in anderen Größen verfügbar?",       # DE: tallas disponibles
+        "haben Sie das noch auf Lager?",              # DE: en stock
+        "gibt es das in Schwarz?",                    # DE: color/variante
+        "è disponibile in altre taglie?",             # IT: tallas disponibles
+        "lo avete in stock?",                         # IT: en stock
+        "è ancora disponibile?",                      # IT: disponibilidad general
     ],
 
     # -- Account: Orders -------------------------------------------
@@ -307,6 +321,14 @@ PROTOTYPE_EXAMPLES: Dict[str, List[str]] = {
         "algo parecido a esto",
         "muestrame mas opciones",
         "que mas tienen de vestidos?",
+        # FIX (13/06/2026 — miniml-multilang): Ejemplos FR/DE/IT.
+        "je cherche une robe pour un mariage",        # FR: búsqueda producto
+        "montrez-moi des robes similaires",           # FR: mostrar similares
+        "je voudrais voir des robes de soirée",       # FR: quiero ver
+        "zeigen Sie mir ähnliche Kleider",            # DE: mostrar similares
+        "ich suche ein Kleid für eine Hochzeit",      # DE: búsqueda producto
+        "mostrami vestiti simili",                    # IT: mostrar similares
+        "cerco un vestito per un matrimonio",         # IT: búsqueda producto
     ],
 }
 

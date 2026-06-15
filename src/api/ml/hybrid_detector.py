@@ -443,17 +443,23 @@ class HybridIntentDetector:
             # ===========================================================
             # CAPA 3: MiniLM semantico (NUEVO — Mayo 2026)
             # ===========================================================
-            # Se activa cuando ml_confidence < miniml_trigger_threshold
-            # (default 0.60), lo que indica que sklearn tambien tiene
-            # baja certeza y el query puede ser slang/typo/cross-lingual.
+            # Trigger principal: ml_confidence < miniml_trigger_threshold (0.60)
+            # → modelo sklearn tiene baja certeza, query puede ser cross-lingual.
             #
-            # Importante: se evalua DESPUES del calculo de final_confidence
-            # (intents_agree + max()) para usar el mejor valor disponible
-            # de sklearn como referencia de comparacion. Si final_confidence
-            # ya supero el threshold, MiniLM no se invoca.
+            # Trigger adicional (FIX 14/06/2026 — sub_intent): cuando ML detecta
+            # INFORMATIONAL con alta confianza (> 0.60) pero sub_intent=unknown
+            # (sklearn solo clasifica binario, no sub_intents), MiniLM se usa
+            # como SUB-INTENT REFINER aunque la confianza sea suficiente.
+            # Sin este fix: "Dans quelles tailles ce modèle est-il disponible?"
+            # (ml=0.74 > 0.60) no pasaba por MiniLM → sub_intent=unknown →
+            # KB retornaba documento genérico en lugar de product_availability.
             # ===========================================================
+            _ml_informational_no_subintent = (
+                str(getattr(ml_prediction, "intent", "")).upper() == "INFORMATIONAL"
+                and ml_sub_intent == "unknown"
+            )
             if (
-                final_confidence < self.miniml_trigger_threshold
+                (final_confidence < self.miniml_trigger_threshold or _ml_informational_no_subintent)
                 and self._ensure_miniml_loaded()
             ):
                 try:

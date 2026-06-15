@@ -68,14 +68,6 @@ if TYPE_CHECKING:
 from src.api.core.llm_client import UnifiedLLMClient
 from src.api.core.claude_config import LFM_KB_CONFIG, GPT4O_MINI_FALLBACK_CONFIG
 
-# ── Singleton KB GPT-4o-mini client ──────────────────────────────────────────
-# FIX (12/06/2026 — kb_gpt4o_mini_timeout): El cliente per-call creaba una nueva
-# conexion TCP+TLS a OpenRouter en cada KB request. Después de un timeout de LFM
-# (5s), el event loop de Cloud Run estaba bajo presion y la nueva conexion tardaba
-# >5s → cascada de timeouts en todos los modelos. El singleton reutiliza el pool
-# de conexiones httpx igual que self._gpt4o_mini_client en mcp_personalization_engine.
-_kb_gpt4o_mini_singleton: object = None  # type: ignore[assignment]
-
 logger = logging.getLogger(__name__)
 
 
@@ -909,15 +901,7 @@ async def generate_contextual_answer(
 
     # Normalise language to base code
     lang_key = (language or "es").split("-")[0].lower()
-    # FIX (14/06/2026 — CH-multilang): antes era binario 'español'/'English'.
-    # Para FR retornaba 'English', LFM 2.5 ignoraba la instrucción y seguía
-    # el idioma del documento KB (ES por fallback) → respuesta en español.
-    # Solución: dict completo para los 5 idiomas de los mercados activos.
-    _LANG_DISPLAY_KB = {
-        "es": "español", "en": "English", "fr": "français",
-        "de": "Deutsch", "it": "italiano",
-    }
-    response_language = _LANG_DISPLAY_KB.get(lang_key, "English")
+    response_language = "español" if lang_key == "es" else "English"
 
     # Retrieve Claude client if not injected
     if anthropic_client is None:
@@ -992,8 +976,7 @@ async def generate_contextual_answer(
         system_prompt = (
             f"You are a helpful customer support assistant for an e-commerce fashion store. "
             f"You answer customer questions ONLY using the policy document provided. "
-            f"ALWAYS reply in {response_language}, even if the document is in a different language. "
-            f"Be concise: 2–3 sentences maximum. "
+            f"Reply in {response_language}. Be concise: 2–3 sentences maximum. "
             f"{product_mention_instruction}"
             f"If the document does not contain the specific information asked, say so clearly and briefly."
         )
@@ -1094,57 +1077,6 @@ async def generate_contextual_answer(
         f"Answer the customer's specific question based only on the document above."
     )
 
-    # ── EARLY RETURN: template directo para out_of_stock (FIX 12/06/2026) ───
-    # Cuando el producto esta completamente agotado (in_stock=0, todos los
-    # variants qty=0, no_data=False), la respuesta es DETERMINISTA. No se
-    # necesita ningun LLM — elimina la cascada de 11s (LFM+GPT-4o-mini+Claude).
-    #
-    # MULTILINGUE: dict de templates por idioma (mercados activos: CL/MX/ES=es,
-    # CH=fr/de/it/en, Internacional=en). Si el idioma detectado NO esta en el dict,
-    # el bloque NO retorna y el flujo continua hacia el LLM — evita respuestas
-    # incorrectas para idiomas no contemplados. Añadir un idioma = 1 linea en el dict.
-    if sub_intent == "product_availability" and product_context and availability_context:
-        _var_inv = product_context.get("variant_inventory", {})
-        _in_stock_v = {k: v for k, v in _var_inv.items() if v > 0}
-        _no_data_flag = not _var_inv  # GraphQL fallo o producto sin variantes
-        _all_oos = bool(_var_inv) and not _in_stock_v and not _no_data_flag
-        if _all_oos:
-            _title = product_context.get("title", "Este producto")
-            _sizes = ", ".join(sorted(_var_inv.keys()))
-            # Mercados: CL/MX/ES (es) · CH-FR (fr) · CH-DE (de) · CH-IT (it) · intl (en)
-            _OOS_TEMPLATES = {
-                "es": (
-                    f"El {_title} se encuentra agotado actualmente en todas las "
-                    f"tallas ({_sizes}). Te recomendamos explorar productos similares."
-                ),
-                "en": (
-                    f"The {_title} is currently sold out in all sizes ({_sizes}). "
-                    f"We recommend exploring similar available products."
-                ),
-                "fr": (
-                    f"Le {_title} est actuellement épuisé dans toutes les tailles ({_sizes}). "
-                    f"Nous vous recommandons d’explorer des produits similaires disponibles."
-                ),
-                "de": (
-                    f"Das {_title} ist derzeit in allen Größen ({_sizes}) ausverkauft. "
-                    f"Wir empfehlen Ihnen, ähnliche verfügbare Produkte zu entdecken."
-                ),
-                "it": (
-                    f"Il {_title} è attualmente esaurito in tutte le taglie ({_sizes}). "
-                    f"Ti consigliamo di esplorare prodotti simili disponibili."
-                ),
-            }
-            _tpl = _OOS_TEMPLATES.get(lang_key)  # None si idioma no contemplado
-            if _tpl is not None:
-                # Idioma reconocido: retorno directo sin LLM
-                logger.info(
-                    "KB out_of_stock template (%s, no LLM called): handle=%s sizes=%s",
-                    lang_key, product_context.get("handle", "?"), _sizes,
-                )
-                return _tpl
-            # Idioma no contemplado en el dict: continuar hacia LLM para no dar
-            # una respuesta en idioma incorrecto. Cobertura actual: es/en/fr/de/it.
-
     # ── RUTA LFM — Fase B (activa si LFM_KB_ENABLED=true) ──────────────────
     # Lee la variable directamente de os.environ — nunca via lru_cache.
     # Razón: lru_cache congela el valor al momento del import; en Cloud Run
@@ -1171,9 +1103,10 @@ async def generate_contextual_answer(
             )
             resp = await asyncio.wait_for(
                 _lfm_kb_client.complete(system_prompt, user_prompt),
-                timeout=5.0,  # REVERT 12/06/2026: 3s era demasiado agresivo para el
-                              # free tier de LFM2.5-1.2B. Cold-start puede tomar 4-5s.
-                              # Timeout recuperado a 5s original.
+                timeout=3.0,  # FIX 10/06/2026: reducido de 5s a 3s.
+                              # En produccion el free-tier puede cold-start >5s.
+                              # Con 3s: total fallback = 3s + ~2.4s GPT-4o-mini = ~5.4s
+                              # vs 5s + 2.4s = 7.4s anterior. Mejora 26% UX en fallos.
             )
             elapsed_ms = (time.time() - start_time) * 1000
             logger.info(
@@ -1195,19 +1128,17 @@ async def generate_contextual_answer(
     _gpt4o_mini_kb_enabled = os.environ.get('GPT4O_MINI_FALLBACK_ENABLED', 'false').lower() == 'true'
     if _gpt4o_mini_kb_enabled:
         try:
-            # FIX (12/06/2026): Singleton — reutiliza pool TCP/TLS vs per-call.
-            global _kb_gpt4o_mini_singleton
-            if _kb_gpt4o_mini_singleton is None:
-                _kb_gpt4o_mini_singleton = UnifiedLLMClient(
-                    provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
-                    model=GPT4O_MINI_FALLBACK_CONFIG['model'],
-                    max_tokens=GPT4O_MINI_FALLBACK_CONFIG['max_tokens'],
-                    temperature=0.3,
-                )
-                logger.info('KB GPT-4o-mini singleton created — connection pool ready')
+            # UnifiedLLMClient es ligero (AsyncOpenAI wrapper). Instancia por llamada,
+            # mismo razonamiento que el bloque LFM de arriba.
+            _gpt4o_mini_kb_client = UnifiedLLMClient(
+                provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
+                model=GPT4O_MINI_FALLBACK_CONFIG['model'],
+                max_tokens=min(GPT4O_MINI_FALLBACK_CONFIG['max_tokens'], max_tokens),
+                temperature=0.3,   # temperatura baja: respuesta KB factual y determinista
+            )
             resp = await asyncio.wait_for(
-                _kb_gpt4o_mini_singleton.complete(system_prompt, user_prompt),
-                timeout=8.0,  # ampliado a 8s: singleton warm pero OpenRouter puede tardar
+                _gpt4o_mini_kb_client.complete(system_prompt, user_prompt),
+                timeout=5.0,  # mismo que LFM; GPT-4o-mini tipicamente <500ms
             )
             elapsed_ms = (time.time() - start_time) * 1000
             logger.info(

@@ -2805,12 +2805,26 @@ class MCPPersonalizationEngine:
         # Si tier_upsell_instruction esta disponible (cliente identificado viendo un
         # producto), se usa en lugar de la instruccion generica de upsell.
         # Si no hay perfil ni producto, el prompt funciona igual que antes.
+        # FIX (14/06/2026 — lang-userprompt-v2):
+        # ANTES: "Como experto en personalizacion..." (ES) + "Responde en {code}"
+        # → Dos problemas: (1) prompt inicia en español → LFM defaultea a español,
+        #   (2) {language} era código ISO ("en", "fr") en instrucción española = garbled.
+        # AHORA: instrucción de idioma VA PRIMERO, en inglés neutro, con el NOMBRE
+        # del idioma (no el código ISO). El bloque siguiente en español queda subordinado.
+        _LANG_NAMES_UP = {
+            "es": ("español", "en español"),
+            "en": ("English", "in English"),
+            "fr": ("français", "en français"),
+            "de": ("Deutsch", "auf Deutsch"),
+            "it": ("italiano", "in italiano"),
+        }
+        _lang_name, _lang_prep = _LANG_NAMES_UP.get(language, (language, f"in {language}"))
         prompt = (
-            f"Como experto en personalizacion de e-commerce, genera una respuesta "
-            f"conversacional personalizada.\n"
-            f"Responde en {language} con tono {tone} en 2 o 3 oraciones maximo.\n"
-            f"No inicies con frases como 'Basandome en tu busqueda...'\n"
-            f"Especialidad: Personalizacion comportamental\n"
+            f"IMPORTANT: Respond {_lang_prep} only. "
+            f"Do NOT respond in Spanish unless the user is writing in Spanish.\n"
+            f"You are an e-commerce personalization assistant. Write a conversational recommendation.\n"
+            f"Tone: {tone}. Maximum 3 sentences. Do NOT start with 'Based on your search...'.\n"
+            f"Specialty: behavioral personalization\n"
         )
 
         if tier_upsell_instruction:
@@ -3005,21 +3019,31 @@ class MCPPersonalizationEngine:
         #     f"Eres un asistente de compras para {market_config.name} con tono {tone}. "
         #     f"Respuestas cortas y directas, maximo 3 oraciones."
         # )
+        # FIX (13/06/2026 — lang-native-prompt): instrucción en idioma objetivo.
+        # "Responde siempre en English" (en español) no tenía suficiente peso —
+        # LFM seguía el contexto dominante del prompt (nombres ES, categorías ES).
+        # Solución: escribir la instrucción en el idioma objetivo mismo.
+        _LANG_SYSTEM_INTROS = {
+            "es": "Eres un asistente de compras AI experto en moda y estilismo.",
+            "en": ("You are an AI fashion shopping assistant. "
+                   "ALWAYS respond in English. DO NOT respond in Spanish."),
+            "fr": ("Tu es un assistant shopping IA expert en mode. "
+                   "Réponds TOUJOURS en français. NE réponds PAS en espagnol."),
+            "de": ("Du bist ein KI-Mode-Shopping-Assistent. "
+                   "Antworte IMMER auf Deutsch. Antworte NICHT auf Spanisch."),
+            "it": ("Sei un assistente shopping IA esperto di moda. "
+                   "Rispondi SEMPRE in italiano. NON rispondere in spagnolo."),
+        }
+        _lang_intro = _LANG_SYSTEM_INTROS.get(
+            effective_language,
+            f"Always respond in the same language as the user ({effective_language})."
+        )
         return (
-            # f"Eres un asistente de compras AI experto en personalización para el mercado {market_config.name} "
-            f"Eres un asistente de compras AI experto en:"
-            f"- marketing de moda, "
-            f"- estilismo/imagen personal, "
-            f"- diseño de moda. "
-            f"Responde siempre en {effective_language} con tono {tone}. "
-            # f"Especialidades: marketing de moda, estilismo/imagen personal, diseño de moda.\n"
-            # f"Usa elementos culturales apropiados para {market_config.id}.\n"
-
-
-            # f"Dominio cultural: {market_config.localization.get("cultural_preferences", {})}.\n"
+            f"{_lang_intro} "
+            f"Especialidades: marketing de moda, estilismo, diseño. "
+            f"Tono: {tone}. "
             f"Tu objetivo es crear experiencias conversacionales que se sientan únicas para cada usuario, optimizando para conversión y satisfacción.\n"
-
-            f"Respuestas cortas y directas, 2 oraciones, maximo 3."       
+            f"Respuestas cortas y directas, 2 oraciones, maximo 3."
         )
     
     # === MÉTODOS DE ANÁLISIS Y CÁLCULO ===

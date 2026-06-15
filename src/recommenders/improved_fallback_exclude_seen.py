@@ -58,6 +58,18 @@ CATEGORY_KEYWORDS = {
             # Contextuales
             "vestido fiesta", "party dress",
             "vestido evento", "event dress",
+            # FIX (13/06/2026 — CH-multilang): FR/DE/IT keywords para mercado CH.
+            # Sin estas palabras, queries en francés/alemán/italiano no detectan
+            # VESTIDOS y el fallback cae a diversificación de 42 categorías
+            # incluyendo accesorios baratos. Con estas keywords, el sistema
+            # identifica correctamente la categoría de ropa.
+            "robe", "robes",                           # FR: vestido
+            "robe de soirée", "robe habillée",         # FR: vestido de noche/fiesta
+            "robe élégante",                           # FR: vestido elegante
+            "kleid", "kleider",                        # DE: vestido
+            "abendkleid", "partyKleid",                # DE: vestido de noche/fiesta
+            "vestito", "vestiti",                      # IT: vestido
+            "abito", "abiti",                          # IT: vestido/traje formal
         ]
     },
     
@@ -96,6 +108,11 @@ CATEGORY_KEYWORDS = {
             # Keywords relacionados
             "boda", "wedding",
             "novia", "bride",
+            # FIX (13/06/2026 — CH-multilang): FR/DE/IT boda/casamiento
+            "mariage", "mariée", "robe de mariée",     # FR: boda, novia, vestido novia
+            "mariage civil", "robe nuptiale",           # FR: variantes
+            "hochzeit", "brautkleid", "hochzeitskleid", # DE: boda, vestido novia
+            "matrimonio", "sposa", "abito da sposa",    # IT: matrimonio, novia, vestido novia
         ]
     },
     
@@ -143,40 +160,65 @@ CATEGORY_KEYWORDS = {
     "VESTIDOS LARGOS": {
         "type": "concrete",
         "keywords": [
-            # Específicos
+            # Español
             "vestido largo", "vestidos largos",
+            # Inglés
             "long dress",
             "maxi dress",
-            # Ocasiones
+            # Ocasiones ES
             "vestido de noche", "evening dress",
             "vestido gala", "gala dress",
             "vestido fiesta largo", "long party dress",
+            # FIX (15/06/2026 — CH-multilang): keywords FR/DE/IT para vestidos LARGOS.
+            # "robe longue" (2 palabras, specificity=2) permite que Change 1 suprima
+            # VESTIDOS CORTOS / VESTIDOS MIDIS cuando el usuario pide vestidos largos.
+            "robe longue", "robes longues",         # FR: vestido largo
+            "robe maxi",                            # FR: maxi vestido
+            "langes kleid", "lange kleider",        # DE: vestido largo
+            "maxi kleid",                           # DE: maxi vestido
+            "vestito lungo", "vestiti lunghi",      # IT: vestido largo
+            "abito lungo",                          # IT: vestido largo (formal)
         ]
     },
     
     "VESTIDOS CORTOS": {
         "type": "concrete",
         "keywords": [
-            # Específicos
+            # Español
             "vestido corto", "vestidos cortos",
+            # Inglés
             "short dress",
             "mini dress",
-            # Ocasiones
+            # Ocasiones ES
             "vestido casual",
             "vestido coctel", "cocktail dress",
             "vestido dia", "day dress",
+            # FIX (15/06/2026 — CH-multilang): keywords FR/DE/IT para vestidos CORTOS.
+            # Sin estas palabras, "Montrez-moi des robes courtes" expande el padre VESTIDOS
+            # a los 3 hijos (3:3:2) en lugar de mostrar solo VESTIDOS CORTOS.
+            # Con un keyword de 2+ palabras (specificity=2 > 0.5), Change 1 suprime
+            # las hermanas VESTIDOS LARGOS / VESTIDOS MIDIS.
+            "robe courte", "robes courtes",        # FR: vestido corto
+            "mini robe",                            # FR: mini vestido
+            "kurzes kleid", "kurze kleider",        # DE: vestido corto
+            "vestito corto", "vestiti corti",       # IT: vestido corto
         ]
     },
     
     "VESTIDOS MIDIS": {
         "type": "concrete",
         "keywords": [
-            # Específicos
+            # Español
             "vestido midi", "vestidos midis",
+            # Inglés
             "midi dress",
             "vestido medio", "medium dress",
-            # Descripción
+            # Descripción ES
             "vestido rodilla", "knee length dress",
+            # FIX (15/06/2026 — CH-multilang): keywords FR/DE/IT para vestidos MIDIS.
+            "robe mi-longue", "robe midi",          # FR: vestido midi / semilong
+            "midi kleid", "midi-kleid",             # DE: vestido midi
+            "vestito midi",                         # IT: vestido midi
         ]
     },
     
@@ -206,6 +248,10 @@ CATEGORY_KEYWORDS = {
             # Regionales
             "enagua", "enaguas",  # Regional: petticoat/skirt
             "pollera", "polleras",  # AR, UY: skirt
+            # FIX (13/06/2026 — CH-multilang)
+            "jupe", "jupes",        # FR: falda
+            "rock", "röcke",        # DE: falda (nota: "rock" también EN, contexto ayuda)
+            "gonna", "gonne",       # IT: falda
         ]
     },
     
@@ -222,6 +268,13 @@ CATEGORY_KEYWORDS = {
             "polera", "poleras",  # CL: t-shirt
             # Tipos
             "camiseta", "camisetas", "t-shirt",
+            # FIX (13/06/2026 — CH-multilang)
+            "haut", "hauts",        # FR: top/blusa
+            "chemise", "chemises",  # FR: camisa
+            "oberteil",             # DE: parte superior/top
+            "bluse", "blusen",      # DE: blusa
+            "maglia", "maglie",     # IT: jersey/top
+            "camicetta",            # IT: blusa
         ]
     },
     
@@ -274,6 +327,13 @@ CATEGORY_KEYWORDS = {
             "complemento", "complementos",
             # Descriptivos
             "detalle", "detalles",
+            # FIX (14/06/2026 — CH-multilang): sin estas keywords, "Montre-moi
+            # des accessoires" no detecta ACCESSORIES → retorna KIMONOS del contexto.
+            "accessoire", "accessoires",   # FR: accesorio/s
+            "bijou", "bijoux",             # FR: joya/s (colectivo)
+            "Accessoire", "Accessoires",   # DE: accesorio/s
+            "Schmuck",                     # DE: joyería
+            "accessorio", "accessori",     # IT: accesorio/s
         ]
     },
     

@@ -405,6 +405,15 @@ class IntentPatterns:
                 r"\b(similar(?:es)?|parecido(?:s)?|como.*este|like.*this)\b",
                 r"\b(muéstrame|muestrame|enséñame|ensenname)\b",
                 r"\b(más.*opciones|more.*options|otras.*opciones|other.*options)\b",
+                # FIX (13/06/2026 — FR-transactional): Palabras clave de busqueda en FRANCES.
+                # Problema: "Je cherche une robe pour un mariage" era clasificada INFORMATIONAL
+                # (ML 0.865) porque rule-based no tenia patrones FR → ML override TRANSACTIONAL.
+                # Con estos patrones, rule-based alcanza score 0.5 → GUARD protege TRANSACTIONAL.
+                # Verbos de busqueda FR: chercher (buscar), montrer (mostrar), trouver (encontrar)
+                r"\b(cherche|chercher|cherches|cherchons|cherchez|recherche|rechercher)\b",
+                r"\b(montre|montre-moi|montrez|montrez-moi|montrer)\b",
+                r"\b(recommande|recommandez|recommander|sugg[eè]re|sugg[eè]rer)\b",
+                r"\b(trouver|trouve|trouvez|voudrais.*voir|je.*voudrais)\b",
             ],
         },
 
@@ -431,6 +440,7 @@ class IntentPatterns:
         # El handler solo ejecuta visual search si product_ctx está disponible.
         TransactionalSubIntent.OUTFIT_COMPLETION: {
             "keywords": [
+                # ── Español ──────────────────────────────────────────────────
                 r"\b(complet(?:a|ar|o).*(?:outfit|look|estilo))\b",
                 r"\b(armar.*(?:outfit|look)|outfit.*completo|look.*completo)\b",
                 r"\b(combin[ao](?:r|s)?.*(?:con|esto|esta)|qu[eé].*combin[ao])\b",
@@ -438,8 +448,25 @@ class IntentPatterns:
                 r"\b(complementar|complemento|complementa.*(?:con|esto|esta))\b",
                 r"\b(complemento.*(?:para|de)|un.*complemento)\b",
                 r"\b(accesorio.*(?:para|que.*combine)|bolso.*que.*combine)\b",
-            ],
-        },
+                # ── Français (14/06/2026 — CH-multilang) ─────────────────────
+                # Diseñados para que "Je cherche quelque chose qui va avec ça"
+                # sume score=1.0 (2×0.5) > product_search score=0.5 ("cherche").
+                # Así OUTFIT_COMPLETION gana sin tocar el GUARD.
+                # Pattern A v2 (15/06/2026 — fix "vont avec"):
+                # "Quels accessoires vont avec cette robe?" usaba conjugación
+                # "vont" (3ª plural de aller) que no estaba cubierta.
+                # Con vont/irait/iraient, cualquier forma de "aller avec" suma +0.5.
+                r"\b(qui\s+va\s+avec|va\s+(?:bien\s+)?avec|vont\s+(?:bien\s+)?avec)\b",  # +0.5
+                r"\b(aller\s+(?:bien\s+)?avec|irait\s+(?:bien\s+)?avec|iraient\s+(?:bien\s+)?avec)\b",
+                r"\b(quelque\s+chose\s+(qui|que|pour|à))\b",                # Pattern B (+0.5)
+                r"\b(compl[eé]ter\s+(la\s+tenue|le\s+look|l.outfit))\b",  # "compléter la tenue"
+                r"\b(quoi\s+(mettre|porter|associer)\s+avec)\b",            # "quoi mettre avec"
+                r"\b(accessoires?\s+(pour|avec|à\s+porter))\b",             # "accessoires pour/avec"
+                # ── Deutsch ───────────────────────────────────────────────────
+                r"\b(passend\s+zu|dazu\s+kombin|was\s+geht\s+dazu)\b",
+                # ── Italiano ──────────────────────────────────────────────────
+                r"\b(abbinare\s+con|cosa\s+abbinare|completare\s+il\s+look)\b",
+            ],       },
     }
 
     # ───────────────────────────────────────────────────────────

@@ -405,6 +405,13 @@ async def get_mcp_conversation_recommendations(
                     # ✅ HÍBRIDO: Usar detector ML + rule-based
                     logger.info(f"🎯 ML Intent Detection ENABLED - analyzing query: '{conversation_query[:50]}...'")
                     
+                    # FIX (15/06/2026): _detected_method captura el método ANTES de
+                    # convertir hybrid_result a intent_result. getattr(intent_result,
+                    # 'method', '') siempre devuelve '' porque IntentDetectionResult
+                    # no tiene el campo 'method'. Esto causaba que _is_multilang_informational
+                    # fuera siempre False y el threshold permaneciera en 0.7.
+                    _detected_method = ""  # default; sobreescrito si el path ML tiene éxito
+                    
                     try:
                         # FIX (24/03/2026): Import lazy para evitar que
                         # sklearn/joblib falle en import-time y silencie el handler.
@@ -413,6 +420,10 @@ async def get_mcp_conversation_recommendations(
                         
                         # Detectar intent con híbrido (async)
                         hybrid_result = await hybrid_detector.detect(conversation_query, user_id=validated_user_id)
+                        
+                        # Guardar método ANTES de convertir (to_intent_detection_result
+                        # no transfiere 'method_used' a IntentDetectionResult)
+                        _detected_method = hybrid_result.method_used
                         
                         # Convertir a formato estándar
                         from src.api.core.intent_detection import IntentDetectionResult
@@ -434,21 +445,33 @@ async def get_mcp_conversation_recommendations(
                     from src.api.core.intent_detection import detect_intent
                     logger.info(f"🎯 Intent Detection ENABLED (rule-based only) - analyzing query: '{conversation_query[:50]}...'")
                     intent_result = detect_intent(conversation_query)
+                    _detected_method = "rule_based"  # FIX (15/06/2026): inicializar para scope uniforme
                 
                 logger.info(f"   Detected Intent: {intent_result.primary_intent} "
                            f"(confidence: {intent_result.confidence:.2f})")
                 logger.info(f"   Reasoning: {intent_result.reasoning}")
                 
                 # FIX (10/04/2026): El threshold de 0.7 fue disenado para INFORMATIONAL.
-                # Para TRANSACTIONAL el GUARD ya garantiza que el intent es correcto
-                # aunque la confidence sea 0.50 (un patron real fue matcheado).
-                # Usar threshold reducido de 0.5 para TRANSACTIONAL evita que requests
-                # validos (ej. "Recomiendame similares") caigan al path de diversificacion
-                # con historial contaminado en lugar de al path TF-IDF directo.
+                # Para TRANSACTIONAL el GUARD ya garantiza que el intent es correcto.
+                #
+                # FIX (12/06/2026 — multilang-CH): Threshold reducido para INFORMATIONAL
+                # cuando el method es ml_fallback o miniml_semantic.
+                # RAZON: Las reglas rule-based solo cubren ES/EN. Un usuario CH que escribe
+                # en FR, DE o IT no tiene match en rule-based → default TRANSACTIONAL 0.50.
+                # El ML y MiniLM detectan INFORMATIONAL (0.52) pero cae bajo el threshold
+                # 0.70 → "defaulting to products". La baja confidence NO indica ambiguedad
+                # real — indica ausencia de reglas para ese idioma.
+                # Cuando rule_based falla (no pattern match) y ML+MiniLM coinciden en
+                # INFORMATIONAL, threshold 0.5 es correcto y seguro.
                 from src.api.core.intent_types import IntentType as _IntentType
+                _is_multilang_informational = (
+                    intent_result.primary_intent != _IntentType.TRANSACTIONAL
+                    and _detected_method in ("ml_fallback", "miniml_semantic")
+                )
                 _effective_threshold = (
                     0.5
                     if intent_result.primary_intent == _IntentType.TRANSACTIONAL
+                    or _is_multilang_informational
                     else settings.intent_confidence_threshold
                 )
                 if intent_result.confidence >= _effective_threshold:
@@ -1132,6 +1155,56 @@ async def get_mcp_conversation_recommendations(
                             else:
                                 logger.debug("FIX #1 v2: no context available, user_events remains empty")
                             
+                            # ── F-08 Fase B.2: Outfit Completion — categorías complementarias ──
+                            # Trigger: sub_intent=outfit_completion + current_product_context
+                            # Activa cuando VISUAL_SEARCH_ENABLED=false (dev local) o cuando
+                            # la Fase B (visual search) no pudo ejecutarse.
+                            # Reemplaza user_events (que apuntan a KIMONOS/TAPADOS) con
+                            # categorías COMPLEMENTARIAS (AROS, COLLARES, CLUTCH, etc.).
+                            # Sin este fix: "quelque chose qui va avec ça" → más kimonos.
+                            if (
+                                _b08_sub_intent == "outfit_completion"
+                                and _current_ctx
+                                and user_events
+                            ):
+                                _outfit_product_type = _current_ctx.get("product_type", "").upper()
+                                _OUTFIT_COMPLEMENT_MAP = {
+                                    "KIMONOS":         ["AROS", "COLLARES", "CLUTCH", "CINTURONES", "BRAZALETES"],
+                                    "TAPADOS":         ["AROS", "COLLARES", "CLUTCH", "CINTURONES", "BRAZALETES"],
+                                    "VESTIDOS LARGOS": ["AROS", "COLLARES", "CLUTCH", "TOCADOS", "CINTURONES"],
+                                    "VESTIDOS CORTOS": ["AROS", "CLUTCH", "CINTURONES", "BRAZALETES"],
+                                    "VESTIDOS MIDIS":  ["AROS", "COLLARES", "CLUTCH", "TOCADOS"],
+                                    "NOVIAS LARGOS":   ["TOCADOS", "CLUTCH", "AROS", "BRAZALETES"],
+                                    "NOVIAS CORTOS":   ["TOCADOS", "AROS", "CLUTCH", "BRAZALETES"],
+                                    "FALDAS":          ["TOPS", "AROS", "CINTURONES", "BRAZALETES"],
+                                    "TOPS":            ["FALDAS", "AROS", "COLLARES", "CLUTCH"],
+                                    "BLUSAS":          ["FALDAS", "AROS", "COLLARES", "CLUTCH"],
+                                    "ENTERITOS LARGOS": ["CINTURONES", "AROS", "CLUTCH", "COLLARES"],
+                                    "ENTERITOS CORTOS": ["CINTURONES", "AROS", "CLUTCH", "BRAZALETES"],
+                                }
+                                _complement_cats = _OUTFIT_COMPLEMENT_MAP.get(
+                                    _outfit_product_type,
+                                    ["AROS", "COLLARES", "CLUTCH", "CINTURONES"],  # fallback genérico
+                                )
+                                user_events = [
+                                    {
+                                        "productId": None,
+                                        "product_info": {
+                                            "product_type": _cat,
+                                            "source": "outfit_complement_f08b2"
+                                        },
+                                        "eventType": "view",
+                                        "source": "outfit_complement"
+                                    }
+                                    for _cat in _complement_cats
+                                ]
+                                logger.info(
+                                    f"F-08B.2 outfit_completion: overriding user_events "
+                                    f"with complement categories for "
+                                    f"type={_outfit_product_type!r}: {_complement_cats}"
+                                )
+                            # ── Fin F-08 Fase B.2 ───────────────────────────────────────────
+                            
                             # ── F-08 Fase C: Diversificación visual coherente (Turn 2+) ────────
                             # Trigger: use_diversification=True + product_ctx + query similar
                             #          + VISUAL_SEARCH_ENABLED=true.
@@ -1239,13 +1312,36 @@ async def get_mcp_conversation_recommendations(
                             # ── Fin F-08 Fase C ───────────────────────────────────────
 
                             # ✨ MEJORADO: Pasar query del usuario Y user_events poblado
+                            # F-08B.2: cuando outfit_completion activó el OUTFIT_COMPLEMENT_MAP,
+                            # user_events ya tiene las categorías correctas (AROS/COLLARES/CLUTCH).
+                            # Si pasamos user_query al smart_fallback, PRIORIDAD 1 detecta
+                            # "robe" → VESTIDOS y sobreescribe esos user_events con vestidos.
+                            # Fix: suprimir user_query para forzar PRIORIDAD 2 (usa user_events).
+                            _outfit_complement_active = (
+                                _b08_sub_intent == "outfit_completion"
+                                and any(
+                                    evt.get("product_info", {}).get("source") == "outfit_complement_f08b2"
+                                    for evt in (user_events or [])
+                                )
+                            )
+                            _smart_fallback_query = (
+                                None  # PRIORIDAD 1 bypassed — PRIORIDAD 2 usa user_events (AROS/COLLARES/...)
+                                if _outfit_complement_active
+                                else conversation_query
+                            )
+                            if _outfit_complement_active:
+                                logger.info(
+                                    "F-08B.2 query suppressed: outfit_complement_f08b2 activo — "
+                                    "PRIORIDAD 2 usará user_events de complement categories"
+                                )
+                            
                             recommendations = await ImprovedFallbackStrategies.smart_fallback(
                                 user_id=validated_user_id,
                                 products=all_products,
                                 user_events=user_events,  # ✅ FIX #1: Ahora poblado
                                 n=n_recommendations,
                                 exclude_products=shown_products,
-                                user_query=conversation_query  # ✨ Query awareness (mayor prioridad)
+                                user_query=_smart_fallback_query  # None si outfit_complement activo
                             )
                             
                             logger.info(f"✅ Diversified recommendations obtained: {len(recommendations)} items")

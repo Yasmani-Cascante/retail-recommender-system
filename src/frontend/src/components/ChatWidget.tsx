@@ -65,9 +65,31 @@ function getSuggestionChips(lang: string): string[] {
  */
 function buildProductSuggestions(product: ActiveProductContext, lang: string): string[] {
   const title = product.title.toLowerCase();
-  const isEN = lang.split('-')[0].toLowerCase() === 'en';
+  const _lc = lang.split('-')[0].toLowerCase();
+  const isEN = _lc === 'en';
+  const isFR = _lc === 'fr';
+  const isDE = _lc === 'de';
+  const isIT = _lc === 'it';
 
-  if (title.includes('vestido') || title.includes('dress')) {
+  if (title.includes('vestido') || title.includes('dress') || title.includes('robe')) {
+    if (isFR) return [
+      `Montrez-moi des robes similaires`,
+      `Est-il disponible dans d'autres tailles?`,
+      `Quels accessoires vont avec cette robe?`,
+      `Je cherche quelque chose pour un mariage`,
+    ];
+    if (isDE) return [
+      `Zeige mir ähnliche Kleider`,
+      `Gibt es das in anderen Größen?`,
+      `Welche Accessoires passen zu diesem Kleid?`,
+      `Ich suche etwas für eine Hochzeit`,
+    ];
+    if (isIT) return [
+      `Mostrami abiti simili`,
+      `È disponibile in altre taglie?`,
+      `Quali accessori abbinare con questo vestito?`,
+      `Cerco qualcosa per un matrimonio`,
+    ];
     return isEN ? [
       `Show me similar dresses`,
       `Is it available in other sizes?`,
@@ -116,6 +138,18 @@ function buildProductSuggestions(product: ActiveProductContext, lang: string): s
     ];
   }
   // Generic fallback
+  if (isFR) return [
+    `Avez-vous cet article en stock?`,
+    `Quelles tailles avez-vous?`,
+    `Montrez-moi des produits similaires`,
+    `Je cherche quelque chose qui va avec ça`,
+  ];
+  if (isDE) return [
+    `Ist dieser Artikel vorrätig?`,
+    `Welche Größen haben Sie?`,
+    `Zeige mir ähnliche Produkte`,
+    `Ich suche etwas, das dazu passt`,
+  ];
   return isEN ? [
     `Is this item in stock?`,
     `What sizes do you have?`,
@@ -816,7 +850,19 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     
     // Query con vocabulario transaccional para que el intent detector lo clasifique
     // correctamente como TRANSACTIONAL y no derive al Knowledge Base
-    const queryText = `Recoméndame productos similares a este`;
+    // FIX (14/06/2026 — CH-multilang): query del botón "Ver similares" reactiva al idioma del navegador.
+    // Antes era hardcodeado en español (ignoraba FR/DE/IT del navegador suizo).
+    // El texto usa vocabulario TRANSACCIONAL en cada idioma para que el intent detector
+    // lo clasifique como product_search y no lo derive al Knowledge Base.
+    const _similarLang = (navigator.language || 'es').split('-')[0].toLowerCase();
+    const _SIMILAR_QUERIES: Record<string, string> = {
+      es: 'Recoméndame productos similares a este',
+      en: 'Show me similar products to this one',
+      fr: 'Montrez-moi des produits similaires à celui-ci',
+      de: 'Zeige mir ähnliche Produkte wie dieses',
+      it: 'Mostrami prodotti simili a questo',
+    };
+    const queryText = _SIMILAR_QUERIES[_similarLang] ?? _SIMILAR_QUERIES['es'];
 
 
     // Pasar handle directamente (tercer arg) — evita la race condition de useState.
