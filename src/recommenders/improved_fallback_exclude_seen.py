@@ -174,6 +174,12 @@ CATEGORY_KEYWORDS = {
             # VESTIDOS CORTOS / VESTIDOS MIDIS cuando el usuario pide vestidos largos.
             "robe longue", "robes longues",         # FR: vestido largo
             "robe maxi",                            # FR: maxi vestido
+            # FIX (16/06/2026 — typo tolerance FR): "robes longe" (typo de "longue")
+            # no matcheaba ninguno de los keywords anteriores porque falta la 'u'.
+            # "robes long" ES SUBSTRING de "robes longe", "robes longues" y "robes longue".
+            # Con specificity=2 (2 palabras), Change 1 sigue suprimiendo las hermanas.
+            # Cubre: "robes longe" (typo), "robes long" (EN-influenced), "robes longues" (ya OK).
+            "robes long",                           # FR prefix: robes lon(gue/ges/ge)
             "langes kleid", "lange kleider",        # DE: vestido largo
             "maxi kleid",                           # DE: maxi vestido
             "vestito lungo", "vestiti lunghi",      # IT: vestido largo

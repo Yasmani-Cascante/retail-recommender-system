@@ -47,7 +47,30 @@ logger = logging.getLogger(__name__)
 # similares al producto que está viendo (product_ctx con image_url disponible).
 # Diseño: regex simple y rápido (<0.1ms) — sin IO, sin dependencias externas.
 _F08_VISUAL_SIMILARITY_RE = re.compile(
-    r'\b(similar(?:es)?|parecido[sa]?|como.*este|como.*esta|like.*this)\b',
+    # FIX (16/06/2026 — FR/DE/IT visual similarity): El patrón original
+    # solo cubría ES/EN. La variante francesa "similaires" difiere de
+    # "similares" ES en la posición 6 ('i' vs 'r'), por lo que NINGUNA
+    # query FR activaba F-08A ni F-08C.
+    # Consultas fallidas antes del fix:
+    #   "Voir des produits similaires"           → False (Turn 16 → 0 recs)
+    #   "Voir des articles similaires"           → False (Turn 10 → 0 recs)
+    #   "Montrez-moi des produits similaires"    → False (smart_fallback en lugar de FAISS)
+    # Cobertura del patrón corregido:
+    #   similar(?:es)?  → ES/EN: similar, similares
+    #   similaires?     → FR: similaire, similaires
+    #   simil[ei]\w*    → IT: simile, simili (y variantes)
+    #   parecido[sa]?   → ES: parecido, parecida, parecidos
+    #   como\s+este/a   → ES
+    #   like\s+this     → EN
+    r'\b('
+    r'similar(?:es)?'
+    r'|similaires?'
+    r'|simil[ei]\w*'
+    r'|parecido[sa]?'
+    r'|como\s+este'
+    r'|como\s+esta'
+    r'|like\s+this'
+    r')',
     re.IGNORECASE,
 )
 
@@ -56,14 +79,16 @@ def _is_visual_similarity_query(query: str) -> bool:
     """
     Devuelve True si la query expresa una petición de similitud visual.
 
-    Usado por F-08 Fase A para decidir si reemplazar TF-IDF con
-    FashionSigLIP en Turn 1 cuando product_ctx tiene image_url disponible.
+    Usado por F-08 Fase A (Turn 1) y Fase C (Turn 2+) para decidir si
+    activar la búsqueda FAISS/FashionSigLIP en lugar del smart_fallback.
 
-    Patrones activadores:
-      - "similares", "similar"        → productos similares a este
-      - "parecido", "parecida", ...   → parecidos a este
-      - "como este / esta"            → como este producto
-      - "like this"                   → english support
+    Patrones activadores (ES/EN/FR/IT):
+      - "similar(es)"   → ES/EN: productos similares a este
+      - "similaires?"   → FR: produits similaires / produit similaire
+      - "simil[ei]"     → IT: simile, simili
+      - "parecido(s/a)" → ES: parecidos a este
+      - "como este/a"   → ES: como este producto
+      - "like this"     → EN
     """
     if not query:
         return False
@@ -508,7 +533,7 @@ async def get_mcp_conversation_recommendations(
                                 kb_obj = get_knowledge_base()
                                 logger.info("ℹ️ Using hardcoded fallback KB via get_knowledge_base()")
                             except Exception as fallback_e:
-                                logger.debug(f"Fallback hardcoded KB not available: {fallback_e}")
+                                logger.warning(f"Fallback hardcoded KB not available: {fallback_e}")
 
                         if kb_obj:
                             try:
@@ -1053,22 +1078,24 @@ async def get_mcp_conversation_recommendations(
                                 _product_type = _current_ctx.get("product_type", "")
                                 _collections = _current_ctx.get("collections", [])
                                 
-                                # Crear un evento por cada coleccion del producto actual
-                                for _col in _collections:
-                                    user_events.append({
-                                        "productId": _current_ctx.get("id"),
-                                        "product_info": {
-                                            "product_type": _col,
-                                            "source": "current_product_context"
-                                        },
-                                        "eventType": "view",
-                                        "source": "f01_product_context"
-                                    })
-                                # Anadir tambien el product_type directo
-                                if _product_type and not any(
-                                    e["product_info"]["product_type"] == _product_type
-                                    for e in user_events
-                                ):
+                                # FIX (16/06/2026 — coleccion-contamination):
+                                # ANTES: se creaban eventos con los NOMBRES DE COLECCION
+                                # Shopify ('Tapados', 'Capas', 'Fiesta') almacenados como
+                                # product_type. Esto corrompía PRIORIDAD 2 en smart_fallback:
+                                # preferred_categories=['Tapados','Capas','Fiesta'] no
+                                # coinciden con product_types reales ('CAPAS BORDADAS',
+                                # 'CAPAS GASA') → 0 matches → PRIORIDAD 3: 42 categorías
+                                # aleatorias → productos sin imagen, precio 0.01 CHF.
+                                #
+                                # CAUSA: colecciones son metadata de organización Shopify
+                                # (storefront), NO product_types del catálogo TF-IDF.
+                                # PRIORIDAD 2 filtra por product_type — nombres de colección
+                                # nunca coincidirán con valores reales del catálogo.
+                                #
+                                # FIX: almacenar SOLO el product_type real del producto actual.
+                                # Los siblings (añadidos debajo) completan el conjunto de
+                                # categorías para PRIORIDAD 2 (ej. CAPAS GASA + CAPAS BORDADAS).
+                                if _product_type:
                                     user_events.append({
                                         "productId": _current_ctx.get("id"),
                                         "product_info": {
@@ -1153,7 +1180,7 @@ async def get_mcp_conversation_recommendations(
                                     categories_found = [evt["product_info"]["product_type"] for evt in user_events]
                                     logger.info(f"   Historical categories: {categories_found}")
                             else:
-                                logger.debug("FIX #1 v2: no context available, user_events remains empty")
+                                logger.info("FIX #1 v2: no context available, user_events remains empty")
                             
                             # ── F-08 Fase B.2: Outfit Completion — categorías complementarias ──
                             # Trigger: sub_intent=outfit_completion + current_product_context
@@ -1253,6 +1280,22 @@ async def get_mcp_conversation_recommendations(
                                         # categoria del producto actual como filtro.
                                         # Esto evita cross-category contamination (9 CHF
                                         # accessories en resultados de vestidos).
+                                        #
+                                        # FIX (16/06/2026 — F-08C accessory gap):
+                                        # Usar solo el tipo exacto (_c08_ctx_type="AROS") resulta
+                                        # en < 8 candidatos en el pool FAISS para categorias con
+                                        # pocos productos (AROS, COLLARES, CLUTCH, etc.).
+                                        # El pool FAISS de un AROS devuelve vecinos mixtos
+                                        # (AROS + COLLARES + BRAZALETES + CLUTCH), todos
+                                        # visualmente similares, pero el filtro strict solo
+                                        # acepta "AROS" -> muy pocos pasan -> F-08C no activa.
+                                        #
+                                        # Solucion: expandir a los hermanos del mismo padre
+                                        # para capturar todo el grupo categorial:
+                                        #   AROS          -> ACCESSORIES -> [AROS, COLLARES, BRAZALETES, ...]
+                                        #   VESTIDOS CORTOS -> VESTIDOS  -> [VESTIDOS CORTOS, LARGOS, MIDIS]
+                                        # Mantiene coherencia semantica (todos son del mismo
+                                        # "mundo visual") sin cruzar categorias no relacionadas.
                                         if not _c08_query_cats:
                                             _c08_ctx_type = mcp_context.current_product_context.get(
                                                 "product_type", ""
@@ -1260,7 +1303,40 @@ async def get_mcp_conversation_recommendations(
                                                 mcp_context, "current_product_context", None
                                             ) else ""
                                             if _c08_ctx_type:
-                                                _c08_query_cats = [_c08_ctx_type]
+                                                try:
+                                                    # get_parent_categories() ya importado arriba
+                                                    # en la seccion de diversificacion.
+                                                    _c08_parent_map = get_parent_categories()
+                                                    # Buscar el grupo de hermanas del tipo actual.
+                                                    # next() con default=None evita StopIteration.
+                                                    _c08_siblings = next(
+                                                        (
+                                                            subs
+                                                            for subs in _c08_parent_map.values()
+                                                            if _c08_ctx_type.upper()
+                                                            in [s.upper() for s in subs]
+                                                        ),
+                                                        None,
+                                                    )
+                                                    _c08_query_cats = (
+                                                        _c08_siblings
+                                                        if _c08_siblings
+                                                        else [_c08_ctx_type]
+                                                    )
+                                                    if _c08_siblings:
+                                                        logger.info(
+                                                            f"F-08C category expansion: "
+                                                            f"'{_c08_ctx_type}' -> {_c08_query_cats} "
+                                                            f"({len(_c08_query_cats)} types from parent group)"
+                                                        )
+                                                except Exception as _c08_expand_err:
+                                                    # Degradacion graceful: si falla la expansion,
+                                                    # caer al tipo exacto (comportamiento anterior).
+                                                    _c08_query_cats = [_c08_ctx_type]
+                                                    logger.warning(
+                                                        f"F-08C category expansion failed "
+                                                        f"(using exact type): {_c08_expand_err}"
+                                                    )
 
                                         # Filtrar pool: excluir vistos + filtrar por categoria
                                         _c08_candidates = [
@@ -1274,6 +1350,33 @@ async def get_mcp_conversation_recommendations(
                                                    in [c.upper() for c in _c08_query_cats]
                                             )
                                         ]
+
+                                        # FIX (16/06/2026 — observabilidad pool exhausto):
+                                        # Cuando los candidatos visuales son insuficientes
+                                        # (categoria pequena como CAPAS GASA, AROS) el bloque
+                                        # caia silenciosamente a smart_fallback sin ningun log.
+                                        # Esto hizo invisible el problema durante dias:
+                                        # el sintoma era "productos aleatorios sin imagen"
+                                        # pero el log no mostraba por que.
+                                        # Con este logger.info el diagnostico es inmediato.
+                                        #
+                                        # FIX (17/06/2026 — caso limite 0 candidatos):
+                                        # La condicion original "0 < len(...)" excluía el caso
+                                        # MAS extremo: cuando el pool queda completamente vacio
+                                        # tras filtrar (visto en Turn 4, sesion 17/06 12:39 PM —
+                                        # CAPAS GASA con 24 shown_products). Ese turno NO generaba
+                                        # ni "pool insuficiente" ni "visual_diversification" —
+                                        # gap total de observabilidad justo en el peor escenario.
+                                        # Cambiado a "0 <=" para cubrir tambien candidates=0.
+                                        if 0 <= len(_c08_candidates) < n_recommendations:
+                                            logger.info(
+                                                f"F-08C pool insuficiente: {len(_c08_candidates)} candidatos "
+                                                f"(necesarios={n_recommendations}, "
+                                                f"cats={_c08_query_cats}, "
+                                                f"shown={len(shown_products)}). "
+                                                f"Categoria pequena o pool agotado. "
+                                                f"Fallback a smart_fallback categorizado."
+                                            )
 
                                         # Solo usar visual pool si tiene suficientes candidatos
                                         if len(_c08_candidates) >= n_recommendations:
@@ -1306,9 +1409,18 @@ async def get_mcp_conversation_recommendations(
                                                 return _c08_recs
 
                                 except asyncio.TimeoutError:
-                                    logger.debug("F-08C visual timeout — fallback a smart_fallback")
+                                    # FIX (16/06/2026): elevado de logger.debug a logger.info
+                                    # para visibilidad en producción.
+                                    # El cold start del embedding service (min-instances=0)
+                                    # provoca timeouts de 3s en la primera llamada tras idle.
+                                    # El comportamiento es correcto (smart_fallback actua),
+                                    # pero el silencio previo era un gap de observabilidad.
+                                    logger.warning(
+                                        "F-08C visual timeout (>3s) — embedding service probablemente frío. "
+                                        "Fallback a smart_fallback. Próxima llamada será rápida (~1-2ms)."
+                                    )
                                 except Exception as _c08_err:
-                                    logger.debug(f"F-08C visual fallback: {_c08_err}")
+                                    logger.warning(f"F-08C visual fallback: {_c08_err}")
                             # ── Fin F-08 Fase C ───────────────────────────────────────
 
                             # ✨ MEJORADO: Pasar query del usuario Y user_events poblado

@@ -34,8 +34,14 @@
 }
 .iconGroup {
   display: flex;
+  align-items: center;
   margin-right: 0;
   width: 100%;
+  padding-inline: 8px;
+  margin-top: 6px;
+  max-width: 660px;
+  justify-self: center;
+  gap: 4px;
 }
 .inputRow:focus-within {
   border-color: #777777;
@@ -118,10 +124,10 @@
 /* ── Pie de página ───────────────────────────────────── */
 .footer {
   text-align: center;
-  margin-top: 8px;
   font-size: 10px;
   color: #bbb;
   letter-spacing: 0.02em;
+  margin-left: auto;
 }
 
 /* ── Botón icónico genérico (cámara, futura voz, etc.) ──────────────────

@@ -399,10 +399,21 @@ class IntentPatterns:
                 r"\b(opciones.*de|options|alternativas)\b",
                 # FIX (09/04/2026): Patrones de SIMILITUD — deben ser siempre TRANSACTIONAL.
                 # Queries como "Muéstrame similares", "Ver productos similares",
-                # "Recoméndame parecidos a este" son peticisiones de producto, no
+                # "Recoméndame parecidos a este" son peticiones de producto, no
                 # consultas informacionales. Se añaden aquí para que el rule-based
                 # alcance confianza >= 0.5 y el ML no pueda hacer override a INFORMATIONAL.
                 r"\b(similar(?:es)?|parecido(?:s)?|como.*este|like.*this)\b",
+                # FIX (16/06/2026 — FR visual similarity): "similaires" en francés difiere
+                # de "similares" en español en la posición 6 (i vs r), por lo que el patrón
+                # anterior no hacía match. Sin patrón rule-based, ML overrideaba a
+                # INFORMATIONAL (label=product_material, sim=0.49), y el usuario recibía
+                # una respuesta KB en lugar de productos visuales.
+                # Ejemplos fallidos antes del fix:
+                #   "Voir des produits similaires"   → recom_provided=[] (Turn 16)
+                #   "Voir des articles similaires"   → recom_provided=[] (Turn 10)
+                #   "Montrez-moi des produits similaires" → caía a smart_fallback
+                # Con este patrón, rule-based detecta TRANSACTIONAL → GUARD protege.
+                r"\b(similaires?|simil[ei]\w*)\b",   # FR: similaire/similaires · IT: simile/simili
                 r"\b(muéstrame|muestrame|enséñame|ensenname)\b",
                 r"\b(más.*opciones|more.*options|otras.*opciones|other.*options)\b",
                 # FIX (13/06/2026 — FR-transactional): Palabras clave de busqueda en FRANCES.

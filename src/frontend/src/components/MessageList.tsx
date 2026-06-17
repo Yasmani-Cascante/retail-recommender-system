@@ -408,6 +408,7 @@ function OutfitCardSlider({
   const renderStackCard = (product: OutfitProduct, offset: number) => {
     const isActive = offset === 0;
     const translate = offset * 8;
+    const translateX = offset * 11; // Ghost 1 se desplaza ligeramente a la izquierda, Ghost 2 y 3 a la derecha
     const scale = 1 - offset * 0.045;
 
     return (
@@ -426,8 +427,9 @@ function OutfitCardSlider({
           inset: 0,
           zIndex: 10 - offset,
           background: 'var(--surface, #fff)',
+          // background:isActive? 'var(--surface, #fff)' : 'var(--surface, #1c1c1ce5)',
           borderRadius: '10px',
-          border: '1px solid var(--border, #e5e7eb)',
+          border: '1px solid var(--border, #606369)',
           overflow: 'hidden',
           cursor: isActive && product.handle ? 'pointer' : 'default',
           boxShadow: isActive
@@ -436,7 +438,7 @@ function OutfitCardSlider({
           display: 'flex',
           flexDirection: 'column',
           pointerEvents: isActive ? 'auto' : 'none',
-          transform: `translate3d(${translate}px, ${translate}px, ${-offset * 80}px) rotate(${offset * 2}deg) scale(${scale})`,
+          transform: `translate3d(${translateX}px, ${translate}px, ${-offset * 80}px) rotate(${0}deg) scale(${scale})`,
           transformOrigin: 'center bottom',
           transition: 'transform 280ms cubic-bezier(.22,.61,.36,1), opacity 280ms cubic-bezier(.22,.61,.36,1), box-shadow 280ms cubic-bezier(.22,.61,.36,1)',
           opacity: 1 - offset * 0.12,
@@ -891,10 +893,12 @@ function OutfitPanel({
   outfitResult,
   onChatAbout,
   onShowSimilar,
+  isExpanded,
 }: {
   outfitResult:  NonNullable<Message['outfitResult']>;
   onChatAbout?:  (product: import('../types/widget').ProductRecommendation) => void;
   onShowSimilar?: (product: import('../types/widget').ProductRecommendation) => void;
+  isExpanded?: boolean;
 }) {
   const categories = Object.entries(outfitResult.outfit ?? {})
     .filter(([, prods]) => prods.length > 0);
@@ -906,9 +910,11 @@ function OutfitPanel({
       overflowX: 'auto',
       paddingBottom: '8px',
       WebkitOverflowScrolling: 'touch',
-      scrollbarWidth: 'thin',
+      // scrollbarWidth: 'thin',
+      scrollbarWidth: 'auto',
     }}>
-      <div style={{ display: 'flex', gap: '24px', width: 'max-content', alignItems: 'flex-start', paddingBottom: '4px' }}>
+      {/* <div style={{ display: 'flex', gap: '24px', width: 'max-content', alignItems: 'flex-start', paddingBottom: '4px' }}> */}
+      <div style={{ display: 'flex', gap: '24px', width: `${isExpanded ? '100%' : 'max-content'}`, flexWrap: 'wrap', alignItems: 'flex-start', paddingBottom: '4px' }}>
         {categories.map(([category, products]) => (
           <OutfitCardSlider
             key={category}
@@ -1144,6 +1150,7 @@ export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onSh
               {message.outfitResult && (
                 <OutfitPanel
                   outfitResult={message.outfitResult}
+                  isExpanded={isExpanded}
                   onChatAbout={onChatAbout}
                   onShowSimilar={onShowSimilar}
                 />

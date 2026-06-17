@@ -145,7 +145,10 @@ export function MessageInput({
             </svg>
           </button>
         </div>
-        {/* Botón cámara — visible solo cuando visualSearchEnabled=true.
+      
+      </div>
+
+       {/* Botón cámara — visible solo cuando visualSearchEnabled=true.
             El <input type="file"> está oculto; el botón lo activa con .click().
             El atributo 'capture' NO se usa deliberadamente: queremos que el
             usuario pueda elegir entre la cámara o la galería de fotos. */}
@@ -220,14 +223,12 @@ export function MessageInput({
                 </button>
               </>
             )}
+            <span className={styles.footer}>AI-Shoppings · Asistente de moda</span>
           </div>
+
+          
         )}
 
-      </div>
-
-       
-
-      <p className={styles.footer}>AI-Shoppings · Asistente de moda</p>
     </div>
   );
 }

@@ -1142,7 +1142,8 @@ export function ChatWidget({ config }: ChatWidgetProps) {
             className={`${styles.header} ${isHeaderHidden && !isExpanded ? styles.headerHidden : ''}`}
           >
             
-            <div className={styles.headerLeft}>
+            <div className={styles.headerLeft}
+            style={{ paddingLeft: isExpanded ? '58px' : '12px' }}>
                 {/* <div className={`${isExpanded ? styles.h_hidden : styles.aiBubbleWrapperHeader}`}
                 > 
                   <AiBubble 
