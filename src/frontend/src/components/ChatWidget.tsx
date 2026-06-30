@@ -383,6 +383,16 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus>('healthy');
   // showWarmingOverlay: true when health check takes >1.5s (Case 1)
   const [showWarmingOverlay, setShowWarmingOverlay] = useState(false);
+  // showInlineWarmingHint -- OPCION A (29/06/2026): true cuando state.isLoading
+  // lleva mas de 3s seguidos en MEDIO de una conversacion ya abierta (envio de
+  // mensaje, busqueda visual o de outfit -- los tres usan state.isLoading).
+  // A diferencia de showWarmingOverlay (pantalla completa, solo al abrir el
+  // chat), este hint vive junto al indicador de "escribiendo" en MessageList
+  // -- ver useEffect mas abajo y el bloque {warmingHint && (...)} en
+  // MessageList.tsx. Decision de UX (29/06/2026, sugerencia de Yasmani):
+  // tapar todo el panel por una respuesta de texto que tarda es desproporcionado
+  // cuando el usuario ya esta en medio de una conversacion.
+  const [showInlineWarmingHint, setShowInlineWarmingHint] = useState(false);
   // isResuming: true when session resume is in progress (used in Task 8)
   const [isResuming, setIsResuming] = useState(false);
   // sessionRecap: previous session turns for recap display (used in Task 9)
@@ -681,6 +691,22 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     return () => clearTimeout(timer);
   }, [showInactivityWarning, api]);
 
+  // OPCION A (29/06/2026): activa showInlineWarmingHint solo si state.isLoading
+  // permanece true mas de 3s seguidos -- una respuesta normal (caso comun)
+  // nunca llega a disparar este timer, asi que el hint solo aparece en el
+  // escenario real de cold-start a mitad de conversacion (instancia nueva de
+  // Cloud Run atendiendo un mensaje de seguimiento -- ver DCT de Opcion A).
+  // Se reinicia limpio en cada mensaje: cuando isLoading vuelve a false el
+  // hint se oculta de inmediato y el timer pendiente se cancela.
+  useEffect(() => {
+    if (!state.isLoading) {
+      setShowInlineWarmingHint(false);
+      return;
+    }
+    const hintTimer = setTimeout(() => setShowInlineWarmingHint(true), 3000);
+    return () => clearTimeout(hintTimer);
+  }, [state.isLoading]);
+
   /**
    * handleSendMessage — envía un mensaje al backend.
    *
@@ -935,7 +961,13 @@ export function ChatWidget({ config }: ChatWidgetProps) {
 
     // Mensaje del usuario: burbuja vacía con chip que muestra la imagen
     const lc = (navigator.language || 'es').split('-')[0].toLowerCase();
-    const chipLabel = lc === 'en' ? 'Search by image' : 'Buscar por imagen';
+    // FIX (28/06/2026): ampliado a los 5 idiomas (es/en/fr/it/de) -- mismo
+    // motivo que CATEGORY_LABELS arriba, el mercado suizo necesita fr/it/de.
+    const _IMG_CHIP_LABEL: Record<string, string> = {
+      es: 'Buscar por imagen', en: 'Search by image', fr: 'Rechercher par image',
+      it: 'Cerca per immagine', de: 'Suche per Bild',
+    };
+    const chipLabel = _IMG_CHIP_LABEL[lc] ?? _IMG_CHIP_LABEL['es'];
 
     const userMsg: Message = {
       id: `vs_user_${Date.now()}`,
@@ -955,20 +987,40 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     }));
 
     try {
-      const recommendations = await api.searchByImage(
+      // FIX (27/06/2026): searchByImage ahora devuelve { recommendations, message }
+      // en vez de un array plano -- message es generado por LLM en el backend
+      // (ver _generate_visual_search_message en visual_search_router.py). Se pasa
+      // `lc` para que el backend responda en el idioma correcto. `message` puede
+      // venir undefined (LLM deshabilitado/fallo) -- en ese caso se usa la
+      // plantilla estatica de siempre como respaldo, sin romper nada.
+      const { recommendations, message } = await api.searchByImage(
         file,
         config.marketId,
         8,
+        lc,
       );
 
       const hasResults = recommendations.length > 0;
+      // FIX (28/06/2026): ampliado a los 5 idiomas (es/en/fr/it/de). `message`
+      // (generado por LLM en el backend) ya soporta los 5 -- esto solo cubre
+      // el caso de respaldo cuando message viene undefined.
+      const _IMG_FOUND: Record<string, (n: number) => string> = {
+        es: (n) => `Encontré ${n} producto${n !== 1 ? 's' : ''} similares:`,
+        en: (n) => `Found ${n} visually similar product${n !== 1 ? 's' : ''}:`,
+        fr: (n) => `J'ai trouvé ${n} produit${n !== 1 ? 's' : ''} similaire${n !== 1 ? 's' : ''} :`,
+        it: (n) => `Ho trovato ${n} prodott${n !== 1 ? 'i' : 'o'} simil${n !== 1 ? 'i' : 'e'}:`,
+        de: (n) => `${n} visuell ähnliche${n !== 1 ? '' : 's'} Produkt${n !== 1 ? 'e' : ''} gefunden:`,
+      };
+      const _IMG_NO_RESULTS: Record<string, string> = {
+        es: 'No encontré productos similares. Intenta con otra imagen.',
+        en: 'No similar products found. Try with another image.',
+        fr: 'Aucun produit similaire trouvé. Essayez avec une autre image.',
+        it: "Nessun prodotto simile trovato. Prova con un'altra immagine.",
+        de: 'Keine ähnlichen Produkte gefunden. Versuche es mit einem anderen Bild.',
+      };
       const replyText = hasResults
-        ? (lc === 'en'
-            ? `Found ${recommendations.length} visually similar products:`
-            : `Encontré ${recommendations.length} producto${recommendations.length !== 1 ? 's' : ''} similares:`)
-        : (lc === 'en'
-            ? 'No similar products found. Try with another image.'
-            : 'No encontré productos similares. Intenta con otra imagen.');
+        ? (message ?? (_IMG_FOUND[lc] ?? _IMG_FOUND['es'])(recommendations.length))
+        : (_IMG_NO_RESULTS[lc] ?? _IMG_NO_RESULTS['es']);
 
       const assistantMsg: Message = {
         id: `vs_assistant_${Date.now()}`,
@@ -987,10 +1039,15 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     } catch (error) {
       // Extraer mensaje descriptivo del error (puede venir del backend: 503, 413, etc.)
       const rawMsg = error instanceof Error ? error.message : '';
-      const friendlyMsg = rawMsg ||
-        (lc === 'en'
-          ? 'Visual search is not available right now. Please try again.'
-          : 'La búsqueda visual no está disponible ahora. Inténtalo de nuevo.');
+      // FIX (28/06/2026): ampliado a los 5 idiomas (es/en/fr/it/de).
+      const _IMG_ERROR: Record<string, string> = {
+        es: 'La búsqueda visual no está disponible ahora. Inténtalo de nuevo.',
+        en: 'Visual search is not available right now. Please try again.',
+        fr: "La recherche visuelle n'est pas disponible actuellement. Veuillez réessayer.",
+        it: 'La ricerca visiva non è disponibile al momento. Riprova più tardi.',
+        de: 'Die visuelle Suche ist derzeit nicht verfügbar. Bitte versuche es erneut.',
+      };
+      const friendlyMsg = rawMsg || (_IMG_ERROR[lc] ?? _IMG_ERROR['es']);
 
       const errorMsg: Message = {
         id: `vs_error_${Date.now()}`,
@@ -1013,6 +1070,58 @@ export function ChatWidget({ config }: ChatWidgetProps) {
   }, [api, config.marketId, isVisualSearching, state.isLoading]);
 
   /**
+   * CATEGORY_LABELS / describeOutfitCategories -- FIX (27/06/2026, ampliado 28/06/2026):
+   *
+   * El mensaje de outfit antes solo mostraba el NUMERO de categorias
+   * encontradas ("... (3 categorias):"), sin decir cuales. Esto se percibia
+   * como una respuesta estatica/generica, ya que es exactamente el mismo
+   * texto en cada busqueda salvo por el numero. Esta funcion construye una
+   * frase que nombra cada categoria con su conteo, ej.
+   * "2 vestidos, 1 zapato y 3 accesorios" -- usando las claves reales que
+   * devuelve el backend (ALL_OUTFIT_CATEGORIES en visual_search_router.py).
+   *
+   * FIX (28/06/2026): se ampliaron las traducciones a los 5 idiomas que
+   * maneja el sistema (es/en/fr/it/de) -- el mercado suizo (CH) necesita
+   * fr/it/de, no solo es/en. Antes cualquier idioma distinto de 'en' caia
+   * a espanol por defecto. Mismo patron que _SIMILAR_QUERIES (arriba, en
+   * handleShowSimilar), que ya cubria los 5 idiomas correctamente.
+   */
+  const CATEGORY_LABELS: Record<string, Record<string, [string, string]>> = {
+    dress:     { es: ['vestido', 'vestidos'],       en: ['dress', 'dresses'],         fr: ['robe', 'robes'],               it: ['vestito', 'vestiti'],       de: ['Kleid', 'Kleider'] },
+    enterito:  { es: ['enterito', 'enteritos'],     en: ['jumpsuit', 'jumpsuits'],     fr: ['combinaison', 'combinaisons'], it: ['tuta', 'tute'],             de: ['Overall', 'Overalls'] },
+    top:       { es: ['top', 'tops'],                en: ['top', 'tops'],              fr: ['haut', 'hauts'],               it: ['top', 'top'],               de: ['Top', 'Tops'] },
+    bottom:    { es: ['pantalón', 'pantalones'],    en: ['bottom', 'bottoms'],        fr: ['pantalon', 'pantalons'],       it: ['pantalone', 'pantaloni'],   de: ['Hose', 'Hosen'] },
+    conjunto:  { es: ['conjunto', 'conjuntos'],     en: ['set', 'sets'],              fr: ['ensemble', 'ensembles'],       it: ['completo', 'completi'],     de: ['Set', 'Sets'] },
+    shoes:     { es: ['zapato', 'zapatos'],         en: ['shoe', 'shoes'],            fr: ['chaussure', 'chaussures'],     it: ['scarpa', 'scarpe'],         de: ['Schuh', 'Schuhe'] },
+    bag:       { es: ['bolso', 'bolsos'],           en: ['bag', 'bags'],              fr: ['sac', 'sacs'],                 it: ['borsa', 'borse'],           de: ['Tasche', 'Taschen'] },
+    accessory: { es: ['accesorio', 'accesorios'],   en: ['accessory', 'accessories'], fr: ['accessoire', 'accessoires'],   it: ['accessorio', 'accessori'],  de: ['Accessoire', 'Accessoires'] },
+    outerwear: { es: ['abrigo', 'abrigos'],         en: ['outerwear piece', 'outerwear pieces'], fr: ["vêtement d'extérieur", "vêtements d'extérieur"], it: ['capospalla', 'capispalla'], de: ['Oberbekleidungsstück', 'Oberbekleidungsstücke'] },
+  };
+
+  // FIX (28/06/2026): conectores ('y'/'and'/...) para los 5 idiomas.
+  const CATEGORY_CONNECTORS: Record<string, string> = { es: 'y', en: 'and', fr: 'et', it: 'e', de: 'und' };
+
+  const describeOutfitCategories = (
+    result: OutfitResult,
+    categoriesFound: string[],
+    lc: string,
+  ): string => {
+    const lang = (['en', 'fr', 'it', 'de'].includes(lc) ? lc : 'es');
+    const parts = categoriesFound.map((cat) => {
+      const count = result.outfit[cat]?.length ?? 0;
+      const labels = CATEGORY_LABELS[cat]?.[lang];
+      const label = labels ? (count === 1 ? labels[0] : labels[1]) : cat;
+      return `${count} ${label}`;
+    });
+    if (parts.length === 0) return '';
+    if (parts.length === 1) return parts[0];
+    const last = parts[parts.length - 1];
+    const rest = parts.slice(0, -1).join(', ');
+    const connector = CATEGORY_CONNECTORS[lang] ?? 'y';
+    return `${rest} ${connector} ${last}`;
+  };
+
+  /**
    * handleOutfitSearch — S1 FASE 4: búsqueda de outfit completo por imagen.
    *
    * Flujo idéntico a handleImageUpload pero llama searchOutfitByImage() y
@@ -1025,7 +1134,12 @@ export function ChatWidget({ config }: ChatWidgetProps) {
 
     const previewUrl = URL.createObjectURL(file);
     const lc = (navigator.language || 'es').split('-')[0].toLowerCase();
-    const chipLabel = lc === 'en' ? 'Complete the outfit' : 'Completar outfit';
+    // FIX (28/06/2026): ampliado a los 5 idiomas (es/en/fr/it/de).
+    const _OUTFIT_CHIP_LABEL: Record<string, string> = {
+      es: 'Completar outfit', en: 'Complete the outfit', fr: 'Compléter la tenue',
+      it: "Completa l'outfit", de: 'Outfit vervollständigen',
+    };
+    const chipLabel = _OUTFIT_CHIP_LABEL[lc] ?? _OUTFIT_CHIP_LABEL['es'];
 
     // Mensaje del usuario: burbuja con chip que muestra la imagen de referencia
     const userMsg: Message = {
@@ -1052,13 +1166,27 @@ export function ChatWidget({ config }: ChatWidgetProps) {
       );
 
       const hasResults = totalProducts > 0;
+      const categoryDescription = hasResults
+        ? describeOutfitCategories(result, categoriesFound, lc)
+        : '';
+      // FIX (28/06/2026): ampliado a los 5 idiomas (es/en/fr/it/de).
+      const _OUTFIT_REPLY: Record<string, (d: string) => string> = {
+        es: (d) => `Aquí tienes sugerencias para completar tu outfit: ${d}.`,
+        en: (d) => `Here are suggestions to complete your outfit: ${d}.`,
+        fr: (d) => `Voici des suggestions pour compléter votre tenue : ${d}.`,
+        it: (d) => `Ecco alcuni suggerimenti per completare il tuo outfit: ${d}.`,
+        de: (d) => `Hier sind Vorschläge, um dein Outfit zu vervollständigen: ${d}.`,
+      };
+      const _OUTFIT_NO_RESULTS: Record<string, string> = {
+        es: 'No encontré sugerencias para este outfit. Prueba con otra foto.',
+        en: 'No suggestions found for this outfit. Try with another photo.',
+        fr: 'Aucune suggestion trouvée pour cette tenue. Essayez avec une autre photo.',
+        it: "Nessun suggerimento trovato per questo outfit. Prova con un'altra foto.",
+        de: 'Keine Vorschläge für dieses Outfit gefunden. Versuche es mit einem anderen Foto.',
+      };
       const replyText  = hasResults
-        ? (lc === 'en'
-            ? `Here are suggestions to complete your outfit (${categoriesFound.length} categories):`
-            : `Aquí tienes sugerencias para completar tu outfit (${categoriesFound.length} categorías):`)
-        : (lc === 'en'
-            ? 'No suggestions found for this outfit. Try with another photo.'
-            : 'No encontré sugerencias para este outfit. Prueba con otra foto.');
+        ? (_OUTFIT_REPLY[lc] ?? _OUTFIT_REPLY['es'])(categoryDescription)
+        : (_OUTFIT_NO_RESULTS[lc] ?? _OUTFIT_NO_RESULTS['es']);
 
       const assistantMsg: Message = {
         id: `outfit_assistant_${Date.now()}`,
@@ -1078,11 +1206,15 @@ export function ChatWidget({ config }: ChatWidgetProps) {
 
     } catch (error) {
       const raw = error instanceof Error ? error.message : '';
-      const friendly = raw || (
-        lc === 'en'
-          ? 'Outfit search is not available right now. Please try again.'
-          : 'La búsqueda de outfit no está disponible ahora. Inténtalo de nuevo.'
-      );
+      // FIX (28/06/2026): ampliado a los 5 idiomas (es/en/fr/it/de).
+      const _OUTFIT_ERROR: Record<string, string> = {
+        es: 'La búsqueda de outfit no está disponible ahora. Inténtalo de nuevo.',
+        en: 'Outfit search is not available right now. Please try again.',
+        fr: "La recherche de tenue n'est pas disponible actuellement. Veuillez réessayer.",
+        it: 'La ricerca outfit non è disponibile al momento. Riprova più tardi.',
+        de: 'Die Outfit-Suche ist derzeit nicht verfügbar. Bitte versuche es erneut.',
+      };
+      const friendly = raw || (_OUTFIT_ERROR[lc] ?? _OUTFIT_ERROR['es']);
       const errorMsg: Message = {
         id: `outfit_error_${Date.now()}`,
         type: 'error',
@@ -1225,6 +1357,24 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                 Disappears automatically once the health check resolves.    */}
             {showWarmingOverlay && (
               <div className={styles.warmingOverlay}>
+                {/* OPCION A (29/06/2026): antes no habia forma de salir de
+                    este overlay -- el usuario quedaba atrapado mientras el
+                    chat arrancaba. Reutiliza handleClose, que ya limpia el
+                    estado correctamente (el useEffect del health-check se
+                    cancela solo al cambiar isOpen, ver su cleanup arriba). */}
+                <button
+                  className={styles.warmingOverlayCloseBtn}
+                  onClick={handleClose}
+                  aria-label="Cerrar chat"
+                  title="Cerrar"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
                 <div className={styles.spinner} />
                 <p className={styles.warmingText}>
                   {localStorage.getItem('rr_widget_session_id')
@@ -1319,6 +1469,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                 onShowSimilar={handleShowSimilar}
                 onSuggestionClick={(text) => handleSendMessage(text, undefined, undefined, true)}
                 isServiceDown={serviceStatus === 'down'}
+                warmingHint={showInlineWarmingHint}
                 bottomContent={(serviceStatus === 'down' && !isResuming) || isResuming ? (
                   <>
                     {serviceStatus === 'down' && !isResuming && (
@@ -1383,15 +1534,24 @@ export function ChatWidget({ config }: ChatWidgetProps) {
             {/* Case 2a: Inactivity warning — shown after 15 min of no interaction */}
             {showInactivityWarning && serviceStatus !== 'down' && (
               <div className={styles.inactivityWarning}>
-                <button
-                  className={styles.inactivityWarningDismiss}
-                  onClick={() => setShowInactivityWarning(false)}
-                  aria-label="Cerrar aviso"
-                >×</button>
-                <span className={styles.inactivityWarningTitle}>¿Sigues ahí?</span>
+                <div className={styles.inactivityWarningHeader} aria-hidden="true">
+                    
+                    <span className={styles.inactivityWarningTitle}>¿Sigues ahí?</span>
+                    <button
+                      className={styles.inactivityWarningDismiss}
+                      onClick={() => setShowInactivityWarning(false)}
+                      aria-label="Cerrar aviso"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" x="0px" y="0px" width="20px" height="20px" viewBox="0 0 72 72" fill="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M 19 15 C 17.977 15 16.951875 15.390875 16.171875 16.171875 C 14.609875 17.733875 14.609875 20.266125 16.171875 21.828125 L 30.34375 36 L 16.171875 50.171875 C 14.609875 51.733875 14.609875 54.266125 16.171875 55.828125 C 16.951875 56.608125 17.977 57 19 57 C 20.023 57 21.048125 56.609125 21.828125 55.828125 L 36 41.65625 L 50.171875 55.828125 C 51.731875 57.390125 54.267125 57.390125 55.828125 55.828125 C 57.391125 54.265125 57.391125 51.734875 55.828125 50.171875 L 41.65625 36 L 55.828125 21.828125 C 57.390125 20.266125 57.390125 17.733875 55.828125 16.171875 C 54.268125 14.610875 51.731875 14.609875 50.171875 16.171875 L 36 30.34375 L 21.828125 16.171875 C 21.048125 15.391875 20.023 15 19 15 z"></path>
+                      </svg>
+                    </button>
+                  </div> 
+
+                {/* <span className={styles.inactivityWarningTitle}>¿Sigues ahí?</span> */}
                 <span className={styles.inactivityWarningSub}>El chat entrará en reposo si no hay actividad en los próximos 5 minutos.</span>
               </div>
-            )}
+            )} 
 
           </div>
 

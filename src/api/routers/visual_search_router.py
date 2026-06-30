@@ -77,6 +77,11 @@ class VisualSearchResponse(BaseModel):
     total_found: int
     latency_ms: float
     visual_index_size: int = 0
+    # FIX (27/06/2026): mensaje opcional generado por LLM describiendo los
+    # productos encontrados. None si la generacion fallo/esta deshabilitada --
+    # el frontend cae a su plantilla estatica de respaldo en ese caso. Ver
+    # _generate_visual_search_message() para el detalle completo.
+    message: Optional[str] = None
 
 
 # ── Singleton helper ──────────────────────────────────────────────────────────
@@ -118,6 +123,146 @@ def _get_tfidf_recommender():
     return tfidf_recommender
 
 
+# ── Mensaje generado por LLM (FIX 27/06/2026) ─────────────────────────────────
+async def _generate_visual_search_message(recommendations: List[dict], language: str) -> Optional[str]:
+    """
+    Genera un mensaje breve y persuasivo describiendo los productos
+    encontrados por busqueda visual, usando el mismo cliente LLM y los
+    mismos modelos que el resto de la conversacion (LFM2-24B primario via
+    OpenRouter, GPT-4o-mini de respaldo -- ver UnifiedLLMClient en
+    src/api/core/llm_client.py y LFM_MCP_CONFIG / GPT4O_MINI_FALLBACK_CONFIG
+    en src/api/core/claude_config.py).
+
+    DECISION DE PRODUCTO (27/06/2026): este endpoint (busqueda por similitud
+    visual) antes no generaba ningun texto -- el frontend mostraba una
+    plantilla fija ("Encontre N productos similares:") identica en cada
+    busqueda, sin mencionar que se encontro. A diferencia del outfit
+    (resultado estructurado por categoria, donde una plantilla mejorada
+    basta -- ver describeOutfitCategories en ChatWidget.tsx), la busqueda
+    por similitud es un momento de descubrimiento/venta donde una frase
+    generada que conecte los productos encontrados aporta mas valor
+    comercial. Yasmani decidio pagar el costo de latencia/tokens aqui
+    especificamente por ese motivo.
+
+    Presupuesto de tiempo MAS CORTO que el flujo conversacional principal
+    (4.0s LFM / 3.0s GPT-4o-mini, contra 10.0s/8.0s en
+    mcp_personalization_engine.py) -- este endpoint se diseno para ser
+    rapido, y la generacion de mensaje no debe comprometer eso. Si ambos
+    modelos fallan, no estan habilitados, o no hay API key configurada,
+    devuelve None -- el endpoint NUNCA se rompe por esto; el frontend cae
+    a su plantilla estatica de respaldo (comportamiento previo, intacto).
+
+    Args:
+        recommendations: productos ya sanitizados (title, price, currency).
+        language: 'es', 'en', 'fr', 'it' o 'de' -- determina el idioma del
+            mensaje generado. Cualquier otro valor cae a espanol por defecto.
+
+    Returns:
+        Optional[str]: el mensaje generado, o None si no se pudo generar.
+    """
+    if not recommendations:
+        return None
+
+    api_key = os.environ.get('OPENROUTER_API_KEY')
+    if not api_key:
+        return None
+
+    titles = [
+        f"{r.get('title', 'Producto')} ({r.get('currency', '')} {r.get('price', '')})"
+        for r in recommendations[:5]
+    ]
+    products_text = '; '.join(titles)
+
+    # FIX (28/06/2026): el mercado suizo (CH) requiere tambien fr/it/de, no
+    # solo es/en -- antes cualquier idioma distinto de 'en' caia a espanol
+    # por defecto sin importar el idioma real del navegador del usuario.
+    # _VS_PROMPTS cubre los 5 idiomas que maneja el sistema (mismos que
+    # navigator.language puede devolver para un usuario en Suiza: fr-CH,
+    # de-CH, it-CH, adicional a es/en de los otros mercados).
+    _VS_PROMPTS = {
+        'es': (
+            'Eres un asistente de compras de moda. Dada una lista de productos '
+            'encontrados por busqueda de similitud visual, escribe UNA frase breve, '
+            'calida y persuasiva (maximo 2 lineas) destacando 1-2 productos por '
+            'nombre. Nunca inventes detalles que no esten en la lista. '
+            'Responde solo en espanol.',
+            'Productos encontrados: {products}',
+        ),
+        'en': (
+            'You are a fashion shopping assistant. Given a list of products found '
+            'via visual similarity search, write ONE short, warm, persuasive sentence '
+            '(max 2 lines) highlighting 1-2 standout items by name. '
+            'Never invent details not in the list. Respond in English only.',
+            'Products found: {products}',
+        ),
+        'fr': (
+            "Tu es un assistant shopping mode. A partir d'une liste de produits "
+            'trouves par recherche de similarite visuelle, ecris UNE phrase courte, '
+            'chaleureuse et persuasive (maximum 2 lignes) en mettant en avant 1 ou 2 '
+            "articles par leur nom. N'invente jamais de details absents de la liste. "
+            'Reponds uniquement en francais.',
+            'Produits trouves : {products}',
+        ),
+        'it': (
+            'Sei un assistente di shopping di moda. Data una lista di prodotti '
+            'trovati tramite ricerca di similarita visiva, scrivi UNA frase breve, '
+            'calorosa e persuasiva (massimo 2 righe) evidenziando 1-2 articoli per '
+            'nome. Non inventare mai dettagli non presenti nella lista. '
+            'Rispondi solo in italiano.',
+            'Prodotti trovati: {products}',
+        ),
+        'de': (
+            'Du bist ein Mode-Shopping-Assistent. Schreibe anhand einer Liste von '
+            'Produkten, die durch visuelle Aehnlichkeitssuche gefunden wurden, EINEN '
+            'kurzen, warmen und ueberzeugenden Satz (maximal 2 Zeilen), der 1-2 '
+            'herausragende Artikel namentlich hervorhebt. Erfinde niemals Details, '
+            'die nicht in der Liste stehen. Antworte ausschliesslich auf Deutsch.',
+            'Gefundene Produkte: {products}',
+        ),
+    }
+
+    system_prompt, _user_template = _VS_PROMPTS.get(language, _VS_PROMPTS['es'])
+    user_prompt = _user_template.format(products=products_text)
+
+    import asyncio as _asyncio_vsm
+    from src.api.core.llm_client import UnifiedLLMClient
+    from src.api.core.claude_config import LFM_MCP_CONFIG, GPT4O_MINI_FALLBACK_CONFIG
+
+    if os.environ.get('LFM_MCP_ENABLED', 'false').lower() == 'true':
+        try:
+            lfm_client = UnifiedLLMClient(
+                provider=LFM_MCP_CONFIG['provider'],
+                model=LFM_MCP_CONFIG['model'],
+                max_tokens=120,
+                temperature=LFM_MCP_CONFIG['temperature'],
+            )
+            resp = await _asyncio_vsm.wait_for(
+                lfm_client.complete(system_prompt, user_prompt), timeout=4.0,
+            )
+            logger.info('visual_search_message_lfm_ok', model=resp.model)
+            return resp.content
+        except Exception as e:
+            logger.warning('visual_search_message_lfm_failed', error=str(e))
+
+    if os.environ.get('GPT4O_MINI_FALLBACK_ENABLED', 'false').lower() == 'true':
+        try:
+            gpt4o_client = UnifiedLLMClient(
+                provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
+                model=GPT4O_MINI_FALLBACK_CONFIG['model'],
+                max_tokens=120,
+                temperature=GPT4O_MINI_FALLBACK_CONFIG['temperature'],
+            )
+            resp = await _asyncio_vsm.wait_for(
+                gpt4o_client.complete(system_prompt, user_prompt), timeout=3.0,
+            )
+            logger.info('visual_search_message_gpt4o_mini_ok', model=resp.model)
+            return resp.content
+        except Exception as e:
+            logger.warning('visual_search_message_gpt4o_mini_failed', error=str(e))
+
+    return None
+
+
 # ── Endpoint principal: búsqueda visual ───────────────────────────────────────
 
 @router.post('/v1/mcp/visual-search', response_model=VisualSearchResponse)
@@ -125,6 +270,7 @@ async def visual_search(
     file: UploadFile = File(..., description='Imagen del producto (JPEG/PNG/WebP, max 5MB)'),
     market_id: str = Form(default='ES', description='Mercado para precios'),
     top_k: int = Form(default=8, description='Número máximo de resultados'),
+    language: str = Form(default='es', description="Idioma del mensaje generado: 'es', 'en', 'fr', 'it' o 'de'"),
     api_key: str = Depends(get_api_key),
 ):
     """
@@ -301,13 +447,23 @@ async def visual_search(
 
     from src.api.routers.mcp_router import sanitize_rec_for_frontend
     sanitized  = [sanitize_rec_for_frontend(r) for r in resolved]
+
+    # FIX (27/06/2026): generar mensaje descriptivo via LLM -- ver
+    # _generate_visual_search_message() para el razonamiento completo.
+    # Esto corre DESPUES de resolver precios (necesita title+price+currency
+    # reales para el prompt) y ANTES de medir latency_ms final, asi que el
+    # costo de esta llamada queda reflejado honestamente en latency_ms.
+    _vs_message = await _generate_visual_search_message(sanitized, language)
+
     elapsed_ms = round((time.time() - t_start) * 1000, 1)
 
     logger.info('visual_search_complete', market_id=market_id,
-                found=len(sanitized), latency_ms=elapsed_ms)
+                found=len(sanitized), latency_ms=elapsed_ms,
+                message_generated=bool(_vs_message))
 
     return VisualSearchResponse(
         recommendations=sanitized, total_found=len(sanitized), latency_ms=elapsed_ms,
+        message=_vs_message,
     )
 
 

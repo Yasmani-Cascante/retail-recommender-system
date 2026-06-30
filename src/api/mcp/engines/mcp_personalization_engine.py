@@ -2634,6 +2634,36 @@ class MCPPersonalizationEngine:
         mcp_context = context.mcp_context
         market_config = context.market_config
 
+        # DECISION DE PRODUCTO (20/06/2026): leer category_exhausted_info temprano
+        # para poder condicionar otras instrucciones del prompt (F-01 upsell) que
+        # entran en conflicto cuando las recomendaciones incluyen items de otras
+        # categorias por agotamiento. Sin esto, F-01 podia instruir "trata estos
+        # como complementos deliberados de la misma categoria/coleccion" justo
+        # antes de que nuestro propio bloque dijera "estos son de otra categoria
+        # porque se agoto" -- el LLM resolvia el conflicto siguiendo la instruccion
+        # de F-01 (mas especifica y orientada a venta), ignorando la nuestra.
+        # Evidencia real: Turno 2, sesion 20/06/2026 -- el LLM describio una Capa
+        # Bordada como "complementaria" del look en PANTALONES en vez de informar
+        # que PANTALONES se habia agotado.
+        _exhausted_info_early = getattr(mcp_context, "category_exhausted_info", None)
+        _category_mixing_active = bool(
+            _exhausted_info_early
+            and _exhausted_info_early.get("total_count", 0) > _exhausted_info_early.get("shown_count", 0)
+        )
+        # FIX (22/06/2026, feedback Yasmani): _category_mixing_active solo es True
+        # cuando HAY mezcla de categorias (total_count > shown_count) -- pero el
+        # Caso 1 (deficit puro, ej. 6/8 sin completar, SIN mezcla, off=0) tambien
+        # necesita que la instruccion de cierre (la de mayor peso/recencia en el
+        # prompt) refuerce el aviso de agotamiento. Sin esto, un turno con deficit
+        # puro cae de vuelta a la instruccion de cierre GENERICA ("por que estos
+        # productos son ideales..."), que no menciona el agotamiento en absoluto --
+        # el LLM termina sin informar nada sobre los X articulos restantes.
+        # _category_exhausted_active cubre los 3 casos (1, 2 y 3) por igual; se usa
+        # especificamente para la instruccion de cierre. _category_mixing_active se
+        # mantiene sin cambios para la supresion de upsell (esa SI es especifica a
+        # cuando hay mezcla real).
+        _category_exhausted_active = bool(_exhausted_info_early)
+
         # Solo las 3 mejores recomendaciones con datos minimos.
         #
         # OPCION A (28/03/2026): Precio para el prompt de Claude.
@@ -2663,6 +2693,40 @@ class MCPPersonalizationEngine:
         current_market_id = mcp_context.current_market_id if hasattr(mcp_context, 'current_market_id') else "CL"
 
         top_recs = personalization_result["recommendations"][:3]
+
+        # FIX (26/06/2026, Fix #2 post-investigacion sesion 26/06/2026): garantizar
+        # que al menos 1 producto de relleno (de otra categoria, por agotamiento)
+        # entre al top-3 que ve el LLM, para que tenga nombre y precio concretos
+        # que mencionar en vez de solo un conteo abstracto ("hay N de otra
+        # categoria"). Sin esto, cuando hay mezcla y los items on-category ocupan
+        # las primeras posiciones (mayor score), el LLM recibia la instruccion
+        # de Caso 2/3 sin ningun dato concreto que anclar -- y en la practica
+        # terminaba omitiendo esa parte de la respuesta por completo. Evidencia
+        # real (Turno 1, sesion 26/06/2026): "Aqui tienes los ultimos Pantalones
+        # negros disponibles..." sin mencionar en absoluto el velo de novia ni
+        # la capa bordada que tambien se mostraron al usuario en esa misma grilla.
+        if _category_mixing_active and _exhausted_info_early:
+            _ex_cat_for_summary = (_exhausted_info_early.get("category") or "").upper()
+            _all_recs_for_summary = personalization_result["recommendations"]
+            _has_off_category_in_top3 = any(
+                (r.get("category") or r.get("product_type", "")).upper() != _ex_cat_for_summary
+                for r in top_recs
+            )
+            if not _has_off_category_in_top3:
+                _first_off_category = next(
+                    (
+                        r for r in _all_recs_for_summary
+                        if (r.get("category") or r.get("product_type", "")).upper() != _ex_cat_for_summary
+                    ),
+                    None,
+                )
+                if _first_off_category is not None:
+                    top_recs = top_recs[:2] + [_first_off_category]
+                    logger.info(
+                        "recs_summary_top3_forced_off_category category=%s off_category_id=%s",
+                        _ex_cat_for_summary, _first_off_category.get("id", "?"),
+                    )
+
         recs_summary = ", ".join(
             f"{rec.get('title', 'Producto')[:40]} "
             f"({self._format_price_for_market(rec, current_market_id, market_config.currency)})"
@@ -2770,15 +2834,35 @@ class MCPPersonalizationEngine:
         # Instruccion de upsell cruzada: tier + rango de precio + categorias preferidas.
         # Retorna string vacio si no hay perfil de cliente, preservando el
         # comportamiento actual para usuarios anonimos (sin cambios en el prompt).
-        tier_upsell_instruction = self._build_tier_upsell_instruction(
-            customer_profile=customer_profile,
-            product_ctx=product_ctx,
-            ref_price_clp=ref_price_clp,
-            preferred_categories=(
-                customer_profile.get("preferred_categories", []) if customer_profile else []
-            ),
-            market_currency=market_config.currency,
+        # FIX (20/06/2026): suprimir cuando hay mezcla de categorias por agotamiento
+        # (_category_mixing_active) -- la matriz de 12 celdas de
+        # _build_tier_upsell_instruction tiene varias variantes con lenguaje de
+        # "complemento/alternativa de la misma coleccion o categoria" que entra en
+        # conflicto directo con el aviso de category_exhausted mas abajo.
+        tier_upsell_instruction = (
+            ""
+            if _category_mixing_active
+            else self._build_tier_upsell_instruction(
+                customer_profile=customer_profile,
+                product_ctx=product_ctx,
+                ref_price_clp=ref_price_clp,
+                preferred_categories=(
+                    customer_profile.get("preferred_categories", []) if customer_profile else []
+                ),
+                market_currency=market_config.currency,
+            )
         )
+
+        # FIX (20/06/2026): observabilidad explicita de la supresion -- sin esto,
+        # no habia forma de confirmar en logs si la supresion realmente se aplico
+        # en un turno dado (la ausencia de tier_upsell_instruction_built en logs es
+        # ambigua: podria ser por supresion O por falta de customer_profile/product_ctx).
+        if _category_mixing_active:
+            logger.info(
+                "upsell_instruction_suppressed_due_to_category_mixing "
+                "has_customer_profile=%s has_product_ctx=%s",
+                bool(customer_profile), bool(product_ctx),
+            )
 
          # ── F-01: Contexto del producto actual (upsell contextual) ─────────────────
          # Construir lineas descriptivas del producto actual para el prompt
@@ -2831,13 +2915,24 @@ class MCPPersonalizationEngine:
             # Instruccion especifica tier x producto (cliente identificado)
             prompt += tier_upsell_instruction
         elif upsell_context_line:
-            # Sin perfil de cliente: instruccion generica de upsell
-            prompt += (
-                f"\nContexto del producto que el usuario esta viendo:\n{upsell_context_line}\n"
-                "Si es natural en la conversacion, sugiere complementos o alternativas "
-                "de mayor valor de la misma coleccion o categoria. "
-                "No menciones el upsell de forma forzada, solo si enriquece la respuesta.\n"
-            )
+            if _category_mixing_active:
+                # FIX (20/06/2026): mismo motivo que el gateo de tier_upsell_instruction
+                # arriba -- no instruir "sugiere complementos de la misma categoria"
+                # cuando las recomendaciones de relleno son aleatorias (Standard
+                # diversification), no curadas. El contexto factual del producto se
+                # mantiene (util para tallas, etc.) pero sin la orientacion de venta
+                # que competiria con el aviso de category_exhausted mas abajo.
+                prompt += (
+                    f"\nContexto del producto que el usuario esta viendo:\n{upsell_context_line}\n"
+                )
+            else:
+                # Sin perfil de cliente: instruccion generica de upsell
+                prompt += (
+                    f"\nContexto del producto que el usuario esta viendo:\n{upsell_context_line}\n"
+                    "Si es natural en la conversacion, sugiere complementos o alternativas "
+                    "de mayor valor de la misma coleccion o categoria. "
+                    "No menciones el upsell de forma forzada, solo si enriquece la respuesta.\n"
+                )
 
         # ── F-02: Contexto de tallas del cliente (11/04/2026) ────────────────────
         # Se lee desde mcp_context.size_profile (SizeProfile o None).
@@ -2954,24 +3049,261 @@ class MCPPersonalizationEngine:
         # tallas, stock o material, el asistente debe mencionar el nombre del
         # producto para que el usuario sepa que la respuesta es específica a ese item.
         # Esto evita mostrar chips visuales adicionales manteniendo claridad.
+        #
+        # FIX (21/06/2026): gatear esta instruccion cuando la query actual nombra
+        # una categoria EXPLICITA distinta a la del producto que el usuario esta
+        # viendo. Sin esto, el LLM mencionaba el producto previamente visto (ej.
+        # "Pantalones") incluso cuando el usuario pregunto por una categoria
+        # totalmente distinta (ej. "muestrame faldas"), porque product_ctx refleja
+        # la pagina de producto abierta en el navegador, no de que habla el chat --
+        # persiste sin cambios mientras el usuario sigue navegando esa PDP.
+        # Evidencia: observacion directa de Yasmani (21/06/2026) -- "muestrame
+        # faldas"/"muestrame capas" mientras viendo PANTALONES devolvia productos
+        # correctos (faldas/capas) pero el LLM mencionaba "Pantalones".
+        #
+        # Import local con alias (mismo patron que el Caso A en
+        # mcp_conversation_handler.py): evita riesgo de UnboundLocalError si en el
+        # futuro se agrega otro import condicional de estos nombres en esta funcion.
+        _product_ctx_category_mismatch = False
         if product_ctx:
+            _current_query_for_ctx_check = getattr(mcp_context, "current_query", "") or ""
+            if _current_query_for_ctx_check:
+                try:
+                    from src.recommenders.improved_fallback_exclude_seen import (
+                        extract_categories_from_query as _ctx_extract_categories,
+                        get_concrete_categories as _ctx_get_concrete_categories,
+                    )
+                    _ctx_query_cats = _ctx_extract_categories(
+                        _current_query_for_ctx_check, _ctx_get_concrete_categories()
+                    )
+                    _ctx_product_type = (product_ctx.get("product_type") or "").upper()
+                    if (
+                        _ctx_query_cats
+                        and _ctx_product_type
+                        and _ctx_product_type not in [c.upper() for c in _ctx_query_cats]
+                    ):
+                        _product_ctx_category_mismatch = True
+                        logger.info(
+                            "solucion_b_suppressed_category_mismatch viewed_category=%s "
+                            "query_categories=%s query=%s",
+                            _ctx_product_type, _ctx_query_cats,
+                            _current_query_for_ctx_check[:50],
+                        )
+                except Exception as _ctx_cat_err:
+                    logger.warning(
+                        "product_ctx category mismatch detection failed: %s", _ctx_cat_err
+                    )
+
+        if product_ctx and not _product_ctx_category_mismatch and not _category_mixing_active:
             prompt += (
                 f"\nIMPORTANTE: El usuario está viendo el producto '{product_ctx['title']}'. "
-                f"Cuando respondas sobre tallas, disponibilidad, material o características, "
-                f"menciona el nombre del producto al inicio para que el usuario sepa que "
-                f"estás hablando de este item específico. Ejemplo: 'El {product_ctx['title']}...'\n"
+                f"Cuando respondas sobre tallas, material o características de ESTE producto, "
+                f"menciona su nombre al inicio para que el usuario sepa que estas hablando de "
+                f"este item especifico. Ejemplo: 'El {product_ctx['title']}...'\n"
+                f"NO menciones el stock o disponibilidad de este producto de forma proactiva "
+                f"-- solo si el usuario lo pregunta explicitamente. Si la query actual pide "
+                f"productos similares o de otra categoria, concentrate en los productos "
+                f"recomendados, NO en el estado de este producto (FIX 22/06/2026: el LLM "
+                f"abria sus respuestas hablando del stock agotado del producto actual en vez "
+                f"de enfocarse en lo que el usuario pidio).\n"
             )
-        # ── Fin Solución B ───────────────────────────────────────────────────────
+        # ── Fin Solución B ─────────────────────────────────────────────────
 
-        prompt += (
-            f"Historial conversacional (ultimos 3 turnos):\n{last_query}\n"
-            f"Construir sobre la conversacion, manteniendo coherencia durante todo el flujo.\n"
-            f"Moneda: {market_config.currency}\n"
-            f"Productos recomendados: {recs_summary}\n\n"
-            f"- Por que estos productos son ideales para su busqueda.\n"
-            f"- Destaca el producto mas relevante con su precio.\n"
-            f"Respuesta directa sin JSON:"
-        )
+        # FIX (23/06/2026, feedback Yasmani): ademas del mismatch explicito de
+        # categoria de arriba, suprimir Solucion B tambien cuando hay mezcla de
+        # categorias por agotamiento (_category_mixing_active) -- ej. el usuario
+        # pide "productos similares" (sin nombrar otra categoria, asi que el gate
+        # de arriba NO se activa), pero la categoria del producto que esta viendo
+        # se agoto y las recomendaciones reales son 100% de OTRAS categorias. En
+        # ese caso, mencionar el producto que esta viendo por nombre no aporta --
+        # confunde, porque lo que sigue no tiene relacion con el. Evidencia real
+        # (Turno 7, sesion 23/06/2026): "El Palazzo Ariel Satin Verde Oscuro..."
+        # seguido de recomendaciones de Conjunto, Lenceria y Brazalete -- ninguna
+        # relacionada con el Palazzo mencionado.
+        if product_ctx and _category_mixing_active and not _product_ctx_category_mismatch:
+            logger.info(
+                "solucion_b_suppressed_category_mixing viewed_category=%s",
+                (product_ctx.get("product_type") or "?"),
+            )
+
+        # Notificacion de categoria agotada (coherencia categorica estricta).
+        # DECISION DE PRODUCTO (18/06/2026): cuando F-08C aplica strict_category=True
+        # y el relleno categorizado no alcanza el numero pedido (la categoria se agoto),
+        # el handler senaliza esto via mcp_context.category_exhausted_info en vez de
+        # mostrar productos de otras categorias sin avisar. Aqui lo traducimos a una
+        # instruccion explicita para el LLM, siguiendo el mismo patron que F-05
+        # (stock alert): el LLM ya recibe la instruccion de idioma al inicio del
+        # prompt, asi que aunque este bloque este en espanol, la respuesta sale en
+        # el idioma correcto del usuario.
+        #
+        # AJUSTE (19/06/2026): el Caso A (queries de categoria directa) puede mezclar
+        # categorias via el relleno de enhanced_hybrid_recommender.py, mientras que
+        # F-08C y el Caso B nunca mezclan (strict_category=True las bloquea por
+        # completo ahi). Con un solo mensaje fijo, el aviso sonaba desconectado de lo
+        # que el usuario realmente ve cuando SI hay mezcla -- decia "no sugieras otras
+        # categorias" mientras la mitad (o el 100%) de lo mostrado era justamente eso.
+        # Ahora distinguimos 3 escenarios segun shown_count (productos de la categoria
+        # pedida) vs total_count (productos totales en la respuesta):
+        #   1. off=0           -> deficit puro, sin mezcla (F-08C, Caso B, o Caso A sin mezcla)
+        #   2. shown=0, off>0  -> agotamiento total, 100% mezcla (Caso A, categoria vacia)
+        #   3. shown>0, off>0  -> agotamiento parcial CON mezcla (Caso A, categoria parcial)
+        # FIX (20/06/2026): reusar _exhausted_info_early (leido al inicio de la
+        # funcion para gatear las instrucciones de upsell de F-01) en vez de
+        # volver a leer el atributo -- una sola fuente de verdad.
+        _exhausted_info = _exhausted_info_early
+        if _exhausted_info:
+            _ex_cat = _exhausted_info.get("category", "esta categoria")
+            _ex_shown = _exhausted_info.get("shown_count", 0)
+            _ex_total = _exhausted_info.get("total_count", _ex_shown)
+            _ex_off = _ex_total - _ex_shown
+
+            if _ex_off <= 0:
+                # Caso 1: deficit puro, sin mezcla -- todo lo mostrado SI es de la
+                # categoria pedida, solo que son menos de los n solicitados.
+                # FIX (20/06/2026, feedback Yasmani): tiempo presente, sin "ha visto"
+                # (suena como reproche al usuario en vez de presentar el resultado).
+                # FIX (22/06/2026, feedback Yasmani): "nuevo(s)" sugiere "recien
+                # llegado a la tienda", cuando el criterio real es "no visto por el
+                # usuario en esta conversacion" -- se quita esa palabra. Tambien se
+                # quita "agotado" del encabezado (implica falta de stock, dato que
+                # el sistema nunca verifica) y se prohibe citar el marcador literal.
+                prompt += (
+                    f"\nIMPORTANTE (instruccion interna para ti -- NO la cites "
+                    f"literalmente en tu respuesta, traducela a lenguaje natural): a "
+                    f"lo largo de esta conversacion, sumando los que se muestran ahora, "
+                    f"le habras mostrado TODOS los articulos de la categoria "
+                    f"'{_ex_cat}' que existen en el catalogo. Esto NO significa "
+                    f"que esten 'agotados' de stock (eso no lo sabes) -- significa que "
+                    f"ya se los mostraste todos. Estos son los ultimos {_ex_shown} que aun no "
+                    f"habia visto, y son los que se muestran ahora. Informa al usuario "
+                    f"de forma amigable y en TIEMPO PRESENTE, abriendo tu respuesta "
+                    f"anclada a la categoria pedida -- ej. 'Aqui tienes los ultimos "
+                    f"{_ex_cat} disponibles' -- en vez de una apertura generica como "
+                    f"'aqui tienes tus opciones destacadas' (no menciona la categoria "
+                    f"que el usuario pidio). NO uses frases como 'has visto' o 'ya "
+                    f"viste' (suena como un reproche al usuario). NO uses la palabra "
+                    f"'agotado' ni afirmes nada sobre stock o inventario real -- no lo "
+                    f"sabes. NO sugieras ni menciones productos de otras categorias -- "
+                    f"los productos recomendados ya son exclusivamente de '{_ex_cat}'.\n"
+                )
+            elif _ex_shown == 0:
+                # Caso 2: agotamiento total -- NINGUN producto mostrado es de la
+                # categoria pedida. El LLM debe reconocerlo explicitamente, no ocultarlo.
+                # FIX (20/06/2026, feedback Yasmani): tiempo presente, y evitar la
+                # palabra "complementan" para los productos de relleno -- implica una
+                # relacion curada que no existe (son relleno generico, no eleccion
+                # deliberada). Evidencia real: el LLM ignoraba el aviso anterior y
+                # describia productos de otra categoria como si fueran parte de "la
+                # coleccion completa" relacionada con la busqueda.
+                # FIX (22/06/2026, feedback Yasmani): mismo ajuste que Caso 1 -- sin
+                # "nuevo(s)", sin "agotado", prohibicion explicita de citar el marcador.
+                prompt += (
+                    f"\nIMPORTANTE (instruccion interna para ti -- NO la cites "
+                    f"literalmente en tu respuesta, traducela a lenguaje natural): a "
+                    f"lo largo de esta conversacion ya le has mostrado al usuario TODOS "
+                    f"los articulos de la categoria '{_ex_cat}' que coinciden con su "
+                    f"busqueda -- no queda ninguno sin mostrar. Esto NO significa que "
+                    f"esten 'agotados' de stock (eso no lo sabes) -- significa que ya "
+                    f"se los mostraste todos. Los {_ex_total} producto(s) que estas "
+                    f"recomendando ahora son de OTRAS categorias del catalogo, no de "
+                    f"'{_ex_cat}'. Informa al usuario de forma amigable y en TIEMPO "
+                    f"PRESENTE que ya le mostraste todos los '{_ex_cat}' disponibles, y "
+                    f"que le compartes otras opciones destacadas del catalogo. NO uses "
+                    f"la palabra 'agotado' ni afirmes nada sobre stock o inventario "
+                    f"real. NO digas que estos productos son '{_ex_cat}'. NO digas que "
+                    f"estas opciones 'complementan' su busqueda (implica una relacion "
+                    f"que no existe) -- di simplemente que son opciones destacadas o "
+                    f"populares que pudieran complementar su guardarropa.\n"
+                )
+            else:
+                # Caso 3: agotamiento parcial CON mezcla -- algunos productos SI son
+                # de la categoria pedida (menos de n) y el resto completa con otras.
+                # FIX (20/06/2026, feedback Yasmani): mismo ajuste que Caso 1 y Caso 2 --
+                # tiempo presente, sin "viste", sin "complementan tu busqueda".
+                # FIX (22/06/2026, feedback Yasmani): sin "agotado", sin marcador citable.
+                prompt += (
+                    f"\nIMPORTANTE (instruccion interna para ti -- NO la cites "
+                    f"literalmente en tu respuesta, traducela a lenguaje natural): de "
+                    f"los {_ex_total} productos recomendados, solo {_ex_shown} son de "
+                    f"la categoria '{_ex_cat}' que el usuario pidio -- son los ultimos "
+                    f"que le faltaban ver. Sumando estos a lo que ya le mostraste en la "
+                    f"conversacion, le habras mostrado TODOS los articulos de esa "
+                    f"categoria que existen en el catalogo -- esto NO significa que "
+                    f"esten 'agotados' de stock (eso no lo sabes), significa que ya se "
+                    f"los mostraste todos. Los otros {_ex_off} son productos adicionales de otras "
+                    f"categorias, agregados para completar la lista. Informa al "
+                    f"usuario de forma amigable y en TIEMPO PRESENTE, abriendo tu "
+                    f"respuesta anclada a la categoria pedida -- ej. 'Aqui tienes los "
+                    f"ultimos {_ex_cat} disponibles' -- en vez de una apertura generica "
+                    f"como 'aqui tienes tus opciones destacadas' (no menciona la "
+                    f"categoria que el usuario pidio). NUNCA uses 'has visto', 'ya "
+                    f"viste', ni la palabra 'agotado'. Para los {_ex_off} productos de "
+                    f"otras categorias, NO digas que 'complementan tu busqueda' "
+                    f"(implica una relacion que no existe) -- di simplemente que son "
+                    f"opciones destacadas o populares que pudieran complementar su "
+                    f"guardarropa.\n"
+                )
+
+            logger.info(
+                "category_exhausted_notice_added_to_prompt category=%s shown=%d total=%d off=%d",
+                _ex_cat, _ex_shown, _ex_total, _ex_off,
+            )
+        # Fin notificacion categoria agotada.
+
+        # FIX (20/06/2026): la instruccion de cierre generica ("por que estos
+        # productos son ideales para su busqueda") es la ULTIMA cosa que el LLM
+        # lee antes de generar -- posicion de maximo peso/recencia en el prompt.
+        # Cuando hay mezcla de categorias, esa instruccion CONTRADICE directamente
+        # el aviso de category_exhausted de mas arriba: le pedia al LLM explicar
+        # por que TODOS los productos (incluidos los de relleno de otra categoria)
+        # eran ideales para la busqueda, justo despues de haberle dicho que
+        # algunos NO tienen relacion con lo pedido. Evidencia real (Turno 2,
+        # sesion 20/06/2026): el LLM ignoro completamente el aviso de agotamiento
+        # y describio un producto de otra categoria como parte de "la coleccion
+        # completa" relacionada con la busqueda -- la instruccion de cierre, al
+        # ser la mas reciente, ganaba el conflicto. Con mezcla activa, se usa una
+        # instruccion de cierre distinta que refuerza (no contradice) el aviso.
+        if _category_exhausted_active:
+            prompt += (
+                f"Historial conversacional (ultimos 3 turnos):\n{last_query}\n"
+                f"Construir sobre la conversacion, manteniendo coherencia durante todo el flujo.\n"
+                f"Moneda: {market_config.currency}\n"
+                f"Productos recomendados: {recs_summary}\n\n"
+                f"- LO PRIMERO que dices, antes de cualquier otro comentario sobre el "
+                f"producto actual o su disponibilidad/stock, debe ser informar (en tus "
+                f"propias palabras, en TIEMPO PRESENTE) que con este turno ya le has "
+                f"mostrado TODOS los articulos de la categoria pedida (NO 'casi todos' "
+                f"ni 'la mayoria' -- son los ultimos, asi que completan el 100%), segun "
+                f"la instruccion de arriba. NO repitas literalmente los marcadores en "
+                f"mayusculas de arriba "
+                f"(son instrucciones internas para ti, NO texto para el usuario) y NUNCA "
+                f"uses la palabra 'agotado' (implica falta de stock, dato que no "
+                f"verificamos). FIX (22/06/2026): el LLM a veces abria con comentarios "
+                f"sobre el producto actual (ej. su stock) en vez de informar primero "
+                f"esto -- ese orden es incorrecto. Tambien a veces citaba literalmente "
+                f"el marcador interno (ej. 'CATALOGO AGOTADO') en la respuesta visible "
+                f"al usuario -- eso tampoco es correcto.\n"
+                f"- Si hay al menos un producto de la categoria pedida, destacalo con su "
+                f"precio. Si no queda ninguno, NO destaques ningun precio como si fuera "
+                f"de la categoria pedida.\n"
+                f"Respuesta directa sin JSON:"
+            )
+            logger.info(
+                "category_mixing_closing_instruction_applied category=%s shown=%d total=%d",
+                _exhausted_info.get("category", "?"),
+                _exhausted_info.get("shown_count", 0),
+                _exhausted_info.get("total_count", 0),
+            )
+        else:
+            prompt += (
+                f"Historial conversacional (ultimos 3 turnos):\n{last_query}\n"
+                f"Construir sobre la conversacion, manteniendo coherencia durante todo el flujo.\n"
+                f"Moneda: {market_config.currency}\n"
+                f"Productos recomendados: {recs_summary}\n\n"
+                f"- Por que estos productos son ideales para su busqueda.\n"
+                f"- Destaca el producto mas relevante con su precio.\n"
+                f"Respuesta directa sin JSON:"
+            )
 
         return prompt
     

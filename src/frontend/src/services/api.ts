@@ -335,19 +335,30 @@ export class ConversationAPI {
    * IMPORTANTE: NO establecer 'Content-Type' manualmente — fetch lo hace
    * automáticamente con el boundary correcto para multipart/form-data.
    *
+   * FIX (27/06/2026): el backend ahora puede devolver un campo `message`
+   * opcional (generado por LLM, ver _generate_visual_search_message en
+   * visual_search_router.py) describiendo los productos encontrados. El
+   * tipo de retorno cambio de un array plano a un objeto { recommendations,
+   * message } para no descartarlo silenciosamente. `message` es undefined
+   * si el backend no lo genero (LLM deshabilitado/fallo) -- el caller debe
+   * usar su propia plantilla de respaldo en ese caso.
+   *
    * @param imageFile   Archivo subido por el usuario desde <input type="file">
    * @param marketId    Mercado para precios (default: config.marketId ?? 'ES')
    * @param topK        Número máximo de resultados (default: 8)
+   * @param language    Idioma del mensaje generado por el backend ('es' | 'en')
    */
   async searchByImage(
     imageFile: File,
     marketId?: string,
     topK: number = 8,
-  ): Promise<ProductRecommendation[]> {
+    language: string = 'es',
+  ): Promise<{ recommendations: ProductRecommendation[]; message?: string }> {
     const formData = new FormData();
     formData.append('file', imageFile);
     formData.append('market_id', marketId ?? this.config.marketId ?? 'ES');
     formData.append('top_k', String(topK));
+    formData.append('language', language);
 
     const response = await fetch(`${this.config.apiUrl}/v1/mcp/visual-search`, {
       method: 'POST',
@@ -381,11 +392,14 @@ export class ConversationAPI {
       recommendations: unknown[];
       total_found: number;
       latency_ms: number;
+      message?: string | null;
     };
 
-    return (data.recommendations ?? [])
+    const recommendations = (data.recommendations ?? [])
       .filter((r): r is Record<string, unknown> => r != null && typeof r === 'object')
       .map(normalizeRecommendation);
+
+    return { recommendations, message: data.message ?? undefined };
   }
 
   /**

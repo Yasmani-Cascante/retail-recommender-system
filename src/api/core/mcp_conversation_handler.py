@@ -1037,7 +1037,8 @@ async def get_mcp_conversation_recommendations(
                                 ImprovedFallbackStrategies,
                                 extract_categories_from_query,
                                 get_concrete_categories,
-                                get_parent_categories,  # NUEVO: expansion a categorias hermanas
+                                get_parent_categories,      # NUEVO: expansion a categorias hermanas
+                                normalize_recommendation_dict,  # Refactor: esquema visual canonico
                             )
                             # Obtener todos los productos disponibles
                             all_products = main_unified_redis.hybrid_recommender.content_recommender.product_data
@@ -1386,17 +1387,15 @@ async def get_mcp_conversation_recommendations(
                                             ):
                                                 _c08_vprod = _c08_tfidf.id_index.get(str(_c08_vid))
                                                 if _c08_vprod:
-                                                    _c08_score = round(1.0 - _c08_rank * 0.02, 4)
-                                                    _c08_recs.append({
-                                                        "id":               str(_c08_vid),
-                                                        "title":            _c08_vprod.get("title", ""),
-                                                        "similarity_score": _c08_score,
-                                                        "score":            _c08_score,
-                                                        "handle":           _c08_vprod.get("handle", ""),
-                                                        "image_url":        _c08_vprod.get("image_url"),
-                                                        "product_data":     _c08_vprod,
-                                                        "source":           "visual_diversification_f08c",
-                                                    })
+                                                    _c08_recs.append(
+                                                        normalize_recommendation_dict(
+                                                            raw=_c08_vprod,
+                                                            rank=_c08_rank,
+                                                            score_start=1.0,
+                                                            score_step=0.02,
+                                                            source="visual_diversification_f08c",
+                                                        )
+                                                    )
 
                                             if _c08_recs:
                                                 logger.info(
@@ -1407,6 +1406,180 @@ async def get_mcp_conversation_recommendations(
                                                     f"candidates={len(_c08_candidates)})"
                                                 )
                                                 return _c08_recs
+
+                                        # ── F-08C Sprint Candidatos Parciales + Relleno Categorizado (17/06/2026) ──
+                                        # PROBLEMA RESUELTO: hasta este fix, cuando el pool visual quedaba
+                                        # entre 1 y (n_recommendations - 1) candidatos, el bloque NO HACIA NADA
+                                        # mas que loguear "pool insuficiente" (ver bloque de arriba) y caia al
+                                        # smart_fallback() generico mas abajo en el flujo, que reconstruye las
+                                        # n recomendaciones DESDE CERO -- descartando por completo la señal de
+                                        # similitud visual ya calculada (la mas valiosa: viene rankeada por
+                                        # cercania visual real, no por heuristica de categoria).
+                                        # Evidencia: Turn 4 (0 candidatos) y Turn 5 (1 candidato) de la sesion
+                                        # de validacion 17/06/2026 -- documentados en el DCT de cierre del
+                                        # sprint CAPAS GASA.
+                                        #
+                                        # DISEÑO (acordado con Yasmani antes de implementar):
+                                        #   1. Los candidatos visuales parciales se usan TAL CUAL estan --
+                                        #      ya vienen rankeados por similitud real.
+                                        #   2. El resto (n_recommendations - len(_c08_candidates)) se rellena
+                                        #      llamando a smart_fallback(), anclado a las MISMAS categorias
+                                        #      deseadas (_c08_query_cats) via user_events sinteticos -- mismo
+                                        #      patron ya validado en produccion para F-08B.2
+                                        #      (outfit_complement_f08b2, mas arriba en este mismo archivo).
+                                        #   3. user_query=None es CRITICO al llamar a smart_fallback: si
+                                        #      pasaramos conversation_query, PRIORIDAD 1 de
+                                        #      get_personalized_fallback() volveria a llamar a
+                                        #      extract_categories_from_query() sobre el texto crudo de la
+                                        #      query, y podria detectar una categoria DISTINTA a
+                                        #      _c08_query_cats (ej. si _c08_query_cats vino de la expansion a
+                                        #      hermanas porque la query no nombraba categoria explicita, pero
+                                        #      algun keyword ambiguo SI matchea otra categoria). Con
+                                        #      user_query=None forzamos PRIORIDAD 2, que usa exclusivamente
+                                        #      los user_events sinteticos que construimos aqui -- garantiza
+                                        #      coherencia entre el filtro del pool visual y el relleno.
+                                        #
+                                        # PESO EXTRA al tipo exacto del producto actual:
+                                        #   PRIORIDAD 2 en get_personalized_fallback() solo usa el TOP-3 de
+                                        #   categorias por frecuencia. Para grupos con muchas categorias
+                                        #   hermanas (ej. ACCESSORIES tiene 8: AROS, COLLARES, BRAZALETES,
+                                        #   CLUTCH, CINTURONES, CARTERAS, TOCADOS, BRALETTES), solo 3 entrarian
+                                        #   al reparto. Para garantizar que la categoria EXACTA del producto
+                                        #   que el usuario esta viendo nunca quede fuera de ese top-3, le damos
+                                        #   el doble de frecuencia que a sus hermanas (2 eventos en vez de 1).
+                                        elif len(_c08_candidates) > 0:
+                                            _c08_current_type = str(
+                                                mcp_context.current_product_context.get("product_type", "")
+                                            ).upper()
+
+                                            # Construir user_events sinteticos: un evento por categoria
+                                            # deseada, con peso extra (evento adicional) para el tipo exacto
+                                            # del producto actual.
+                                            _c08_fill_events = []
+                                            for _c08_cat in _c08_query_cats:
+                                                _c08_fill_events.append({
+                                                    "productId": None,
+                                                    "product_info": {
+                                                        "product_type": _c08_cat,
+                                                        "source": "f08c_partial_fill"
+                                                    },
+                                                    "eventType": "view",
+                                                    "source": "f08c_partial_fill"
+                                                })
+                                                if _c08_cat.upper() == _c08_current_type:
+                                                    _c08_fill_events.append({
+                                                        "productId": None,
+                                                        "product_info": {
+                                                            "product_type": _c08_cat,
+                                                            "source": "f08c_partial_fill_anchor_boost"
+                                                        },
+                                                        "eventType": "view",
+                                                        "source": "f08c_partial_fill"
+                                                    })
+
+                                            _c08_needed = n_recommendations - len(_c08_candidates)
+
+                                            # Exclusion ampliada: vistos en turnos previos + los candidatos
+                                            # visuales que YA vamos a usar (para no duplicarlos en el relleno)
+                                            # + el producto actual (por si acaso, igual que el filtro del pool).
+                                            _c08_fill_exclude = (
+                                                set(shown_products)
+                                                | {str(pid) for pid in _c08_candidates}
+                                                | {_c08_pid}
+                                            )
+
+                                            _c08_fill_raw = await ImprovedFallbackStrategies.smart_fallback(
+                                                user_id=validated_user_id,
+                                                products=all_products,
+                                                user_events=_c08_fill_events,
+                                                n=_c08_needed,
+                                                exclude_products=_c08_fill_exclude,
+                                                user_query=None,  # bypass PRIORIDAD 1 -- ver comentario arriba
+                                                # DECISION DE PRODUCTO (18/06/2026): coherencia categorica
+                                                # estricta. Antes, si la categoria preferida se agotaba,
+                                                # get_personalized_fallback rellenaba silenciosamente con
+                                                # productos de OTRAS categorias ("Top-up P2 broad") -- el
+                                                # usuario recibia, p.ej., 4 CALZONES + 4 productos random sin
+                                                # ninguna explicacion. Con strict_category=True, el fill NUNCA
+                                                # mezcla categorias: devuelve menos de _c08_needed si la
+                                                # categoria se agota, y el bloque de abajo detecta ese deficit
+                                                # para notificar al usuario via el LLM en vez de ocultarlo.
+                                                strict_category=True,
+                                            )
+
+                                            # Detectar agotamiento de categoria: si el relleno no alcanzo lo
+                                            # necesario (porque strict_category=True bloqueo el broadening),
+                                            # señalizar al LLM via mcp_context para que informe al usuario
+                                            # de forma transparente en vez de simplemente entregar menos
+                                            # productos sin explicacion alguna.
+                                            if len(_c08_fill_raw) < _c08_needed:
+                                                _c08_exhausted_cat = (
+                                                    _c08_query_cats[0] if _c08_query_cats else "esta categoria"
+                                                )
+                                                _c08_shown_count = len(_c08_candidates) + len(_c08_fill_raw)
+                                                mcp_context.category_exhausted_info = {  # type: ignore[attr-defined]
+                                                    "category": _c08_exhausted_cat,
+                                                    "shown_count": _c08_shown_count,
+                                                    # F-08C con strict_category=True nunca mezcla categorias --
+                                                    # total_count == shown_count siempre en este call site.
+                                                    "total_count": _c08_shown_count,
+                                                }
+                                                logger.info(
+                                                    f"F-08C category_exhausted: {len(_c08_candidates)} visual + "
+                                                    f"{len(_c08_fill_raw)} fill = {_c08_shown_count} "
+                                                    f"(de {n_recommendations} pedidos, categoria="
+                                                    f"{_c08_exhausted_cat!r}). LLM notificacion activada."
+                                                )
+
+                                            # PASO 1: construir _c08_recs con los candidatos visuales parciales.
+                                            _c08_recs = []
+                                            for _c08_rank, _c08_vid in enumerate(_c08_candidates):
+                                                _c08_vprod = _c08_tfidf.id_index.get(str(_c08_vid))
+                                                if _c08_vprod:
+                                                    _c08_recs.append(
+                                                        normalize_recommendation_dict(
+                                                            raw=_c08_vprod,
+                                                            rank=_c08_rank,
+                                                            score_start=1.0,
+                                                            score_step=0.02,
+                                                            source="visual_diversification_f08c",
+                                                        )
+                                                    )
+
+                                            # PASO 2: normalizar la salida de smart_fallback al esquema visual
+                                            # canonico usando normalize_recommendation_dict(), que unifica
+                                            # la logica de los 4 bloques (F-08A, F-08C feliz, F-08C visual
+                                            # parcial, F-08C relleno) en un unico lugar.
+                                            # score_start arranca un escalon por debajo del ultimo candidato
+                                            # visual para preservar el orden visual-primero en el resultado.
+                                            _c08_fill_score_start = (
+                                                round(_c08_recs[-1]["score"] - 0.05, 4)
+                                                if _c08_recs else 0.90
+                                            )
+                                            for _c08_fill_rank, _c08_fill_prod in enumerate(_c08_fill_raw):
+                                                _c08_recs.append(
+                                                    normalize_recommendation_dict(
+                                                        raw=_c08_fill_prod,
+                                                        rank=_c08_fill_rank,
+                                                        score_start=_c08_fill_score_start,
+                                                        score_step=0.02,
+                                                        source="categorized_fill_f08c",
+                                                    )
+                                                )
+
+                                            if _c08_recs:
+                                                logger.info(
+                                                    f"F-08C visual_partial_plus_fill: "
+                                                    f"{len(_c08_recs)} productos totales "
+                                                    f"(visual={len(_c08_candidates)}, "
+                                                    f"fill={len(_c08_fill_raw)}, "
+                                                    f"needed_fill={_c08_needed}, "
+                                                    f"cats={_c08_query_cats})"
+                                                )
+                                                return _c08_recs
+                                        # Si len(_c08_candidates) == 0: no se hace nada -- cae a smart_fallback()
+                                        # mas abajo en el flujo normal (comportamiento ya correcto desde el fix
+                                        # de contaminacion de colecciones, Bug 3).
 
                                 except asyncio.TimeoutError:
                                     # FIX (16/06/2026): elevado de logger.debug a logger.info
@@ -1446,15 +1619,128 @@ async def get_mcp_conversation_recommendations(
                                     "F-08B.2 query suppressed: outfit_complement_f08b2 activo — "
                                     "PRIORIDAD 2 usará user_events de complement categories"
                                 )
-                            
+
+                            # DECISION DE PRODUCTO (19/06/2026) -- Caso B: extender coherencia
+                            # categorica estricta tambien cuando F-08C no encuentra NINGUN
+                            # candidato visual (0 candidatos) en una query de similitud.
+                            # En ese caso _smart_fallback_query = conversation_query (la query
+                            # real, ej. "similar a este"), que no nombra categoria explicita ->
+                            # PRIORIDAD 1 no detecta nada -> cae a PRIORIDAD 2 con user_events
+                            # (categoria del producto actual via contexto). Es EXACTAMENTE la
+                            # misma rama ya protegida con strict_category en el relleno de
+                            # F-08C -- aqui extendemos el mismo flag a este call site.
+                            #
+                            # EXTENSION (20/06/2026): ampliar tambien a queries de categoria
+                            # directa en Turno 2+ ("muestrame mas pantalones"). Hallazgo real
+                            # (Turno 3, sesion 20/06/2026): esa query NO es de similitud, asi
+                            # que _is_visual_similarity_query devolvia False y este call site
+                            # quedaba sin proteccion. A partir del Turno 2, las queries de
+                            # categoria directa caen AQUI (no en "Standard recommendations",
+                            # que solo corre en la primera consulta de la sesion) -- es el
+                            # mismo problema del Caso A, pero por una puerta distinta.
+                            # Import local con alias: el import agrupado de
+                            # extract_categories_from_query mas arriba esta dentro del bloque
+                            # F-08C (solo corre si la query es de similitud), asi que aqui
+                            # reimportamos con alias para evitar el mismo UnboundLocalError
+                            # de BUG-REFACTOR-1 (18/06/2026) -- mismo patron que el bloque
+                            # "Standard recommendations" del Caso A.
+                            try:
+                                from src.recommenders.improved_fallback_exclude_seen import (
+                                    extract_categories_from_query as _b_extract_categories,
+                                    get_concrete_categories as _b_get_concrete_categories,
+                                )
+                                # FIX (22/06/2026): capturar la LISTA completa (no solo el
+                                # booleano) para poder reutilizarla mas abajo en la deteccion
+                                # de agotamiento -- ver BUG-CASEB-CATFALSEPOS.
+                                _b_explicit_categories = _b_extract_categories(
+                                    conversation_query, _b_get_concrete_categories()
+                                )
+                            except Exception as _b_cat_err:
+                                logger.warning(f"Case B category detection failed: {_b_cat_err}")
+                                _b_explicit_categories = []
+                            _b_has_explicit_category = bool(_b_explicit_categories)
+                            #
+                            # IMPORTANTE: sigue sin aplicar a outfit_completion (combina
+                            # categorias por diseno). Las busquedas de categoria directa SI
+                            # quedan cubiertas ahora (antes solo similitud).
+                            _strict_zero_candidates = (
+                                not _outfit_complement_active
+                                and (
+                                    _is_visual_similarity_query(conversation_query)
+                                    or _b_has_explicit_category
+                                )
+                            )
+
                             recommendations = await ImprovedFallbackStrategies.smart_fallback(
                                 user_id=validated_user_id,
                                 products=all_products,
                                 user_events=user_events,  # ✅ FIX #1: Ahora poblado
                                 n=n_recommendations,
                                 exclude_products=shown_products,
-                                user_query=_smart_fallback_query  # None si outfit_complement activo
+                                user_query=_smart_fallback_query,  # None si outfit_complement activo
+                                strict_category=_strict_zero_candidates,
                             )
+
+                            # Detectar agotamiento de categoria (Caso B, Opcion 1 -- 20/06/2026):
+                            # el chequeo original solo comparaba len(recommendations) <
+                            # n_recommendations -- pero get_personalized_fallback tiene su PROPIO
+                            # fallthrough interno a PRIORIDAD 3 (diverse) cuando las categorias
+                            # preferidas quedan en CERO productos disponibles (no solo "pocos").
+                            # Ese fallthrough vive DENTRO de la misma llamada, fuera del alcance
+                            # de strict_category (que solo protege el top-up de PRIORIDAD 2 cuando
+                            # personalized_products SI tiene algo). Resultado real observado
+                            # (Turno 5, sesion 20/06/2026): con CALZONES totalmente agotado,
+                            # smart_fallback devolvia 8 productos de "Standard diversification"
+                            # (mezclados, sin relacion), pero como el conteo SI llegaba a
+                            # n_recommendations, la condicion original nunca se activaba -- mismo
+                            # punto ciego que tuvo el Caso A antes de la Opcion 1. Aplicamos aqui
+                            # exactamente el mismo fix: comparar categorias presentes, no solo
+                            # el conteo total.
+                            # FIX (22/06/2026 -- BUG-CASEB-CATFALSEPOS): _zero_cand_categories
+                            # se calculaba SOLO desde user_events (categoria ambiental/historica
+                            # de turnos anteriores), incluso cuando la query ACTUAL nombraba una
+                            # categoria EXPLICITA y DISTINTA que SI se encontro completa. Evidencia
+                            # real (Turno 4, sesion 22/06/2026): query "Muestrame Calzones" encontro
+                            # 8/8 CALZONES (Distribution plan: {'CALZONES': 8}, sin agotamiento),
+                            # pero el chequeo comparaba contra ['PANTALONES'] (categoria historica
+                            # de turnos anteriores, reconstruida via "FIX #1 v2: ... from turn
+                            # history" porque no habia current_product_context) -- como ningun
+                            # CALZON coincidia con "PANTALONES", el sistema reporto falsamente
+                            # "0 de la categoria pedida + 8 de otras categorias, categoria=
+                            # PANTALONES", y el LLM le dijo al usuario que no habia mas PANTALONES
+                            # mientras le mostraba CALZONES.
+                            # FIX: priorizar la categoria EXPLICITA de la query actual
+                            # (_b_explicit_categories, ya detectada arriba) sobre la categoria
+                            # historica/ambiental -- solo caer a la historica cuando la query NO
+                            # nombra ninguna categoria explicita (ej. "similar a este").
+                            _zero_cand_categories = _b_explicit_categories or list({
+                                evt.get("product_info", {}).get("product_type", "")
+                                for evt in (user_events or [])
+                                if evt.get("product_info", {}).get("product_type")
+                            })
+                            if _strict_zero_candidates and _zero_cand_categories:
+                                _zero_cand_cats_upper = {c.upper() for c in _zero_cand_categories}
+                                _zero_cand_on_count = sum(
+                                    1 for rec in recommendations
+                                    if (rec.get("category") or rec.get("product_type", "")).upper()
+                                    in _zero_cand_cats_upper
+                                )
+                                _zero_cand_off_count = len(recommendations) - _zero_cand_on_count
+
+                                if _zero_cand_off_count > 0 or _zero_cand_on_count < n_recommendations:
+                                    _zero_cand_cat = _zero_cand_categories[0]
+                                    mcp_context.category_exhausted_info = {  # type: ignore[attr-defined]
+                                        "category": _zero_cand_cat,
+                                        "shown_count": _zero_cand_on_count,
+                                        "total_count": len(recommendations),
+                                    }
+                                    logger.info(
+                                        f"smart_fallback category_exhausted (Caso B): "
+                                        f"{_zero_cand_on_count} de la categoria pedida + "
+                                        f"{_zero_cand_off_count} de otras categorias "
+                                        f"(total={len(recommendations)}/{n_recommendations}, "
+                                        f"categoria={_zero_cand_cat!r}). LLM notificacion activada."
+                                    )
                             
                             logger.info(f"✅ Diversified recommendations obtained: {len(recommendations)} items")
                             logger.info(f"   Context used: {len(user_events)} historical events, excluded {len(shown_products)} seen products")
@@ -1511,6 +1797,19 @@ async def get_mcp_conversation_recommendations(
                     ):
                         try:
                             from src.api.routers.visual_search_router import _get_colbert_client
+                            # FIX (18/06/2026 - BUG-REFACTOR-1): normalize_recommendation_dict
+                            # se importaba SOLO dentro del bloque F-08C (Turn 2+). Python marca
+                            # cualquier nombre importado en UNA rama de una funcion como variable
+                            # local de TODA la funcion. Cuando F-08C no corre (Turn 1, sin
+                            # current_product_context de sesion previa), la variable queda
+                            # sin asignar y F-08A lanza UnboundLocalError al usarla.
+                            # Resultado en produccion: F-08 visual_search fallback a TF-IDF
+                            # en todos los Turn 1, perdiendo el ranking por similitud visual.
+                            # FIX: importar aqui tambien, siguiendo el patron de imports lazy
+                            # ya existente en este bloque. El modulo esta cacheado en sys.modules
+                            # despues del primer import (en F-08C o aqui), asi que el segundo
+                            # import es un dict lookup de microsegundos -- sin costo real.
+                            from src.recommenders.improved_fallback_exclude_seen import normalize_recommendation_dict
                             _f08_colbert = _get_colbert_client()
                             _f08_tfidf   = getattr(
                                 main_unified_redis.hybrid_recommender,
@@ -1566,17 +1865,15 @@ async def get_mcp_conversation_recommendations(
                                 for _f08_rank, _f08_vid in enumerate(_f08_ids_to_use[:n_recommendations]):
                                     _f08_vprod = _f08_tfidf.id_index.get(str(_f08_vid))
                                     if _f08_vprod:
-                                        _f08_score = round(1.0 - _f08_rank * 0.03, 4)
-                                        _f08_recs.append({
-                                            "id":               str(_f08_vid),
-                                            "title":            _f08_vprod.get("title", ""),
-                                            "similarity_score": _f08_score,
-                                            "score":            _f08_score,
-                                            "handle":           _f08_vprod.get("handle", ""),
-                                            "image_url":        _f08_vprod.get("image_url"),
-                                            "product_data":     _f08_vprod,
-                                            "source":           "visual_search_f08",
-                                        })
+                                        _f08_recs.append(
+                                            normalize_recommendation_dict(
+                                                raw=_f08_vprod,
+                                                rank=_f08_rank,
+                                                score_start=1.0,
+                                                score_step=0.03,  # F-08A usa paso 0.03
+                                                source="visual_search_f08",
+                                            )
+                                        )
 
                                 if _f08_recs:
                                     logger.info(
@@ -1600,6 +1897,76 @@ async def get_mcp_conversation_recommendations(
                         user_query=conversation_query  # ✨ NUEVO: Permite detección de categoría desde query
                     )
                     logger.info(f"✅ Base recommendations obtained: {len(recommendations)} items")
+
+                    # DECISION DE PRODUCTO (19/06/2026, Caso A): coherencia categorica estricta
+                    # cuando el usuario nombra una categoria explicita ("muestrame calzones") y
+                    # strict_category=True (ya aplicado en enhanced_hybrid_recommender.py /
+                    # hybrid_recommender.py) bloqueo el relleno con otras categorias. Detectamos
+                    # el deficit resultante y senalizamos al LLM, igual que en F-08C y el Caso B.
+                    # Import local con alias: el import agrupado de extract_categories_from_query
+                    # mas arriba esta dentro del bloque F-08C (Turn 2+), que no corre en este
+                    # camino "Standard recommendations" (primera llamada) -- mismo patron de
+                    # BUG-REFACTOR-1 (18/06/2026). El alias evita cualquier interaccion con el
+                    # nombre usado en el bloque F-08C.
+                    try:
+                        from src.recommenders.improved_fallback_exclude_seen import (
+                            extract_categories_from_query as _std_extract_categories,
+                            get_concrete_categories as _std_get_concrete_categories,
+                        )
+                        _std_available_categories = _std_get_concrete_categories()
+                        _std_query_categories = _std_extract_categories(
+                            conversation_query, _std_available_categories
+                        )
+                    except Exception as _std_cat_err:
+                        logger.warning(f"Standard recommendations category detection failed: {_std_cat_err}")
+                        _std_query_categories = []
+
+                    # DECISION DE PRODUCTO (19/06/2026, Opcion 1): la deteccion original
+                    # solo comparaba len(recommendations) < n_recommendations -- pero
+                    # enhanced_hybrid_recommender.py tiene su PROPIO mecanismo de relleno
+                    # ("additional_recs", activado cuando faltan resultados tras filtrar
+                    # interactuados) que completa hasta n llamando a
+                    # get_diverse_category_products(), SIN pasar por strict_category.
+                    # Resultado real observado en produccion: "muestrame pantalones" con
+                    # PANTALONES agotado devolvia 8 productos (6 PANTALONES + 2 de otras
+                    # categorias) sin avisar, porque el conteo final SI llegaba a
+                    # n_recommendations -- la condicion original nunca se activaba.
+                    #
+                    # FIX: en vez de comparar solo el conteo total, comparamos las
+                    # categorias presentes en el resultado final contra la categoria
+                    # pedida. Notificamos si HAY items de otra categoria (sin importar
+                    # si el conteo total alcanzo n) O si los items de la categoria
+                    # pedida por si solos no alcanzan n. Revisamos tanto "category"
+                    # (esquema de get_diverse_category_products / get_popular_products)
+                    # como "product_type" (esquema de smart_sample_across_categories /
+                    # get_personalized_fallback, que preservan el producto completo).
+                    if _std_query_categories:
+                        _std_query_cats_upper = {c.upper() for c in _std_query_categories}
+                        _std_on_category_count = sum(
+                            1 for rec in recommendations
+                            if (rec.get("category") or rec.get("product_type", "")).upper()
+                            in _std_query_cats_upper
+                        )
+                        _std_off_category_count = len(recommendations) - _std_on_category_count
+
+                        if _std_off_category_count > 0 or _std_on_category_count < n_recommendations:
+                            mcp_context.category_exhausted_info = {  # type: ignore[attr-defined]
+                                "category": _std_query_categories[0],
+                                "shown_count": _std_on_category_count,
+                                # Caso A SI puede mezclar categorias (via el relleno de
+                                # enhanced_hybrid_recommender.py) -- total_count puede ser
+                                # mayor a shown_count. El prompt usa la diferencia para
+                                # distinguir agotamiento parcial-sin-mezcla de
+                                # parcial-con-mezcla de total-con-mezcla.
+                                "total_count": len(recommendations),
+                            }
+                            logger.info(
+                                f"Standard recommendations category_exhausted (Caso A): "
+                                f"{_std_on_category_count} de la categoria pedida + "
+                                f"{_std_off_category_count} de otras categorias "
+                                f"(total={len(recommendations)}/{n_recommendations}, "
+                                f"categoria={_std_query_categories[0]!r}). LLM notificacion activada."
+                            )
 
                     # ── F-01 Mejora: Reranking por colección del producto actual ──────────────────
                     # Si el usuario está viendo un producto con colecciones conocidas

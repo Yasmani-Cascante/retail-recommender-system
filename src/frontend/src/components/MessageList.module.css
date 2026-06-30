@@ -334,6 +334,48 @@
   animation-delay: 0.3s;
 }
 
+/* -- OPCION A (29/06/2026): hint inline de "calentando el modelo" --
+ * Aparece debajo de los tres puntos solo cuando isLoading lleva >3s
+ * (timer en ChatWidget.tsx), no en cada respuesta normal. */
+.typingColumn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.warmingHint {
+  font-size: 11px;
+  color: #9ca3af;
+  padding-left: 4px;
+  line-height: 1.4;
+}
+
+/* -- Efecto de aparicion letra por letra ("Claude style") --
+ * Usado por AnimatedReveal. Cada letra es un <span> con animation-delay
+ * escalonado, calculado en JS (no aqui) segun su indice. */
+.revealContainer {
+  display: inline-block;
+}
+
+.revealLetter {
+  display: inline-block;
+  opacity: 0;
+  animation: letterIn 0.35s ease forwards;
+}
+
+@keyframes letterIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* -- Animaciones */
 @keyframes msgFadeIn {
   from {

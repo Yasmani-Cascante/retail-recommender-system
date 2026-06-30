@@ -846,13 +846,39 @@
   line-height: 1.5;
 }
 
+/* OPCION A (29/06/2026): boton de cerrar dentro de showWarmingOverlay.
+ * Antes el overlay no tenia ninguna salida -- si el usuario abria el chat
+ * y caia en un cold-start, no podia minimizar ni cerrar mientras esperaba.
+ * Reutiliza el mismo patron visual que .closeBtn del header, posicionado
+ * en absoluto porque .warmingOverlay ya es position:absolute; inset:0. */
+.warmingOverlayCloseBtn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  border: none;
+  background: rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  color: #1c1c1c;
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.warmingOverlayCloseBtn:hover {
+  background: rgba(0, 0, 0, 0.15);
+}
+
 /* Cold start: inactivity warning */
 .inactivityWarning {
   position: relative;
   background: #fefce8;
   /* border: 1px solid #fde68a; */
-  /* border-radius: 12px; */
-  padding: 22px 28px;
+  border-radius: 8px;
+  /* padding: 22px 28px; */
   font-size: 12px;
   color: #78350f;
   line-height: 1.5;
@@ -862,16 +888,31 @@
   font-size: small;
   max-width: 660px;
   margin: 0 auto;
+  box-shadow: rgba(59, 59, 59, 0.288) 0px 3px 4px -2px;
+  width: 92%;
+  margin-bottom: 4px;
 }
 .inactivityWarningTitle {
   font-size: 16px;
   font-weight: 600;
 }
+.inactivityWarningHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 24px;
+  padding-right: 14px;
+  padding-top: 16px;
+  /* padding-bottom: 12px; */
+  background: #ffffff00;
+}
 .inactivityWarningSub {
   font-size: 13px;
+  padding-inline: 24px;
+  padding-bottom: 22px;
 }
 .inactivityWarningDismiss {
-  position: absolute;
+  /* position: absolute; */
   top: 10px;
   right: 14px;
   background: none;

@@ -4,6 +4,8 @@ Estrategias mejoradas de fallback para el sistema de recomendaciones.
 Este módulo proporciona implementaciones de estrategias de fallback más
 avanzadas para cuando las fuentes primarias de recomendaciones no están
 disponibles o no devuelven resultados.
+
+(Revisar, candidato a archivar en 0_legacy)
 """
 
 import logging

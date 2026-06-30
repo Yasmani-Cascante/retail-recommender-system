@@ -305,7 +305,13 @@ class HybridRecommender:
                 user_id=user_id,
                 products=self.content_recommender.product_data,
                 user_events=user_events,
-                n=n_recommendations
+                n=n_recommendations,
+                # DECISION (19/06/2026, Caso A): coherencia categorica estricta -- si
+                # el usuario nombro una categoria especifica, mezclar con otras no
+                # tiene sentido. Esta clase no recibe user_query, asi que PRIORIDAD 1
+                # nunca se activa aqui hoy -- este flag es preventivo/consistente, no
+                # un cambio de comportamiento real en este call site.
+                strict_category=True,
             )
         except Exception as e:
             logger.error(f"Error usando fallback mejorado: {str(e)}, usando fallback básico")

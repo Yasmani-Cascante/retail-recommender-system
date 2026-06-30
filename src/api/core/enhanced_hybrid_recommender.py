@@ -228,7 +228,14 @@ class EnhancedHybridRecommender:
                 products=self.content_recommender.product_data,
                 user_events=user_events,
                 n=n_recommendations,
-                user_query=user_query  # ✨ AGREGADO
+                user_query=user_query,  # ✨ AGREGADO
+                # DECISION (19/06/2026, Caso A): coherencia categorica estricta. Cuando
+                # user_query nombra una categoria explicita ("muestrame calzones"), no
+                # tiene sentido rellenar con productos de otras categorias si la
+                # categoria pedida se agota -- el usuario tiene un interes especifico.
+                # user_events aqui es [] para usuarios reales (solo sintetico para
+                # test_/synthetic_), asi que esto no afecta a PRIORIDAD 2 en la practica.
+                strict_category=True,
             )
         except Exception as e:
             logger.error(f"Error usando fallback mejorado: {str(e)}, usando fallback básico")

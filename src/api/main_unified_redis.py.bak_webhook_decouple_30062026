@@ -1980,74 +1980,45 @@ async def lifespan(app: FastAPI):
                 #   1. get_webhooks() → lista webhooks existentes
                 #   2. ensure_webhooks_registered() compara topics con REQUIRED_WEBHOOKS
                 #   3. Solo crea los que faltan (no duplica)
-                # DESACOPLAMIENTO (30/06/2026): registro de webhooks de Shopify como
-                # fire-and-forget para no bloquear startup_complete.
-                #
-                # Por que: ensure_webhooks_registered() hace llamadas HTTP a la API de
-                # Shopify (/admin/api/2025-01/webhooks.json) que tardan ~127s en cold-start
-                # -- exactamente igual que el full sync de KB que corre en paralelo en el
-                # background job. Tenerlo como await directo bloqueaba startup_complete
-                # (y por tanto la apertura del puerto) durante esos 127s.
-                #
-                # El registro de webhooks ya estaba marcado como non-critical en los
-                # comentarios del codigo -- si falla, el KB sigue funcionando via full
-                # sync periodico. Convertirlo a fire-and-forget no cambia la semantica
-                # del sistema; solo elimina el bloqueo de lifespan.
-                #
-                # Impacto esperado: cold-start ~225s -> ~95s. El startup probe pasa
-                # mucho antes. El registro de webhooks ocurre de todos modos, solo que
-                # concurrente al arranque en vez de bloquearlo.
-                #
-                # Patron identico al usado en PASO 8.5c/8.5d (warmups LFM + GPT-4o-mini).
-                async def _register_webhooks_background() -> None:
-                    """Registra webhooks de Shopify en background -- non-critical, fire-and-forget."""
-                    if getattr(settings, "KB_WEBHOOKS_ENABLED", False) and getattr(settings, "APP_PUBLIC_URL", None):
-                        logger.info(
-                            "shopify_webhook_registration_started",
-                            note="running in background -- non-blocking"
+                if getattr(settings, "KB_WEBHOOKS_ENABLED", False) and getattr(settings, "APP_PUBLIC_URL", None):
+                    logger.info(
+                        "🔄 Registering Shopify webhooks for incremental sync (M4)..."
+                    )
+                    try:
+                        from src.api.core.shopify_webhook_registry import ensure_webhooks_registered
+                        
+                        await ensure_webhooks_registered(
+                            shopify_client=shopify_kb_client,
+                            app_url=settings.APP_PUBLIC_URL,
                         )
-                        try:
-                            from src.api.core.shopify_webhook_registry import ensure_webhooks_registered
-
-                            await ensure_webhooks_registered(
-                                shopify_client=shopify_kb_client,
-                                app_url=settings.APP_PUBLIC_URL,
-                            )
-
-                            logger.info(
-                                "shopify_webhooks_registered",
-                                status="ok",
-                                note="M4 Incremental Sync active"
-                            )
-                        except ImportError as imp_err:
-                            logger.warning(
-                                "shopify_webhook_registry_not_importable",
-                                error=str(imp_err)
-                            )
-                        except Exception as webhook_err:
-                            # Fallo no critico: el KB sigue con full sync periodico.
-                            logger.warning(
-                                "shopify_webhook_registration_failed",
-                                error=str(webhook_err),
-                                note="non-critical -- system continues with periodic full sync"
-                            )
+                        
+                        logger.info(
+                            "✅ Shopify webhooks registered successfully (M4 Incremental Sync active)"
+                        )
+                    except ImportError as imp_err:
+                        # El módulo registry no está disponible (posible entorno legacy)
+                        logger.warning(
+                            f"⚠️ shopify_webhook_registry not importable — webhooks skipped: {imp_err}"
+                        )
+                    except Exception as webhook_err:
+                        # Fallo no crítico: el sistema arranca de todas formas.
+                        # El KB seguirá funcionando vía full sync periódico (background job).
+                        logger.warning(
+                            f"⚠️ Webhook registration failed (non-critical, system continues): {webhook_err}"
+                        )
+                else:
+                    # Feature flag desactivado o URL pública no configurada
+                    if not getattr(settings, "KB_WEBHOOKS_ENABLED", False):
+                        logger.info(
+                            "ℹ️ Shopify webhook registration skipped "
+                            "(KB_WEBHOOKS_ENABLED=false — usando full sync periódico)"
+                        )
                     else:
-                        if not getattr(settings, "KB_WEBHOOKS_ENABLED", False):
-                            logger.info(
-                                "shopify_webhook_registration_skipped",
-                                reason="KB_WEBHOOKS_ENABLED=false"
-                            )
-                        else:
-                            logger.warning(
-                                "shopify_webhook_registration_skipped",
-                                reason="APP_PUBLIC_URL not configured"
-                            )
-
-                asyncio.create_task(_register_webhooks_background())
-                logger.info(
-                    "shopify_webhooks_registration_background_launched",
-                    note="fire-and-forget -- does not block startup_complete"
-                )
+                        logger.warning(
+                            "⚠️ Shopify webhook registration skipped "
+                            "— APP_PUBLIC_URL not configured. "
+                            "Set APP_PUBLIC_URL to your Cloud Run URL to enable incremental sync."
+                        )
 
                 logger.info("🎉 Shopify KB integration complete!")
                 

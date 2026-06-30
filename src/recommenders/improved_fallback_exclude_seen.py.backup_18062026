@@ -927,8 +927,7 @@ def smart_sample_across_categories(
     products: List[Dict],
     categories: List[str],
     n: int = 5,
-    exclude_products: Optional[Set[str]] = None,
-    strict_category: bool = False,  # DECISION (19/06/2026): coherencia categorica estricta, Caso A
+    exclude_products: Optional[Set[str]] = None
 ) -> List[Dict]:
     """
     Distribuye n productos entre múltiples categorías de forma inteligente.
@@ -944,13 +943,6 @@ def smart_sample_across_categories(
         categories: Lista de categorías concretas a incluir (ordenadas por prioridad)
         n: Número total de productos a devolver
         exclude_products: Set de IDs de productos a excluir
-        strict_category: si True, el paso 6 (relleno con CUALQUIER categoria del
-            catalogo cuando las categorias pedidas no alcanzan n) se omite --
-            devuelve menos de n en vez de mezclar categorias no solicitadas.
-            Usado para queries de categoria explicita ("muestrame calzones") donde
-            el usuario tiene un interes especifico y mezclar no tiene sentido
-            (DECISION 19/06/2026, Caso A). Default False preserva el comportamiento
-            existente para callers que no lo especifiquen.
         
     Returns:
         List[Dict]: Lista de n productos distribuidos entre categorías
@@ -962,12 +954,9 @@ def smart_sample_across_categories(
         exclude_products = set()
     
     # 1. Filtrar productos disponibles (excluir vistos)
-    # FIX (20/06/2026): tambien excluir gift cards y similares (ver
-    # is_recommendable_product) -- no son articulos de moda recomendables.
     available_products = [
         p for p in products 
         if str(p.get("id", "")) not in exclude_products
-        and is_recommendable_product(p)
     ]
     
     if not available_products:
@@ -1021,15 +1010,8 @@ def smart_sample_across_categories(
         selected_products.extend(sampled)
         logger.debug(f"  ✅ {category}: {len(sampled)} products selected")
     
-    # 6. Si no alcanzamos n productos, rellenar con productos de cualquier categoria.
-    # FIX (19/06/2026 -- strict_category, Caso A): este relleno tomaba productos
-    # de CUALQUIER categoria del catalogo (available_products no esta filtrado por
-    # las categorias pedidas) cuando las categorias detectadas en la query no
-    # alcanzaban n. Resultado real observado: "muestrame calzones" con pocos
-    # calzones disponibles devolvia calzones + productos random sin relacion,
-    # sin avisar al usuario. DECISION (19/06/2026): si el usuario nombro una
-    # categoria especifica, mezclar no tiene sentido -- mejor devolver menos de n.
-    if len(selected_products) < n and not strict_category:
+    # 6. Si no alcanzamos n productos, rellenar con productos de cualquier categoría
+    if len(selected_products) < n:
         remaining_needed = n - len(selected_products)
         selected_ids = set(str(p.get("id", "")) for p in selected_products)
         
@@ -1046,11 +1028,6 @@ def smart_sample_across_categories(
             )
             selected_products.extend(additional)
             logger.info(f"🔄 Added {len(additional)} additional products to reach n={n}")
-    elif len(selected_products) < n and strict_category:
-        logger.info(
-            f"🔄 strict_category=True: NO se rellena con otras categorias. "
-            f"Devolviendo {len(selected_products)}/{n} sin completar."
-        )
     
     # 7. Limitar a exactamente n productos (por si acaso)
     final_products = selected_products[:n]
@@ -1110,203 +1087,6 @@ def safe_extract_price(product: Dict) -> float:
         return 0.0
 
 
-def normalize_recommendation_dict(
-    raw: Dict,
-    rank: int = 0,
-    score_start: float = 1.0,
-    score_step: float = 0.02,
-    source: str = "unknown",
-) -> Dict:
-    """
-    Normaliza cualquier dict de producto al esquema visual canonico.
-
-    Los cuatro bloques de recomendacion visual (F-08 Fase A, F-08C camino
-    feliz, F-08C candidatos parciales, F-08C relleno categorizado) construian
-    cada uno su propio dict con los mismos 8 campos pero copiando el codigo
-    de forma manual. Esta funcion unifica esa logica en un unico lugar.
-
-    El score sigue una progresion descendente:
-        score = round(score_start - rank * score_step, 4)
-    Cada bloque caller pasa el rank (posicion dentro de su propia lista) y
-    el score_start apropiado para que la progresion nunca se solape entre
-    fuentes distintas en una misma respuesta hibrida.
-
-    Args:
-        raw:         Dict crudo del catalogo (de id_index) o dict plano de
-                     smart_fallback -- ambos tienen al menos id/title/handle.
-        rank:        Posicion 0-indexed dentro de la lista de resultados.
-        score_start: Score del primer elemento de esta fuente (default 1.0).
-        score_step:  Decremento por posicion (default 0.02).
-        source:      Etiqueta de trazabilidad (ej. 'visual_search_f08',
-                     'visual_diversification_f08c', 'categorized_fill_f08c').
-
-    Returns:
-        Dict con los campos: id, title, similarity_score, score, handle,
-        image_url, product_data, source.
-    """
-    score = round(score_start - rank * score_step, 4)
-    return {
-        "id":               str(raw.get("id", "")),
-        "title":            raw.get("title", "") or "Producto",
-        "similarity_score": score,
-        "score":            score,
-        "handle":           raw.get("handle", ""),
-        "image_url":        raw.get("image_url"),
-        # Anidar el dict crudo para que los consumidores downstream
-        # (mcp_personalization_engine, sanitize_rec_for_frontend) puedan
-        # acceder a todos los campos del catalogo sin doble lookup.
-        "product_data":     raw,
-        "source":           source,
-    }
-
-
-def is_recommendable_product(product: Dict) -> bool:
-    """
-    Determina si un producto es apto para aparecer en recomendaciones de
-    fallback (popular, diverso, por categoria). Excluye gift cards y otros
-    items no-fisicos que no deberian recomendarse como articulos de moda.
-
-    FIX (20/06/2026): Gift Card (ID 9977923600693) aparecio en
-    recomendaciones de relleno via "Standard diversification" -- sin
-    imagen, CHF 0.01 (conversion desde 10 CLP, precio nominal tipico de
-    gift card). Las 4 estrategias de fallback samplean sobre el catalogo
-    completo sin distinguir tipo de producto; este filtro centraliza la
-    exclusion para las 4 a la vez, en el mismo punto donde ya se filtra
-    por exclude_products.
-
-    Senales usadas (en orden de prioridad):
-      1. product.get("gift_card") is True -- campo booleano nativo de
-         Shopify, presente si el catalogo lo preservo al sincronizar.
-      2. "gift card" / "tarjeta de regalo" en el titulo (case-insensitive)
-         -- senal robusta y especifica para este catalogo de moda; ningun
-         producto de ropa legitimo tendria esas palabras en el titulo.
-      3. "snowboard" en el titulo (case-insensitive) -- FIX (26/06/2026):
-         "The Inventory Not Tracked Snowboard" (ID 9977923633461) y "The
-         Multi-managed Snowboard" (ID 9977924124981) se mostraron a clientes
-         reales como recomendaciones de moda, via la rama de relleno aleatorio
-         "Standard diversification". Son productos de demostracion que Shopify
-         precarga en toda tienda nueva (nomenclatura fija "The [X] Snowboard").
-         Se evaluo excluir por ausencia de market_prices (senal mas robusta,
-         confirmada via el warning [OpcionA-fallback] en produccion), pero se
-         descarto: ese campo no se popula de forma persistente en el catalogo
-         maestro (el batch de enriquecimiento de PASO 4.5 esta desactivado
-         desde 21/04/2026, y el enriquecimiento lazy por turno opera sobre
-         copias que no se propagan de vuelta) -- excluir por su ausencia
-         hubiera afectado a la mayoria del catalogo, no solo a los snowboards.
-
-    Args:
-        product: dict crudo del catalogo (de products / product_data).
-
-    Returns:
-        bool: True si el producto es apto para recomendar, False si debe
-        excluirse de cualquier lista de recomendaciones de fallback.
-    """
-    if product.get("gift_card") is True:
-        return False
-    title = (product.get("title") or "").lower()
-    if "gift card" in title or "tarjeta de regalo" in title:
-        return False
-    if "snowboard" in title:
-        return False
-    return True
-
-
-# FIX (28/06/2026): categorias que son productos legitimos y vendibles, pero
-# NO son prendas/accesorios de moda vestibles -- recomendarlas como "similar"
-# a ropa confunde al usuario (ej. un perfume sugerido como similar a un
-# pantalon). Confirmado contra el catalogo real de Shopify: dentro de la
-# coleccion "Complementos" (9 product_type: BRAZALETE, ALAS DE NOVIA, AROMAS,
-# AROS, CARTERAS, CINTURONES, CLUTCH, COLLARES, TOCADOS), AROMAS es el UNICO
-# no vestible -- los otros 8 son accesorios de moda legitimos (pulseras, aros,
-# carteras, cinturones, collares, tocados, velos). Evidencia real (sesion
-# 28/06/2026): "Aroma Frutos Rojos 100 ml" recomendado como "producto similar"
-# a un Palazzo (pantalon), via la rama de relleno aleatorio "Standard
-# diversification" en get_diverse_category_products().
-#
-# Nota: reorganizar estas categorias en Shopify (ej. crear una coleccion
-# "Perfumeria" separada) es una decision de merchandising independiente de
-# este fix -- las colecciones de Shopify no cambian el campo product_type de
-# cada producto, que es lo que este sistema usa para agrupar por categoria.
-# Este set debe actualizarse si en el futuro aparecen mas product_type no
-# vestibles (ej. velas, joyeria de regalo no vestible, etc.).
-NON_FASHION_CATEGORIES_UPPER = {"AROMAS"}
-
-
-def _score_product_quality(product: Dict) -> float:
-    """
-    Score heuristico de calidad de un producto -- usado para PRIORIZAR
-    seleccion (en vez de azar puro) cuando se rellena con productos de
-    diversificacion/relleno.
-
-    FIX (27/06/2026): extraido como helper compartido a partir del scoring
-    que ya existia, en linea, dentro de get_popular_products(). Se reusa
-    ahora tambien en get_diverse_category_products() para dar peso de
-    calidad a la seleccion de PRODUCTOS dentro de cada categoria (no a la
-    seleccion de QUE categorias incluir, que sigue siendo aleatoria por
-    diseno -- esa aleatoriedad es la diversificacion en si).
-
-    DECISION (27/06/2026): se elimino la senal de banda de precio que existia
-    en la version original (+1 si 10<=precio<=100, -1 si precio<=0). Esa banda
-    compara contra el precio CRUDO en CLP -- los productos reales de este
-    catalogo convierten a CHF 4-223 (~4.500-250.000 CLP), muy por encima de
-    ese rango. La senal no discriminaba nada en la escala actual (ni
-    productos reales ni los productos de demostracion de Shopify la
-    activaban), asi que se descarto en vez de recalibrar un numero magico
-    nuevo que podria volver a desincronizarse con la escala real del catalogo.
-
-    Señales usadas: imagenes (+2), descripcion >100 caracteres (+1),
-    mas de 1 variante (+1), tiene tags (+1), mas jitter aleatorio (+/-0.5)
-    para mantener variedad entre llamadas (sin esto, el resultado seria
-    100% deterministico turno a turno).
-
-    Returns:
-        float: score heuristico, mayor = mejor candidato.
-    """
-    score = 0.0
-
-    if product.get("images") and len(product.get("images", [])) > 0:
-        score += 2
-
-    description = product.get("body_html", "") or product.get("description", "")
-    if description and len(description) > 100:
-        score += 1
-
-    if product.get("variants") and len(product.get("variants", [])) > 1:
-        score += 1
-
-    if product.get("tags") and len(product.get("tags", [])) > 0:
-        score += 1
-
-    score += random.uniform(-0.5, 0.5)
-
-    return score
-
-
-def _pick_top_by_quality(products: List[Dict], n: int) -> List[Dict]:
-    """
-    Selecciona los n productos de mayor score de calidad (ver
-    _score_product_quality), en vez de random.sample() puro.
-
-    FIX (27/06/2026): usado en get_diverse_category_products() para las 4
-    llamadas que seleccionan PRODUCTOS (no categorias) -- ver docstring de
-    _score_product_quality para el razonamiento completo. Si n >= len(products)
-    no hay nada que priorizar, se devuelven todos sin reordenar (evita gastar
-    ciclos de sort innecesarios cuando no hay exceso de candidatos).
-
-    Args:
-        products: lista de productos candidatos.
-        n: cuantos devolver (los de mayor score).
-
-    Returns:
-        List[Dict]: los n productos de mayor score, mismo esquema de entrada.
-    """
-    if n >= len(products):
-        return list(products)
-    scored = [(p, _score_product_quality(p)) for p in products]
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return [p for p, _ in scored[:n]]
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Clase principal con estrategias de fallback
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1356,46 +1136,53 @@ class ImprovedFallbackStrategies:
         if exclude_products is None:
             exclude_products = set()
             
-        # FIX (20/06/2026): tambien excluir gift cards y similares (ver
-        # is_recommendable_product) -- no son articulos de moda recomendables.
         available_products = [
             p for p in products 
             if str(p.get("id", "")) not in exclude_products
-            and is_recommendable_product(p)
         ]
         
         if not available_products:
-            # FIX (18/06/2026 - BUG-NREC-3 / Bug 6, hallado durante la validacion de
-            # BUG-NREC-2): el bloque anterior tenia un "ultimo recurso" que, cuando
-            # el catalogo quedaba completamente agotado por las exclusiones
-            # (len(products) <= len(exclude_products)), ignoraba exclude_products
-            # por completo y tomaba products[:n] del catalogo SIN FILTRAR. Esto
-            # podia reintroducir productos que el caller (ej. get_diverse_category_products,
-            # via su propio "ultimo recurso") acababa de seleccionar segundos antes
-            # en la misma llamada, generando duplicados en el resultado final.
-            # Reproducido deterministicamente: products=4, exclude=4 -> resultado
-            # con un ID repetido (['P1','P3','P4','P1']).
-            #
-            # FIX: preferimos devolver menos de n productos (visible en logs) a
-            # violar silenciosamente la exclusion. available_products se queda
-            # vacio; el flujo normal de abajo (scored_products=[], sorted=[],
-            # popular_products=[]) ya devuelve [] de forma honesta sin necesidad
-            # de un return temprano.
-            logger.warning(
-                "No hay productos disponibles despues de excluir las interacciones del usuario "
-                "(catalogo agotado por exclusiones) - devolviendo lista vacia en vez de ignorar exclusiones"
-            )
+            logger.warning("No hay productos disponibles después de excluir las interacciones del usuario")
+            if len(products) > len(exclude_products):
+                available_products = [p for p in products if str(p.get("id", "")) not in exclude_products]
+            else:
+                available_products = products[:min(n, len(products))]
+            logger.info(f"Utilizando {len(available_products)} productos como fallback")
         
-        # FIX (27/06/2026): scoring extraido a _score_product_quality() (helper
-        # compartido, reusado tambien en get_diverse_category_products()). Se
-        # elimino la senal de banda de precio (+1 si 10<=precio<=100, -1 si
-        # precio<=0) -- comparaba contra el precio CRUDO en CLP, fuera de
-        # escala para el catalogo real actual (CHF 4-223 ~= 4.500-250.000 CLP).
-        # Ver docstring de _score_product_quality para el detalle completo.
-        scored_products = [
-            (product, _score_product_quality(product))
-            for product in available_products
-        ]
+        scored_products = []
+        
+        for product in available_products:
+            score = 0
+            
+            if product.get("images") and len(product.get("images", [])) > 0:
+                score += 2
+            
+            description = product.get("body_html", "") or product.get("description", "")
+            if description and len(description) > 100:
+                score += 1
+            
+            if product.get("variants") and len(product.get("variants", [])) > 1:
+                score += 1
+            
+            price = 0
+            if product.get("variants") and len(product.get("variants")) > 0:
+                price_str = product["variants"][0].get("price", "0")
+                try:
+                    price = float(price_str)
+                except (ValueError, TypeError):
+                    price = 0
+            
+            if price <= 0:
+                score -= 1
+            elif 10 <= price <= 100:
+                score += 1
+            
+            if product.get("tags") and len(product.get("tags", [])) > 0:
+                score += 1
+            
+            score += random.uniform(-0.5, 0.5)
+            
+            scored_products.append((product, score))
         
         sorted_products = sorted(scored_products, key=lambda x: x[1], reverse=True)
         popular_products = sorted_products[:min(n, len(sorted_products))]
@@ -1448,39 +1235,28 @@ class ImprovedFallbackStrategies:
         if exclude_products is None:
             exclude_products = set()
             
-        # FIX (20/06/2026): tambien excluir gift cards y similares (ver
-        # is_recommendable_product) -- no son articulos de moda recomendables.
         available_products = [
             p for p in products 
             if str(p.get("id", "")) not in exclude_products
-            and is_recommendable_product(p)
         ]
         
         if not available_products:
-            # FIX (18/06/2026 - BUG-NREC-3 / Bug 6): mismo patron que en
-            # get_popular_products. El bloque anterior recalculaba el mismo filtro
-            # que ya habia dado vacio (non_excluded era, por construccion, identico
-            # a available_products) y, al ser siempre vacio, caia al
-            # "else: random.sample(products, ...)" que ignoraba exclude_products
-            # por completo. Devolver [] aqui es honesto y consistente con el otro
-            # guard de esta misma funcion (catalogo vacio -> return []).
-            logger.warning(
-                "No hay productos disponibles despues de excluir las interacciones del usuario "
-                "(catalogo agotado por exclusiones) - devolviendo lista vacia en vez de ignorar exclusiones"
-            )
-            return []
+            logger.warning("No hay productos disponibles después de excluir las interacciones del usuario")
+            if len(products) > 0:
+                non_excluded = [p for p in products if str(p.get("id", "")) not in exclude_products]
+                if non_excluded:
+                    available_products = non_excluded
+                else:
+                    available_products = random.sample(products, min(n, len(products)))
+                logger.info(f"Utilizando {len(available_products)} productos como fallback")
+            else:
+                logger.error("No hay productos disponibles en absoluto")
+                return []
         
         # Agrupar productos por categoría
-        # FIX (28/06/2026): excluir categorias no vestibles (ver
-        # NON_FASHION_CATEGORIES_UPPER) ANTES de construir el pool de
-        # diversificacion -- asi nunca pueden ser elegidas ni por "smart
-        # diversification" ni por "standard diversification", sin importar
-        # cual de las dos ramas termine usandose.
         products_by_category = {}
         for product in available_products:
             category = product.get("product_type", "General")
-            if category.upper() in NON_FASHION_CATEGORIES_UPPER:
-                continue
             if category not in products_by_category:
                 products_by_category[category] = []
             products_by_category[category].append(product)
@@ -1524,10 +1300,7 @@ class ImprovedFallbackStrategies:
                         category_products = products_by_category[category]
                         num_to_take = min(products_per_priority, len(category_products))
                         if num_to_take > 0:
-                            # FIX (27/06/2026): peso de calidad en vez de azar puro --
-                            # ver _pick_top_by_quality. Solo cambia QUE PRODUCTO
-                            # representa la categoria, no QUE categorias se incluyen.
-                            selected = _pick_top_by_quality(category_products, num_to_take)
+                            selected = random.sample(category_products, num_to_take)
                             diverse_products.extend(selected)
                     
                     # Si no alcanzamos n, complementar con otras categorías
@@ -1551,8 +1324,7 @@ class ImprovedFallbackStrategies:
                                     len(category_products)
                                 )
                                 if num_to_take > 0:
-                                    # FIX (27/06/2026): peso de calidad, ver arriba.
-                                    selected = _pick_top_by_quality(category_products, num_to_take)
+                                    selected = random.sample(category_products, num_to_take)
                                     diverse_products.extend(selected)
                     
                     # Limitar a n
@@ -1573,14 +1345,6 @@ class ImprovedFallbackStrategies:
                             "category": product.get("product_type", ""),
                             "score": 0.5,
                             "handle": product.get("handle", ""),
-                            # FIX (19/06/2026 -- bug de imagen faltante en relleno):
-                            # esta rama construia el dict campo por campo y se
-                            # olvidaba de copiar image_url, a diferencia de las
-                            # otras 3 estrategias de fallback que preservan el
-                            # producto completo via **product. Resultado real
-                            # observado: productos de relleno (otras categorias)
-                            # se mostraban sin imagen en el widget.
-                            "image_url": product.get("image_url"),
                             "recommendation_type": "smart_diverse_fallback"
                         })
                     
@@ -1601,10 +1365,7 @@ class ImprovedFallbackStrategies:
             category_products = products_by_category[category]
             num_to_take = min(products_per_category, len(category_products))
             if num_to_take > 0:
-                # FIX (27/06/2026): peso de calidad en vez de azar puro -- ver
-                # _pick_top_by_quality. selected_categories sigue siendo aleatoria
-                # (diversificacion real); solo cambia el producto dentro de cada una.
-                selected_products = _pick_top_by_quality(category_products, num_to_take)
+                selected_products = random.sample(category_products, num_to_take)
                 diverse_products.extend(selected_products)
         
         # Complementar si falta
@@ -1616,10 +1377,7 @@ class ImprovedFallbackStrategies:
             
             num_additional = min(n - len(diverse_products), len(remaining_products))
             if num_additional > 0:
-                # FIX (27/06/2026): peso de calidad en vez de azar puro -- este
-                # pool junta productos de varias categorias NO seleccionadas, pero
-                # sigue siendo seleccion de PRODUCTOS individuales, no de categorias.
-                additional_products = _pick_top_by_quality(remaining_products, num_additional)
+                additional_products = random.sample(remaining_products, num_additional)
                 diverse_products.extend(additional_products)
         
         # Último recurso: productos populares
@@ -1654,10 +1412,6 @@ class ImprovedFallbackStrategies:
                 "category": product.get("product_type", ""),
                 "score": 0.5,
                 "handle": product.get("handle", ""),
-                # FIX (19/06/2026 -- bug de imagen faltante en relleno): mismo
-                # patron que la rama "smart diversification" de arriba -- esta
-                # rama tampoco copiaba image_url al construir el dict a mano.
-                "image_url": product.get("image_url"),
                 "recommendation_type": "diverse_fallback"
             })
         
@@ -1671,8 +1425,7 @@ class ImprovedFallbackStrategies:
         user_events: Optional[List[Dict]] = None,
         n: int = 5,
         exclude_products: Optional[Set[str]] = None,
-        user_query: Optional[str] = None,  # ✨ NUEVO PARÁMETRO
-        strict_category: bool = False,  # DECISION (18/06/2026): coherencia categorica estricta
+        user_query: Optional[str] = None  # ✨ NUEVO PARÁMETRO
     ) -> List[Dict]:
         """
         Genera recomendaciones personalizadas de fallback con soporte para múltiples categorías.
@@ -1692,13 +1445,6 @@ class ImprovedFallbackStrategies:
             n: Número de recomendaciones a generar
             exclude_products: Set de IDs de productos a excluir
             user_query: Query del usuario en lenguaje natural (NUEVO)
-            strict_category: si True, el top-up de PRIORIDAD 2 (cuando las
-                categorias preferidas se agotan) NO amplia la busqueda al
-                catalogo completo -- devuelve menos de n en vez de mezclar
-                categorias. Usado por F-08C fill (18/06/2026) para garantizar
-                coherencia categorica estricta. Default False preserva el
-                comportamiento existente para todos los demas callers
-                (flujo principal, F-08B.2 outfit completion).
             
         Returns:
             List[Dict]: Lista de productos recomendados con scores
@@ -1707,12 +1453,9 @@ class ImprovedFallbackStrategies:
             exclude_products = set()
         
         # Filtrar productos disponibles
-        # FIX (20/06/2026): tambien excluir gift cards y similares (ver
-        # is_recommendable_product) -- no son articulos de moda recomendables.
         available_products = [
             p for p in products 
             if str(p.get("id", "")) not in exclude_products
-            and is_recommendable_product(p)
         ]
         
         if not available_products:
@@ -1771,8 +1514,7 @@ class ImprovedFallbackStrategies:
                     products=available_products,
                     categories=query_categories,
                     n=n,
-                    exclude_products=exclude_products,
-                    strict_category=strict_category,  # DECISION (19/06/2026): Caso A
+                    exclude_products=exclude_products
                 )
                 
                 if query_driven_products:
@@ -1904,8 +1646,7 @@ class ImprovedFallbackStrategies:
                                     f"   Top-up P2 (preferred): {len(extra)} products "
                                     f"from preferred categories (pool={len(preferred_remaining)})"
                                 )
-                                personalized_products.extend(extra)
-                            elif not strict_category:
+                            else:
                                 # Prioridad 2 del top-up: categorias preferidas agotadas,
                                 # diversificar al catalogo completo
                                 extra = random.sample(remaining, min(needed, len(remaining)))
@@ -1913,20 +1654,7 @@ class ImprovedFallbackStrategies:
                                     f"   Top-up P2 (broad): {len(extra)} products "
                                     f"(preferred exhausted, pool={len(remaining)})"
                                 )
-                                personalized_products.extend(extra)
-                            else:
-                                # FIX (18/06/2026 - strict_category): decision de producto.
-                                # Coherencia categorica estricta tiene prioridad sobre
-                                # completar n. NO hacer broadening -- devolver menos de n.
-                                # El caller (F-08C) detecta el deficit comparando contra
-                                # lo pedido y notifica al usuario via
-                                # mcp_context.category_exhausted_info, en vez de mostrar
-                                # otras categorias sin avisar.
-                                logger.info(
-                                    f"   Top-up P2 (strict_category=True): preferred "
-                                    f"exhausted, NO broadening. Devolviendo "
-                                    f"{len(personalized_products)}/{n} sin completar."
-                                )
+                            personalized_products.extend(extra)
 
                     # Agregar scores
                     recommendations = []
@@ -2001,8 +1729,7 @@ class ImprovedFallbackStrategies:
         user_events: Optional[List[Dict]] = None,
         n: int = 5,
         exclude_products: Optional[Set[str]] = None,
-        user_query: Optional[str] = None,  # ✨ NUEVO PARÁMETRO
-        strict_category: bool = False,  # DECISION (18/06/2026): propagar a get_personalized_fallback
+        user_query: Optional[str] = None  # ✨ NUEVO PARÁMETRO
     ) -> List[Dict]:
         """
         Estrategia de fallback inteligente que selecciona la mejor
@@ -2017,9 +1744,6 @@ class ImprovedFallbackStrategies:
             n: Número de recomendaciones a devolver
             exclude_products: Set de IDs de productos a excluir (opcional)
             user_query: Query del usuario en lenguaje natural (opcional) ✨ NUEVO
-            strict_category: si True, propaga a get_personalized_fallback para
-                que su top-up de PRIORIDAD 2 no amplie a otras categorias cuando
-                las preferidas se agoten. Ver docstring de get_personalized_fallback.
             
         Returns:
             List[Dict]: Lista de productos recomendados
@@ -2034,48 +1758,27 @@ class ImprovedFallbackStrategies:
             
         logger.info(f"Smart fallback exclusions: {len(interacted_products)} from interactions + {len(exclude_products or set())} from context = {len(combined_exclude)} total")
         
-        # ✨ PRIORIZAR: Si hay query con categoría o hay eventos del usuario, usar
-        # personalized_fallback (que detecta categoría desde la query y/o desde los
-        # eventos). Antes había DOS llamadas casi idénticas a get_personalized_fallback
-        # -- una para "hay query" y otra para "hay eventos sin query" -- y solo la
-        # primera pasaba exclude_products=combined_exclude (FIX BUG-NREC-1, 21/04/2026).
-        #
-        # FIX (17/06/2026 — BUG-NREC-2 / "Bug 5" del sprint F-08C Candidatos Parciales):
-        # La segunda rama (user_events sin user_query) llamaba a get_personalized_fallback
-        # SOLO con (user_id, products, user_events, n) -- sin exclude_products. Como
-        # exclude_products tiene default None en get_personalized_fallback, esa rama
-        # IGNORABA POR COMPLETO combined_exclude (vistos en turnos previos + cualquier
-        # exclusion explicita del caller), pese a que combined_exclude ya se habia
-        # calculado correctamente unas lineas arriba.
-        #
-        # IMPACTO REAL CONFIRMADO (reproducido y validado con caso de prueba ejecutable
-        # antes de aplicar este fix): cualquier caller que use user_query=None +
-        # user_events (patron usado por F-08B.2 outfit_completion, ya en produccion,
-        # y por F-08C candidatos-parciales-mas-relleno) podia recibir productos
-        # duplicados o ya mostrados en el "relleno", porque las exclusiones nunca
-        # llegaban a get_personalized_fallback.
-        #
-        # FIX: unificar ambas ramas en una sola llamada. user_query=None es un valor
-        # perfectamente valido para get_personalized_fallback (su PRIORIDAD 1 simplemente
-        # no se activa si la query es None/vacia), asi que no hace falta mantener dos
-        # llamadas casi-idénticas -- la duplicacion de código era la causa estructural
-        # de que esta rama quedara desactualizada respecto al fix de BUG-NREC-1.
-        # Con la unificacion, cualquier caller futuro que use este mismo patron queda
-        # protegido automaticamente, sin depender de que alguien recuerde replicar
-        # el fix en cada rama nueva.
-        if user_query or (user_events and len(user_events) > 0):
-            if user_query:
-                logger.info(f"🎯 Using query-aware personalized fallback with query: '{user_query[:50]}...'")
-            else:
-                logger.info(f"Usando fallback personalizado para usuario {user_id} con {len(user_events)} eventos")
+        # ✨ PRIORIZAR: Si hay query con categoría, usar personalized_fallback que ahora la detecta
+        # FIX (21/04/2026 — BUG-NREC-1): combined_exclude NO se pasaba a get_personalized_fallback
+        # cuando había user_query. Resultado: los 16 productos ya mostrados en turnos anteriores
+        # no se excluían, y el sistema podía devolver duplicados O, al filtrar internamente
+        # con un pool reducido por el bug #3, devolver menos de n.
+        if user_query:
+            logger.info(f"🎯 Using query-aware personalized fallback with query: '{user_query[:50]}...'")
             return await ImprovedFallbackStrategies.get_personalized_fallback(
                 user_id,
                 products,
                 user_events,
                 n,
-                exclude_products=combined_exclude,  # FIX (17/06/2026): pasar exclusiones reales SIEMPRE
+                exclude_products=combined_exclude,  # FIX: pasar exclusiones reales
                 user_query=user_query,
-                strict_category=strict_category,
+            )
+        
+        # Si tenemos eventos del usuario pero no query, usar recomendaciones personalizadas
+        if user_events and len(user_events) > 0:
+            logger.info(f"Usando fallback personalizado para usuario {user_id} con {len(user_events)} eventos")
+            return await ImprovedFallbackStrategies.get_personalized_fallback(
+                user_id, products, user_events, n
             )
         
         # Si es un usuario nuevo, alternar entre productos populares y diversos

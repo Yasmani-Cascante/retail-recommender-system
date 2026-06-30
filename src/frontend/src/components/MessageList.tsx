@@ -231,14 +231,53 @@ function generateContextualSuggestions(recommendations: import('../types/widget'
 
 // ── i18n helpers for MessageList UI chrome ─────────────────────────────────
 const ML_UI_TEXT: Record<string, Record<string, string>> = {
-  es: { suggestions: 'Sugerencias', wasHelpful: '¿Te fue útil?' },
-  en: { suggestions: 'Suggestions', wasHelpful: 'Was this helpful?' },
-  de: { suggestions: 'Vorschläge', wasHelpful: 'War das hilfreich?' },
-  fr: { suggestions: 'Suggestions', wasHelpful: 'Cela vous a-t-il aidé ?' },
+  es: { suggestions: 'Sugerencias', wasHelpful: '¿Te fue útil?', warmingModel: 'Calentando el modelo…' },
+  en: { suggestions: 'Suggestions', wasHelpful: 'Was this helpful?', warmingModel: 'Warming up the model…' },
+  de: { suggestions: 'Vorschläge', wasHelpful: 'War das hilfreich?', warmingModel: 'Modell wird aufgewärmt…' },
+  fr: { suggestions: 'Suggestions', wasHelpful: 'Cela vous a-t-il aidé ?', warmingModel: 'Réchauffement du modèle…' },
 };
 function mlT(key: string): string {
   const code = (navigator.language || 'es').split('-')[0].toLowerCase();
   return ML_UI_TEXT[code]?.[key] ?? ML_UI_TEXT['es'][key] ?? '';
+}
+
+/**
+ * AnimatedReveal -- OPCION A (29/06/2026): efecto de aparicion letra por
+ * letra ("Claude style") para el hint "calentando el modelo".
+ *
+ * Por que: el hint solo aparece tras 3s reales de espera (ver el timer en
+ * ChatWidget.tsx) -- en ese punto el usuario ya lleva un rato mirando los
+ * tres puntos. Un fade-in instantaneo de todo el texto se siente como un
+ * salto brusco; revelar letra por letra comunica visualmente que "algo se
+ * esta generando ahora mismo", coherente con la espera real que esta
+ * ocurriendo (el warmup del LLM terminando en el backend).
+ *
+ * Sin librerias externas -- mismo criterio que renderMarkdown() arriba en
+ * este archivo: cada caracter es un <span> con animation-delay escalonado
+ * (calculado aqui en JS, la animacion CSS vive en .revealLetter). Los
+ * espacios se reemplazan por \u00A0 (non-breaking space) para que un span
+ * con display:inline-block no los colapse visualmente.
+ *
+ * Accesibilidad: el texto completo vive en aria-label del span contenedor
+ * (rol "status" para que un lector de pantalla lo anuncie una sola vez);
+ * los spans de cada letra son aria-hidden para que no se anuncien letra
+ * por letra.
+ */
+function AnimatedReveal({ text, delayStepMs = 22 }: { text: string; delayStepMs?: number }) {
+  return (
+    <span className={styles.revealContainer} role="status" aria-label={text}>
+      {text.split('').map((char, i) => (
+        <span
+          key={i}
+          aria-hidden="true"
+          className={styles.revealLetter}
+          style={{ animationDelay: `${i * delayStepMs}ms` }}
+        >
+          {char === ' ' ? '\u00A0' : char}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 // S1 FASE 4: Etiquetas legibles por categoria de outfit
@@ -948,9 +987,17 @@ interface MessageListProps {
   isServiceDown?: boolean;
   /** bottomContent — rendered at the bottom of the scroll area (e.g., service-down card) */
   bottomContent?: ReactNode;
+  /**
+   * warmingHint -- OPCION A (29/06/2026): true cuando isLoading lleva mas
+   * de 3s seguidos (timer en ChatWidget.tsx). Muestra el texto "Calentando
+   * el modelo..." debajo de los tres puntos del indicador de escritura,
+   * en vez de tapar el chat con el showWarmingOverlay completo -- ese
+   * overlay sigue reservado solo para la apertura inicial del chat.
+   */
+  warmingHint?: boolean;
 }
 
-export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onShowSimilar, onSuggestionClick, isServiceDown, bottomContent }: MessageListProps) {
+export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onShowSimilar, onSuggestionClick, isServiceDown, bottomContent, warmingHint }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [expandedKbId, setExpandedKbId] = useState<string | null>(null);
 
@@ -1232,10 +1279,20 @@ export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onSh
               </g>
             </svg>
           </div>
-          <div className={styles.typingBubble} aria-label="El asistente está escribiendo">
-            <span className={styles.typingDot} />
-            <span className={styles.typingDot} />
-            <span className={styles.typingDot} />
+          <div className={styles.typingColumn}>
+            <div className={styles.typingBubble} aria-label="El asistente está escribiendo">
+              <span className={styles.typingDot} />
+              <span className={styles.typingDot} />
+              <span className={styles.typingDot} />
+            </div>
+            {/* OPCION A (29/06/2026): hint inline -- solo tras 3s reales de
+                espera (ver useEffect en ChatWidget.tsx). No tapa el chat
+                como showWarmingOverlay -- vive junto al typing indicator. */}
+            {warmingHint && (
+              <div className={styles.warmingHint}>
+                <AnimatedReveal text={mlT('warmingModel')} />
+              </div>
+            )}
           </div>
         </div>
       )}
