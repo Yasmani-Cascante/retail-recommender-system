@@ -64,6 +64,32 @@ router  = APIRouter()
 # Una vez inicializado, se reutiliza en todas las requests del proceso.
 _colbert_client_singleton = None
 
+# PROBLEMA 2 FIX (30/06/2026): singletons de UnifiedLLMClient para
+# _generate_visual_search_message().
+#
+# Por que: antes se instanciaba UnifiedLLMClient dentro de la funcion en
+# CADA llamada. Cada instancia nueva crea un httpx.AsyncClient propio --
+# sin reutilizacion de conexiones TCP entre requests. El coste de
+# TCP connect + TLS handshake con OpenRouter es de ~3-4s en frio, lo que
+# dejaba sin margen al timeout de 4.0s para la inferencia LLM real.
+#
+# Evidencia directa de los logs (30/06/2026):
+#   warmup LFM con timeout=14.0s -> OK en 8.9s (cold, margen suficiente)
+#   T3/T5/T6 con timeout=4.0s   -> FAIL en 4.7s (cold, timeout agotado
+#                                   antes de recibir ninguna respuesta)
+#   T7 con timeout=4.0s         -> OK en 1.1s (conexion ya establecida)
+#
+# Con singleton: la conexion TCP+TLS se establece una sola vez (primera
+# llamada) y se reutiliza en todas las siguientes -- exactamente el mismo
+# patron que _colbert_client_singleton para el embedding-service.
+# PATRON (01/07/2026): para LFM visual search reutiliza engine._lfm_client
+# (el cliente del MCP engine, ya caliente por el warmup de startup PASO 8.5c
+# y los pings de keep-alive cada 300s -- ver main_unified_redis.py).
+# Para GPT-4o-mini si se mantiene un singleton dedicado porque el engine
+# no usa GPT directamente. El singleton se inicializa y calienta en lifespan
+# via warmup_vs_gpt4o_singleton() (PASO 8.5e).
+_vs_gpt4o_client = None  # UnifiedLLMClient(GPT-4o-mini) -- singleton
+
 
 # ── Feature flag ──────────────────────────────────────────────────────────────
 def _visual_search_enabled() -> bool:
@@ -113,6 +139,87 @@ def _get_colbert_client():
                 detail='Visual search service unavailable (COLBERT_SERVICE_URL not set)'
             )
     return _colbert_client_singleton
+
+
+# FIX (01/07/2026): _get_vs_lfm_client() eliminado.
+# Visual search ahora obtiene engine._lfm_client via ServiceFactory,
+# que ya esta caliente por el warmup de startup (PASO 8.5c) y los
+# pings de keep-alive cada 300s. Ver _generate_visual_search_message().
+
+
+def _get_vs_gpt4o_client():
+    """
+    Devuelve el singleton de UnifiedLLMClient para GPT-4o-mini (visual search).
+    Mismo razonamiento que _get_vs_lfm_client(). Devuelve None si el fallback
+    no esta habilitado.
+    """
+    global _vs_gpt4o_client
+    if _vs_gpt4o_client is None:
+        if os.environ.get('GPT4O_MINI_FALLBACK_ENABLED', 'false').lower() != 'true':
+            return None
+        from src.api.core.llm_client import UnifiedLLMClient
+        from src.api.core.claude_config import GPT4O_MINI_FALLBACK_CONFIG
+        _vs_gpt4o_client = UnifiedLLMClient(
+            provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
+            model=GPT4O_MINI_FALLBACK_CONFIG['model'],
+            max_tokens=120,
+            temperature=GPT4O_MINI_FALLBACK_CONFIG['temperature'],
+        )
+        logger.info('vs_gpt4o_client_singleton_initialized',
+                    model=GPT4O_MINI_FALLBACK_CONFIG['model'])
+    return _vs_gpt4o_client
+
+
+async def warmup_vs_gpt4o_singleton() -> None:
+    """
+    Pre-inicializa y calienta el singleton _vs_gpt4o_client de visual search.
+    Llamado como fire-and-forget (asyncio.create_task) desde lifespan()
+    en main_unified_redis.py (PASO 8.5e).
+
+    Por que existe esta funcion:
+      El MCP engine no usa GPT-4o-mini directamente -- es el fallback
+      exclusivo de visual search. Sin este warmup, la primera visual search
+      donde LFM falla crea un UnifiedLLMClient frio y puede tardar > 8s
+      (el timeout configurado) solo en TCP+TLS+primera_inferencia.
+      Con este warmup el singleton ya tiene conexion establecida con
+      OpenRouter y la respuesta llega en < 2s.
+
+    Delay de 14s:
+      Se espera a que los warmups de LFM y GPT-4o-mini del engine (PASO
+      8.5c/8.5d, cada uno con asyncio.sleep(8.0)) terminen. Inicializar
+      _vs_gpt4o_client en paralelo estricto causaria dos llamadas concurrentes
+      al mismo modelo en OpenRouter -- el delay evita esa contention.
+    """
+    import asyncio as _a
+
+    try:
+        await _a.sleep(14.0)  # esperar al fin de PASO 8.5d
+
+        if os.environ.get('GPT4O_MINI_FALLBACK_ENABLED', 'false').lower() != 'true':
+            logger.info('vs_gpt4o_singleton_warmup_skipped',
+                        reason='GPT4O_MINI_FALLBACK_ENABLED != true')
+            return
+
+        vs_gpt4o = _get_vs_gpt4o_client()  # inicializa el singleton
+        if vs_gpt4o is None:
+            return
+
+        logger.info('vs_gpt4o_singleton_warmup_started')
+        resp = await _a.wait_for(
+            vs_gpt4o.complete(
+                'Eres un asistente de moda.',
+                'Responde: OK',
+            ),
+            timeout=14.0,
+        )
+        logger.info('vs_gpt4o_singleton_warmup_complete', model=resp.model)
+
+    except _a.TimeoutError:
+        logger.warning('vs_gpt4o_singleton_warmup_timeout')
+    except Exception as e:
+        logger.warning('vs_gpt4o_singleton_warmup_error',
+                       error=str(e) or repr(e),
+                       error_type=type(e).__name__)
 
 
 def _get_tfidf_recommender():
@@ -225,40 +332,64 @@ async def _generate_visual_search_message(recommendations: List[dict], language:
     user_prompt = _user_template.format(products=products_text)
 
     import asyncio as _asyncio_vsm
-    from src.api.core.llm_client import UnifiedLLMClient
-    from src.api.core.claude_config import LFM_MCP_CONFIG, GPT4O_MINI_FALLBACK_CONFIG
 
-    if os.environ.get('LFM_MCP_ENABLED', 'false').lower() == 'true':
+    # FIX (01/07/2026): para LFM reutilizamos engine._lfm_client.
+    #
+    # Por que: engine._lfm_client es el mismo cliente que calientan el
+    # warmup de startup (PASO 8.5c en main_unified_redis.py) y los pings
+    # de keep-alive cada 300s. Al compartirlo, la primera visual search
+    # del proceso encuentra la conexion a OpenRouter ya establecida y el
+    # modelo LFM ya cargado en la GPU -- en vez de un cold-start de 10-30s
+    # que hace que el timeout de 10s falle (comportamiento observado en
+    # logs del 01/07/2026, T4 y T6: 20s de latencia total).
+    #
+    # httpx.AsyncClient es async-safe: multiples coroutines pueden usar el
+    # mismo cliente simultaneamente sin race conditions.
+    #
+    # Fallback: si ServiceFactory no esta disponible (ej. tests unitarios),
+    # se usa un UnifiedLLMClient efimero -- mismo comportamiento pre-fix.
+    lfm_client = None
+    try:
+        from src.api.factories.service_factory import ServiceFactory
+        _vs_engine = await ServiceFactory.get_mcp_recommender()
+        if (_vs_engine
+                and hasattr(_vs_engine, '_lfm_mcp_enabled')
+                and _vs_engine._lfm_mcp_enabled
+                and hasattr(_vs_engine, '_lfm_client')
+                and _vs_engine._lfm_client):
+            lfm_client = _vs_engine._lfm_client
+    except Exception as _e:
+        logger.warning('vs_lfm_engine_client_unavailable',
+                       error=str(_e) or repr(_e))
+
+    if lfm_client is not None:
         try:
-            lfm_client = UnifiedLLMClient(
-                provider=LFM_MCP_CONFIG['provider'],
-                model=LFM_MCP_CONFIG['model'],
-                max_tokens=120,
-                temperature=LFM_MCP_CONFIG['temperature'],
-            )
             resp = await _asyncio_vsm.wait_for(
-                lfm_client.complete(system_prompt, user_prompt), timeout=4.0,
+                lfm_client.complete(system_prompt, user_prompt),
+                timeout=10.0,
             )
             logger.info('visual_search_message_lfm_ok', model=resp.model)
             return resp.content
         except Exception as e:
-            logger.warning('visual_search_message_lfm_failed', error=str(e))
+            logger.warning('visual_search_message_lfm_failed',
+                           error=str(e) or repr(e),
+                           error_type=type(e).__name__)
 
-    if os.environ.get('GPT4O_MINI_FALLBACK_ENABLED', 'false').lower() == 'true':
+    # GPT-4o-mini: usa el singleton _vs_gpt4o_client, pre-calentado en
+    # lifespan por warmup_vs_gpt4o_singleton() (PASO 8.5e).
+    gpt4o_client = _get_vs_gpt4o_client()
+    if gpt4o_client is not None:
         try:
-            gpt4o_client = UnifiedLLMClient(
-                provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
-                model=GPT4O_MINI_FALLBACK_CONFIG['model'],
-                max_tokens=120,
-                temperature=GPT4O_MINI_FALLBACK_CONFIG['temperature'],
-            )
             resp = await _asyncio_vsm.wait_for(
-                gpt4o_client.complete(system_prompt, user_prompt), timeout=3.0,
+                gpt4o_client.complete(system_prompt, user_prompt),
+                timeout=8.0,
             )
             logger.info('visual_search_message_gpt4o_mini_ok', model=resp.model)
             return resp.content
         except Exception as e:
-            logger.warning('visual_search_message_gpt4o_mini_failed', error=str(e))
+            logger.warning('visual_search_message_gpt4o_mini_failed',
+                           error=str(e) or repr(e),
+                           error_type=type(e).__name__)
 
     return None
 

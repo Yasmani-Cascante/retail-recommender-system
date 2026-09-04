@@ -382,6 +382,162 @@ class IntentPatterns:
     # ───────────────────────────────────────────────────────────
 
     TRANSACTIONAL_PATTERNS = {
+        # ORDEN DELIBERADO (11/07/2026 -- fix del empate sistemico en _detect_transactional):
+        # PRODUCT_SEARCH esta declarado AL FINAL de este diccionario, no al principio.
+        # _detect_transactional() (mas abajo en este archivo) usa "if score > best_score"
+        # -- estrictamente mayor -- para decidir el ganador: en un EMPATE exacto de score,
+        # gana el sub_intent que se itero PRIMERO (el dict preserva orden de insercion
+        # en Python 3.7+).
+        #
+        # PRODUCT_SEARCH es el "catch-all" generico de este modulo (ver docstring de la
+        # clase RuleBasedIntentDetector: "Default to TRANSACTIONAL (safe fallback)") --
+        # sus keywords ("busco", "quiero", "necesito", "ver", "mostrar"...) son verbos
+        # genericos que aparecen en CASI cualquier query transaccional, incluidas las que
+        # tambien matchean un sub_intent mas especifico (OUTFIT_COMPLETION, PURCHASE_INTENT,
+        # PRODUCT_VIEW). Cuando eso pasa, es un empate de 1 match c/u (+0.5 cada uno).
+        #
+        # BUG CONFIRMADO EN PRODUCCION (11/07/2026): con PRODUCT_SEARCH primero en el dict,
+        # ganaba TODOS esos empates por orden de declaracion, no por relevancia semantica.
+        # Ejemplos reales que fallaban antes de este reorden (verificado corriendo el
+        # detector real, no una simulacion):
+        #   "quiero completar el look"                     -> product_search (deberia ser outfit_completion)
+        #   "necesito unos zapatos que combinen con esto"   -> product_search (deberia ser outfit_completion)
+        #   "busco complementar esto"                       -> product_search (deberia ser outfit_completion)
+        #   "quiero comprar esto"                           -> product_search (deberia ser purchase_intent)
+        #   "quiero ver detalles de este producto"          -> product_search (deberia ser product_view)
+        # 6 de 8 patrones de OUTFIT_COMPLETION en espanol estaban en riesgo de este mismo
+        # empate -- no era un caso aislado de una sola frase.
+        #
+        # FIX: mover PRODUCT_SEARCH al final del dict. Como es el sub_intent mas generico
+        # (catch-all), es semanticamente correcto que PIERDA los empates contra cualquier
+        # sub_intent mas especifico -- un empate significa que la query tiene evidencia de
+        # AMBOS, y la evidencia especifica deberia pesar mas que el verbo generico.
+        #
+        # VALIDADO (11/07/2026) corriendo el detector real (no simulado) contra:
+        #   - Los 6 patrones antes en riesgo -> 5/6 corregidos (el 6to, "que me pongo con
+        #     esto", es un bug de regex NO relacionado: el patron busca "poner" literal y
+        #     no cubre la conjugacion "pongo" -- pendiente, no es un empate).
+        #   - 10 queries de control que deben seguir siendo product_search -> sin regresiones.
+        #   - Bonus: "quiero comprar esto" y "quiero ver detalles..." ahora clasifican
+        #     correctamente como purchase_intent/product_view (mismo bug, sin reportar antes).
+        #   - Las 6 queries reales usadas en las sesiones de validacion de este proyecto
+        #     (incluyendo "Busco un conjunto completo" y "Recomiendame productos similares",
+        #     que SI deben seguir siendo product_search) -> 100% correcto, sin regresiones.
+        #
+        # Si en el futuro se agrega un nuevo sub_intent transaccional cuyas keywords son
+        # tan genericas como las de PRODUCT_SEARCH (verbos comunes sin contexto especifico),
+        # debe declararse ANTES de PRODUCT_SEARCH para mantener este invariante: el
+        # catch-all siempre al final.
+
+        TransactionalSubIntent.PRODUCT_VIEW: {
+            "keywords": [
+                r"\b(ver.*este|ver.*ese|see.*this|see.*that)\b",
+                r"\b(detalles|details|información.*del.*producto)\b",
+                r"\b(características|features|especificaciones)\b",
+            ],
+        },
+
+        TransactionalSubIntent.PURCHASE_INTENT: {
+            "keywords": [
+                r"\b(comprar|buy|purchase|adquirir)\b",
+                r"\b(llevar|me.*llevo|take|get)\b",
+                r"\b(agregar.*carrito|add.*cart|añadir)\b",
+                r"\b(checkout|finalizar.*compra|pay)\b",
+            ],
+        },
+
+        # F-08 Fase B: Detectar peticiones de outfit/complementos.
+        # Alta precisión: solo activa cuando la intención es combinar prendas,
+        # no cuando pide "similares" (eso sigue siendo PRODUCT_SEARCH).
+        # El handler solo ejecuta visual search si product_ctx está disponible.
+        TransactionalSubIntent.OUTFIT_COMPLETION: {
+            "keywords": [
+                # ── Español ──────────────────────────────────────────────────
+                r"\b(complet(?:a|ar|o).*(?:outfit|look|estilo))\b",
+                r"\b(armar.*(?:outfit|look)|outfit.*completo|look.*completo)\b",
+                # FIX (26/07/2026): "este" faltaba en la lista de palabras que pueden
+                # seguir al verbo -- confirmado en logs de produccion: "Con que accesorios
+                # puedo combinar este?" clasificaba INFORMATIONAL (via ML) en vez de
+                # TRANSACTIONAL, mientras que la misma consulta con "esto"/"esta" si
+                # activaba la proteccion rule-based. "este" es la forma gramaticalmente
+                # correcta para referirse a un producto ancla masculino (vestido,
+                # brazalete, aro, collar son todos masculinos en espanol) -- un caso de
+                # uso comun, no un edge case.
+                r"\b(combin[aeo](?:r|s)?.*(?:con|esto|esta|este)|qu[eé].*combin[aeo](?:n|s)?)\b",
+                # FIX (16/07/2026): la alternativa B ("qu[eé].*combin[aeo]") tiene un
+                # \b al final del grupo completo -- exige limite de palabra justo
+                # despues de la vocal [aeo]. "qué accesorios combinan" NO matcheaba:
+                # despues de la "a" en "combina" viene una "n" (otro caracter de
+                # palabra, no un limite), asi que \b fallaba ahi. Confirmado en
+                # logs de produccion (16/07/2026, dos despliegues distintos, dos
+                # productos ancla distintos): la query cae a INFORMATIONAL/
+                # product_material en vez de outfit_completion, nunca llega a F-08B.
+                # "combinan"/"combinen" (conjugacion plural, la mas natural despues
+                # de "qué accesorios/zapatos/...") quedaban fuera. Sufijo opcional
+                # (?:n|s)? igual al patron que ya tiene la alternativa A. Validado
+                # contra "combinan", "combinan?", "combinas", "combina" y contra el
+                # caso que ya funcionaba ("qué zapatos combinan con esto") -- sin
+                # romper nada.
+                # FIX (11/07/2026): [ao] -> [aeo]. Diagnosticado en logs de produccion:
+                # "Busco algo que combine con esto" (subjuntivo, forma gramaticalmente
+                # correcta y de uso comun) no matcheaba porque "combine" tiene "e", no
+                # "a"/"o". La query caia al patron generico de PRODUCT_SEARCH ("busco"),
+                # por lo que nunca llegaba a F-08B -- el fallback resultante trataba la
+                # categoria del producto ancla como preferencia en vez de excluirla,
+                # devolviendo mas productos de la misma categoria en vez de complementos
+                # (efecto documentado como "Hallazgo 3" en sesiones anteriores, sin
+                # diagnosticar hasta ahora). "combin[aeo]" cubre combina/combino/combine
+                # + sufijo opcional r/s (combinar/combinas/combines).
+                #
+                # FIX 2 (11/07/2026): el fix de arriba (combin[aeo]) era NECESARIO pero
+                # NO SUFICIENTE. Verificado en logs de produccion post-deploy: la query
+                # seguia clasificando como product_search a pesar del regex ya corregido.
+                # Causa real: _detect_transactional() usa "if score > best_score" (linea
+                # ~803) -- estrictamente mayor. "Busco algo que combine con esto" matchea
+                # UN patron de PRODUCT_SEARCH ("busco", +0.5) Y, ya con el fix de arriba,
+                # UN patron de OUTFIT_COMPLETION ("combine...esto", +0.5) -- empate exacto.
+                # Como PRODUCT_SEARCH se itera primero (es el primer sub_intent declarado
+                # en TRANSACTIONAL_PATTERNS), su score se fija primero como best_score, y
+                # el empate posterior de OUTFIT_COMPLETION nunca cumple "> best_score" ->
+                # PRODUCT_SEARCH gana por orden de declaracion, no por relevancia semantica.
+                # No se toca la logica de desempate en si (usada deliberadamente en otros
+                # sub-intents de este archivo, ver comentario "En empate gana el primero
+                # detectado" en PRODUCT_SIZING) -- se sigue el mismo patron ya establecido
+                # en este archivo para los patrones FR ("Diseñados para que...sume
+                # score=1.0 (2×0.5) > product_search score=0.5"): anadir un SEGUNDO patron
+                # distinto que tambien matchee, para que el score total (1.0) gane el
+                # empate de forma decisiva sin depender del orden del diccionario.
+                # Validado con simulacion del algoritmo completo (no solo el regex aislado)
+                # contra la query real + variantes, y contra 6 queries de control que deben
+                # seguir siendo product_search ("busco algo bonito", "quiero algo para el
+                # verano", etc.) -- sin regresiones.
+                r"\b(algo.*que.*(?:combine|vaya|haga\s*juego)|something.*that.*(?:match(?:es)?|goes))\b",
+                r"\b(qu[eé].*(?:va|poner|usar).*con|what.*(?:goes|wear).*with)\b",
+                # FIX (26/07/2026): mismo gap que el patron de "combinar" de arriba --
+                # "este" faltaba en la lista.
+                r"\b(complementar|complemento|complementa.*(?:con|esto|esta|este))\b",
+                r"\b(complemento.*(?:para|de)|un.*complemento)\b",
+                r"\b(accesorio.*(?:para|que.*combine)|bolso.*que.*combine)\b",
+                # ── Français (14/06/2026 — CH-multilang) ─────────────────────
+                # Diseñados para que "Je cherche quelque chose qui va avec ça"
+                # sume score=1.0 (2×0.5) > product_search score=0.5 ("cherche").
+                # Así OUTFIT_COMPLETION gana sin tocar el GUARD.
+                # Pattern A v2 (15/06/2026 — fix "vont avec"):
+                # "Quels accessoires vont avec cette robe?" usaba conjugación
+                # "vont" (3ª plural de aller) que no estaba cubierta.
+                # Con vont/irait/iraient, cualquier forma de "aller avec" suma +0.5.
+                r"\b(qui\s+va\s+avec|va\s+(?:bien\s+)?avec|vont\s+(?:bien\s+)?avec)\b",  # +0.5
+                r"\b(aller\s+(?:bien\s+)?avec|irait\s+(?:bien\s+)?avec|iraient\s+(?:bien\s+)?avec)\b",
+                r"\b(quelque\s+chose\s+(qui|que|pour|à))\b",                # Pattern B (+0.5)
+                r"\b(compl[eé]ter\s+(la\s+tenue|le\s+look|l.outfit))\b",  # "compléter la tenue"
+                r"\b(quoi\s+(mettre|porter|associer)\s+avec)\b",            # "quoi mettre avec"
+                r"\b(accessoires?\s+(pour|avec|à\s+porter))\b",             # "accessoires pour/avec"
+                # ── Deutsch ───────────────────────────────────────────────────
+                r"\b(passend\s+zu|dazu\s+kombin|was\s+geht\s+dazu)\b",
+                # ── Italiano ──────────────────────────────────────────────────
+                r"\b(abbinare\s+con|cosa\s+abbinare|completare\s+il\s+look)\b",
+            ],       },
+
         TransactionalSubIntent.PRODUCT_SEARCH: {
             "keywords": [
                 r"\b(busco|buscando|estoy.*buscando|looking.*for)\b",
@@ -427,57 +583,6 @@ class IntentPatterns:
                 r"\b(trouver|trouve|trouvez|voudrais.*voir|je.*voudrais)\b",
             ],
         },
-
-        TransactionalSubIntent.PRODUCT_VIEW: {
-            "keywords": [
-                r"\b(ver.*este|ver.*ese|see.*this|see.*that)\b",
-                r"\b(detalles|details|información.*del.*producto)\b",
-                r"\b(características|features|especificaciones)\b",
-            ],
-        },
-
-        TransactionalSubIntent.PURCHASE_INTENT: {
-            "keywords": [
-                r"\b(comprar|buy|purchase|adquirir)\b",
-                r"\b(llevar|me.*llevo|take|get)\b",
-                r"\b(agregar.*carrito|add.*cart|añadir)\b",
-                r"\b(checkout|finalizar.*compra|pay)\b",
-            ],
-        },
-
-        # F-08 Fase B: Detectar peticiones de outfit/complementos.
-        # Alta precisión: solo activa cuando la intención es combinar prendas,
-        # no cuando pide "similares" (eso sigue siendo PRODUCT_SEARCH).
-        # El handler solo ejecuta visual search si product_ctx está disponible.
-        TransactionalSubIntent.OUTFIT_COMPLETION: {
-            "keywords": [
-                # ── Español ──────────────────────────────────────────────────
-                r"\b(complet(?:a|ar|o).*(?:outfit|look|estilo))\b",
-                r"\b(armar.*(?:outfit|look)|outfit.*completo|look.*completo)\b",
-                r"\b(combin[ao](?:r|s)?.*(?:con|esto|esta)|qu[eé].*combin[ao])\b",
-                r"\b(qu[eé].*(?:va|poner|usar).*con|what.*(?:goes|wear).*with)\b",
-                r"\b(complementar|complemento|complementa.*(?:con|esto|esta))\b",
-                r"\b(complemento.*(?:para|de)|un.*complemento)\b",
-                r"\b(accesorio.*(?:para|que.*combine)|bolso.*que.*combine)\b",
-                # ── Français (14/06/2026 — CH-multilang) ─────────────────────
-                # Diseñados para que "Je cherche quelque chose qui va avec ça"
-                # sume score=1.0 (2×0.5) > product_search score=0.5 ("cherche").
-                # Así OUTFIT_COMPLETION gana sin tocar el GUARD.
-                # Pattern A v2 (15/06/2026 — fix "vont avec"):
-                # "Quels accessoires vont avec cette robe?" usaba conjugación
-                # "vont" (3ª plural de aller) que no estaba cubierta.
-                # Con vont/irait/iraient, cualquier forma de "aller avec" suma +0.5.
-                r"\b(qui\s+va\s+avec|va\s+(?:bien\s+)?avec|vont\s+(?:bien\s+)?avec)\b",  # +0.5
-                r"\b(aller\s+(?:bien\s+)?avec|irait\s+(?:bien\s+)?avec|iraient\s+(?:bien\s+)?avec)\b",
-                r"\b(quelque\s+chose\s+(qui|que|pour|à))\b",                # Pattern B (+0.5)
-                r"\b(compl[eé]ter\s+(la\s+tenue|le\s+look|l.outfit))\b",  # "compléter la tenue"
-                r"\b(quoi\s+(mettre|porter|associer)\s+avec)\b",            # "quoi mettre avec"
-                r"\b(accessoires?\s+(pour|avec|à\s+porter))\b",             # "accessoires pour/avec"
-                # ── Deutsch ───────────────────────────────────────────────────
-                r"\b(passend\s+zu|dazu\s+kombin|was\s+geht\s+dazu)\b",
-                # ── Italiano ──────────────────────────────────────────────────
-                r"\b(abbinare\s+con|cosa\s+abbinare|completare\s+il\s+look)\b",
-            ],       },
     }
 
     # ───────────────────────────────────────────────────────────

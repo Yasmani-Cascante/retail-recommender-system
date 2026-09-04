@@ -1012,7 +1012,7 @@ async def process_conversation(
             next_turn_number = metadata.get("session_context", {}).get("next_turn_number", 1)
             
             logger.info(f"🎯 Router received from handler: {len(recommendation_ids)} recommendation IDs")
-            logger.info(f"🎯 IDs to store: {recommendation_ids[:3]}...")
+            logger.info(f"🎯 IDs to store ({len(recommendation_ids)} total): {recommendation_ids}")
 
             # ✅ CREAR UN ÚNICO ConversationTurn con datos completos del handler
             if state_manager and conversation_session:

@@ -19,18 +19,18 @@ echo '>>> Deploying to Cloud Run...'
 #   --cpu 2         (era 1)    — indexación paralela de imágenes, encode más rápido
 #   --min-instances 1          — sin cambio, ya estaba en 1 para ColBERT
 #   --timeout 300   (era 60)   — la indexación de imagen por batch puede durar >60s
-gcloud run deploy $SERVICE_NAME \
+gcloud beta run deploy $SERVICE_NAME \
   --image $IMAGE \
   --region $REGION \
   --project $PROJECT \
   --memory 4Gi \
-  --cpu 2 \
-  --min-instances 1 \
+  --cpu 1 \
+  --min-instances 0 \
   --max-instances 1 \
   --timeout 300 \
-  --allow-unauthenticated \
+  --no-allow-unauthenticated \
   --ingress all \
-  --no-cpu-throttling \
+  --startup-probe="httpGet.path=/health/startup-probe,httpGet.port=8080,initialDelaySeconds=10,periodSeconds=15,timeoutSeconds=3,failureThreshold=9" \
   --set-env-vars VISUAL_INDEX_BUCKET=retail-recommendations-449216-visual-index
 
 

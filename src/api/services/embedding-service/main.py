@@ -44,6 +44,27 @@ log = logging.getLogger(__name__)
 colbert_retriever = None
 visual_retriever  = None
 
+# PROBLEMA 1 FIX (30/06/2026): flag de readiness para el startup probe HTTP.
+#
+# Por que: el lifespan carga ColBERT y FashionSigLIP SINCRÓNICAMENTE antes
+# del yield -- el puerto solo se abre cuando ambos modelos estan listos.
+# Para el caso normal (ambos cargados), el TCP probe default ya era suficiente.
+#
+# PERO: si FashionSigLIP falla, el codigo hace:
+#   visual_retriever = None  <- no hace raise, continua al yield
+# En ese caso el TCP probe da OK (puerto abierto) pero el servicio devuelve
+# 503 en todos los requests de busqueda visual -- Cloud Run enruta trafico
+# a una instancia que no puede atenderlo. El HTTP startup probe evita esto:
+# verifica que AMBOS modelos esten cargados antes de autorizar trafico.
+#
+# Uso: GET /health/startup-probe
+#   200 {"ready": true}  -- ambos modelos listos, aceptar trafico
+#   503 {"ready": false} -- algun modelo no cargo, no enrutar trafico
+#
+# Se pone a False en shutdown para que un posible redeploy en caliente
+# (rolling update) no enrute trafico a una instancia que esta cerrando.
+_models_ready: bool = False
+
 
 # ── Pydantic models ─────────────────────────────────────────────────────────
 
@@ -86,6 +107,21 @@ class SearchImageResponse(BaseModel):
     visual_index_size: int
 
 
+class MultiTextBoostRequest(BaseModel):
+    """Fase 1b Paso 3 (23/07/2026): batch de N textos de boost en una sola
+    llamada -- ver visual_retriever.search_by_product_id_with_multi_text_boost()."""
+    product_id: str
+    boost_texts: List[str]
+    alpha: float = 0.5
+    top_k: int = 8
+
+
+class MultiTextBoostResponse(BaseModel):
+    results: List[List[str]]  # alineado 1:1 con el orden de boost_texts recibido
+    latency_ms: float
+    visual_index_size: int
+
+
 # ── Startup / shutdown ─────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -121,7 +157,24 @@ async def lifespan(app: FastAPI):
     log.info('[startup] Embedding service ready. ColBERT=%s FashionSigLIP=%s',
              'OK' if colbert_retriever else 'FAILED',
              'OK' if visual_retriever else 'UNAVAILABLE')
+
+    # PROBLEMA 1 FIX: setear _models_ready solo si AMBOS modelos cargaron.
+    # Si FashionSigLIP fallo (visual_retriever=None), el flag permanece False
+    # y el startup probe devolvera 503 -- Cloud Run no enrutara trafico.
+    global _models_ready
+    _models_ready = (colbert_retriever is not None and visual_retriever is not None)
+    if not _models_ready:
+        log.error('[startup] _models_ready=False -- startup probe will block traffic '
+                  '(colbert=%s fashionsiglip=%s)',
+                  'ok' if colbert_retriever else 'FAILED',
+                  'ok' if visual_retriever else 'FAILED')
+    else:
+        log.info('[startup] _models_ready=True -- startup probe will allow traffic')
+
     yield
+
+    # PROBLEMA 1 FIX: resetear en shutdown para rolling updates limpios.
+    _models_ready = False
     log.info('[shutdown] Embedding service shutdown')
 
 
@@ -148,6 +201,41 @@ async def health():
         'category_map_size':    visual_retriever.category_map_size() if visual_retriever else 0,
         'outfit_search_ready':  (visual_retriever.category_map_size() > 0) if visual_retriever else False,
     }
+
+
+# PROBLEMA 1 FIX (30/06/2026): endpoint dedicado para el startup probe de Cloud Run.
+#
+# Distinto de /health (que el monolito usa para su health check periodico y
+# que siempre devuelve 200 con detalles de estado) -- este endpoint devuelve
+# 503 hasta que AMBOS modelos (ColBERT + FashionSigLIP) esten cargados.
+#
+# Por que no usar /health directamente para el probe:
+#   /health siempre devuelve HTTP 200 aunque visual_retriever sea None --
+#   seria necesario que Cloud Run inspeccionara el JSON response body, lo
+#   que el startup probe no soporta (solo verifica el codigo HTTP).
+#   Con este endpoint dedicado, el codigo HTTP 200 es condicion suficiente.
+#
+# Sin autenticacion: el startup probe de Cloud Run llama directo al puerto
+# del contenedor sin pasar por el IAM de Cloud Run -- igual que /health.
+# El endpoint no exponemos en el schema de OpenAPI (include_in_schema=False)
+# para que no aparezca en la documentacion publica del servicio.
+@app.get('/health/startup-probe', include_in_schema=False)
+async def startup_probe():
+    """Readiness check para Cloud Run -- 200 solo cuando ambos modelos estan listos."""
+    if _models_ready:
+        return {
+            'ready':        True,
+            'colbert':      'ok',
+            'fashionsiglip':'ok',
+        }
+    raise HTTPException(
+        status_code=503,
+        detail={
+            'ready':        False,
+            'colbert':      'ok' if colbert_retriever else 'unavailable',
+            'fashionsiglip':'ok' if visual_retriever  else 'unavailable',
+        }
+    )
 
 
 @app.post('/v1/embed/index')
@@ -399,6 +487,92 @@ async def search_by_product_id(
 
     return SearchImageResponse(
         product_ids=product_ids,
+        latency_ms=latency_ms,
+        visual_index_size=visual_retriever.index_size(),
+    )
+
+
+@app.get('/v1/embed/search-by-id-with-text-boost', response_model=SearchImageResponse)
+async def search_by_product_id_with_text_boost(
+    product_id: str   = Query(..., description='Shopify product ID numerico'),
+    boost_text: str   = Query(..., description='Texto de composite embedding YA RESUELTO por el llamante'),
+    alpha:      float = Query(default=0.5, description='Peso imagen vs texto (0.5 = mitad y mitad)'),
+    top_k:      int   = Query(default=8, description='Numero maximo de resultados'),
+):
+    """
+    Igual que /v1/embed/search-by-id-with-boost, pero recibe el texto de
+    composite embedding YA RESUELTO (boost_text) en vez de una clave de
+    categoria que este servicio tendria que resolver internamente.
+
+    Fase 1b (23/07/2026): el embedding-service ya no conoce taxonomia de
+    ningun tenant -- toda esa logica vive en product_taxonomy.py, lado
+    monolito. Ver visual_retriever.search_by_product_id_with_text_boost()
+    para el razonamiento completo.
+
+    Devuelve [] si el product_id no esta en el indice. Si boost_text esta
+    vacio, degrada a busqueda pura de imagen (mismo resultado que
+    search-by-id).
+    """
+    if not visual_retriever or not visual_retriever.is_ready():
+        raise HTTPException(503, 'Visual index not ready')
+
+    t0 = time.time()
+    product_ids = await visual_retriever.search_by_product_id_with_text_boost(
+        product_id, boost_text=boost_text, alpha=alpha, top_k=top_k,
+    )
+    latency_ms  = round((time.time() - t0) * 1000, 1)
+
+    log.info(
+        'search_by_product_id_with_text_boost: product_id=%s alpha=%.2f '
+        'found=%d latency=%.1fms',
+        product_id, alpha, len(product_ids), latency_ms,
+    )
+
+    return SearchImageResponse(
+        product_ids=product_ids,
+        latency_ms=latency_ms,
+        visual_index_size=visual_retriever.index_size(),
+    )
+
+
+@app.post('/v1/embed/search-by-id-with-multi-text-boost', response_model=MultiTextBoostResponse)
+async def search_by_product_id_with_multi_text_boost(request: MultiTextBoostRequest):
+    """
+    Igual que /v1/embed/search-by-id-with-text-boost, pero acepta VARIOS
+    textos de boost a la vez (request.boost_texts) y hace UNA sola busqueda
+    FAISS en vez de N -- ver
+    visual_retriever.search_by_product_id_with_multi_text_boost() para el
+    razonamiento completo (Fase 1b Paso 3, 23/07/2026).
+
+    POST con body JSON en vez de GET con query params -- una lista de
+    textos no calza bien en query params, y esto evita URLs enormes con N
+    textos codificados.
+
+    Devuelve results alineado 1:1 con boost_texts -- results[i] corresponde
+    a boost_texts[i]. Lista vacia si product_id no esta en el indice o
+    boost_texts esta vacio.
+    """
+    if not visual_retriever or not visual_retriever.is_ready():
+        raise HTTPException(503, 'Visual index not ready')
+
+    t0 = time.time()
+    results = await visual_retriever.search_by_product_id_with_multi_text_boost(
+        request.product_id,
+        boost_texts=request.boost_texts,
+        alpha=request.alpha,
+        top_k=request.top_k,
+    )
+    latency_ms = round((time.time() - t0) * 1000, 1)
+
+    log.info(
+        'search_by_product_id_with_multi_text_boost: product_id=%s n_texts=%d '
+        'alpha=%.2f total_found=%d latency=%.1fms',
+        request.product_id, len(request.boost_texts), request.alpha,
+        sum(len(r) for r in results), latency_ms,
+    )
+
+    return MultiTextBoostResponse(
+        results=results,
         latency_ms=latency_ms,
         visual_index_size=visual_retriever.index_size(),
     )

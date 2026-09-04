@@ -92,7 +92,7 @@ class ClaudeModelConfig:
 
 LFM_MCP_CONFIG = {
 'provider': 'openrouter', 
-'model': 'liquid/lfm-2-24b-a2b', 
+'model': 'liquid/lfm-2-24b-a2b',
 'max_tokens': 300, 
 'temperature': 0.7, 
 'description': 'LFM2-24B MoE — MCP personalization replacement' 

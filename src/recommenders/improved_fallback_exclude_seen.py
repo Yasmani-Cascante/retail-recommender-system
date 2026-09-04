@@ -127,8 +127,22 @@ CATEGORY_KEYWORDS = {
         "keywords": [
             "conjunto", "conjuntos",
             "set", "sets",
-            "outfit", "outfits",
             "two piece", "2 piece",
+            # FIX (11/07/2026): se quitaron "outfit"/"outfits" de aqui. Eran
+            # demasiado genericos -- "outfit" en espanol/spanglish se usa para
+            # referirse al look completo ("completa el outfit"), no especificamente
+            # a un conjunto de dos piezas. Efecto real confirmado en logs de
+            # produccion (11/07/2026): la query genuinamente generica "completa el
+            # outfit" (sobre un producto CARTERAS) matcheaba el keyword "outfit" ->
+            # expandia a CONJUNTOS FALDAS/PANTALONES -> F-08B acotaba la busqueda a
+            # target_categories=['conjunto'], devolviendo solo 3 productos en vez
+            # del fallback amplio esperado (dress/top/accessory/enterito/outerwear).
+            # Antes del fix de hoy (ZAPATOS/CONJUNTOS en _B08_SHOPIFY_TO_OUTFIT_CAT)
+            # esta deteccion falsa ya ocurria pero se descartaba en silencio (las
+            # claves CONJUNTOS FALDAS/PANTALONES no existian en ese diccionario) --
+            # dos bugs que se cancelaban. Al completar el mapeo, la deteccion falsa
+            # quedo expuesta. "conjunto"/"conjuntos"/"set"/"two piece" siguen
+            # detectando CONJUNTOS correctamente sin este keyword generico.
         ]
     },
     
@@ -319,10 +333,40 @@ CATEGORY_KEYWORDS = {
         # Convirtiendo a 'parent' el sistema expande automáticamente a los
         # product_types reales cuando el usuario dice 'accesorios'.
         "type": "parent",
+        # FIX (06/07/2026): alineado con la colección real "Complementos" de
+        # Shopify (confirmado via captura de pantalla, 9 tipos: BRAZALETE,
+        # ALAS DE NOVIA, AROMAS, AROS, CARTERAS, CINTURONES, CLUTCH, COLLARES,
+        # TOCADOS). Dos cambios respecto a la version anterior:
+        #
+        #   1. AGREGADO "BRAZALETE" (singular, 1 producto en catalogo real) --
+        #      antes solo estaba "BRAZALETES" (plural, 36 productos). El
+        #      producto singular nunca se beneficiaba de la expansion a
+        #      categorias hermanas en F-08/F-08C.
+        #
+        #   2. AGREGADO "ALAS DE NOVIA" -- presente en Complementos pero
+        #      ausente de esta lista; mismo problema que BRAZALETE singular.
+        #
+        #   3. ELIMINADO "BRALETTES" -- investigacion de estandar de industria
+        #      (taxonomia de Google Shopping Merchant Center: los bralettes
+        #      se clasifican bajo Apparel & Accessories > Clothing > Underwear
+        #      & Socks > Bras, categoria 214 -- NUNCA bajo Accessories) confirma
+        #      que un bralette es una PRENDA (cubre el torso, reemplaza a un
+        #      top) y no un accesorio (los accesorios complementan una prenda
+        #      ya puesta: joyeria, bolsos, cinturones, tocados). Ademas,
+        #      BRALETTES ni siquiera pertenece a la coleccion Complementos en
+        #      Shopify -- es su propio product_type separado. Ya esta
+        #      correctamente clasificado como "top" en
+        #      visual_retriever.py::SHOPIFY_TYPE_TO_OUTFIT_CATEGORY; estaba
+        #      duplicado e inconsistente aqui. Ver DCT sesion 06/07/2026 para
+        #      el analisis completo (Notion, DCT F-08 Fase A).
+        #
+        #   NOTA: AROMAS permanece deliberadamente ausente de esta lista --
+        #   ver NON_FASHION_CATEGORIES_UPPER mas abajo (un perfume no es una
+        #   prenda/accesorio vestible, exclusion ya validada el 28/06/2026).
         "subcategories": [
-            "AROS", "COLLARES", "BRAZALETES",
+            "AROS", "COLLARES", "BRAZALETES", "BRAZALETE",
             "CLUTCH", "CINTURONES", "CARTERAS",
-            "TOCADOS", "BRALETTES",
+            "TOCADOS", "ALAS DE NOVIA",
         ],
         "keywords": [
             # Español genérico

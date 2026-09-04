@@ -40,7 +40,19 @@ jinja2==3.1.5
 httpx>=0.24.0  # Para MCPClient async HTTP calls and CLAUDE/ANTHROPIC
 
 # === CLAUDE/ANTHROPIC INTEGRATION ===
-anthropic>=0.25.0
+# FIX (04/09/2026): fijado a version exacta tras incidente de produccion --
+# anthropic>=0.25.0 (sin techo) dejo que un rebuild de Docker instalara
+# anthropic 1.3.0 un mes despues del ultimo deploy exitoso, y esa version
+# migro su dependencia HTTP interna de httpx a httpx2 (paquete PyPI
+# separado), rompiendo la construccion del cliente en service_factory.py
+# (get_mcp_recommender) -- TypeError en CADA request conversacional, no
+# solo en el arranque. Version exacta probada y confirmada funcionando de
+# punta a punta contra el codigo real (ver comentario en service_factory.py).
+# httpx2 declarado explicitamente: hasta ahora solo llegaba como
+# dependencia indirecta de anthropic, sin garantia de version si anthropic
+# cambia su propio pin en el futuro.
+anthropic==1.3.0
+httpx2==2.12.0
 
 # === DESARROLLO Y TESTING (opcional) ===
 # pytest>=7.0.0
@@ -52,8 +64,11 @@ anthropic>=0.25.0
 # Para instalar dependencias de desarrollo:
 # pip install -r requirements.txt pytest pytest-asyncio pytest-cov locust
 # === CLAUDE/ANTHROPIC INTEGRATION ===
-anthropic>=0.25.0
+# FIX (04/09/2026): mismo pin que arriba -- ver comentario en la primera
+# aparicion de este bloque.
+anthropic==1.3.0
 httpx>=0.24.0
+httpx2==2.12.0
 
 # === AI CONVERSATION ENHANCEMENTS ===
 textblob>=0.17.1  # Para analisis de texto basico en fallbacks

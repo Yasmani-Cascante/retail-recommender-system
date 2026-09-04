@@ -1500,6 +1500,25 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_warmup_gpt4o_mini_connection())
         logger.info("GPT-4o-mini warm-up started in background (non-blocking)")
 
+        # ── PASO 8.5e: Warmup del singleton GPT-4o-mini de visual search ──────────────
+        # Por que es un paso separado: el engine NO usa GPT-4o-mini directamente
+        # (es solo el fallback de visual search). El warmup de PASO 8.5d calienta
+        # la conexion del engine, pero _vs_gpt4o_client es un singleton distinto
+        # en visual_search_router.py que necesita su propio calentamiento.
+        #
+        # warmup_vs_gpt4o_singleton() tiene un asyncio.sleep(14.0) interno para
+        # escalonarse despues de los PASO 8.5c/8.5d -- no compite con ellos.
+        # Es fire-and-forget: no afecta al startup probe ni a startup_complete.
+        async def _warmup_vs_gpt4o_task() -> None:
+            try:
+                from src.api.routers.visual_search_router import warmup_vs_gpt4o_singleton
+                await warmup_vs_gpt4o_singleton()
+            except Exception as _e:
+                logger.warning("vs_gpt4o_warmup_import_error: %s", _e)
+
+        asyncio.create_task(_warmup_vs_gpt4o_task())
+        logger.info("VS GPT-4o-mini singleton warm-up started in background (non-blocking)")
+
         # ================================================================================
         # PASO 8.6: CLAUDE API KEEP-ALIVE PERIODICO (background task)
         # ════════════════════════════════════════════════════════════════════
@@ -1688,6 +1707,126 @@ async def lifespan(app: FastAPI):
                 logger.info(f"ℹ️ LFM keep-alive NOT started — LFM not enabled or client not ready")
         except Exception as _lfm_ka_err:
             logger.warning(f"⚠️ LFM keep-alive task setup failed: {_lfm_ka_err}")
+
+        # ════════════════════════════════════════════════════════════════════
+        # PASO 8.8: GPT-4O-MINI FALLBACK KEEP-ALIVE PERIÓDICO (motor conversacional)
+        # ════════════════════════════════════════════════════════════════════
+        # POR QUE ES NECESARIO (descubierto 11/07/2026):
+        # self._gpt4o_mini_client (mcp_personalization_engine.py) es una
+        # instancia de UnifiedLLMClient SEPARADA de self._lfm_client -- cada
+        # una crea su propio AsyncOpenAI con su propio pool de conexiones
+        # (confirmado en llm_client.py). El comentario original en
+        # claude_config.py asumia que el keep-alive de LFM (PASO 8.7)
+        # tambien mantenia caliente la conexion de GPT-4o-mini -- esa
+        # suposicion es arquitectonicamente incorrecta: son dos clientes
+        # HTTP distintos, aunque apunten al mismo host (openrouter.ai).
+        #
+        # Ese gap se calentaba con GPT-4o-mini warmup (PASO ~8.6, una sola
+        # vez al arranque) -- pero sin ping periodico, su conexion puede
+        # quedar idle y necesitar re-establecerse en el primer uso real.
+        # Normalmente esto pasa desapercibido porque LFM funciona la
+        # mayoria de las veces y el fallback rara vez se ejercita.
+        #
+        # EVIDENCIA REAL (sesion 10-11/07/2026): el proveedor unico de LFM
+        # en OpenRouter cayo (404 "No endpoints found", externo, fuera de
+        # nuestro control) -- CADA consulta conversacional paso a depender
+        # de self._gpt4o_mini_client. Resultado: 4 de 4 fallbacks fallaron
+        # con gpt4o_mini_fallback_timeout_8s -- ambos modelos fuera al mismo
+        # tiempo, degradacion total del motor conversacional.
+        #
+        # FIX: mismo patron que PASO 8.7, aplicado a self._gpt4o_mini_client.
+        # Reutiliza el MISMO _lfm_ka_engine ya obtenido arriba (mismo motor,
+        # ambos clientes viven en la misma instancia) -- sin fetch adicional.
+        #
+        # COSTE: ~80 tokens/ping x 12 pings/hora x 24h -- despreciable
+        # (mismo orden de magnitud que el keep-alive de LFM).
+        # INTERVALO: 300s, igual que LFM -- mismo presupuesto de frescura.
+        # ════════════════════════════════════════════════════════════════════
+        gpt4o_mini_mcp_keepalive_task = None
+
+        async def _gpt4o_mini_mcp_keepalive_loop(engine) -> None:
+            # Mantiene caliente la conexion de self._gpt4o_mini_client del
+            # motor conversacional -- independiente del keep-alive de LFM
+            # (PASO 8.7) y del keep-alive de visual search (PASO 8.5e),
+            # que son clientes UnifiedLLMClient distintos con sus propios
+            # pools de conexion.
+            GPT4O_MINI_MCP_KEEPALIVE_INTERVAL_S = 300  # 5 minutos, igual que LFM
+            gpt4o_mini_ping_count = 0
+
+            while True:
+                try:
+                    await asyncio.sleep(GPT4O_MINI_MCP_KEEPALIVE_INTERVAL_S)
+                    gpt4o_mini_ping_count += 1
+
+                    if not (engine and
+                            hasattr(engine, '_gpt4o_mini_fallback_enabled') and
+                            engine._gpt4o_mini_fallback_enabled and
+                            hasattr(engine, '_gpt4o_mini_client') and
+                            engine._gpt4o_mini_client):
+                        logger.warning(
+                            "⚠️ GPT-4o-mini MCP keep-alive: client not available, stopping loop"
+                        )
+                        break
+
+                    ping_start = time.time()
+                    await asyncio.wait_for(
+                        engine._gpt4o_mini_client.complete(
+                            "Eres un asistente util.",
+                            "k",  # prompt minimo, igual que el keep-alive de LFM
+                        ),
+                        timeout=15.0  # mismo presupuesto que LFM keep-alive
+                    )
+                    ping_ms = (time.time() - ping_start) * 1000
+                    logger.info(
+                        f"🔄 GPT-4o-mini MCP keep-alive #{gpt4o_mini_ping_count} OK "
+                        f"in {ping_ms:.0f}ms — fallback connection stays warm"
+                    )
+
+                except asyncio.CancelledError:
+                    logger.info(
+                        f"✅ GPT-4o-mini MCP keep-alive loop cancelled after "
+                        f"{gpt4o_mini_ping_count} pings (clean shutdown)"
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        f"⚠️ GPT-4o-mini MCP keep-alive #{gpt4o_mini_ping_count} timeout (15s) — "
+                        f"fallback connection may be cold; next real fallback may be slow"
+                    )
+                    # Continuar el loop; el siguiente ping intentara renovar
+                except Exception as gpt4o_mini_ka_err:
+                    logger.warning(
+                        f"⚠️ GPT-4o-mini MCP keep-alive #{gpt4o_mini_ping_count} error: "
+                        f"{type(gpt4o_mini_ka_err).__name__}: {gpt4o_mini_ka_err} — "
+                        f"will retry in {GPT4O_MINI_MCP_KEEPALIVE_INTERVAL_S}s"
+                    )
+
+        # Arrancar GPT-4o-mini MCP keep-alive si el cliente esta disponible.
+        # Reutiliza _lfm_ka_engine (mismo motor obtenido arriba para LFM) --
+        # ambos clientes (_lfm_client y _gpt4o_mini_client) viven en la
+        # misma instancia de MCPPersonalizationEngine.
+        try:
+            if (_lfm_ka_engine and
+                    hasattr(_lfm_ka_engine, '_gpt4o_mini_fallback_enabled') and
+                    _lfm_ka_engine._gpt4o_mini_fallback_enabled and
+                    hasattr(_lfm_ka_engine, '_gpt4o_mini_client') and
+                    _lfm_ka_engine._gpt4o_mini_client):
+                gpt4o_mini_mcp_keepalive_task = asyncio.create_task(
+                    _gpt4o_mini_mcp_keepalive_loop(_lfm_ka_engine)
+                )
+                logger.info(
+                    f"✅ GPT-4o-mini MCP keep-alive background task started "
+                    f"(interval=300s) — fallback connection will stay warm indefinitely"
+                )
+            else:
+                logger.info(
+                    f"ℹ️ GPT-4o-mini MCP keep-alive NOT started — "
+                    f"fallback not enabled or client not ready"
+                )
+        except Exception as _gpt4o_mini_ka_err:
+            logger.warning(
+                f"⚠️ GPT-4o-mini MCP keep-alive task setup failed: {_gpt4o_mini_ka_err}"
+            )
 
         # ============================================================================
         # 🎯 PASO 9: COMPREHENSIVE HEALTH CHECK
@@ -1929,13 +2068,110 @@ async def lifespan(app: FastAPI):
                         _vs_client = _get_colbert_client()  # inicializa singleton
 
                         async def _prefetch_iam_token():
-                            """Pre-fetchea el token IAM para el colbert singleton."""
+                            """Pre-fetchea el token IAM y lanza el ping proactivo al embedding-service."""
                             try:
-                                await _vs_client._auth_headers()  # ya tiene timeout=10s
+                                _auth = await _vs_client._auth_headers()  # ya tiene timeout=10s interno
                                 logger.info(
                                     'visual_search_iam_prefetch_ok',
                                     note='colbert singleton ready — first outfit request will be fast'
                                 )
+
+                                # PING PROACTIVO (02/07/2026): despertar el embedding-service
+                                # si esta frio en Cloud Run (min-instances=0).
+                                #
+                                # Por que aqui (despues del prefetch IAM, no antes):
+                                #   El embedding-service usa --no-allow-unauthenticated.
+                                #   Cloud Run verifica el token IAM en el Load Balancer ANTES
+                                #   de crear la instancia -- un ping sin Bearer token seria
+                                #   rechazado con 403 sin despertar nada. Al reutilizar _auth
+                                #   del prefetch anterior (ya cacheado, costo ~0ms), el ping
+                                #   llega autenticado y Cloud Run crea la instancia.
+                                #
+                                # Comportamiento segun el estado del embedding-service:
+                                #   CALIENTE:  responde 200 en < 500ms -- confirmacion de salud.
+                                #   FRIO:      Cloud Run crea la instancia y tarda 130s en
+                                #              responder -- asyncio.wait_for dispara TimeoutError
+                                #              a los 3s. Eso es CORRECTO: la instancia ya se
+                                #              esta calentando en background. Logueamos INFO
+                                #              (no WARNING) porque es el resultado esperado.
+                                #
+                                # Resultado neto (caso ideal): el embedding-service empieza a
+                                # calentarse ~80s antes de que llegue el primer usuario (durante
+                                # el propio startup del monolito), en vez de cuando llega T1.
+                                # Reduce la ventana de errores 503 de 130s a ~50s.
+                                #
+                                # LIMITACION CONOCIDA -- NO GARANTIZADO (descubierta 03/07/2026):
+                                #   Este ping es "mejor esfuerzo", NO confiable. Root cause:
+                                #   Cloud Run (sin --cpu-boost / --no-cpu-throttling, que es la
+                                #   config actual del monolito) solo garantiza CPU mientras el
+                                #   contenedor procesa una request HTTP activa. El lifespan hace
+                                #   yield practicamente en el mismo instante en que este await
+                                #   arranca -- si el yield ocurre primero, Cloud Run considera
+                                #   que el startup "termino" y puede congelar el CPU del
+                                #   contenedor ANTES de que el timeout de 3s (o la respuesta real)
+                                #   tengan oportunidad de resolverse. El resultado observado en
+                                #   produccion: NINGUN log de este bloque aparece (ni ok, ni
+                                #   timeout, ni error) -- el codigo se queda pendiente a medio
+                                #   ejecutar, sin CPU para completar ninguna rama.
+                                #
+                                #   Evidencia (logs 02/07/2026, revision retail-recommender-00250-9tq):
+                                #     18:38:37.011  visual_search_iam_prefetch_ok  (ocurre ANTES
+                                #                    del yield, con CPU garantizada -- log presente)
+                                #     18:38:37.012  Uvicorn running (yield del lifespan)
+                                #     [... silencio total: cero logs de este bloque ...]
+                                #     18:38:44.465  primer GET /health/startup-probe (CPU reactivada)
+                                #   El embedding-service NO fue despertado por este ping en esa
+                                #   sesion -- lo desperto OPM-1 (visual_index_sync_job) 4 minutos
+                                #   despues, en un ciclo separado.
+                                #
+                                #   Por que SI funcionan los warmups de LFM/GPT-4o-mini (PASO
+                                #   8.5c/8.5d) y el registro de webhooks con el mismo patron
+                                #   fire-and-forget: todos ellos completan ANTES del yield,
+                                #   dentro de la ventana de procesamiento activo del startup,
+                                #   donde Cloud Run garantiza CPU sin condiciones. Este ping es
+                                #   el unico que puede cruzar al lado equivocado del yield.
+                                #
+                                #   MITIGACION REAL: Cloud Scheduler 24/7 contra /health del
+                                #   embedding-service (ver DCT sesion 02-03/07/2026). Cada ping
+                                #   del Scheduler ES una request HTTP entrante real -- Cloud Run
+                                #   garantiza CPU para procesarla sin excepcion, a diferencia de
+                                #   este ping fire-and-forget. NO depender de este bloque como
+                                #   mecanismo principal para evitar cold-starts del embedding-
+                                #   service; tratarlo como optimizacion de mejor esfuerzo
+                                #   solamente (puede ayudar si el resto del startup se demora
+                                #   lo suficiente para que el ping alcance a correr con CPU
+                                #   activa, pero no hay garantia).
+                                #
+                                #   FIX PENDIENTE (no aplicado -- requiere decision explicita):
+                                #   convertir este bloque en un await bloqueante DENTRO de la
+                                #   ventana activa del startup (antes del yield), con timeout
+                                #   corto (~2s), en vez de fire-and-forget. Coste: hasta 2s
+                                #   adicionales en el arranque del monolito en el peor caso
+                                #   (embed frio). Beneficio: el intento de despertar al embed
+                                #   quedaria garantizado con CPU disponible.
+                                try:
+                                    _ping_resp = await asyncio.wait_for(
+                                        _vs_client._http.get('/health', headers=_auth),
+                                        timeout=3.0,
+                                    )
+                                    logger.info(
+                                        'embedding_service_proactive_ping_ok',
+                                        status_code=_ping_resp.status_code,
+                                        note='instance already warm'
+                                    )
+                                except asyncio.TimeoutError:
+                                    # Esperado cuando el embed esta frio:
+                                    # Cloud Run recibio el request y esta creando la instancia.
+                                    logger.info(
+                                        'embedding_service_proactive_ping_timeout',
+                                        note='cold-start triggered proactively — instance warming in background'
+                                    )
+                                except Exception as _pe:
+                                    logger.warning(
+                                        'embedding_service_proactive_ping_error',
+                                        error=str(_pe) or repr(_pe)
+                                    )
+
                             except Exception as _e:
                                 logger.warning(
                                     'visual_search_iam_prefetch_error', error=str(_e)
@@ -2219,6 +2455,17 @@ async def lifespan(app: FastAPI):
                 logger.info(f"✅ LFM keep-alive background task stopped cleanly")
             except Exception as e:
                 logger.warning(f"⚠️ LFM keep-alive task shutdown warning: {e}")
+
+        # ════════════════════════════════════════════════════════════════════
+        # PASO 8.8 SHUTDOWN: Cancelar GPT-4o-mini MCP keep-alive background task
+        # ════════════════════════════════════════════════════════════════════
+        if gpt4o_mini_mcp_keepalive_task is not None and not gpt4o_mini_mcp_keepalive_task.done():
+            try:
+                gpt4o_mini_mcp_keepalive_task.cancel()
+                await asyncio.gather(gpt4o_mini_mcp_keepalive_task, return_exceptions=True)
+                logger.info(f"✅ GPT-4o-mini MCP keep-alive background task stopped cleanly")
+            except Exception as e:
+                logger.warning(f"⚠️ GPT-4o-mini MCP keep-alive task shutdown warning: {e}")
 
         # ════════════════════════════════════════════════════════════════════
         # M3: SHUTDOWN GCP METRICS EXPORTER — cancela el background task

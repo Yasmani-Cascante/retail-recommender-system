@@ -704,7 +704,7 @@ class MCPConversationStateManager:
         # ✅ FILTRAR IDs válidos
         valid_ids = [str(id_val) for id_val in recommendation_ids if id_val and str(id_val).strip()]
         
-        logger.info(f"🎯 Creating turn with {len(valid_ids)} recommendation IDs: {valid_ids[:3]}...")
+        logger.info(f"🎯 Creating turn with {len(valid_ids)} recommendation IDs: {valid_ids}")
         
         # ✅ CREAR ConversationTurn con datos completos
         new_turn = ConversationTurn(
@@ -732,7 +732,7 @@ class MCPConversationStateManager:
         # ✅ LOGGING para debugging
         logger.info(f"✅ Turn {new_turn.turn_number} created successfully:")
         logger.info(f"   - recommendations_provided: {len(new_turn.recommendations_provided)} IDs")
-        logger.info(f"   - First 3 IDs: {new_turn.recommendations_provided[:3] if new_turn.recommendations_provided else 'None'}")
+        logger.info(f"   - All IDs: {new_turn.recommendations_provided if new_turn.recommendations_provided else 'None'}")
         logger.info(f"   - Total turns in session: {session.total_turns}")
         
         return session

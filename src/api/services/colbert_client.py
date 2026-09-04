@@ -337,6 +337,107 @@ class LFM2ColBERTClient:
             self._handle_visual_failure(e)
             return None
 
+    async def search_by_product_id_with_text_boost(
+        self,
+        product_id: str,
+        boost_text: str,
+        alpha: float = 0.5,
+        top_k: int = 8,
+    ) -> Optional[List[str]]:
+        """
+        Igual que search_by_product_id_with_category_boost(), pero envia el
+        texto de composite embedding YA RESUELTO (boost_text) en vez de una
+        clave de categoria -- el embedding-service ya no necesita conocer
+        taxonomia de ningun tenant (Fase 1b, 23/07/2026). El texto se
+        resuelve del lado del monolito via product_taxonomy.py (unica
+        fuente de verdad).
+
+        Devuelve None si circuit breaker abierto, [] si el producto no esta
+        en el indice FAISS todavia -- mismo contrato que search_by_product_id().
+        """
+        if self._visual_circuit_open:
+            log.debug('ColBERT VISUAL circuit open — search_by_product_id_with_text_boost skipped')
+            return None
+        try:
+            auth = await self._auth_headers()
+            resp = await self._http.get(
+                '/v1/embed/search-by-id-with-text-boost',
+                headers=auth,
+                params={
+                    'product_id': str(product_id),
+                    'boost_text': boost_text,
+                    'alpha': str(alpha),
+                    'top_k': str(top_k),
+                },
+                timeout=8.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self._visual_failures = 0
+            log.info(
+                'search_by_product_id_with_text_boost: %d results in %.1fms '
+                'for product_id=%s',
+                len(data['product_ids']), data['latency_ms'], product_id,
+            )
+            return data['product_ids']
+        except Exception as e:
+            self._handle_visual_failure(e)
+            return None
+
+    async def search_by_product_id_with_multi_text_boost(
+        self,
+        product_id: str,
+        boost_texts: List[str],
+        alpha: float = 0.5,
+        top_k: int = 8,
+    ) -> Optional[List[List[str]]]:
+        """
+        Igual que search_by_product_id_with_text_boost(), pero batchea N
+        textos de boost en UNA sola busqueda FAISS del lado del
+        embedding-service, en vez de N llamadas HTTP separadas -- ver
+        visual_retriever.search_by_product_id_with_multi_text_boost() para
+        el razonamiento completo (Fase 1b Paso 3, 23/07/2026).
+
+        POST con body JSON (no GET con query params) -- una lista de N
+        textos no calza bien en query params.
+
+        Devuelve None si circuit breaker abierto, [] si el producto no esta
+        en el indice FAISS todavia o boost_texts esta vacio. Si tiene
+        exito, devuelve una lista alineada 1:1 con boost_texts (results[i]
+        corresponde a boost_texts[i]).
+        """
+        if self._visual_circuit_open:
+            log.debug('ColBERT VISUAL circuit open — search_by_product_id_with_multi_text_boost skipped')
+            return None
+        if not boost_texts:
+            return []
+        try:
+            auth = await self._auth_headers()
+            resp = await self._http.post(
+                '/v1/embed/search-by-id-with-multi-text-boost',
+                headers=auth,
+                json={
+                    'product_id': str(product_id),
+                    'boost_texts': boost_texts,
+                    'alpha': alpha,
+                    'top_k': top_k,
+                },
+                timeout=8.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self._visual_failures = 0
+            log.info(
+                'search_by_product_id_with_multi_text_boost: %d/%d textos con '
+                'resultados en %.1fms for product_id=%s',
+                sum(1 for r in data['results'] if r), len(boost_texts),
+                data['latency_ms'], product_id,
+            )
+            return data['results']
+        except Exception as e:
+            self._handle_visual_failure(e)
+            return None
+
     async def search_by_image(
         self,
         image_bytes: bytes,

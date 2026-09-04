@@ -1291,7 +1291,24 @@ class ServiceFactory:
                 if cls._mcp_recommender is None:
                     try:
                         import os
-                        from anthropic import AsyncAnthropic
+                        # FIX (04/09/2026): anthropic SDK actualizado a 1.x en este rebuild
+                        # (requirements.txt tenia "anthropic>=0.25.0", sin techo -- cada build
+                        # de Docker instala lo ultimo disponible en PyPI, no lo que se uso hace
+                        # un mes). La version nueva del SDK migro su dependencia HTTP de httpx a
+                        # httpx2 (paquete PyPI separado, instalado automaticamente como
+                        # dependencia de anthropic) y ahora exige que http_client sea una
+                        # instancia de httpx2 -- pasar un httpx.AsyncClient estandar lanza
+                        # TypeError. Confirmado en logs de produccion (04/09/2026): esto rompia
+                        # CADA request (get_mcp_recommender es una dependencia de FastAPI
+                        # resuelta en cada llamada), no solo el arranque.
+                        # Fix verificado de punta a punta contra el paquete real instalado
+                        # (anthropic 1.3.0 + httpx2 2.12.0): DefaultAsyncHttpxClient +
+                        # httpx2.Timeout/httpx2.Limits aceptan los mismos parametros
+                        # (http2, timeout, limits, connect/read/write/pool,
+                        # max_keepalive_connections/max_connections/keepalive_expiry) que
+                        # httpx.AsyncClient/Timeout/Limits -- ningun valor de configuracion
+                        # de Cloud Run (ver comentarios originales abajo) cambio.
+                        from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
                         from src.api.mcp.engines.mcp_personalization_engine import MCPPersonalizationEngine
 
                         # Obtener dependencias
@@ -1311,7 +1328,7 @@ class ServiceFactory:
                         # httpx.Timeout configura connect=10s (establecer la conexión TCP/TLS)
                         # y read=25s (leer la respuesta). Sin esto, la SDK usa defaults que
                         # pueden ser demasiado generosos o no respetarse en todos los paths.
-                        import httpx
+                        import httpx2
                         # Strip whitespace/newlines defensively — Secret Manager puede
                         # inyectar la clave con \r\n al final si fue creada desde
                         # Windows o con un editor que añade newline al guardar.
@@ -1348,15 +1365,18 @@ class ServiceFactory:
                         anthropic_client = AsyncAnthropic(
                             api_key=anthropic_api_key,
                             max_retries=0,        # fallo rápido: el loop interno maneja reintentos
-                            http_client=httpx.AsyncClient(
+                            # FIX (04/09/2026): DefaultAsyncHttpxClient (httpx2) reemplaza a
+                            # httpx.AsyncClient -- ver comentario en el import de arriba.
+                            # Mismos valores exactos que antes, solo cambia la clase.
+                            http_client=DefaultAsyncHttpxClient(
                                 http2=False,      # HTTP/1.1: más resiliente en Cloud Run NAT
-                                timeout=httpx.Timeout(
+                                timeout=httpx2.Timeout(
                                     connect=10.0,  # tiempo máx para establecer TCP/TLS
                                     read=25.0,     # tiempo máx para leer respuesta de Claude
                                     write=10.0,
                                     pool=5.0
                                 ),
-                                limits=httpx.Limits(
+                                limits=httpx2.Limits(
                                     max_keepalive_connections=5,
                                     max_connections=10,
                                     # 300s: cubre startup (~90s) + margen hasta primera request.

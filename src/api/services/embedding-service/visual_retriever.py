@@ -254,6 +254,13 @@ class FashionSigLIPRetriever:
         # Si warmup() no se llama, search_outfit_by_image() tiene fallback a encode_text().
         self._text_embed_cache: Dict[str, np.ndarray] = {}
 
+        # Fase 1b (23/07/2026): cache lazy por texto exacto -- separado de
+        # _text_embed_cache (que sigue keyed por nombre de categoria, para
+        # CATEGORY_TEXT_PROMPTS/SHOPIFY_TYPE_TEXT_PROMPTS, sin pre-warm porque
+        # este servicio ya no conoce de antemano que textos se van a pedir.
+        # Ver search_by_product_id_with_text_boost().
+        self._text_boost_cache: Dict[str, np.ndarray] = {}
+
         log.info('FashionSigLIP loaded in %.1fs | embed_dim=%d | tokenizer=ready',
                  time.time() - t0, self._embed_dim)
 
@@ -890,6 +897,198 @@ class FashionSigLIPRetriever:
             ][:top_k]
 
         return await loop.run_in_executor(None, _reconstruct_and_search, position)
+
+    async def search_by_product_id_with_text_boost(
+        self,
+        product_id: str,
+        boost_text: str,
+        alpha: float = 0.5,
+        top_k: int = 8,
+    ) -> List[str]:
+        """
+        Igual que search_by_product_id_with_category_boost(), pero recibe el
+        texto de composite embedding YA RESUELTO por el llamante (boost_text),
+        en vez de una clave de categoria que este servicio resolveria
+        internamente.
+
+        POR QUE (Fase 1b, 23/07/2026 -- ver PLAN_Fase1b_Revision_Arquitectonica_23072026.md
+        en el repo del monolito): el embedding-service es un microservicio
+        Cloud Run separado, desplegado independientemente del monolito.
+        Mantener un diccionario de taxonomia (que tipos existen, como se
+        llaman, que texto los describe) en ESTE lado acopla el
+        embedding-service al vocabulario de UN tenant especifico -- no
+        escala a una plataforma multi-tenant. Esta funcion no conoce ningun
+        tipo de producto: solo combina imagen + texto libre y busca. Toda la
+        taxonomia vive en un solo lugar (product_taxonomy.py, lado
+        monolito).
+
+        Cache: por texto exacto recibido (no por nombre de categoria) --
+        lazy, en tiempo de ejecucion. La primera llamada con un texto nuevo
+        paga el encode (~150ms); llamadas siguientes con el MISMO texto (el
+        monolito envia el mismo texto de forma consistente por tipo) son
+        cache hit. Sin pre-warm -- este servicio ya no conoce de antemano
+        que textos se van a pedir.
+
+        Fallback identico a search_by_product_id():
+          - product_id no esta en el indice FAISS -> []
+          - boost_text vacio/None -> degrada a busqueda pura de imagen
+            (delega directamente a search_by_product_id).
+        """
+        if self._faiss_index is None or not self._id_map:
+            log.warning('[search_by_product_id_with_text_boost] Index not ready.')
+            return []
+
+        pid = str(product_id)
+        try:
+            position = self._id_map.index(pid)
+        except ValueError:
+            log.debug(
+                '[search_by_product_id_with_text_boost] product_id=%s not in FAISS index',
+                pid,
+            )
+            return []
+
+        if not boost_text:
+            log.debug(
+                '[search_by_product_id_with_text_boost] boost_text vacio -- '
+                'degrading to plain image search'
+            )
+            return await self.search_by_product_id(pid, top_k=top_k)
+
+        loop = asyncio.get_running_loop()
+
+        def _reconstruct_text_boost_and_search(pos):
+            import numpy as _np
+            image_vec = self._faiss_index.reconstruct(pos)
+            image_np  = _np.array(image_vec, dtype=_np.float32).reshape(1, -1)
+
+            cached_text_np = self._text_boost_cache.get(boost_text)
+            if cached_text_np is not None:
+                text_np = cached_text_np
+            else:
+                import torch as _torch
+                tokens = self._tokenizer([boost_text])
+                with _torch.no_grad():
+                    text_embed = self._model.encode_text(tokens)
+                    text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+                text_np = text_embed.float().cpu().numpy()
+                # Cachear para proximas llamadas con este mismo texto exacto.
+                self._text_boost_cache[boost_text] = text_np
+
+            composite = alpha * image_np + (1.0 - alpha) * text_np
+            norm      = _np.linalg.norm(composite, axis=-1, keepdims=True)
+            composite = (composite / norm).astype(_np.float32)
+
+            _, indices = self._faiss_index.search(composite, top_k + 1)
+            return [
+                self._id_map[idx]
+                for idx in indices[0]
+                if 0 <= idx < len(self._id_map) and self._id_map[idx] != pid
+            ][:top_k]
+
+        return await loop.run_in_executor(None, _reconstruct_text_boost_and_search, position)
+
+    async def search_by_product_id_with_multi_text_boost(
+        self,
+        product_id: str,
+        boost_texts: List[str],
+        alpha: float = 0.5,
+        top_k: int = 8,
+    ) -> List[List[str]]:
+        """
+        Igual que search_by_product_id_with_text_boost(), pero acepta VARIOS
+        textos de boost a la vez y hace UNA sola busqueda FAISS en vez de N.
+
+        POR QUE (Fase 1b Paso 3, 23/07/2026 -- ver
+        PLAN_Fase1b_Revision_Arquitectonica_23072026.md): F-08B necesita
+        pedir varios tipos especificos a la vez (ej. COLLARES, BRAZALETES,
+        CINTURONES... para completar un outfit). Hacer N llamadas HTTP
+        paralelas (una por tipo) escala mal con catalogos de taxonomia mas
+        rica -- cientos de tipos significarian cientos de round-trips por
+        consulta. FAISS IndexFlatIP acepta naturalmente una matriz de
+        consultas (N, embed_dim) en una sola llamada -- es una multiplicacion
+        de matrices, el costo extra de N filas vs. 1 es marginal comparado
+        con el overhead de red de N llamadas HTTP separadas.
+
+        Los textos que ya estan en cache se resuelven al instante; los que
+        faltan se encodean en UN SOLO batch (no uno por uno) y se cachean
+        para la proxima vez -- mismo self._text_boost_cache que
+        search_by_product_id_with_text_boost() (comparten cache, formato
+        identico: cada entrada es un array (1, embed_dim)).
+
+        Devuelve una lista alineada 1:1 con boost_texts -- results[i]
+        corresponde a boost_texts[i]. [] (lista vacia) si product_id no
+        esta en el indice FAISS o boost_texts esta vacio.
+        """
+        if self._faiss_index is None or not self._id_map:
+            log.warning('[search_by_product_id_with_multi_text_boost] Index not ready.')
+            return []
+
+        if not boost_texts:
+            return []
+
+        pid = str(product_id)
+        try:
+            position = self._id_map.index(pid)
+        except ValueError:
+            log.debug(
+                '[search_by_product_id_with_multi_text_boost] product_id=%s not in FAISS index',
+                pid,
+            )
+            return []
+
+        loop = asyncio.get_running_loop()
+
+        def _reconstruct_multi_text_boost_and_search(pos):
+            import numpy as _np
+            image_vec = self._faiss_index.reconstruct(pos)
+            image_np  = _np.array(image_vec, dtype=_np.float32).reshape(1, -1)
+
+            # Resolver embeddings de texto: cache hits directos, misses en
+            # UN SOLO batch encode (no uno por uno).
+            text_vecs    = [None] * len(boost_texts)
+            miss_indices = []
+            miss_texts   = []
+            for i, txt in enumerate(boost_texts):
+                cached = self._text_boost_cache.get(txt)
+                if cached is not None:
+                    text_vecs[i] = cached[0]
+                else:
+                    miss_indices.append(i)
+                    miss_texts.append(txt)
+
+            if miss_texts:
+                import torch as _torch
+                tokens = self._tokenizer(miss_texts)
+                with _torch.no_grad():
+                    text_embed = self._model.encode_text(tokens)
+                    text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+                miss_np = text_embed.float().cpu().numpy()  # (len(miss_texts), embed_dim)
+                for j, i in enumerate(miss_indices):
+                    text_vecs[i] = miss_np[j]
+                    # Cachear en el mismo formato (1, embed_dim) que usa
+                    # search_by_product_id_with_text_boost() -- cache
+                    # compartido entre ambos metodos.
+                    self._text_boost_cache[miss_texts[j]] = miss_np[j].reshape(1, -1)
+
+            text_matrix = _np.stack(text_vecs, axis=0).astype(_np.float32)  # (N, embed_dim)
+            composite   = alpha * image_np + (1.0 - alpha) * text_matrix   # broadcast -> (N, embed_dim)
+            norm        = _np.linalg.norm(composite, axis=-1, keepdims=True)
+            composite   = (composite / norm).astype(_np.float32)
+
+            # UNA sola llamada FAISS para las N consultas.
+            _, indices_matrix = self._faiss_index.search(composite, top_k + 1)
+
+            results = []
+            for row in indices_matrix:
+                row_ids = [
+                    self._id_map[idx] for idx in row
+                    if 0 <= idx < len(self._id_map) and self._id_map[idx] != pid
+                ][:top_k]
+                results.append(row_ids)
+            return results
+
+        return await loop.run_in_executor(None, _reconstruct_multi_text_boost_and_search, position)
 
     # ─────────────────────────────────────────────────────────────────────────
     # S1: SEARCH — búsqueda de outfit completo (nuevo)

@@ -934,30 +934,272 @@ async def get_mcp_conversation_recommendations(
                                     _img_r.raise_for_status()
                                     _img_bytes_b08 = _img_r.content
 
-                                # Excluir la categoria propia del producto visto.
-                                # SHOPIFY_TYPE_TO_OUTFIT_CATEGORY mapping (subset relevante).
-                                _B08_TYPE_TO_CAT = {
-                                    "vestidos cortos": "dress", "vestidos largos": "dress",
-                                    "vestidos midis":  "dress", "enteritos":       "enterito",
-                                    "blusas":   "top",       "polos":    "top",
-                                    "tops":     "top",       "accesorios": "accessory",
-                                    "bolsos":   "bag",       "calzado":   "bottom",
-                                    "pantalones": "bottom",  "faldas":   "bottom",
+                                # GAP B FIX (11/07/2026): _B08_TYPE_TO_CAT (el diccionario
+                                # que vivia aqui antes) usaba claves genericas en espanol
+                                # ("accesorios", "bolsos", "calzado") que NUNCA calzaban con
+                                # ningun product_type real de Shopify (los reales son "AROS",
+                                # "CARTERAS", "ZAPATOS", etc. -- confirmado revisando cada
+                                # clave contra el catalogo real). Efecto: _b08_own_cat quedaba
+                                # "" (vacio) para casi cualquier producto ancla de accesorios,
+                                # bolsos, zapatos o enteritos, y la exclusion de "no recomendar
+                                # la propia categoria del producto ancla" nunca se aplicaba en
+                                # esos casos -- ej. viendo un producto AROS, "completa el
+                                # outfit" buscaba accesorios (bucket "accessory") sin
+                                # excluirlo, aunque el ancla ya fuera un accesorio.
+                                #
+                                # Fix: eliminar el diccionario duplicado y mover aqui
+                                # _B08_SHOPIFY_TO_OUTFIT_CAT (antes solo se definia mas abajo,
+                                # para el narrowing de Hallazgo 2) como unica fuente de verdad
+                                # -- ya esta alineado 1:1 con los product_type reales del
+                                # catalogo, a diferencia del diccionario viejo.
+                                _B08_SHOPIFY_TO_OUTFIT_CAT = {
+                                    "AROS": "accessory", "COLLARES": "accessory",
+                                    "BRAZALETES": "accessory", "BRAZALETE": "accessory",
+                                    "CINTURONES": "accessory", "TOCADOS": "accessory",
+                                    "ALAS DE NOVIA": "accessory",
+                                    "CARTERAS": "bag", "CLUTCH": "bag",
+                                    "VESTIDOS CORTOS": "dress", "VESTIDOS LARGOS": "dress",
+                                    "VESTIDOS MIDIS": "dress",
+                                    "ENTERITOS CORTOS": "enterito", "ENTERITOS LARGOS": "enterito",
+                                    "TOPS": "top", "BRALETTES": "top",
+                                    "PANTALONES": "bottom", "FALDAS": "bottom",
+                                    "CAPAS BORDADAS": "outerwear", "CAPAS GASA": "outerwear",
+                                    "KIMONOS": "outerwear",
+                                    "ZAPATOS": "shoes",
+                                    "CONJUNTOS FALDAS": "conjunto",
+                                    "CONJUNTOS PANTALONES": "conjunto",
                                 }
-                                _b08_own_cat    = _B08_TYPE_TO_CAT.get(_b08_ptype, "")
-                                _b08_target_cats = [
-                                    c for c in ["dress", "top", "accessory", "bag",
-                                                "enterito", "outerwear"]
-                                    if c != _b08_own_cat
+                                # _b08_ptype llega en minusculas (linea anterior) -- .upper()
+                                # para calzar con las claves (mayusculas) del diccionario.
+                                _b08_own_cat = _B08_SHOPIFY_TO_OUTFIT_CAT.get(_b08_ptype.upper(), "")
+
+                                # GAP 2 FIX (13/07/2026): grupos de conflicto de "slot" de
+                                # prenda. Antes solo se excluia _b08_own_cat (la categoria
+                                # exacta del producto ancla), sin modelar que otras categorias
+                                # ocupan el MISMO slot corporal y por tanto tampoco son
+                                # complementarias. Confirmado con evidencia real de produccion
+                                # (13/07/2026): ancla VESTIDOS CORTOS (dress) devolvia
+                                # categories=['top','accessory','bag','enterito','outerwear'] --
+                                # "top" y "enterito" son incompatibles con un vestido (prenda de
+                                # cuerpo completo), no complementos.
+                                #
+                                # dress/enterito son prendas de cuerpo completo -- conflictan
+                                # entre si y con "top" (no tiene sentido sugerir un top sobre/
+                                # bajo un vestido o enterito). top/bottom se necesitan
+                                # mutuamente pero no a dress/enterito (serian "otro outfit
+                                # completo", no un complemento). accessory/bag/outerwear/shoes
+                                # son compatibles con cualquier prenda base -- sin conflictos,
+                                # no aparecen como llaves aqui.
+                                #
+                                # Se aplica de forma UNIVERSAL: tanto a la lista amplia por
+                                # defecto como a la categoria detectada explicitamente por texto
+                                # (ver _b08_mapped_cats mas abajo) -- decision de producto
+                                # consciente (sesion 13/07/2026): la deteccion de categoria por
+                                # texto ya tuvo falsos positivos por colision de keywords en
+                                # esta misma sesion (ej. "outfit" disparando CONJUNTOS), asi que
+                                # confiar ciegamente en una "peticion explicita" puede estar
+                                # propagando un bug de deteccion en vez de una intencion real
+                                # del usuario. Consistente con el principio de coherencia
+                                # categorica estricta (strict_category=True) ya establecido en
+                                # otras partes del sistema.
+                                _B08_SLOT_CONFLICTS = {
+                                    "dress":    {"top", "bottom", "enterito"},
+                                    "enterito": {"top", "bottom", "dress"},
+                                    "top":      {"dress", "enterito"},
+                                    "bottom":   {"dress", "enterito"},
+                                }
+                                # FIX (14/07/2026): "accessory" y "bag" son buckets MULTI-TIPO
+                                # -- varios product_type concretos de Shopify caen en el mismo
+                                # bucket (AROS/COLLARES/BRAZALETES/CINTURONES/TOCADOS/ALAS DE
+                                # NOVIA -> accessory; CARTERAS/CLUTCH -> bag). Auto-excluir el
+                                # bucket ENTERO cuando el ancla es de ese bucket bloqueaba
+                                # combinaciones legitimas entre tipos hermanos (ej. ancla AROS
+                                # nunca podia sugerir un COLLAR; ancla CLUTCH nunca podia
+                                # sugerir una CARTERA), ademas del bug ya confirmado en
+                                # produccion (13/07/2026): ancla AROS + "que accesorios
+                                # combinan" devolvia SOLO 'bag' (5 clutch, sin variedad),
+                                # porque 'accessory' -- lo unico que el usuario pidio -- se
+                                # auto-excluia por ser tambien la categoria del ancla.
+                                #
+                                # A diferencia de dress/enterito/top/bottom (una sola prenda de
+                                # ese tipo por outfit), accessory y bag son inherentemente
+                                # multi-item: aretes+collar+pulsera es un combo de estilismo
+                                # normal, y una cartera+clutch son piezas intercambiables, no
+                                # conflictivas. La exclusion del MISMO tipo concreto (ej. no
+                                # mas AROS si el ancla ya es AROS, no mas CLUTCH si el ancla ya
+                                # es CLUTCH) se maneja aparte, a nivel de producto individual,
+                                # con _b08_is_same_type() mas abajo -- no a nivel de bucket.
+                                _b08_excluded_cats = (
+                                    _B08_SLOT_CONFLICTS.get(_b08_own_cat, set())
+                                    | (set() if _b08_own_cat in {"accessory", "bag"} else {_b08_own_cat})
+                                )
+
+                                # HALLAZGO 2 FIX (06/07/2026): leer la categoria especifica
+                                # que el usuario pidio en su consulta, en vez de siempre usar
+                                # la lista fija de 6 categorias.
+                                #
+                                # Por que: _b08_target_cats era SIEMPRE la misma lista fija
+                                # (menos la categoria propia del producto), sin importar si
+                                # el usuario pidio "completa el outfit" (amplio) o "que
+                                # accesorios combinan" (especifico). Confirmado con evidencia
+                                # real (sesion 05/07/2026): "Que accesorios combinan con este
+                                # vestido?" devolvio categories=['top','accessory','bag',
+                                # 'enterito','outerwear'] -- 4 categorias que el usuario nunca
+                                # pidio, mezcladas con los accesorios que si pidio.
+                                #
+                                # Mecanismo: reusa extract_categories_from_query() (ya usada
+                                # en F-08C y en el bloque Standard recommendations) para
+                                # detectar si el usuario menciono una categoria Shopify
+                                # explicita (ej. "accesorios" -> expande via CATEGORY_KEYWORDS
+                                # a AROS/COLLARES/BRAZALETES/etc). Si detecta algo, mapea esos
+                                # tipos concretos a su bucket de outfit-category
+                                # (accessory/bag/dress/top/enterito/outerwear/bottom) y usa
+                                # SOLO esos como target_categories -- nunca la categoria
+                                # propia del producto ancla. Si no detecta nada (consulta
+                                # generica tipo "completa el outfit"), mantiene el
+                                # comportamiento amplio actual sin cambios.
+                                #
+                                # Import lazy: mismo patron defensivo ya usado para
+                                # get_parent_categories en F-08 Fase A (BUG-REFACTOR-1,
+                                # 18/06/2026) -- extract_categories_from_query y
+                                # get_concrete_categories estan importados arriba SOLO
+                                # dentro del bloque "if use_diversification:" (Turn 2+).
+                                # F-08B puede activarse en Turn 1 tambien (ver comentario de
+                                # trigger arriba), donde esa rama nunca ejecuta -- sin este
+                                # import lazy, usarlas aqui lanzaria UnboundLocalError.
+                                # _B08_SHOPIFY_TO_OUTFIT_CAT ya quedo definido arriba (Gap B
+                                # fix, 11/07/2026), junto con _b08_own_cat -- se reusa aqui tal
+                                # cual para el narrowing de Hallazgo 2, sin redefinirlo.
+                                _b08_query_target_cats = None
+                                try:
+                                    from src.recommenders.improved_fallback_exclude_seen import (
+                                        extract_categories_from_query as _b08_extract_cats,
+                                        get_concrete_categories as _b08_get_concrete_cats,
+                                    )
+                                    _b08_available_cats = _b08_get_concrete_cats()
+                                    _b08_detected = _b08_extract_cats(
+                                        conversation_query, _b08_available_cats
+                                    )
+                                    if _b08_detected:
+                                        _b08_mapped_cats = {
+                                            _B08_SHOPIFY_TO_OUTFIT_CAT[c.upper()]
+                                            for c in _b08_detected
+                                            if c.upper() in _B08_SHOPIFY_TO_OUTFIT_CAT
+                                        }
+                                        # GAP 2 FIX (13/07/2026): antes solo .discard(_b08_own_cat)
+                                        # -- se cambia a resta de conjunto completa
+                                        # (_b08_excluded_cats incluye _b08_own_cat + conflictos de
+                                        # slot) para que una categoria detectada por texto que
+                                        # sea incompatible con el ancla (ej. "top" detectado sobre
+                                        # un vestido) tampoco pase, aplicando el mismo criterio
+                                        # que a la lista amplia por defecto (ver comentario
+                                        # completo junto a _B08_SLOT_CONFLICTS mas arriba).
+                                        _b08_mapped_cats -= _b08_excluded_cats
+                                        if _b08_mapped_cats:
+                                            _b08_query_target_cats = list(_b08_mapped_cats)
+                                            logger.info(
+                                                f"F-08B query category detected: "
+                                                f"{_b08_detected} -> {_b08_query_target_cats} "
+                                                f"(narrowing target_categories)"
+                                            )
+                                except Exception as _b08_detect_err:
+                                    logger.debug(
+                                        f"F-08B category detection from query failed "
+                                        f"(using default broad categories): {_b08_detect_err}"
+                                    )
+
+                                # GAP 2 FIX (13/07/2026): lista de candidatos ampliada de 6 a
+                                # 8 categorias:
+                                #   + "bottom" (pantalones/faldas) -- NUNCA se habia agregado
+                                #     pese a estar probada y funcionando en el embedding-service
+                                #     desde la implementacion original de S1 (13/05/2026):
+                                #     CATEGORY_TEXT_PROMPTS la incluye, tiene 69 productos
+                                #     mapeados (2.3% del catalogo). Confirmado en la
+                                #     documentacion del proyecto -- era un olvido de
+                                #     implementacion, no una limitacion tecnica. Sin esto,
+                                #     ningun producto TOP recibia jamas una recomendacion de
+                                #     pantalon/falda desde F-08B.
+                                #   + "shoes" -- antes solo alcanzable via narrowing explicito
+                                #     por texto ("que zapatos combinan"). No conflictua con
+                                #     nada (slot independiente, "pies") y ya esta validado en
+                                #     produccion (fix ZAPATOS->shoes, sesion 11/07/2026). Los 9
+                                #     prompts de categoria ya estan precalculados en el warmup
+                                #     del embedding-service (_text_embed_cache), asi que
+                                #     agregarla no anade llamadas de encoding, solo una busqueda
+                                #     FAISS adicional sobre vectores ya en cache.
+                                #
+                                # Deliberadamente FUERA de la lista por defecto (decision de
+                                # producto, no limitacion tecnica):
+                                #   - "conjunto": es un set de dos piezas vendido como unidad,
+                                #     no un "complemento" -- mostrar conjuntos random en un
+                                #     "completa el outfit" generico no tiene el mismo sentido
+                                #     que sugerir zapatos/accesorios. Investigacion dedicada
+                                #     pendiente (Gap 3, sesion 13/07/2026).
+                                #   - "lingerie": mezclar ropa interior en sugerencias
+                                #     genericas puede sentirse invasivo si el usuario no lo
+                                #     pidio explicitamente. Ninguna de las dos aparece mapeada
+                                #     como target en _B08_SHOPIFY_TO_OUTFIT_CAT, asi que ya
+                                #     estaban excluidas por omision -- no requirio cambio
+                                #     adicional de codigo.
+                                _B08_FULL_CANDIDATE_CATS = [
+                                    "dress", "top", "bottom", "accessory", "bag",
+                                    "enterito", "outerwear", "shoes",
                                 ]
+                                _b08_target_cats = _b08_query_target_cats if _b08_query_target_cats else [
+                                    c for c in _B08_FULL_CANDIDATE_CATS
+                                    if c not in _b08_excluded_cats
+                                ]
+
+                                # GAP 1 FIX (13/07/2026): _b08_shown_ids = productos ya
+                                # mostrados en la sesion (shown_products, calculado mas arriba
+                                # en get_base_recommendations() -- ya esta en scope aqui, mismo
+                                # nivel de funcion, sin necesidad de pasarlo como parametro).
+                                # Confirmado con evidencia real de produccion (13/07/2026): dos
+                                # consultas genericas seguidas ("combina con esto" + "completa
+                                # el look") sobre el mismo producto devolvieron exactamente los
+                                # mismos 8 productos, pese a que shown_products ya los tenia
+                                # registrados ("Diversification needed: True", "shown_products
+                                # count: 8" en el log) -- F-08B nunca consultaba esa
+                                # informacion, solo excluia el producto ancla.
+                                _b08_shown_ids = {str(p) for p in shown_products}
 
                                 # Composite embedding: alpha=0.5 (imagen y texto con igual peso)
                                 # Evita que vestidos dominen todas las categorias (issue S1).
+                                # top_k_per_category: 3 -> 5 (GAP 1 FIX, 13/07/2026) -> 15 (17/07/2026):
+                                # dar margen para filtrar productos ya mostrados sin vaciar categorias
+                                # de golpe. Los 9 prompts de categoria ya estan precalculados en el
+                                # warmup (_text_embed_cache) -- pedir top_k mas alto no agrega
+                                # llamadas de encoding, solo mas resultados de una busqueda FAISS
+                                # que de todas formas ya ocurre (<1ms independiente de k, ver
+                                # docstring de search_outfit_by_image).
+                                #
+                                # FIX (17/07/2026): 5 resulto insuficiente cuando el ancla es un
+                                # tipo que domina su propio bucket visualmente (ej. AROS dentro de
+                                # "accessory"). _b08_is_same_type() excluye correctamente mas del
+                                # mismo tipo, pero si los 5 candidatos crudos de "accessory" son en
+                                # su mayoria del MISMO tipo que el ancla (altamente probable --
+                                # otro Aros es lo visualmente mas parecido a un Aros), casi no
+                                # sobrevive nada. Confirmado en produccion (16/07/2026): ancla AROS
+                                # + "que accesorios combinan" -> 1 solo producto sobreviviente de
+                                # 10 candidatos crudos (5 accessory + 5 bag), dos consultas
+                                # seguidas devolviendo literalmente el mismo item repetido.
+                                #
+                                # Por que 15 es seguro: "accessory" es ~21.2% del catalogo (no una
+                                # categoria rara) -- con el search_pool interno de 150 candidatos,
+                                # ceil(15/0.212)~=71, bien dentro del presupuesto. Para categorias
+                                # ya de por si escasas (bag/shoes/bottom, ~2.2-2.4%), 15 supera lo
+                                # que el search_pool=150 puede ofrecer de forma fiable (ya ocurria
+                                # esto tambien con top_k=5, solo que de forma menos visible) -- el
+                                # servidor simplemente devuelve lo que tenga disponible sin
+                                # romperse, y el relleno restringido de abajo sigue cubriendo el
+                                # caso de escasez real. Validar con logs reales tras el proximo
+                                # deploy si 15 es suficiente o si conviene diferenciar el top_k
+                                # por categoria (accessory/dress mas alto, bag/shoes mas bajo).
                                 _b08_outfit = await asyncio.wait_for(
                                     _b08_colbert.search_outfit_by_image(
                                         image_bytes=_img_bytes_b08,
                                         target_categories=_b08_target_cats,
-                                        top_k_per_category=3,
+                                        top_k_per_category=15,
                                         alpha=0.5,
                                     ),
                                     timeout=5.0,
@@ -974,54 +1216,377 @@ async def get_mcp_conversation_recommendations(
                                     # Iterar .items() directamente causaba
                                     # 'float' object is not iterable al llegar a latency_ms.
                                     _b08_outfit_cats = _b08_outfit.get("outfit", {})
-                                    _b08_pools = {
-                                        cat: [pid for pid in pids if str(pid) != _b08_pid]
+
+                                    # FASE 1B PASO 4 (23/07/2026): complementa el pool generico de
+                                    # arriba con candidatos dirigidos por tipo especifico, usando
+                                    # product_taxonomy.py (Paso 1) + la busqueda multi-texto
+                                    # batcheada (Paso 3). Resuelve "Gap C" (documentado 03/07/2026):
+                                    # search_outfit_by_image() usa un solo prompt generico por
+                                    # bucket -- si la vecindad visual del ancla esta dominada por su
+                                    # propio tipo, el bucket completo puede volver homogeneo
+                                    # (confirmado en produccion, T3 23/07/2026: 15/15 candidatos de
+                                    # "accessory" eran AROS, incluso con top_k=15 y el filtro
+                                    # _b08_is_same_type() de mas abajo -- si el pool crudo entero es
+                                    # del mismo tipo, no queda nada que filtrar).
+                                    #
+                                    # Para cada bucket target con tipos de steering_text propio (hoy:
+                                    # accessory, bag -- familia ACCESSORIES), pide un candidato
+                                    # dirigido por cada tipo hermano (excluyendo el propio tipo del
+                                    # ancla) usando alpha_complement (0.2 -- mayormente texto, Fase 0).
+                                    # Agrupado por alpha (hoy: un solo grupo, los 9 tipos comparten
+                                    # 0.2) para que UNA sola llamada batcheada cubra todos los tipos
+                                    # de ese grupo -- ver product_taxonomy.get_alpha() si algun tipo
+                                    # necesita un alpha_complement distinto en el futuro.
+                                    #
+                                    # Se AGREGA a _b08_outfit_cats[bucket] (no reemplaza) -- toda la
+                                    # logica de abajo (mismo-tipo, interleave por subtipo, pools
+                                    # fresh/full, interleave entre buckets) opera sin cambios sobre
+                                    # la lista combinada.
+                                    from src.recommenders.product_taxonomy import (
+                                        types_in_outfit_slot as _b08_types_in_outfit_slot,
+                                        get_steering_text as _b08_get_steering_text,
+                                        get_alpha as _b08_get_alpha,
+                                    )
+                                    _b08_own_type_upper = _b08_ptype.upper() if _b08_ptype else ""
+                                    _b08_boost_groups: dict = {}  # alpha -> [(bucket, tipo, texto), ...]
+                                    for _b08_bt_bucket in list(_b08_outfit_cats.keys()):
+                                        for _b08_bt_type in _b08_types_in_outfit_slot(_b08_bt_bucket):
+                                            if _b08_bt_type == _b08_own_type_upper:
+                                                continue
+                                            _b08_bt_text = _b08_get_steering_text(_b08_bt_type)
+                                            if not _b08_bt_text:
+                                                continue
+                                            _b08_bt_alpha = _b08_get_alpha(_b08_bt_type, "complement") or 0.2
+                                            _b08_boost_groups.setdefault(_b08_bt_alpha, []).append(
+                                                (_b08_bt_bucket, _b08_bt_type, _b08_bt_text)
+                                            )
+
+                                    for _b08_grp_alpha, _b08_grp_items in _b08_boost_groups.items():
+                                        try:
+                                            _b08_grp_results = await asyncio.wait_for(
+                                                _b08_colbert.search_by_product_id_with_multi_text_boost(
+                                                    _b08_pid,
+                                                    boost_texts=[i[2] for i in _b08_grp_items],
+                                                    alpha=_b08_grp_alpha,
+                                                    top_k=5,
+                                                ),
+                                                timeout=3.0,
+                                            )
+                                        except Exception as _b08_grp_err:
+                                            logger.debug(f"F-08B Fase 1b boost grupo alpha={_b08_grp_alpha} fallo: {_b08_grp_err}")
+                                            _b08_grp_results = None
+
+                                        if _b08_grp_results:
+                                            for (_b08_g_bucket, _b08_g_type, _b08_g_text), _b08_g_ids in zip(
+                                                _b08_grp_items, _b08_grp_results
+                                            ):
+                                                if _b08_g_ids:
+                                                    _b08_outfit_cats[_b08_g_bucket] = (
+                                                        _b08_outfit_cats.get(_b08_g_bucket, []) + _b08_g_ids
+                                                    )
+                                            logger.info(
+                                                f"F-08B Fase 1b: {len(_b08_grp_items)} tipos con boost "
+                                                f"dirigido (alpha={_b08_grp_alpha}) agregados a "
+                                                f"{sorted(set(i[0] for i in _b08_grp_items))}"
+                                            )
+
+                                    # DIAGNOSTIC LOG (18/07/2026): desglose por tipo real de los
+                                    # candidatos CRUDOS de cada bucket, ANTES de cualquier filtro
+                                    # (ancla, mismo-tipo, shown_products). Mismo patron ya usado
+                                    # en F-08C ("candidate breakdown", 13/07/2026) para el
+                                    # problema identico. Por que: sin esto no hay forma de
+                                    # confirmar con datos si un resultado pobre en variedad (ej.
+                                    # "8/8 Clutch" reportado en produccion 18/07/2026 para un
+                                    # ancla AROS, screenshot T5) viene de que el pool crudo de
+                                    # "accessory" ya estaba dominado por AROS desde el origen
+                                    # (embedding-service), o de otra causa en el filtrado
+                                    # posterior (_b08_is_same_type, _b08_shown_ids). Puramente
+                                    # aditivo -- no cambia ningun comportamiento, solo
+                                    # visibilidad para decidir el siguiente paso con datos reales
+                                    # en vez de hipotesis.
+                                    for _b08_diag_cat, _b08_diag_pids in _b08_outfit_cats.items():
+                                        if not isinstance(_b08_diag_pids, list) or not _b08_diag_pids:
+                                            continue
+                                        _b08_diag_breakdown: dict = {}
+                                        for _b08_diag_pid in _b08_diag_pids:
+                                            _b08_diag_type = (
+                                                _b08_tfidf.id_index.get(str(_b08_diag_pid), {})
+                                                .get("product_type", "").upper()
+                                                if _b08_tfidf else "UNKNOWN"
+                                            )
+                                            _b08_diag_breakdown[_b08_diag_type] = (
+                                                _b08_diag_breakdown.get(_b08_diag_type, 0) + 1
+                                            )
+                                        logger.info(
+                                            f"F-08B candidate breakdown: bucket={_b08_diag_cat!r} "
+                                            f"{_b08_diag_breakdown} "
+                                            f"(anchor_type={(_b08_ptype.upper() if _b08_ptype else None)!r}, "
+                                            f"total={len(_b08_diag_pids)})"
+                                        )
+
+                                    # FIX (14/07/2026): _b08_is_same_type() -- complemento del
+                                    # fix de arriba (accessory/bag ya no se auto-excluyen como
+                                    # bucket completo). Sin esto, un ancla AROS buscando dentro
+                                    # de 'accessory' podia devolver mas AROS (visualmente lo mas
+                                    # cercano a si mismo), no variedad real. Se filtra por
+                                    # product_type CONCRETO (no por bucket), reusando el mismo
+                                    # patron ya establecido en F-08C para el problema identico
+                                    # de expansion a categorias hermanas:
+                                    #   _c08_tfidf.id_index.get(str(pid), {}).get("product_type", "").upper()
+                                    # Se aplica de forma universal (no solo para accessory/bag)
+                                    # -- costo marginal nulo (mismo id_index ya en memoria, ya
+                                    # consultado para title/handle/image_url mas abajo) y sirve
+                                    # de defensa adicional si en el futuro se deja de
+                                    # auto-excluir algun otro bucket.
+                                    def _b08_is_same_type(_b08_cand_pid):
+                                        if not _b08_tfidf or not _b08_ptype:
+                                            return False
+                                        _b08_cand = _b08_tfidf.id_index.get(str(_b08_cand_pid), {})
+                                        return (
+                                            _b08_cand.get("product_type", "").upper()
+                                            == _b08_ptype.upper()
+                                        )
+
+                                    # FIX (24/07/2026): _b08_belongs_to_bucket() -- complemento de
+                                    # _b08_is_same_type(). search_outfit_by_image() (pool generico,
+                                    # preexistente) a veces devuelve candidatos cuyo product_type
+                                    # real no pertenece al bucket donde se los coloco -- confirmado
+                                    # en produccion: ancla AROS + "que accesorios combinan" -> un
+                                    # NOVIAS LARGOS (vestido) dentro del bucket "accessory",
+                                    # sobreviviendo hasta el resultado final. _b08_is_same_type()
+                                    # no lo detecta porque solo compara contra el tipo del ANCLA,
+                                    # no contra el bucket declarado. Usa
+                                    # product_taxonomy.get_outfit_slot() (misma fuente de verdad de
+                                    # Fase 1b) para verificar que el tipo real del candidato
+                                    # efectivamente pertenece al bucket -- si no, se descarta como
+                                    # sangrado entre buckets. Fail-open (no bloquea) si el tipo del
+                                    # candidato no esta catalogado en product_taxonomy.py -- evita
+                                    # perder variedad legitima por cobertura incompleta de la
+                                    # taxonomia; el patron establecido es agregar el tipo faltante
+                                    # en cuanto se detecte con evidencia, no bloquear preventivamente.
+                                    def _b08_belongs_to_bucket(_b08_cand_pid, _b08_cat):
+                                        if not _b08_tfidf:
+                                            return True
+                                        _b08_cand = _b08_tfidf.id_index.get(str(_b08_cand_pid), {})
+                                        _b08_cand_type = _b08_cand.get("product_type", "").upper()
+                                        if not _b08_cand_type:
+                                            return True
+                                        from src.recommenders.product_taxonomy import (
+                                            get_outfit_slot as _b08_get_outfit_slot,
+                                        )
+                                        _b08_cand_slot = _b08_get_outfit_slot(_b08_cand_type)
+                                        if _b08_cand_slot is None:
+                                            return True
+                                        return _b08_cand_slot == _b08_cat
+
+                                    # NIVEL 1 FIX (18/07/2026): variedad de subtipos dentro de un
+                                    # mismo bucket. Antes de esto, dentro de un bucket como
+                                    # "accessory" (que agrupa AROS/COLLARES/BRAZALETES/CINTURONES/
+                                    # TOCADOS/ALAS DE NOVIA), el orden de los candidatos era pura
+                                    # similitud visual devuelta por el embedding-service -- sin
+                                    # ningun peso hacia asegurar variedad de subtipos. Igual que
+                                    # F-08C (Hallazgo T8, mismo dia): cuando un subtipo domina
+                                    # numericamente el catalogo o la vecindad visual (ej. AROS),
+                                    # las primeras posiciones del bucket terminan monopolizadas
+                                    # por ese subtipo, dejando poco o ningun lugar para
+                                    # COLLARES/BRAZALETES/CINTURONES/TOCADOS aunque el usuario
+                                    # pidio "accesorios" en general (T5, sesion 18/07/2026:
+                                    # ancla Collar + "que accesorios combinan con esto?" -> solo
+                                    # 2 subtipos distintos entre los 8 resultados).
+                                    #
+                                    # Mismo principio que la particion de F-08C (Hallazgo T8),
+                                    # generalizado de "tipo exacto primero, resto despues" (2
+                                    # grupos) a "round-robin entre TODOS los subtipos presentes"
+                                    # (N grupos) -- agrupa por product_type real (mismo dato ya
+                                    # en memoria via id_index, sin llamadas nuevas), preserva el
+                                    # orden interno de similitud visual dentro de cada subtipo,
+                                    # e intercala un item de cada subtipo por turno. No cambia
+                                    # QUE productos entran al pool (eso lo decide el
+                                    # embedding-service), solo el ORDEN en que se consumen --
+                                    # por eso opera sobre _b08_pools_full antes de derivar
+                                    # _b08_pools_fresh, para que la mejora de orden se propague a
+                                    # ambas pasadas del interleaving por igual.
+                                    def _b08_interleave_by_subtype(_b08_flat_pids):
+                                        if not _b08_tfidf:
+                                            return _b08_flat_pids
+                                        _b08_by_type: dict = {}
+                                        for _b08_st_pid in _b08_flat_pids:
+                                            _b08_st_type = (
+                                                _b08_tfidf.id_index.get(str(_b08_st_pid), {})
+                                                .get("product_type", "UNKNOWN").upper()
+                                            )
+                                            _b08_by_type.setdefault(_b08_st_type, []).append(_b08_st_pid)
+                                        _b08_result = []
+                                        while any(_b08_by_type.values()):
+                                            for _b08_st_key, _b08_st_group in list(_b08_by_type.items()):
+                                                if _b08_st_group:
+                                                    _b08_result.append(_b08_st_group.pop(0))
+                                                if not _b08_st_group:
+                                                    del _b08_by_type[_b08_st_key]
+                                        return _b08_result
+
+                                    # GAP 1 FIX (13/07/2026): search_outfit_by_image() no acepta
+                                    # exclusion de IDs -- limitacion del embedding-service (es un
+                                    # servicio Cloud Run separado, desplegado independientemente;
+                                    # agregar exclude_ids ahi es un cambio de arquitectura de dos
+                                    # servicios coordinados, evaluado y pospuesto deliberadamente
+                                    # -- ver DCT de la sesion 13/07/2026). Se filtra del lado del
+                                    # cliente con dos pools por categoria:
+                                    #   _b08_pools_full:  excluye ancla + mismo product_type (14/07)
+                                    #                      + intercalado por subtipo (18/07)
+                                    #   _b08_pools_fresh: excluye ancla + mismo tipo + _b08_shown_ids
+                                    # El interleaving prioriza "fresh" en la Pasada 1; solo si no
+                                    # alcanza a completar n_recommendations, la Pasada 2 rellena
+                                    # con "full" (repetir productos ya vistos es mejor que dejar
+                                    # el carrusel con menos de n_recommendations items -- mismo
+                                    # principio de "relleno restringido" ya usado en F-08 Fase A).
+                                    _b08_pools_full = {
+                                        cat: _b08_interleave_by_subtype([
+                                            pid for pid in pids
+                                            if str(pid) != _b08_pid
+                                            and not _b08_is_same_type(pid)
+                                            and _b08_belongs_to_bucket(pid, cat)
+                                        ])
                                         for cat, pids in _b08_outfit_cats.items()
                                         if isinstance(pids, list) and pids
                                     }
-                                    _b08_rank = 0
-                                    while (
-                                        len(_b08_recs) < n_recommendations
-                                        and any(_b08_pools.values())
-                                    ):
-                                        for _b08_cat, _b08_pool in list(_b08_pools.items()):
-                                            if not _b08_pool or len(_b08_recs) >= n_recommendations:
-                                                break
-                                            _b08_vid   = _b08_pool.pop(0)
-                                            _b08_vprod = (
-                                                _b08_tfidf.id_index.get(str(_b08_vid))
-                                                if _b08_tfidf else None
-                                            )
-                                            if _b08_vprod:
-                                                _b08_score = round(1.0 - _b08_rank * 0.04, 4)
-                                                _b08_recs.append({
-                                                    "id":               str(_b08_vid),
-                                                    "title":            _b08_vprod.get("title", ""),
-                                                    "similarity_score": _b08_score,
-                                                    "score":            _b08_score,
-                                                    "handle":           _b08_vprod.get("handle", ""),
-                                                    "image_url":        _b08_vprod.get("image_url"),
-                                                    "product_data": {
-                                                        **_b08_vprod,
-                                                        # outfit_category expuesto para LFM:
-                                                        # permite generar respuesta como
-                                                        # "este top combina perfectamente..."
-                                                        "outfit_category": _b08_cat,
-                                                    },
-                                                    "source": f"outfit_completion_f08_{_b08_cat}",
-                                                })
-                                                _b08_rank += 1
-                                            if not _b08_pool:
-                                                del _b08_pools[_b08_cat]
-                                                break
+                                    _b08_pools_fresh = {
+                                        cat: [pid for pid in pids if str(pid) not in _b08_shown_ids]
+                                        for cat, pids in _b08_pools_full.items()
+                                    }
+
+                                    def _b08_interleave(_b08_pools, _b08_recs_list, _b08_seen, _b08_rank_start):
+                                        # Helper deliberado (a diferencia del estilo inline del
+                                        # resto del archivo): la Pasada 1 (fresh) y la Pasada 2
+                                        # (full) ejecutan EXACTAMENTE la misma logica de
+                                        # round-robin + construccion de dict de producto: extraerla
+                                        # evita mantener dos copias que puedan desincronizarse (el
+                                        # mismo tipo de bug de "dos bloques gemelos" ya visto antes
+                                        # en esta sesion con _B08_TYPE_TO_CAT). _b08_pools se
+                                        # consume/vacia in-place (mismo comportamiento que el bucle
+                                        # original); _b08_seen evita reagregar en la Pasada 2 un
+                                        # producto que la Pasada 1 ya agrego.
+                                        _b08_rank = _b08_rank_start
+                                        while (
+                                            len(_b08_recs_list) < n_recommendations
+                                            and any(_b08_pools.values())
+                                        ):
+                                            for _b08_cat, _b08_pool in list(_b08_pools.items()):
+                                                # BUG CRITICO CONFIRMADO (16/07/2026): la condicion
+                                                # original "if not _b08_pool or len(...) >= n: break"
+                                                # rompia el FOR-LOOP COMPLETO en cuanto encontraba
+                                                # la PRIMERA categoria vacia en el orden del dict --
+                                                # aunque otras categorias posteriores SI tuvieran
+                                                # items pendientes, nunca se llegaba a procesarlas.
+                                                # Como nada se popeaba ni se borraba de _b08_pools,
+                                                # el WHILE exterior volvia a entrar con el dict
+                                                # EXACTAMENTE IGUAL -> loop infinito real (100% CPU,
+                                                # cero logs, cero excepcion) hasta que Cloud Run mata
+                                                # la conexion a los 300s (visto en produccion como
+                                                # 504 tras 5 minutos, revision 00260-sr9/00261-bml).
+                                                # Reproducido de forma determinista y confirmado con
+                                                # un test standalone (7 casos adversariales, uno de
+                                                # ellos cuelga con el codigo viejo y termina con este
+                                                # fix) -- ver DCT de la sesion 16/07/2026.
+                                                #
+                                                # Este patron de "break" ya existia en el codigo
+                                                # ANTES de los fixes de Gap 1/Gap 2 de esta semana --
+                                                # no lo introdujeron esos cambios. Pero excluir mas
+                                                # productos (shown_products, mismo product_type) y
+                                                # agregar categorias mas escasas (bottom/shoes, ~2.2-
+                                                # 2.3% del catalogo) aumento mucho la probabilidad de
+                                                # que una categoria termine vacia tras el filtrado --
+                                                # convirtiendo un bug latente en algo reproducible en
+                                                # conversaciones de varios turnos, exactamente el
+                                                # escenario de las pruebas que lo confirmaron.
+                                                #
+                                                # FIX: separar las dos condiciones. "Ya complete
+                                                # n_recommendations" SI debe cortar todo (break). Pero
+                                                # "esta categoria puntual esta vacia" debe saltar a la
+                                                # SIGUIENTE categoria (continue) sin abandonar el resto
+                                                # del for-loop, y borrarla de _b08_pools para que el
+                                                # while exterior no la vuelva a revisar en pasadas
+                                                # futuras -- garantiza que el dict SIEMPRE se achica en
+                                                # cada iteracion, por lo que el while termina siempre.
+                                                if len(_b08_recs_list) >= n_recommendations:
+                                                    break
+                                                if not _b08_pool:
+                                                    del _b08_pools[_b08_cat]
+                                                    continue
+                                                _b08_vid = str(_b08_pool.pop(0))
+                                                if _b08_vid in _b08_seen:
+                                                    if not _b08_pool:
+                                                        del _b08_pools[_b08_cat]
+                                                    continue
+                                                _b08_vprod = (
+                                                    _b08_tfidf.id_index.get(_b08_vid)
+                                                    if _b08_tfidf else None
+                                                )
+                                                if _b08_vprod:
+                                                    _b08_score = round(1.0 - _b08_rank * 0.04, 4)
+                                                    _b08_recs_list.append({
+                                                        "id":               _b08_vid,
+                                                        "title":            _b08_vprod.get("title", ""),
+                                                        "similarity_score": _b08_score,
+                                                        "score":            _b08_score,
+                                                        "handle":           _b08_vprod.get("handle", ""),
+                                                        "image_url":        _b08_vprod.get("image_url"),
+                                                        "product_data": {
+                                                            **_b08_vprod,
+                                                            # outfit_category expuesto para LFM:
+                                                            # permite generar respuesta como
+                                                            # "este top combina perfectamente..."
+                                                            "outfit_category": _b08_cat,
+                                                        },
+                                                        "source": f"outfit_completion_f08_{_b08_cat}",
+                                                    })
+                                                    _b08_seen.add(_b08_vid)
+                                                    _b08_rank += 1
+                                                if not _b08_pool:
+                                                    del _b08_pools[_b08_cat]
+                                                    break
+                                        return _b08_rank
+
+                                    _b08_seen_ids = {_b08_pid}
+                                    _b08_rank_after_fresh = _b08_interleave(
+                                        _b08_pools_fresh, _b08_recs, _b08_seen_ids, 0
+                                    )
+                                    _b08_fresh_count = len(_b08_recs)
+
+                                    if len(_b08_recs) < n_recommendations:
+                                        _b08_interleave(
+                                            _b08_pools_full, _b08_recs, _b08_seen_ids, _b08_rank_after_fresh
+                                        )
 
                                     if _b08_recs:
+                                        _b08_repeated_count = len(_b08_recs) - _b08_fresh_count
                                         logger.info(
                                             f"F-08B outfit_completion: {len(_b08_recs)} productos "
                                             f"(categories={list(_b08_outfit_cats.keys())}, "
-                                            f"pid={_b08_pid!r})"
+                                            f"pid={_b08_pid!r}, frescos={_b08_fresh_count}, "
+                                            f"repetidos_por_agotamiento={_b08_repeated_count})"
                                         )
                                         return _b08_recs
+                                    else:
+                                        # FIX (28/07/2026): antes, si _b08_recs terminaba vacio
+                                        # (busqueda exitosa, sin timeout ni excepcion, pero cero
+                                        # candidatos finales), el codigo caia en silencio total --
+                                        # cero logs -- directo al siguiente mecanismo de fallback
+                                        # mas abajo (F-08B.2). Diagnosticar esto requeria rastrear
+                                        # el codigo linea por linea (ver caso real, 27/07/2026:
+                                        # ancla AROS + "con que vestidos combina mejor?" ->
+                                        # target_categories=['dress'] -> 0 productos -> cayo sin
+                                        # aviso a F-08B.2, que ignora la categoria pedida). Este log
+                                        # no cambia ningun comportamiento, solo hace visible POR QUE
+                                        # no hubo resultados -- pool crudo vacio para las categorias
+                                        # pedidas, o todo ya en shown_products (o ambos).
+                                        logger.info(
+                                            f"F-08B outfit_completion: 0 productos para "
+                                            f"target_categories={_b08_target_cats}, "
+                                            f"anchor_type={_b08_ptype!r}, pid={_b08_pid!r}, "
+                                            f"shown_products_count={len(_b08_shown_ids)} -- "
+                                            f"cayendo a mecanismo de fallback"
+                                        )
 
                         except asyncio.TimeoutError:
                             logger.warning("F-08B outfit_completion timeout — fallback a flujo normal")
@@ -1196,24 +1761,87 @@ async def get_mcp_conversation_recommendations(
                                 and user_events
                             ):
                                 _outfit_product_type = _current_ctx.get("product_type", "").upper()
-                                _OUTFIT_COMPLEMENT_MAP = {
-                                    "KIMONOS":         ["AROS", "COLLARES", "CLUTCH", "CINTURONES", "BRAZALETES"],
-                                    "TAPADOS":         ["AROS", "COLLARES", "CLUTCH", "CINTURONES", "BRAZALETES"],
-                                    "VESTIDOS LARGOS": ["AROS", "COLLARES", "CLUTCH", "TOCADOS", "CINTURONES"],
-                                    "VESTIDOS CORTOS": ["AROS", "CLUTCH", "CINTURONES", "BRAZALETES"],
-                                    "VESTIDOS MIDIS":  ["AROS", "COLLARES", "CLUTCH", "TOCADOS"],
-                                    "NOVIAS LARGOS":   ["TOCADOS", "CLUTCH", "AROS", "BRAZALETES"],
-                                    "NOVIAS CORTOS":   ["TOCADOS", "AROS", "CLUTCH", "BRAZALETES"],
-                                    "FALDAS":          ["TOPS", "AROS", "CINTURONES", "BRAZALETES"],
-                                    "TOPS":            ["FALDAS", "AROS", "COLLARES", "CLUTCH"],
-                                    "BLUSAS":          ["FALDAS", "AROS", "COLLARES", "CLUTCH"],
-                                    "ENTERITOS LARGOS": ["CINTURONES", "AROS", "CLUTCH", "COLLARES"],
-                                    "ENTERITOS CORTOS": ["CINTURONES", "AROS", "CLUTCH", "BRAZALETES"],
-                                }
-                                _complement_cats = _OUTFIT_COMPLEMENT_MAP.get(
-                                    _outfit_product_type,
-                                    ["AROS", "COLLARES", "CLUTCH", "CINTURONES"],  # fallback genérico
-                                )
+
+                                # FIX (28/07/2026): F-08B.2 siempre usaba su propio mapa
+                                # hardcodeado (_OUTFIT_COMPLEMENT_MAP, keyed por el tipo del
+                                # ANCLA), ignorando por completo si el usuario ya habia sido
+                                # explicito sobre que categoria queria en su consulta. Confirmado
+                                # en produccion (27/07/2026): ancla AROS + "con que vestidos
+                                # combina mejor?" detectaba correctamente ['dress'] mas arriba en
+                                # el flujo (log "F-08B query category detected"), pero F-08B.2 lo
+                                # descartaba en silencio y devolvia solo accesorios (COLLARES,
+                                # CLUTCH, CINTURONES) -- la peticion explicita del usuario nunca
+                                # tuvo prioridad sobre el mapa de complemento del ancla.
+                                #
+                                # _b08_query_target_cats se computa mas arriba (bloque F-08 Fase
+                                # B principal, dentro del gate VISUAL_SEARCH_ENABLED) -- puede no
+                                # estar definida si ese bloque nunca corrio, de ahi el acceso
+                                # seguro via locals().get() en vez de referenciar la variable
+                                # directamente (evita UnboundLocalError/NameError).
+                                _b08b2_query_cats = locals().get("_b08_query_target_cats")
+                                if _b08b2_query_cats:
+                                    # El usuario nombro una categoria explicita -- tiene prioridad
+                                    # absoluta sobre el mapa de complemento del ancla. Se resuelve
+                                    # a tipos Shopify reales via product_taxonomy.py (unica fuente
+                                    # de verdad ya establecida en Fase 1b) en vez de mantener un
+                                    # tercer mapa hardcodeado en paralelo.
+                                    from src.recommenders.product_taxonomy import (
+                                        types_in_outfit_slot as _b08b2_types_in_slot,
+                                    )
+                                    _complement_cats = [
+                                        _t
+                                        for _slot in _b08b2_query_cats
+                                        for _t in _b08b2_types_in_slot(_slot)
+                                        if _t != _outfit_product_type
+                                    ]
+                                    logger.info(
+                                        f"F-08B.2 outfit_completion: categoria EXPLICITA de la "
+                                        f"consulta {_b08b2_query_cats} tiene prioridad sobre el "
+                                        f"mapa de complemento del ancla (type={_outfit_product_type!r}) "
+                                        f"-- tipos resueltos: {_complement_cats}"
+                                    )
+                                else:
+                                    # Sin categoria explicita en la consulta -- comportamiento
+                                    # original sin cambios: mapa de complemento keyed por el tipo
+                                    # del ancla.
+                                    _OUTFIT_COMPLEMENT_MAP = {
+                                        "KIMONOS":         ["AROS", "COLLARES", "CLUTCH", "CINTURONES", "BRAZALETES"],
+                                        "TAPADOS":         ["AROS", "COLLARES", "CLUTCH", "CINTURONES", "BRAZALETES"],
+                                        "VESTIDOS LARGOS": ["AROS", "COLLARES", "CLUTCH", "TOCADOS", "CINTURONES"],
+                                        "VESTIDOS CORTOS": ["AROS", "CLUTCH", "CINTURONES", "BRAZALETES"],
+                                        "VESTIDOS MIDIS":  ["AROS", "COLLARES", "CLUTCH", "TOCADOS"],
+                                        "NOVIAS LARGOS":   ["TOCADOS", "CLUTCH", "AROS", "BRAZALETES"],
+                                        "NOVIAS CORTOS":   ["TOCADOS", "AROS", "CLUTCH", "BRAZALETES"],
+                                        "FALDAS":          ["TOPS", "AROS", "CINTURONES", "BRAZALETES"],
+                                        "TOPS":            ["FALDAS", "AROS", "COLLARES", "CLUTCH"],
+                                        "BLUSAS":          ["FALDAS", "AROS", "COLLARES", "CLUTCH"],
+                                        "ENTERITOS LARGOS": ["CINTURONES", "AROS", "CLUTCH", "COLLARES"],
+                                        "ENTERITOS CORTOS": ["CINTURONES", "AROS", "CLUTCH", "BRAZALETES"],
+                                    }
+                                    _complement_cats = [
+                                        _c for _c in _OUTFIT_COMPLEMENT_MAP.get(
+                                            _outfit_product_type,
+                                            ["AROS", "COLLARES", "CLUTCH", "CINTURONES"],  # fallback genérico
+                                        )
+                                        if _c != _outfit_product_type
+                                    ]
+                                    # FIX (17/07/2026): _OUTFIT_COMPLEMENT_MAP solo tiene entradas
+                                    # para tipos de PRENDA (KIMONOS, VESTIDOS*, TOPS, FALDAS, etc.)
+                                    # -- nunca se agregaron entradas para tipos de ACCESORIO (AROS,
+                                    # COLLARES, CLUTCH, CARTERAS, BRAZALETES, CINTURONES, TOCADOS).
+                                    # Cuando el ancla es un accesorio, .get(_outfit_product_type, ...)
+                                    # no encuentra clave y cae al fallback generico -- que incluye
+                                    # literalmente "AROS", "COLLARES" y "CLUTCH" sin saber cual de
+                                    # esos 3 es el propio ancla. Confirmado con evidencia real de
+                                    # produccion + screenshot (16-17/07/2026): ancla AROS DANAE +
+                                    # "que accesorios combinan con este?" -> F-08B.2 (activo porque
+                                    # F-08B primario fallo con 413) devolvia
+                                    # complement_cats=['AROS','COLLARES','CLUTCH','CINTURONES'],
+                                    # resultando en 4 de 8 productos siendo mas Aros.
+                                    # Este filtro cubre TANTO el fallback generico como cualquier
+                                    # entrada especifica del mapa que en el futuro pudiera incluirse
+                                    # a si misma por error -- misma defensa, un solo lugar.
+
                                 user_events = [
                                     {
                                         "productId": None,
@@ -1257,11 +1885,46 @@ async def get_mcp_conversation_recommendations(
                                     )
                                     _c08_pid = str(mcp_context.current_product_context["id"])
 
-                                    # pool visual: top_k=50 para tener margen tras filtrado
-                                    _c08_visual_ids = await asyncio.wait_for(
-                                        _c08_colbert.search_by_product_id(_c08_pid, top_k=50),
-                                        timeout=3.0,
+                                    # COMPOSITE EMBEDDING (Fase 1b, 23/07/2026): reemplaza el chequeo
+                                    # de familia ACCESSORIES (get_parent_categories()) por
+                                    # product_taxonomy.get_steering_text() -- unica fuente de verdad
+                                    # de taxonomia (ver PLAN_Fase1b_Revision_Arquitectonica_23072026.md).
+                                    # El texto se resuelve AQUI (monolito) y se envia ya resuelto
+                                    # (boost_text) al embedding-service, que ya no conoce ningun tipo
+                                    # de producto. alpha tambien viene de la taxonomia (por tipo, no
+                                    # global) -- hoy 0.5 para todos los tipos (identico a Fase 3,
+                                    # cero cambio de comportamiento), ya parametrizado por tipo para
+                                    # ajuste futuro sin otro refactor. _c08_ctx_type (mas abajo) se
+                                    # recalcula para la logica de prioridad de tipo (Hallazgo T8) --
+                                    # calculo independiente, se deja intacto.
+                                    from src.recommenders.product_taxonomy import (
+                                        get_steering_text as _c08_get_steering_text,
+                                        get_alpha as _c08_get_alpha,
                                     )
+                                    _c08_ctx_type_upper_early = mcp_context.current_product_context.get("product_type", "").upper()
+                                    _c08_boost_text  = _c08_get_steering_text(_c08_ctx_type_upper_early)
+                                    _c08_boost_alpha = _c08_get_alpha(_c08_ctx_type_upper_early, "reinforce") or 0.5
+
+                                    # pool visual: top_k=50 para tener margen tras filtrado
+                                    if _c08_boost_text:
+                                        _c08_visual_ids = await asyncio.wait_for(
+                                            _c08_colbert.search_by_product_id_with_text_boost(
+                                                _c08_pid,
+                                                boost_text=_c08_boost_text,
+                                                alpha=_c08_boost_alpha,
+                                                top_k=50,
+                                            ),
+                                            timeout=3.0,
+                                        )
+                                        logger.info(
+                                            f"F-08C: composite embedding boost activo "
+                                            f"(type={_c08_ctx_type_upper_early}, alpha={_c08_boost_alpha})"
+                                        )
+                                    else:
+                                        _c08_visual_ids = await asyncio.wait_for(
+                                            _c08_colbert.search_by_product_id(_c08_pid, top_k=50),
+                                            timeout=3.0,
+                                        )
 
                                     if _c08_visual_ids and _c08_tfidf and hasattr(_c08_tfidf, "id_index"):
                                         # Categorias deseadas: intentar detectar desde el query
@@ -1297,13 +1960,32 @@ async def get_mcp_conversation_recommendations(
                                         #   VESTIDOS CORTOS -> VESTIDOS  -> [VESTIDOS CORTOS, LARGOS, MIDIS]
                                         # Mantiene coherencia semantica (todos son del mismo
                                         # "mundo visual") sin cruzar categorias no relacionadas.
+                                        # HALLAZGO T8 FIX (06/07/2026): None por defecto -- solo
+                                        # se setea dentro de la rama de expansion por contexto
+                                        # (mas abajo), NUNCA en la rama de deteccion por texto
+                                        # explicito. Usado para la particion estable del pool
+                                        # justo antes de cortar a n_recommendations (ver mas
+                                        # abajo, bloque de filtrado de _c08_candidates).
+                                        _c08_anchor_type_for_ranking = None
+                                        # FIX (18/07/2026): _c08_ctx_type se calcula ANTES del
+                                        # if, porque ahora se necesita en dos ramas distintas
+                                        # (antes solo se calculaba dentro de "if not
+                                        # _c08_query_cats"). Ver razon completa mas abajo.
+                                        _c08_ctx_type = mcp_context.current_product_context.get(
+                                            "product_type", ""
+                                        ) if mcp_context and getattr(
+                                            mcp_context, "current_product_context", None
+                                        ) else ""
+
                                         if not _c08_query_cats:
-                                            _c08_ctx_type = mcp_context.current_product_context.get(
-                                                "product_type", ""
-                                            ) if mcp_context and getattr(
-                                                mcp_context, "current_product_context", None
-                                            ) else ""
                                             if _c08_ctx_type:
+                                                # HALLAZGO T8 FIX: guardar el tipo exacto para
+                                                # priorizarlo luego en el ranking del pool -- solo
+                                                # llegamos aqui cuando la categoria vino del
+                                                # contexto del producto (no de texto explicito),
+                                                # asi que priorizar el tipo del ancla es coherente
+                                                # con la intencion del usuario ("similar a este").
+                                                _c08_anchor_type_for_ranking = _c08_ctx_type.upper()
                                                 try:
                                                     # get_parent_categories() ya importado arriba
                                                     # en la seccion de diversificacion.
@@ -1338,6 +2020,37 @@ async def get_mcp_conversation_recommendations(
                                                         f"F-08C category expansion failed "
                                                         f"(using exact type): {_c08_expand_err}"
                                                     )
+                                        elif _c08_ctx_type and _c08_ctx_type.upper() in [
+                                            c.upper() for c in _c08_query_cats
+                                        ]:
+                                            # FIX (18/07/2026): _c08_query_cats SI vino de texto
+                                            # explicito ("if not _c08_query_cats" de arriba dio
+                                            # False), pero el propio tipo del ancla esta incluido
+                                            # en ese conjunto detectado -- el usuario no esta
+                                            # pidiendo algo DISTINTO a su propia categoria, solo
+                                            # confirmando la familia amplia. Ejemplo real
+                                            # confirmado en produccion (18/07/2026): "Muestrame
+                                            # accesorios similares" sobre un Collar detecta por
+                                            # texto ("accesorios") el MISMO grupo de 9 tipos
+                                            # hermanos que la expansion por contexto habria
+                                            # producido de todas formas si el texto no hubiera
+                                            # dicho nada -- pero como _c08_query_cats ya no
+                                            # estaba vacio, la rama de arriba nunca se ejecutaba
+                                            # y _c08_anchor_type_for_ranking se quedaba en None,
+                                            # dejando sin proteccion T8 exactamente el mismo
+                                            # sintoma que T8 ya habia resuelto el 05/07/2026
+                                            # (5 Aros + 2 Chocker + 1 Collar de un Collar ancla).
+                                            #
+                                            # Es seguro extender la proteccion aqui: si el ancla
+                                            # es COLLARES y _c08_query_cats incluye COLLARES, el
+                                            # usuario no esta excluyendo su propio tipo -- solo
+                                            # cuando pide algo que EXCLUYE su propio tipo (ej.
+                                            # "muestrame bolsos" viendo un Collar -- CARTERAS/
+                                            # CLUTCH no incluye COLLARES) esta condicion da False
+                                            # y _c08_anchor_type_for_ranking permanece None, sin
+                                            # cambios respecto al comportamiento ya validado de
+                                            # respetar una peticion explicita distinta.
+                                            _c08_anchor_type_for_ranking = _c08_ctx_type.upper()
 
                                         # Filtrar pool: excluir vistos + filtrar por categoria
                                         _c08_candidates = [
@@ -1351,6 +2064,81 @@ async def get_mcp_conversation_recommendations(
                                                    in [c.upper() for c in _c08_query_cats]
                                             )
                                         ]
+
+                                        # DIAGNOSTIC LOG (13/07/2026): desglose exacto de
+                                        # _c08_candidates por tipo, ANTES del sort de T8 y de
+                                        # cualquier corte a n_recommendations.
+                                        #
+                                        # Por que: la pregunta real que responde este log es
+                                        # "de los N candidatos de la familia Accesorios, cuantos
+                                        # son EXACTAMENTE el tipo pedido (ej. COLLARES) vs
+                                        # rellenados de hermanas (ej. AROS)?" -- sin esto, no
+                                        # hay forma de confirmar con datos si un resultado como
+                                        # "6 Collares + 2 Aros" viene de que el catalogo
+                                        # realmente solo tenia 6 Collares visualmente cercanos,
+                                        # o de otra causa. Ver DCT sesion 13/07/2026.
+                                        #
+                                        # Puramente aditivo: no cambia ningun comportamiento,
+                                        # solo visibilidad.
+                                        _c08_candidate_breakdown: dict = {}
+                                        for _c08_bd_pid in _c08_candidates:
+                                            _c08_bd_type = (
+                                                _c08_tfidf.id_index.get(str(_c08_bd_pid), {})
+                                                .get("product_type", "").upper()
+                                            )
+                                            _c08_candidate_breakdown[_c08_bd_type] = (
+                                                _c08_candidate_breakdown.get(_c08_bd_type, 0) + 1
+                                            )
+                                        logger.info(
+                                            f"F-08C candidate breakdown: {_c08_candidate_breakdown} "
+                                            f"(anchor_type={_c08_anchor_type_for_ranking!r}, "
+                                            f"total={len(_c08_candidates)})"
+                                        )
+
+                                        # HALLAZGO T8 FIX (06/07/2026): priorizar el tipo EXACTO
+                                        # del producto ancla sobre sus hermanas dentro del
+                                        # camino feliz (candidatos suficientes, sin necesidad
+                                        # de relleno).
+                                        #
+                                        # Por que: _c08_candidates se ordenaba solo por score de
+                                        # similitud visual devuelto por FAISS -- sin ningun peso
+                                        # hacia el tipo exacto que el usuario esta viendo. Con
+                                        # categorias hermanas de tamano muy distinto (AROS=524
+                                        # productos vs COLLARES=22), es estadisticamente mucho
+                                        # mas probable que los vecinos visuales mas cercanos sean
+                                        # de la categoria grande, aunque el usuario haya pedido
+                                        # "similar a" un producto de la categoria pequena.
+                                        # Evidencia real (sesion 05/07/2026, T8): clic en "similar
+                                        # a este" sobre un COLLAR devolvio 5 Aros, 2 Chocker, 1
+                                        # Collar -- candidates=49 de pool=50 (camino feliz, sin
+                                        # relleno), sin ningun peso hacia COLLARES especificamente.
+                                        #
+                                        # Alcance: SOLO aplica cuando _c08_query_cats vino de la
+                                        # expansion por contexto (_c08_anchor_type_for_ranking
+                                        # seteado mas arriba, solo dentro de la rama
+                                        # "if not _c08_query_cats:"). Si el usuario pidio una
+                                        # categoria explicita por texto (Turn 2+, ej. "muestrame
+                                        # collares" viendo un producto AROS),
+                                        # _c08_anchor_type_for_ranking permanece None -- no tiene
+                                        # sentido priorizar el tipo del producto ancla en contra
+                                        # de lo que el usuario pidio explicitamente.
+                                        #
+                                        # Mecanismo: particion estable (Python sort es stable) --
+                                        # candidatos del tipo exacto primero (preservando su
+                                        # orden interno por similitud), luego el resto de
+                                        # categorias hermanas (tambien preservando su orden
+                                        # interno). No es un re-ranking por score -- es una
+                                        # partición en dos grupos que preserva la calidad de
+                                        # similitud visual dentro de cada grupo.
+                                        if _c08_anchor_type_for_ranking:
+                                            _c08_candidates = sorted(
+                                                _c08_candidates,
+                                                key=lambda pid: 0 if (
+                                                    _c08_tfidf.id_index.get(str(pid), {})
+                                                    .get("product_type", "").upper()
+                                                    == _c08_anchor_type_for_ranking
+                                                ) else 1,
+                                            )
 
                                         # FIX (16/06/2026 — observabilidad pool exhausto):
                                         # Cuando los candidatos visuales son insuficientes
@@ -1381,6 +2169,55 @@ async def get_mcp_conversation_recommendations(
 
                                         # Solo usar visual pool si tiene suficientes candidatos
                                         if len(_c08_candidates) >= n_recommendations:
+                                            # FIX (26/07/2026, Caso 3): category_exhausted_info solo se
+                                            # disparaba cuando el pool TOTAL (propio tipo + hermanos) era
+                                            # insuficiente (rama de abajo, "Sprint Candidatos Parciales").
+                                            # Aqui, en el camino feliz, puede pasar el mismo problema de
+                                            # fondo con causa distinta: el pool total alcanza
+                                            # (>= n_recommendations), pero el propio tipo del ancla dentro
+                                            # de ese pool no alcanza. La particion T8 (06/07) ya prioriza
+                                            # el tipo exacto primero, asi que si hay suficientes candidatos
+                                            # del tipo propio, el corte final es 100% puro -- pero si no
+                                            # los hay, el corte final termina mezclando tipos hermanos sin
+                                            # que el LLM se entere. Confirmado en produccion (26/07/2026):
+                                            # ancla BRAZALETES devolviendo mayoritariamente AROS en el
+                                            # resultado final, LLM diciendo "complementa perfectamente" sin
+                                            # aclarar la escasez real del tipo pedido.
+                                            #
+                                            # Deteccion: contar cuantos de los primeros n_recommendations
+                                            # candidatos (ya particionados por T8, tipo propio primero) son
+                                            # genuinamente del tipo del ancla. Si son menos que
+                                            # n_recommendations, el corte final mezcla tipos -- señalizar
+                                            # igual que la rama de relleno parcial, mismo formato de
+                                            # mcp_context.category_exhausted_info (misma senal que ya
+                                            # consume mcp_personalization_engine.py para pedirle al LLM
+                                            # que no diga "complementa perfectamente").
+                                            #
+                                            # Alcance: solo cuando _c08_anchor_type_for_ranking esta seteado
+                                            # -- misma condicion que gobierna la particion T8 en si (si el
+                                            # usuario pidio una categoria explicita por texto, este marco de
+                                            # "tipo propio" no aplica).
+                                            if _c08_anchor_type_for_ranking:
+                                                _c08_final_same_type_count = sum(
+                                                    1 for pid in _c08_candidates[:n_recommendations]
+                                                    if _c08_tfidf.id_index.get(str(pid), {})
+                                                       .get("product_type", "").upper()
+                                                       == _c08_anchor_type_for_ranking
+                                                )
+                                                if _c08_final_same_type_count < n_recommendations:
+                                                    mcp_context.category_exhausted_info = {  # type: ignore[attr-defined]
+                                                        "category": _c08_anchor_type_for_ranking,
+                                                        "shown_count": _c08_final_same_type_count,
+                                                        "total_count": n_recommendations,
+                                                    }
+                                                    logger.info(
+                                                        f"F-08C category_exhausted (camino feliz, pool total "
+                                                        f"suficiente pero tipo propio escaso): "
+                                                        f"{_c08_final_same_type_count}/{n_recommendations} son "
+                                                        f"{_c08_anchor_type_for_ranking!r}, el resto son tipos "
+                                                        f"hermanos. LLM notificacion activada."
+                                                    )
+
                                             _c08_recs = []
                                             for _c08_rank, _c08_vid in enumerate(
                                                 _c08_candidates[:n_recommendations]
@@ -1818,11 +2655,40 @@ async def get_mcp_conversation_recommendations(
                             _f08_pid   = str(mcp_context.current_product_context["id"])
                             _f08_ptype = mcp_context.current_product_context.get("product_type", "")
 
-                            # A.5: buscar por ID (usa vector FAISS existente, ~50ms)
-                            _f08_visual_ids = await asyncio.wait_for(
-                                _f08_colbert.search_by_product_id(_f08_pid, top_k=30),
-                                timeout=3.0,
+                            # COMPOSITE EMBEDDING (Fase 1b, 23/07/2026): ver comentario identico en
+                            # el bloque F-08C mas arriba en este archivo -- misma logica, ahora via
+                            # product_taxonomy.py (unica fuente de verdad, reemplaza
+                            # get_parent_categories() + SHOPIFY_TYPE_TEXT_PROMPTS). _f08_type_upper
+                            # (mas abajo, ~linea 2430) se recalcula para la expansion a hermanas --
+                            # calculo independiente, se deja intacto.
+                            from src.recommenders.product_taxonomy import (
+                                get_steering_text as _f08_get_steering_text,
+                                get_alpha as _f08_get_alpha,
                             )
+                            _f08_ptype_upper_early = _f08_ptype.upper() if _f08_ptype else ""
+                            _f08_boost_text  = _f08_get_steering_text(_f08_ptype_upper_early)
+                            _f08_boost_alpha = _f08_get_alpha(_f08_ptype_upper_early, "reinforce") or 0.5
+
+                            # A.5: buscar por ID (usa vector FAISS existente, ~50ms)
+                            if _f08_boost_text:
+                                _f08_visual_ids = await asyncio.wait_for(
+                                    _f08_colbert.search_by_product_id_with_text_boost(
+                                        _f08_pid,
+                                        boost_text=_f08_boost_text,
+                                        alpha=_f08_boost_alpha,
+                                        top_k=30,
+                                    ),
+                                    timeout=3.0,
+                                )
+                                logger.info(
+                                    f"F-08 Fase A: composite embedding boost activo "
+                                    f"(type={_f08_ptype_upper_early}, alpha={_f08_boost_alpha})"
+                                )
+                            else:
+                                _f08_visual_ids = await asyncio.wait_for(
+                                    _f08_colbert.search_by_product_id(_f08_pid, top_k=30),
+                                    timeout=3.0,
+                                )
 
                             # Fallback CDN: solo si producto no está en índice FAISS
                             if not _f08_visual_ids:
@@ -1843,46 +2709,396 @@ async def get_mcp_conversation_recommendations(
                                     )
 
                             if _f08_visual_ids:
-                                # Fase 3: filtrar a la misma categoría del producto visto.
+                                # Fase 3: filtrar a la categoria del producto visto.
                                 # Excluir siempre el propio producto del resultado.
                                 _f08_type_upper = _f08_ptype.upper()
+
+                                # FIX (03/07/2026 -- propagacion del fix F-08C del 16/06/2026):
+                                #
+                                # Por que: el filtro original comparaba SOLO contra el tipo
+                                # exacto (ej. "AROS"). Si el pool de 30 vecinos visuales tenia
+                                # <3 productos de ese tipo exacto, el codigo abandonaba el
+                                # filtro POR COMPLETO y usaba el pool crudo sin ninguna
+                                # restriccion de categoria -- lo que permitia que categorias
+                                # totalmente ajenas (ej. vestidos) dominaran el resultado de
+                                # un producto de accesorios. Ver DCT sesion 03/07/2026: caso
+                                # real "Aros Antonieta" (T3) devolvio 8 vestidos, 0 aros.
+                                #
+                                # Este mismo problema ya fue diagnosticado y arreglado para
+                                # F-08C (Turn 2+) el 16/06/2026 usando expansion a categorias
+                                # "hermanas" del mismo grupo padre (ej. AROS -> [AROS,
+                                # COLLARES, BRAZALETES, CLUTCH, CINTURONES, CARTERAS,
+                                # TOCADOS, BRALETTES]) en vez de abandonar el filtro. Ese fix
+                                # nunca se aplico a F-08 Fase A (Turn 1) porque son dos
+                                # bloques de codigo separados -- este parche cierra esa
+                                # brecha, replicando EXACTAMENTE el mismo patron ya validado
+                                # en produccion para F-08C.
+                                #
+                                # Alcance de este fix: SOLO la expansion a categorias
+                                # hermanas. El mecanismo de relleno con smart_fallback
+                                # restringido (sprint F-08C del 17/06/2026) NO se porta aqui
+                                # -- si el pool expandido sigue siendo insuficiente, el
+                                # codigo no retorna temprano y cae al fallback estandar
+                                # (hybrid_recommender.get_recommendations), igual que hacia
+                                # F-08C antes del sprint del 17/06. Evaluar el relleno
+                                # restringido como fix adicional en una sesion futura si la
+                                # expansion de categorias por si sola no es suficiente.
+                                _f08_expanded_cats = [_f08_type_upper] if _f08_type_upper else []
+                                if _f08_type_upper:
+                                    try:
+                                        # Import lazy: mismo patron defensivo que
+                                        # normalize_recommendation_dict un poco mas arriba en
+                                        # este mismo bloque (comentario BUG-REFACTOR-1,
+                                        # 18/06/2026). get_parent_categories() esta importado
+                                        # arriba SOLO dentro del bloque F-08C (Turn 2+, guardado
+                                        # por "if use_diversification:") -- en Turn 1 esa rama
+                                        # nunca ejecuta, y Python trata el nombre como local a
+                                        # toda la funcion, no solo a esa rama. Sin este import
+                                        # lazy, usar get_parent_categories() aqui lanzaria
+                                        # UnboundLocalError exactamente igual que el bug ya
+                                        # documentado y corregido para normalize_recommendation_dict.
+                                        from src.recommenders.improved_fallback_exclude_seen import (
+                                            get_parent_categories as _f08_get_parent_categories,
+                                        )
+                                        _f08_parent_map = _f08_get_parent_categories()
+                                        _f08_siblings = next(
+                                            (
+                                                subs
+                                                for subs in _f08_parent_map.values()
+                                                if _f08_type_upper in [s.upper() for s in subs]
+                                            ),
+                                            None,
+                                        )
+                                        if _f08_siblings:
+                                            _f08_expanded_cats = [s.upper() for s in _f08_siblings]
+                                            logger.info(
+                                                f"F-08 category expansion: "
+                                                f"{_f08_type_upper!r} -> {_f08_expanded_cats} "
+                                                f"({len(_f08_expanded_cats)} types from parent group)"
+                                            )
+                                    except Exception as _f08_expand_err:
+                                        # Degradacion graceful: si falla la expansion, usar
+                                        # el tipo exacto (comportamiento original, sin romper
+                                        # nada si get_parent_categories() no esta disponible).
+                                        _f08_expanded_cats = [_f08_type_upper] if _f08_type_upper else []
+                                        logger.debug(
+                                            f"F-08 category expansion failed "
+                                            f"(using exact type): {_f08_expand_err}"
+                                        )
+
                                 _f08_same_cat = [
                                     pid for pid in _f08_visual_ids
                                     if str(pid) != _f08_pid
                                     and (
-                                        not _f08_ptype
+                                        not _f08_expanded_cats
                                         or _f08_tfidf.id_index.get(str(pid), {})
-                                           .get("product_type", "").upper() == _f08_type_upper
+                                           .get("product_type", "").upper() in _f08_expanded_cats
                                     )
                                 ]
-                                # Si quedan menos de 3 del mismo tipo, usar pool sin filtro
-                                _f08_ids_to_use = _f08_same_cat if len(_f08_same_cat) >= 3 else [
-                                    pid for pid in _f08_visual_ids if str(pid) != _f08_pid
-                                ]
 
-                                # Fase 4: construir dicts compatibles con formato TF-IDF
-                                _f08_recs = []
-                                for _f08_rank, _f08_vid in enumerate(_f08_ids_to_use[:n_recommendations]):
-                                    _f08_vprod = _f08_tfidf.id_index.get(str(_f08_vid))
-                                    if _f08_vprod:
-                                        _f08_recs.append(
-                                            normalize_recommendation_dict(
-                                                raw=_f08_vprod,
-                                                rank=_f08_rank,
-                                                score_start=1.0,
-                                                score_step=0.03,  # F-08A usa paso 0.03
-                                                source="visual_search_f08",
+                                # FIX (26/07/2026 -- gap de observabilidad, backlog identificado
+                                # al cerrar Fase 1b): F-08C ya tenia este mismo log desde el
+                                # 13/07/2026 ("F-08C candidate breakdown") -- F-08 Fase A nunca lo
+                                # tuvo, pese a compartir la misma estructura de filtrado y
+                                # particion T8. Sin esto, auditar un turno de F-08 Fase A (Turn 1)
+                                # requeria inferir la composicion del pool cruzando IDs finales
+                                # contra otras fuentes -- como se tuvo que hacer manualmente
+                                # durante la validacion del 26/07/2026. Mismo formato exacto que
+                                # F-08C para poder comparar directamente entre ambos caminos.
+                                #
+                                # Puramente aditivo: no cambia ningun comportamiento, solo
+                                # visibilidad -- mismo criterio que el log analogo de F-08C.
+                                _f08_candidate_breakdown: dict = {}
+                                for _f08_bd_pid in _f08_same_cat:
+                                    _f08_bd_type = (
+                                        _f08_tfidf.id_index.get(str(_f08_bd_pid), {})
+                                        .get("product_type", "").upper()
+                                    )
+                                    _f08_candidate_breakdown[_f08_bd_type] = (
+                                        _f08_candidate_breakdown.get(_f08_bd_type, 0) + 1
+                                    )
+                                logger.info(
+                                    f"F-08 candidate breakdown: {_f08_candidate_breakdown} "
+                                    f"(anchor_type={_f08_type_upper!r}, "
+                                    f"total={len(_f08_same_cat)})"
+                                )
+
+                                # HALLAZGO T8 FIX (18/07/2026 -- propagacion a F-08 Fase A del
+                                # fix ya validado en F-08C el 06/07/2026): _f08_same_cat mezcla
+                                # el tipo EXACTO del producto ancla con sus hermanos del mismo
+                                # grupo padre, ordenados solo por similitud visual pura -- sin
+                                # ningun peso hacia el tipo exacto. Con categorias hermanas de
+                                # tamano muy distinto (AROS=524 productos vs COLLARES=22), es
+                                # mucho mas probable que los vecinos visuales mas cercanos sean
+                                # del tipo grande, aunque el usuario este viendo "similar a" un
+                                # producto del tipo pequeno. Confirmado en produccion (18/07/2026,
+                                # screenshot T2): "similar a" un Collar devolvio 5 Aros + 2
+                                # Chocker + 1 Collar -- exactamente el mismo sintoma que T8 ya
+                                # resolvio para F-08C el 06/07/2026, pero nunca se porto a este
+                                # bloque (Turn 1) porque son dos caminos de codigo separados.
+                                #
+                                # Se reordena _f08_same_cat UNA SOLA VEZ aqui, antes de que lo
+                                # consuman tanto el camino feliz (corte directo mas abajo) como
+                                # el mecanismo de relleno restringido -- ambos heredan la mejora
+                                # de orden automaticamente, sin tocar ninguno de los dos por
+                                # separado.
+                                #
+                                # Mecanismo, en dos partes:
+                                #   1. Particion tipo T8: el tipo EXACTO del ancla primero
+                                #      (preservando su orden interno de similitud), el resto
+                                #      (hermanas) despues.
+                                #   2. NIVEL 1 (mismo mecanismo portado a F-08B el 18/07/2026):
+                                #      dentro del "resto" (las hermanas), intercalar por subtipo
+                                #      real en vez de dejar que la similitud visual pura decida
+                                #      el orden -- evita que si hace falta rellenar con hermanas,
+                                #      un solo hermano numeroso (tipicamente AROS) monopolice el
+                                #      relleno a costa de otras hermanas mas escasas.
+                                if _f08_type_upper and _f08_tfidf:
+                                    _f08_own_type_items = [
+                                        pid for pid in _f08_same_cat
+                                        if _f08_tfidf.id_index.get(str(pid), {})
+                                           .get("product_type", "").upper() == _f08_type_upper
+                                    ]
+                                    _f08_sibling_items = [
+                                        pid for pid in _f08_same_cat
+                                        if _f08_tfidf.id_index.get(str(pid), {})
+                                           .get("product_type", "").upper() != _f08_type_upper
+                                    ]
+
+                                    def _f08_interleave_by_subtype(_f08_flat_pids):
+                                        _f08_by_type: dict = {}
+                                        for _f08_st_pid in _f08_flat_pids:
+                                            _f08_st_type = (
+                                                _f08_tfidf.id_index.get(str(_f08_st_pid), {})
+                                                .get("product_type", "UNKNOWN").upper()
                                             )
+                                            _f08_by_type.setdefault(_f08_st_type, []).append(_f08_st_pid)
+                                        _f08_result = []
+                                        while any(_f08_by_type.values()):
+                                            for _f08_st_key, _f08_st_group in list(_f08_by_type.items()):
+                                                if _f08_st_group:
+                                                    _f08_result.append(_f08_st_group.pop(0))
+                                                if not _f08_st_group:
+                                                    del _f08_by_type[_f08_st_key]
+                                        return _f08_result
+
+                                    _f08_same_cat = (
+                                        _f08_own_type_items
+                                        + _f08_interleave_by_subtype(_f08_sibling_items)
+                                    )
+
+                                # HALLAZGO 1 / OPCION A FIX (03/07/2026 -- propagacion del
+                                # sprint F-08C "Candidatos Parciales + Relleno Categorizado"
+                                # del 17/06/2026 a F-08 Fase A):
+                                #
+                                # Por que: la expansion a categorias hermanas (fix anterior de
+                                # esta misma sesion) evita mezclar con categorias totalmente
+                                # ajenas (vestidos), pero NO garantiza llegar a n_recommendations
+                                # items cuando incluso el pool expandido es escaso -- y la
+                                # auditoria de Fase 0 (sesion 03/07/2026) confirmo que para
+                                # varias categorias de accesorios (CARTERAS, parte de
+                                # BRAZALETES) la galeria de fotos completa esta organizada
+                                # alrededor de un vestido/outfit, sin ningun plano de detalle
+                                # del accesorio -- es decir, la CALIDAD del embedding visual
+                                # para esas categorias es estructuralmente limitada por la
+                                # fotografia disponible, no por el codigo de filtrado. Por eso
+                                # este relleno restringido -- que NO depende de la calidad del
+                                # embedding, solo garantiza coherencia de categoria -- es la
+                                # defensa mas robusta disponible hoy.
+                                #
+                                # DISEÑO: identico al ya validado en produccion para F-08C.
+                                #   1. Candidatos visuales parciales se usan tal cual (ya
+                                #      rankeados por similitud real).
+                                #   2. El resto se rellena con smart_fallback(), anclado a las
+                                #      MISMAS categorias hermanas (_f08_expanded_cats) via
+                                #      user_events sinteticos -- nunca mezcla con categorias
+                                #      ajenas.
+                                #   3. user_query=None bypassa PRIORIDAD 1 de
+                                #      get_personalized_fallback() (evita que re-detecte una
+                                #      categoria distinta desde el texto crudo).
+                                #   4. strict_category=True: coherencia categorica estricta --
+                                #      si la categoria se agota, devuelve menos items en vez de
+                                #      mezclar silenciosamente con categorias ajenas.
+                                #   5. Peso extra (evento duplicado) al tipo EXACTO del producto
+                                #      ancla, igual que F-08C, para que nunca quede fuera del
+                                #      top-3 de PRIORIDAD 2 en grupos con muchas hermanas
+                                #      (ej. ACCESSORIES tiene 8 categorias).
+                                #
+                                # shown_products en Fase A (Turn 1) es siempre set() vacio --
+                                # inicializado incondicionalmente al inicio de
+                                # get_base_recommendations(), antes del if use_diversification.
+                                # No hace falta ninguna adaptacion para eso.
+                                #
+                                # all_products: a diferencia de shown_products, SI tiene el
+                                # mismo riesgo de scoping ya documentado para
+                                # get_parent_categories (BUG-REFACTOR-1) -- se asigna solo
+                                # dentro de "if use_diversification:" (Turn 2+), que en Turn 1
+                                # nunca ejecuta. Se obtiene aqui directamente de
+                                # _f08_tfidf.product_data (mismo objeto subyacente).
+                                if len(_f08_same_cat) >= n_recommendations:
+                                    _f08_recs = []
+                                    for _f08_rank, _f08_vid in enumerate(
+                                        _f08_same_cat[:n_recommendations]
+                                    ):
+                                        _f08_vprod = _f08_tfidf.id_index.get(str(_f08_vid))
+                                        if _f08_vprod:
+                                            _f08_recs.append(
+                                                normalize_recommendation_dict(
+                                                    raw=_f08_vprod,
+                                                    rank=_f08_rank,
+                                                    score_start=1.0,
+                                                    score_step=0.03,  # F-08A usa paso 0.03
+                                                    source="visual_search_f08",
+                                                )
+                                            )
+
+                                    if _f08_recs:
+                                        logger.info(
+                                            f"F-08 visual_similarity: {len(_f08_recs)} productos "
+                                            f"(cat={_f08_type_upper!r}, "
+                                            f"expanded_cats={_f08_expanded_cats}, "
+                                            f"pool={len(_f08_visual_ids)}, "
+                                            f"filtered={len(_f08_same_cat)})"
+                                        )
+                                        return _f08_recs  # early-return: bypass TF-IDF
+
+                                elif len(_f08_same_cat) > 0:
+                                    try:
+                                        from src.recommenders.improved_fallback_exclude_seen import (
+                                            ImprovedFallbackStrategies as _f08_ImprovedFallbackStrategies,
                                         )
 
-                                if _f08_recs:
-                                    logger.info(
-                                        f"F-08 visual_similarity: {len(_f08_recs)} productos "
-                                        f"(cat={_f08_type_upper!r}, "
-                                        f"pool={len(_f08_visual_ids)}, "
-                                        f"filtered={len(_f08_same_cat)})"
-                                    )
-                                    return _f08_recs  # early-return: bypass TF-IDF
+                                        _f08_all_products = _f08_tfidf.product_data
+
+                                        _f08_fill_events = []
+                                        for _f08_cat in _f08_expanded_cats:
+                                            _f08_fill_events.append({
+                                                "productId": None,
+                                                "product_info": {
+                                                    "product_type": _f08_cat,
+                                                    "source": "f08a_partial_fill"
+                                                },
+                                                "eventType": "view",
+                                                "source": "f08a_partial_fill"
+                                            })
+                                            if _f08_cat.upper() == _f08_type_upper:
+                                                _f08_fill_events.append({
+                                                    "productId": None,
+                                                    "product_info": {
+                                                        "product_type": _f08_cat,
+                                                        "source": "f08a_partial_fill_anchor_boost"
+                                                    },
+                                                    "eventType": "view",
+                                                    "source": "f08a_partial_fill"
+                                                })
+
+                                        _f08_needed = n_recommendations - len(_f08_same_cat)
+
+                                        _f08_fill_exclude = (
+                                            set(shown_products)
+                                            | {str(pid) for pid in _f08_same_cat}
+                                            | {_f08_pid}
+                                        )
+
+                                        _f08_fill_raw = await _f08_ImprovedFallbackStrategies.smart_fallback(
+                                            user_id=validated_user_id,
+                                            products=_f08_all_products,
+                                            user_events=_f08_fill_events,
+                                            n=_f08_needed,
+                                            exclude_products=_f08_fill_exclude,
+                                            user_query=None,  # bypass PRIORIDAD 1 -- ver comentario arriba
+                                            strict_category=True,
+                                        )
+
+                                        if len(_f08_fill_raw) < _f08_needed:
+                                            _f08_exhausted_cat = (
+                                                _f08_expanded_cats[0] if _f08_expanded_cats else "esta categoria"
+                                            )
+                                            _f08_shown_count = len(_f08_same_cat) + len(_f08_fill_raw)
+                                            mcp_context.category_exhausted_info = {  # type: ignore[attr-defined]
+                                                "category": _f08_exhausted_cat,
+                                                "shown_count": _f08_shown_count,
+                                                "total_count": _f08_shown_count,
+                                            }
+                                            logger.info(
+                                                f"F-08 category_exhausted: {len(_f08_same_cat)} visual + "
+                                                f"{len(_f08_fill_raw)} fill = {_f08_shown_count} "
+                                                f"(de {n_recommendations} pedidos, categoria="
+                                                f"{_f08_exhausted_cat!r}). LLM notificacion activada."
+                                            )
+
+                                        _f08_recs = []
+                                        for _f08_rank, _f08_vid in enumerate(_f08_same_cat):
+                                            _f08_vprod = _f08_tfidf.id_index.get(str(_f08_vid))
+                                            if _f08_vprod:
+                                                _f08_recs.append(
+                                                    normalize_recommendation_dict(
+                                                        raw=_f08_vprod,
+                                                        rank=_f08_rank,
+                                                        score_start=1.0,
+                                                        score_step=0.03,
+                                                        source="visual_search_f08",
+                                                    )
+                                                )
+
+                                        _f08_fill_score_start = (
+                                            round(_f08_recs[-1]["score"] - 0.05, 4)
+                                            if _f08_recs else 0.90
+                                        )
+                                        for _f08_fill_rank, _f08_fill_prod in enumerate(_f08_fill_raw):
+                                            _f08_recs.append(
+                                                normalize_recommendation_dict(
+                                                    raw=_f08_fill_prod,
+                                                    rank=_f08_fill_rank,
+                                                    score_start=_f08_fill_score_start,
+                                                    score_step=0.02,
+                                                    source="categorized_fill_f08a",
+                                                )
+                                            )
+
+                                        if _f08_recs:
+                                            logger.info(
+                                                f"F-08 visual_partial_plus_fill: "
+                                                f"{len(_f08_recs)} productos totales "
+                                                f"(visual={len(_f08_same_cat)}, "
+                                                f"fill={len(_f08_fill_raw)}, "
+                                                f"needed_fill={_f08_needed}, "
+                                                f"cats={_f08_expanded_cats})"
+                                            )
+                                            return _f08_recs
+
+                                    except Exception as _f08_fill_err:
+                                        logger.warning(
+                                            f"F-08 partial_fill failed (using visual-only, "
+                                            f"sin relleno): {_f08_fill_err}"
+                                        )
+                                        _f08_recs = []
+                                        for _f08_rank, _f08_vid in enumerate(_f08_same_cat):
+                                            _f08_vprod = _f08_tfidf.id_index.get(str(_f08_vid))
+                                            if _f08_vprod:
+                                                _f08_recs.append(
+                                                    normalize_recommendation_dict(
+                                                        raw=_f08_vprod,
+                                                        rank=_f08_rank,
+                                                        score_start=1.0,
+                                                        score_step=0.03,
+                                                        source="visual_search_f08",
+                                                    )
+                                                )
+                                        if _f08_recs:
+                                            logger.info(
+                                                f"F-08 visual_similarity (fill failed, visual-only): "
+                                                f"{len(_f08_recs)} productos "
+                                                f"(cat={_f08_type_upper!r}, "
+                                                f"expanded_cats={_f08_expanded_cats}, "
+                                                f"pool={len(_f08_visual_ids)})"
+                                            )
+                                            return _f08_recs
+
+                                # Si len(_f08_same_cat) == 0: no se hace nada -- cae al
+                                # fallback estandar (hybrid_recommender.get_recommendations)
+                                # justo despues de este bloque -- mismo patron de seguridad
+                                # que F-08C ("si 0: cae a smart_fallback()").
 
                         except asyncio.TimeoutError:
                             logger.warning("F-08 visual_search timeout (>3s) — fallback a TF-IDF")
