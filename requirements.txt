@@ -1,109 +1,43 @@
-# === DEPENDENCIAS PRINCIPALES ===
-fastapi==0.115.0
-uvicorn==0.34.0
+# requirements.txt (LOCAL / DESARROLLO)
+# ============================================================================
+# FIX (19/09/2026): unificado con requirements.cloudrun.txt para eliminar la
+# deriva entre ambos archivos. Ver DCT_Automatizacion_Sincronizacion_Catalogo_
+# TFIDF_19092026.md para el contexto completo de la auditoria.
+#
+# Este archivo NO se usa en el build de Docker -- Dockerfile.cloudrun usa
+# requirements.cloudrun.txt directamente. Este es solo para entorno local:
+# instala todo lo de produccion (via -r, siempre en sincronia automatica)
+# mas las herramientas de desarrollo que corren fuera de src/ (Alembic).
+#
+# Paquetes que este archivo declaraba antes y se retiraron en la auditoria
+# del 19/09/2026, confirmados sin ningun uso en el repo (grep recursivo
+# sobre src/, 0 coincidencias):
+#   - ShopifyAPI          -- ninguna integracion de Shopify activa lo importa
+#                            (shopify_client.py usa requests/httpx a mano)
+#   - textblob, langdetect -- declarados bajo "AI conversation enhancements",
+#                            nunca importados por ningun modulo
+#   - anthropic==1.3.0 / httpx2==2.12.0 fijados aqui -- ahora viven en
+#     requirements.cloudrun.txt (unica fuente de verdad), actualizados a
+#     1.7.0 / 2.13.0 tras confirmar la version real corriendo en produccion.
+# Si en el futuro se necesita alguno de los retirados de verdad, agregarlo
+# aqui con su version exacta -- no como piso abierto.
+# ============================================================================
 
-# === PYDANTIC Y CONFIGURACION ===
-pydantic==2.10.0
-pydantic-settings==2.5.2  # Requerido para BaseSettings en Pydantic v2
-python-dotenv==1.0.0
+-r requirements.cloudrun.txt
 
-# === MACHINE LEARNING Y ANALISIS DE DATOS ===
-numpy==1.23.5
-scipy==1.10.1
-# scikit-learn==1.2.2
-scikit-learn==1.6.1  # ACTUALIZADO: Compatibilidad con modelo existente
-
-# === INTEGRACION CON GOOGLE CLOUD ===
-google-cloud-retail==1.25.1
-google-cloud-storage==2.19.0
-google-cloud-core==2.4.1
-google-api-core>=2.15.0
-# M3: Push de métricas Prometheus a GCP Cloud Monitoring (exporter activo en Cloud Run)
-google-cloud-monitoring>=2.0.0
-
-# === INTEGRACION CON SHOPIFY ===
-# shopify-python-api==1.0.1
-ShopifyAPI>=12.0.0 
-
-# === SISTEMA DE CACHE DISTRIBUIDA ===
-redis==4.6.0  # Incluye soporte asincrono en redis.asyncio
-# aioredis>=2.0.1  # Cliente asincrono para Redis
-cachetools>=5.0.0  # Para MCPClientEnhanced local caching
-
-# === DATABASE (PostgreSQL) ===
-asyncpg>=0.29.0  # PostgreSQL async driver para Shopify KB
-
-# === UTILIDADES ===
-tqdm==4.67.0
-requests==2.32.2
-jinja2==3.1.5
-httpx>=0.24.0  # Para MCPClient async HTTP calls and CLAUDE/ANTHROPIC
-
-# === CLAUDE/ANTHROPIC INTEGRATION ===
-# FIX (04/09/2026): fijado a version exacta tras incidente de produccion --
-# anthropic>=0.25.0 (sin techo) dejo que un rebuild de Docker instalara
-# anthropic 1.3.0 un mes despues del ultimo deploy exitoso, y esa version
-# migro su dependencia HTTP interna de httpx a httpx2 (paquete PyPI
-# separado), rompiendo la construccion del cliente en service_factory.py
-# (get_mcp_recommender) -- TypeError en CADA request conversacional, no
-# solo en el arranque. Version exacta probada y confirmada funcionando de
-# punta a punta contra el codigo real (ver comentario en service_factory.py).
-# httpx2 declarado explicitamente: hasta ahora solo llegaba como
-# dependencia indirecta de anthropic, sin garantia de version si anthropic
-# cambia su propio pin en el futuro.
-anthropic==1.3.0
-httpx2==2.12.0
+# === HERRAMIENTAS DE DESARROLLO / MIGRACIONES (solo local, fuera de src/) ===
+# Usadas por alembic/env.py y scripts/m5_alembic_setup.py -- confirmado que
+# ningun modulo dentro de src/ las importa (por eso no estan arriba: Dockerfile.
+# cloudrun solo copia src/, data/, static/, models/ -- nunca la raiz del repo
+# ni scripts/).
+alembic>=1.13.0
+sqlalchemy>=2.0.35
 
 # === DESARROLLO Y TESTING (opcional) ===
 # pytest>=7.0.0
 # pytest-asyncio>=0.21.0
 # pytest-cov>=4.0.0
 # locust>=2.15.0  # Para pruebas de carga
-
-# === NOTA ===
+#
 # Para instalar dependencias de desarrollo:
-# pip install -r requirements.txt pytest pytest-asyncio pytest-cov locust
-# === CLAUDE/ANTHROPIC INTEGRATION ===
-# FIX (04/09/2026): mismo pin que arriba -- ver comentario en la primera
-# aparicion de este bloque.
-anthropic==1.3.0
-httpx>=0.24.0
-httpx2==2.12.0
-
-# === AI CONVERSATION ENHANCEMENTS ===
-textblob>=0.17.1  # Para analisis de texto basico en fallbacks
-langdetect>=1.0.9  # Para deteccion de idioma
-
-# === DEPENDENDIAS PARA PRUEBAS ===
-aiohttp>=3.9.0
-
-# === LOGGING ===
-structlog>=24.1.0
-python-json-logger>=2.0.0
-
-
-prometheus-client==0.19.0
-prometheus-fastapi-instrumentator==6.1.0
-
-# === ALEMBIC MIGRATIONS (M5) ===
-# Alembic: Framework de versionado y ejecución de migraciones de schema DB.
-# SQLAlchemy: Requerido por Alembic como abstracción de conexión.
-#   NOTA: No usamos SQLAlchemy ORM en la aplicación (seguimos con asyncpg directo).
-#   SQLAlchemy se usa ÚNICAMENTE para que Alembic pueda gestionar conexiones
-#   y el tracking de versiones (tabla alembic_version).
-#   Compatible con migración futura a Cloud SQL (solo cambia DB_HOST).
-alembic>=1.13.0
-sqlalchemy>=2.0.35
-
-# === HTML → MARKDOWN (L1) ===
-# markdownify: Convierte HTML de Shopify a Markdown limpio para la Knowledge Base.
-#   Reemplaza el parser regex manual (_html_to_markdown) con una librería robusta
-#   que preserva estructura semántica: tablas, listas, links, headings.
-#   BeautifulSoup4 es una dependencia transitiva de markdownify (ya puede estar
-#   instalada vía otros paquetes; se lista explícitamente para claridad).
-# Referencia: src/api/services/shopify_kb_sync.py → _html_to_markdown()
-markdownify>=0.12.1
-beautifulsoup4>=4.12.0
-
-# python-multipart: requerido por FastAPI para procesar endpoints con File(...) y Form(...)
-python-multipart>=0.0.6
+#   pip install -r requirements.txt pytest pytest-asyncio pytest-cov locust

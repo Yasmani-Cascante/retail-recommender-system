@@ -446,6 +446,25 @@ CATEGORY_KEYWORDS = {
         ]
     },
     
+    # AGREGADO (15/09/2026): "joyas"/"joya" nunca estaba registrada como
+    # keyword -- confirmado en produccion: "¿Que joyas van con esta
+    # cartera?" no detectaba ninguna categoria real (ni "cartera", filtrada
+    # correctamente por RELATIONAL_PATTERNS por ser contextual, ni "joyas",
+    # simplemente inexistente), cayendo al conjunto amplio por defecto en
+    # vez de a AROS/COLLARES/BRAZALETES -- que es lo que "joyas" significa
+    # en el uso real del termino (no ropa, zapatos, ni bolsos/carteras).
+    # Parent con las 4 categorias que genuinamente son joyeria; "BRAZALETE"
+    # (singular, sin keyword propia) se incluye igual -- la expansion de
+    # parent solo exige que el subtipo este en available_categories
+    # (viene de product_taxonomy.py), no que tenga su propia entrada aqui.
+    "JOYAS": {
+        "type": "parent",
+        "keywords": [
+            "joya", "joyas", "joyería", "joyeria",
+        ],
+        "subcategories": ["AROS", "COLLARES", "BRAZALETES", "BRAZALETE"],
+    },
+    
     "CINTURONES": {
         "type": "concrete",
         "keywords": [
@@ -756,6 +775,15 @@ def extract_categories_from_query(
         r'que\s+quede[n]?\s+con',
         r'similar(?:es)?\s+a\s+este',
         r'parecidos?\s+a\s+este',
+        # AGREGADO (15/09/2026): "combina/combinan MEJOR este/esta" -- gap
+        # encontrado en produccion (14/09/2026): "¿Con que zapatos combina
+        # mejor este top?" no matcheaba ningun patron existente (todos
+        # esperan "combina" seguido inmediatamente de "con", pero aqui va
+        # "combina" + "mejor" + "este", sin "con" entre medio) -- "top"
+        # quedaba con la misma especificidad que "zapatos" en vez de
+        # penalizarse como referencia al ancla. "con" opcional para cubrir
+        # ambas variantes ("combina mejor este" y "combina mejor con este").
+        r'combina[n]?\s+mejor\s+(?:con\s+)?(?:este|esta|ese|esa|el|la)\b',
     ]
     relational_cutoff_pos = None
     for _pat in RELATIONAL_PATTERNS:
@@ -852,10 +880,30 @@ def extract_categories_from_query(
     )
     
     # 6. Extraer solo los nombres de categorías
-    result = [cat for cat, _ in sorted_categories]
+    # FIX (05/09/2026): antes se descartaba la puntuacion de especificidad
+    # justo aqui, tratando las categorias penalizadas por patron relacional
+    # (specificity=0.1, ver RELATIONAL_PATTERNS arriba) igual que una
+    # deteccion real de alta confianza. Confirmado en produccion (04/09/2026):
+    # "que accesorios combinan con este vestido" devolvia vestidos genuinos
+    # mezclados con los accesorios pedidos (3 de 8 productos en un caso real
+    # con ancla NOVIAS MIDIS). El minimo de una deteccion legitima es 0.5
+    # (expansion de padre con keyword de 1 palabra) -- filtrar score > 0.1
+    # excluye unicamente lo penalizado por patron relacional, nada mas.
+    #
+    # Si el filtro deja la lista vacia (ej. "algo que combine con este
+    # vestido", donde 'vestido' es la UNICA coincidencia y es puramente
+    # contextual), el llamador ya maneja ese caso correctamente -- cae al
+    # conjunto amplio por defecto en vez de acotar a una categoria que
+    # probablemente solo describe el ancla, no la intencion real.
+    result = [cat for cat, score in sorted_categories if score > 0.1]
     
     # 7. Log resultado
-    if len(result) == 1:
+    if len(result) == 0:
+        logger.info(
+            f"🎯 No category with intent real detected (solo contexto "
+            f"penalizado, si lo habia) from query: '{query[:50]}...'"
+        )
+    elif len(result) == 1:
         logger.info(f"🎯 Single category detected from query: '{result[0]}'")
     else:
         logger.info(f"🎯 Multiple categories detected from query: {result}")

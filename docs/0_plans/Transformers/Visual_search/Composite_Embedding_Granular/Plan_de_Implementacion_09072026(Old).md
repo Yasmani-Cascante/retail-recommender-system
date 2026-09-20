@@ -1,5 +1,9 @@
 ## Plan de Implementación: Composite Embedding Granular (Gap C)
 
+NOTA IMPORTANTE (17/09/2026): 
+
+Este plan ya no describe la arquitectura real (superado por "Opción B" de Fase 1b) y debe leerse como contexto histórico, no como especificación vigente.
+
 **Fecha:** 09/07/2026
 **Relacionado:**
 - `DCT — Propagación Fix F-08C → F-08 Fase A` (Notion) — documenta el Gap C original

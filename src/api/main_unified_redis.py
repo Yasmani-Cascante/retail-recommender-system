@@ -685,6 +685,63 @@ async def lifespan(app: FastAPI):
             retail_recommender = await ServiceFactory.get_retail_recommender()
             # retail_recommender = RecommenderFactory.create_retail_recommender()
             logger.info("✅ TF-IDF and Retail recommenders created")
+
+            # FIX (18/09/2026): Paso B2 del roadmap de automatizacion TF-IDF.
+            # Antes de que nada lea data/tfidf_model.pkl (StartupManager/.load()
+            # mas abajo), intentar descargar la version mas reciente desde GCS
+            # -- la sube el endpoint POST /v1/admin/tfidf/rebuild (Paso B1).
+            # Esto es lo que hace que el catalogo actualizado llegue a TODAS
+            # las instancias (min-instances=0 => cada cold start arranca desde
+            # la imagen, que solo tiene el pickle horneado en build-time) sin
+            # necesitar un redeploy manual cada vez que se regenera.
+            #
+            # Best-effort y no bloqueante: si GCS_BUCKET_NAME no esta
+            # configurado, si el objeto aun no existe, o si falla la red,
+            # se sigue con el pickle horneado en la imagen -- nunca se
+            # bloquea ni se rompe el arranque del servicio por esto.
+            try:
+                _gcs_bucket = os.getenv("GCS_BUCKET_NAME")
+                if _gcs_bucket and tfidf_recommender:
+                    from google.cloud import storage
+                    _storage_client = storage.Client()
+                    _blob = _storage_client.bucket(_gcs_bucket).blob("tfidf-model/tfidf_model.pkl")
+                    if _blob.exists():
+                        _model_dir = os.path.dirname(tfidf_recommender.model_path)
+                        if _model_dir and not os.path.exists(_model_dir):
+                            os.makedirs(_model_dir, exist_ok=True)
+                        # FIX: descarga a un archivo temporal y solo reemplaza
+                        # el definitivo con os.replace() (atomico) si la
+                        # descarga termino OK. Si download_to_filename() falla
+                        # a mitad de camino (red cortada), el pickle horneado
+                        # en la imagen queda intacto en vez de terminar
+                        # truncado/corrupto en la ruta que load() va a leer.
+                        _tmp_path = f"{tfidf_recommender.model_path}.gcs_download_tmp"
+                        _blob.download_to_filename(_tmp_path)
+                        os.replace(_tmp_path, tfidf_recommender.model_path)
+                        logger.info(
+                            f"✅ TF-IDF catalog descargado desde GCS: "
+                            f"gs://{_gcs_bucket}/tfidf-model/tfidf_model.pkl"
+                        )
+                    else:
+                        logger.info(
+                            "ℹ️ TF-IDF: aun no existe pickle en GCS -- "
+                            "usando el horneado en la imagen (normal antes "
+                            "del primer POST /v1/admin/tfidf/rebuild)"
+                        )
+                else:
+                    logger.info("ℹ️ TF-IDF: GCS_BUCKET_NAME no configurado -- usando el pickle horneado en la imagen")
+            except Exception as _gcs_startup_err:
+                # Limpiar el temporal si la descarga fallo a mitad de camino
+                try:
+                    _tmp_cleanup = f"{tfidf_recommender.model_path}.gcs_download_tmp" if tfidf_recommender else None
+                    if _tmp_cleanup and os.path.exists(_tmp_cleanup):
+                        os.remove(_tmp_cleanup)
+                except Exception:
+                    pass
+                logger.warning(
+                    f"⚠️ TF-IDF: no se pudo descargar desde GCS, usando el "
+                    f"pickle horneado en la imagen -- error={_gcs_startup_err}"
+                )
             
         except Exception as e:
             logger.error(f"❌ CRITICAL: ServiceFactory failed to create recommenders: {e}")
@@ -729,6 +786,30 @@ async def lifespan(app: FastAPI):
                     logger.info(f"✅ TF-IDF Status after training: loaded={tfidf_recommender.loaded}")
                     if tfidf_recommender.loaded:
                         logger.info(f"✅ TF-IDF trained with {len(tfidf_recommender.product_data) if tfidf_recommender.product_data else 0} products")
+
+                        # FIX (17/09/2026): alerta de desfase de sincronizacion del catalogo TF-IDF.
+                        # Ver Evaluacion_Integral_Sistema_16092026.md, roadmap corto plazo punto 1.
+                        # Diseno: TFIDFRecommender solo reporta el hecho (days_since_sync);
+                        # el umbral de politica vive en settings (config.py), no en el componente.
+                        tfidf_health = await tfidf_recommender.health_check()
+                        _days_since_sync = tfidf_health.get("days_since_sync")
+                        _max_age = settings.tfidf_sync_max_age_days
+                        if _days_since_sync is None:
+                            logger.warning(
+                                "TF-IDF catalog has NO sync metadata (legacy model, "
+                                "regenerated before this tracking existed). Run "
+                                "regenerate_tfidf_model.py to enable freshness tracking."
+                            )
+                        elif _days_since_sync > _max_age:
+                            logger.warning(
+                                f"TF-IDF catalog STALE: last synced {_days_since_sync:.1f} days ago "
+                                f"(threshold: {_max_age} days). Run regenerate_tfidf_model.py and redeploy."
+                            )
+                        else:
+                            logger.info(
+                                f"TF-IDF catalog synced {_days_since_sync:.1f} days ago "
+                                f"(within {_max_age}-day threshold)"
+                            )
                     else:
                         logger.error("❌ TF-IDF failed to load after startup manager execution")
                 
@@ -2676,6 +2757,41 @@ async def enterprise_health_check():
         # This satisfies Cloud Run's health check requirements without blocking for Redis
         if startup_complete:
             shutdown_at = await _get_shutdown_at()
+
+            # FIX (17/09/2026): freshness del catalogo TF-IDF, visible en /health.
+            # No pasa por HealthCompositionRoot -- ese solo cubre redis_service
+            # (ver ServiceFactory.health_check_all_services) y este fast-path
+            # (startup_complete=True, el caso normal) nunca lo invoca.
+            tfidf_sync_info = {"available": False}
+            if tfidf_recommender and getattr(tfidf_recommender, "loaded", False):
+                _tfidf_health = await tfidf_recommender.health_check()
+                _days = _tfidf_health.get("days_since_sync")
+                _max_age = settings.tfidf_sync_max_age_days if settings else 30
+
+                # FIX (17/09/2026): contador de cambios pendientes (Paso C).
+                # Incrementado por ShopifyWebhookHandler.handle_product_event()
+                # en cada products/create|update|delete. Best-effort: si Redis
+                # no responde, el campo queda en None en vez de romper /health.
+                _pending_changes = None
+                try:
+                    from src.api.core.redis_service import get_redis_service
+                    _redis_for_health = await get_redis_service()
+                    if _redis_for_health and _redis_for_health._client:
+                        _raw_count = await _redis_for_health._client.get(
+                            "catalog:tfidf:changes_since_sync"
+                        )
+                        _pending_changes = int(_raw_count) if _raw_count is not None else 0
+                except Exception:
+                    pass
+
+                tfidf_sync_info = {
+                    "available": True,
+                    "synced_at": _tfidf_health.get("synced_at"),
+                    "days_since_sync": round(_days, 1) if _days is not None else None,
+                    "stale": _days is None or _days > _max_age,
+                    "changes_since_sync": _pending_changes,
+                }
+
             return {
                 "timestamp": time.time(),
                 "service": "enterprise_retail_recommender",
@@ -2691,6 +2807,8 @@ async def enterprise_health_check():
                 "visual_search_enabled": __import__("os").environ.get(
                     "VISUAL_SEARCH_ENABLED", "false"
                 ).lower() == "true",
+                # FIX (17/09/2026): ver comentario junto a tfidf_sync_info, arriba.
+                "tfidf_catalog": tfidf_sync_info,
             }
         
         # Fallback: If startup not yet complete, do comprehensive check
@@ -3562,6 +3680,125 @@ async def load_recommender():
     except Exception as e:
         logger.error(f"Error en load_recommender: {e}")
         return False
+
+# ============================================================================
+# FIX (17/09/2026): TF-IDF CATALOG REBUILD (OPS, Paso B del roadmap de
+# automatizacion -- ver conversacion 17/09/2026)
+# ============================================================================
+# Mismo patron que POST /v1/mcp/visual-search/index (visual_search_router.py):
+# endpoint protegido con API key, pensado para ser llamado por Cloud
+# Scheduler, ACK inmediato + procesamiento en BackgroundTasks.
+#
+# A diferencia de /v1/mcp/visual-search/index (que reindexa desde el
+# catalogo YA cargado en memoria), este endpoint hace fetch FRESCO a
+# Shopify -- ese es el punto: traer los cambios que llegaron desde la
+# ultima sincronizacion.
+#
+# Cadencia sugerida en Cloud Scheduler: diaria. El catalogo cambia "unas
+# pocas veces por semana" (confirmado con Yasmani, 17/09/2026), asi que
+# polling diario es holgado sin ser excesivo.
+#
+# Para crear el Cloud Scheduler job (via consola, mismo flujo que
+# visual-search-weekly-rebuild):
+#   Target: HTTP, URL = {APP_URL}/v1/admin/tfidf/rebuild, method POST
+#   Headers: X-API-Key: {settings.api_key}
+#   Frequency: 0 4 * * *  (diario 4am)
+# ============================================================================
+
+@app.post("/v1/admin/tfidf/rebuild", include_in_schema=True)
+async def trigger_tfidf_rebuild(
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(get_api_key),
+):
+    """
+    Dispara una regeneracion COMPLETA del catalogo TF-IDF.
+
+    Uso previsto: Cloud Scheduler (cron diario), o manualmente para forzar
+    una sincronizacion sin esperar al proximo ciclo.
+
+    Flujo (en background, tras el ACK):
+      1. Fetch productos frescos de Shopify (misma fuente que el startup)
+      2. tfidf_recommender.fit() -- refit completo, actualiza el singleton
+         EN MEMORIA de la instancia que atiende este request
+      3. Upload del pickle resultante a GCS -- fuente de verdad durable,
+         sobrevive redeploys y cold starts (requiere GCS_BUCKET_NAME)
+      4. Reset del contador Redis catalog:tfidf:changes_since_sync (Paso C)
+
+    Nota (min-instances=0): esta llamada solo actualiza la instancia que
+    la atiende. La lectura desde GCS al arranque (Paso B2, pendiente) es
+    lo que garantiza que las demas instancias -- y las que arranquen
+    despues de un cold start -- vean el catalogo actualizado sin depender
+    de que esta misma instancia siga viva.
+    """
+    background_tasks.add_task(_run_tfidf_rebuild)
+    return {
+        "status": "accepted",
+        "message": "TF-IDF catalog rebuild started in background",
+    }
+
+
+async def _run_tfidf_rebuild() -> None:
+    """Ejecuta el refit completo + upload a GCS + reset de contador de cambios."""
+    global tfidf_recommender
+
+    start_time = time.time()
+    logger.info("tfidf_rebuild_started")
+
+    try:
+        if not tfidf_recommender:
+            logger.error("tfidf_rebuild_failed_no_recommender_singleton")
+            return
+
+        products = await load_shopify_products()
+        if not products:
+            logger.error("tfidf_rebuild_failed_no_products")
+            return
+
+        success = await tfidf_recommender.fit(products)
+        if not success:
+            logger.error("tfidf_rebuild_failed_fit_error")
+            return
+
+        # Upload a GCS -- mismo patron que retail_api.py (storage.Client()
+        # + GCS_BUCKET_NAME). Best-effort: si falla, el pickle sigue
+        # actualizado en memoria/disco local de esta instancia -- no se
+        # pierde el refit, solo la durabilidad cross-instance.
+        gcs_uploaded = False
+        try:
+            bucket_name = os.getenv("GCS_BUCKET_NAME")
+            if bucket_name:
+                from google.cloud import storage
+                storage_client = storage.Client()
+                bucket = storage_client.bucket(bucket_name)
+                blob = bucket.blob("tfidf-model/tfidf_model.pkl")
+                blob.upload_from_filename(tfidf_recommender.model_path)
+                gcs_uploaded = True
+                logger.info(f"tfidf_rebuild_gcs_uploaded bucket={bucket_name}")
+            else:
+                logger.warning("tfidf_rebuild_gcs_skipped_no_bucket_configured")
+        except Exception as gcs_err:
+            logger.error(f"tfidf_rebuild_gcs_upload_failed error={gcs_err}")
+
+        # Reset del contador de cambios pendientes (Paso C)
+        try:
+            from src.api.core.redis_service import get_redis_service
+            redis_service = await get_redis_service()
+            if redis_service and redis_service._client:
+                await redis_service._client.set("catalog:tfidf:changes_since_sync", 0)
+                logger.info("tfidf_rebuild_counter_reset_ok")
+            else:
+                logger.warning("tfidf_rebuild_counter_reset_skipped_no_redis_client")
+        except Exception as redis_err:
+            logger.warning(f"tfidf_rebuild_counter_reset_failed error={redis_err}")
+
+        elapsed = time.time() - start_time
+        logger.info(
+            f"tfidf_rebuild_completed products={len(products)} "
+            f"gcs_uploaded={gcs_uploaded} duration_s={elapsed:.1f}"
+        )
+
+    except Exception as e:
+        logger.error(f"tfidf_rebuild_failed error={e}", exc_info=True)
 
 # ============================================================================
 # 📊 HEALTH CHECK COMPATIBILITY - CÓDIGO ORIGINAL PRESERVADO

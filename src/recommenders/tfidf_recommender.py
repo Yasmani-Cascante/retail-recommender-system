@@ -12,6 +12,7 @@ import logging
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
+from datetime import datetime, timezone
 import asyncio
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -38,6 +39,15 @@ class TFIDFRecommender:
         self.product_data = None
         self.product_ids = None
         self.loaded = False
+
+        # FIX (17/09/2026): metadata de sincronizacion con Shopify.
+        # Se setea en fit() (timestamp real de entrenamiento exitoso) o en
+        # load() (leido desde el pickle). None si el modelo nunca fue
+        # entrenado/cargado con este tracking, o si es un pickle legacy
+        # anterior a este cambio. Inicializado aqui (y no solo en fit/load)
+        # para que health_check() nunca falle con AttributeError si se llama
+        # antes de que el modelo este listo.
+        self.synced_at = None
         
         # Variables para fallback
         self.fallback_active = False
@@ -171,16 +181,28 @@ class TFIDFRecommender:
                 model_dir = os.path.dirname(self.model_path)
                 if model_dir and not os.path.exists(model_dir):
                     os.makedirs(model_dir, exist_ok=True)
-                
+
+                # FIX (17/09/2026): metadata de sincronizacion. Este es el
+                # unico punto que sabe, con certeza, que se completo un
+                # entrenamiento exitoso con datos frescos de Shopify. El
+                # pickle viaja igual dentro de la imagen Docker (ver
+                # Dockerfile.cloudrun: COPY data/ /app/data/), asi que este
+                # timestamp sobrevive al build/deploy y refleja la fecha
+                # REAL de sincronizacion, no la fecha del build.
+                synced_at = datetime.now(timezone.utc).isoformat()
+
                 # CORRECCIÓN: Guardar también los datos de productos y IDs
                 with open(self.model_path, 'wb') as f:
                     pickle.dump({
                         'vectorizer': self.vectorizer,
                         'product_vectors': self.product_vectors,
+                        'synced_at': synced_at,
+                        'product_count': len(self.product_data),
                         'product_data': self.product_data,  # Añadir datos de productos
                         'product_ids': self.product_ids     # Añadir IDs de productos
                     }, f)
-                logger.info(f"Modelo TF-IDF guardado en {self.model_path} con {len(self.product_data)} productos")
+                logger.info(f"Modelo TF-IDF guardado en {self.model_path} con {len(self.product_data)} productos (synced_at={synced_at})")
+                self.synced_at = synced_at
             
             self.loaded = True
             await self._build_category_index()
@@ -215,6 +237,7 @@ class TFIDFRecommender:
                 
             self.vectorizer = data['vectorizer']
             self.product_vectors = data['product_vectors']
+            self.synced_at = data.get('synced_at')  # FIX (17/09/2026): compat con pickles legacy via .get()
             
             # CORRECCIÓN CRITICA: Verificar si hay product_data en el modelo
             if 'product_data' in data:
@@ -403,10 +426,30 @@ class TFIDFRecommender:
             "fallback_active": self.fallback_active,
             "has_product_data": self.product_data is not None,
             "has_vectorizer": self.vectorizer is not None,
-            "has_vectors": self.product_vectors is not None
+            "has_vectors": self.product_vectors is not None,
+            "synced_at": self.synced_at,
+            "days_since_sync": self._days_since_sync()
         }
         return status
-    
+
+    def _days_since_sync(self) -> Optional[float]:
+        """
+        Dias transcurridos desde la ultima sincronizacion exitosa con Shopify.
+
+        None si el modelo no tiene metadata de sincronizacion (pickle legacy
+        generado antes de este cambio, o modelo nunca entrenado). El umbral
+        de "stale" NO vive aqui a proposito -- es una decision de politica
+        que corresponde a la capa de configuracion/aplicacion (ver
+        settings.tfidf_sync_max_age_days en main_unified_redis.py), no al
+        componente de bajo nivel.
+        """
+        if not self.synced_at:
+            return None
+        try:
+            synced = datetime.fromisoformat(self.synced_at)
+            return (datetime.now(timezone.utc) - synced).total_seconds() / 86400
+        except (TypeError, ValueError):
+            return None
 
     async def _build_category_index(self):
         """

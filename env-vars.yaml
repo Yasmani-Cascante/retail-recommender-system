@@ -1,0 +1,55 @@
+# env-vars.yaml — variables de entorno PLANAS (no secretas) de retail-recommender
+# ============================================================================
+# FIX (18/09/2026): reconstruido tras un incidente de produccion.
+#
+# `gcloud run services update --set-env-vars X=Y` NO es aditivo: reemplaza
+# TODO el bloque de variables planas por lo que le pases, y eso borro estas
+# 34 variables al agregar solo GCS_BUCKET_NAME. Los secretos sobrevivieron
+# porque van por --set-secrets (mecanismo separado, secretKeyRef).
+#
+# Este archivo es ahora la fuente de verdad versionable de las variables
+# planas -- usalo con --env-vars-file en cada deploy en vez de listarlas a
+# mano, para que esto no se pueda repetir. Es seguro tenerlo en el repo:
+# no contiene secretos (esos siguen en Secret Manager, referenciados aparte
+# en el comando de deploy con --set-secrets).
+#
+# Para agregar UNA variable sin arriesgarte a repetir el incidente:
+#   gcloud run services update retail-recommender --region us-central1 \
+#     --update-env-vars NUEVA_VAR=valor
+# (--update-env-vars SI es aditivo/merge; --set-env-vars siempre reemplaza)
+# ============================================================================
+ENVIRONMENT: "production"
+GOOGLE_PROJECT_ID: "retail-recommendations-449216"
+SERVICE_NAME: "retail-recommender"
+SERVICE_VERSION: "2.1.0"
+REDIS_HOST: "redis-10287.c1.us-central1-2.gce.cloud.redislabs.com"
+REDIS_PORT: "10287"
+REDIS_SSL: "false"
+USE_REDIS_CACHE: "true"
+SHOPIFY_SHOP_URL: "ai-shoppings.myshopify.com"
+DB_SSL: "true"
+KB_CONTENT_VERSIONING: "true"
+PROMETHEUS_METRICS_ENABLED: "true"
+GCP_MONITORING_ENABLED: "true"
+LOG_JSON_FORMAT: "true"
+LOG_LEVEL: "INFO"
+CLOUD_RUN_REGION: "us-central1"
+ENABLE_INTENT_DETECTION: "true"
+INTENT_CONFIDENCE_THRESHOLD: "0.7"
+INTENT_DETECTION_LOGGING: "true"
+ML_INTENT_ENABLED: "true"
+ML_CONFIDENCE_THRESHOLD: "0.8"
+ML_MODEL_PATH: "models/intent_classifier"
+LFM_MCP_ENABLED: "true"
+LFM_KB_ENABLED: "true"
+LFM_COLBERT_ENABLED: "true"
+COLBERT_SERVICE_URL: "https://retail-embedding-service-178362262166.us-central1.run.app"
+VISUAL_SEARCH_ENABLED: "true"
+KB_WEBHOOKS_ENABLED: "true"
+EMBEDDING_AUTH_DISABLED: "false"
+APP_PUBLIC_URL: "https://retail-recommender-178362262166.us-central1.run.app"
+MINILM_INTENT_ENABLED: "true"
+DATABASE_URL: "postgresql://postgres.imhjtqxtumfkqdricbrf:supabaseadmin@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
+GPT4O_MINI_FALLBACK_ENABLED: "true"
+FORCE_GPT4O_MINI_FALLBACK: "false"
+GCS_BUCKET_NAME: "retail-recommendations-449216-tfidf-model"

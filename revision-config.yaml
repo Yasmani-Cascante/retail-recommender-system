@@ -1,0 +1,205 @@
+apiVersion: serving.knative.dev/v1
+kind: Revision
+metadata:
+  annotations:
+    autoscaling.knative.dev/maxScale: '10'
+    autoscaling.knative.dev/minScale: '0'
+    run.googleapis.com/client-name: gcloud
+    run.googleapis.com/client-version: 509.0.0
+    run.googleapis.com/cpu-throttling: 'true'
+    run.googleapis.com/ingress: all
+    run.googleapis.com/operation-id: 122e451c-00cd-4887-80a4-a5969b223f58
+    run.googleapis.com/sessionAffinity: 'false'
+    run.googleapis.com/startup-cpu-boost: 'true'
+    serving.knative.dev/creator: yasmani.cascante@gmail.com
+  creationTimestamp: '2026-09-16T01:14:41.647793Z'
+  generation: 1
+  labels:
+    client.knative.dev/nonce: rdwzamenyi
+    cloud.googleapis.com/location: us-central1
+    run.googleapis.com/startupProbeType: Custom
+    serving.knative.dev/configuration: retail-recommender
+    serving.knative.dev/configurationGeneration: '282'
+    serving.knative.dev/route: retail-recommender
+    serving.knative.dev/service: retail-recommender
+    serving.knative.dev/serviceUid: ff85dc27-d8e1-4b14-993f-d1fb4b4a06e2
+  name: retail-recommender-00282-vhb
+  namespace: '178362262166'
+  ownerReferences:
+  - apiVersion: serving.knative.dev/v1
+    blockOwnerDeletion: true
+    controller: true
+    kind: Configuration
+    name: retail-recommender
+    uid: 9cc4392e-4992-4410-84d4-325c0ae1dd80
+  resourceVersion: AAZbru/K0v4
+  selfLink: /apis/serving.knative.dev/v1/namespaces/178362262166/revisions/retail-recommender-00282-vhb
+  uid: e2d24e53-7aeb-408b-bb16-3fa85f97ed78
+spec:
+  containerConcurrency: 80
+  containers:
+  - env:
+    - name: ENVIRONMENT
+      value: production
+    - name: GOOGLE_PROJECT_ID
+      value: retail-recommendations-449216
+    - name: SERVICE_NAME
+      value: retail-recommender
+    - name: SERVICE_VERSION
+      value: 2.1.0
+    - name: REDIS_HOST
+      value: redis-10287.c1.us-central1-2.gce.cloud.redislabs.com
+    - name: REDIS_PORT
+      value: '10287'
+    - name: REDIS_SSL
+      value: 'false'
+    - name: USE_REDIS_CACHE
+      value: 'true'
+    - name: SHOPIFY_SHOP_URL
+      value: ai-shoppings.myshopify.com
+    - name: DB_SSL
+      value: 'true'
+    - name: KB_CONTENT_VERSIONING
+      value: 'true'
+    - name: PROMETHEUS_METRICS_ENABLED
+      value: 'true'
+    - name: GCP_MONITORING_ENABLED
+      value: 'true'
+    - name: LOG_JSON_FORMAT
+      value: 'true'
+    - name: LOG_LEVEL
+      value: INFO
+    - name: CLOUD_RUN_REGION
+      value: us-central1
+    - name: ENABLE_INTENT_DETECTION
+      value: 'true'
+    - name: INTENT_CONFIDENCE_THRESHOLD
+      value: '0.7'
+    - name: INTENT_DETECTION_LOGGING
+      value: 'true'
+    - name: ML_INTENT_ENABLED
+      value: 'true'
+    - name: ML_CONFIDENCE_THRESHOLD
+      value: '0.8'
+    - name: ML_MODEL_PATH
+      value: models/intent_classifier
+    - name: LFM_MCP_ENABLED
+      value: 'true'
+    - name: LFM_KB_ENABLED
+      value: 'true'
+    - name: LFM_COLBERT_ENABLED
+      value: 'true'
+    - name: COLBERT_SERVICE_URL
+      value: https://retail-embedding-service-178362262166.us-central1.run.app
+    - name: VISUAL_SEARCH_ENABLED
+      value: 'true'
+    - name: KB_WEBHOOKS_ENABLED
+      value: 'true'
+    - name: EMBEDDING_AUTH_DISABLED
+      value: 'false'
+    - name: APP_PUBLIC_URL
+      value: https://retail-recommender-178362262166.us-central1.run.app
+    - name: MINILM_INTENT_ENABLED
+      value: 'true'
+    - name: DATABASE_URL
+      value: postgresql://postgres.imhjtqxtumfkqdricbrf:supabaseadmin@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require
+    - name: GPT4O_MINI_FALLBACK_ENABLED
+      value: 'true'
+    - name: FORCE_GPT4O_MINI_FALLBACK
+      value: 'false'
+    - name: SHOPIFY_ACCESS_TOKEN
+      valueFrom:
+        secretKeyRef:
+          key: latest
+          name: shopify-access-token
+    - name: API_KEY
+      valueFrom:
+        secretKeyRef:
+          key: latest
+          name: api-key
+    - name: SHOPIFY_WEBHOOK_SECRET
+      valueFrom:
+        secretKeyRef:
+          key: latest
+          name: shopify-webhook-secret
+    - name: REDIS_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          key: latest
+          name: redis-password
+    - name: ANTHROPIC_API_KEY
+      valueFrom:
+        secretKeyRef:
+          key: latest
+          name: anthropic-api-key
+    - name: CLAUDE_MAX_TOKENS
+      valueFrom:
+        secretKeyRef:
+          key: latest
+          name: claude-max-tokens
+    - name: CLAUDE_TOKENS_PER_MINUTE
+      valueFrom:
+        secretKeyRef:
+          key: latest
+          name: claude-tokens-per-minute
+    - name: PERPLEXITY_API_KEY
+      valueFrom:
+        secretKeyRef:
+          key: latest
+          name: perplexity-api-key
+    - name: CLAUDE_MODEL_TIER
+      valueFrom:
+        secretKeyRef:
+          key: latest
+          name: claude-model-tier
+    - name: OPENROUTER_API_KEY
+      valueFrom:
+        secretKeyRef:
+          key: latest
+          name: openrouter-api-key
+    image: gcr.io/retail-recommendations-449216/retail-recommender@sha256:46182e50b134f08509dca389bdeb4ca51c48f7c0fb86a2c95839d1b86086be21
+    name: retail-recommender-1
+    ports:
+    - containerPort: 8080
+      name: http1
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+    startupProbe:
+      failureThreshold: 11
+      httpGet:
+        path: /health/startup-probe
+        port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+  serviceAccountName: 178362262166-compute@developer.gserviceaccount.com
+  timeoutSeconds: 300
+status:
+  conditions:
+  - lastTransitionTime: '2026-09-17T14:52:44.227432Z'
+    message: Deploying revision succeeded in 29.11s.
+    status: 'True'
+    type: Ready
+  - lastTransitionTime: '2026-09-17T14:52:44.397059Z'
+    severity: Info
+    status: 'True'
+    type: Active
+  - lastTransitionTime: '2026-09-16T01:16:39.094791Z'
+    message: Containers became healthy in 1m30.28s.
+    status: 'True'
+    type: ContainerHealthy
+  - lastTransitionTime: '2026-09-17T14:52:16.068252Z'
+    message: Container image import completed.
+    status: 'True'
+    type: ContainerReady
+  - lastTransitionTime: '2026-09-17T14:52:44.043535Z'
+    message: Provisioning imported containers completed in 28.92s. Checking container
+      health. This will wait for up to 2m for the configured startup probe, including
+      an initial delay of 10s.
+    status: 'True'
+    type: ResourcesAvailable
+  imageDigest: gcr.io/retail-recommendations-449216/retail-recommender@sha256:46182e50b134f08509dca389bdeb4ca51c48f7c0fb86a2c95839d1b86086be21
+  logUrl: https://console.cloud.google.com/logs/viewer?project=retail-recommendations-449216&resource=cloud_run_revision/service_name/retail-recommender/revision_name/retail-recommender-00282-vhb&advancedFilter=resource.type%3D%22cloud_run_revision%22%0Aresource.labels.service_name%3D%22retail-recommender%22%0Aresource.labels.revision_name%3D%22retail-recommender-00282-vhb%22
+  observedGeneration: 1

@@ -446,6 +446,23 @@ class ShopifyIntegration:
             "X-Shopify-Access-Token": self.access_token
         }
 
+        # FIX (19/09/2026): pacing dinamico + retry con backoff para 'Throttled'.
+        # Shopify expone en cada respuesta GraphQL extensions.cost.throttleStatus
+        # (currentlyAvailable, maximumAvailable, restoreRate) -- el estado REAL
+        # del rate limit de esta tienda. Antes de este fix, el loop disparaba los
+        # ~102 batches sin pausa y, ante 'Throttled', hacia continue() inmediato
+        # -- perpetuaba el throttling en cadena para el resto de la corrida
+        # (confirmado en logs de produccion: 2625/3045 productos cayendo a REST
+        # fallback tras activar --no-cpu-throttling, que acelero el loop lo
+        # suficiente para chocar con el limite real de Shopify).
+        _throttle_available = None       # ultimo currentlyAvailable conocido
+        _throttle_restore_rate = None    # puntos/seg que Shopify repone
+        _estimated_batch_cost = 600.0    # estimacion inicial (ver comentario
+        # original mas arriba: "~600 puntos" por batch de 30 productos x 4
+        # mercados); se ajusta con el costo real (actualQueryCost) del primer
+        # batch exitoso.
+        MAX_THROTTLE_RETRIES = 2
+
         for batch_start in range(0, len(products), BATCH_SIZE):
             batch = products[batch_start: batch_start + BATCH_SIZE]
 
@@ -467,68 +484,109 @@ class ShopifyIntegration:
 
             bulk_query = "query GetMultiMarketPrices {\n" + "\n".join(alias_fragments) + "\n}"
 
-            try:
-                response = await asyncio.to_thread(
-                    requests.post,
-                    graphql_url,
-                    json={"query": bulk_query},
-                    headers=graphql_headers,
-                    timeout=45  # mas tiempo por query mas grande
-                )
-                response.raise_for_status()
-                data = response.json()
+            # FIX: pacing dinamico ANTES de disparar el batch. Si por el batch
+            # anterior sabemos que el presupuesto no alcanza para este, esperamos
+            # lo que Shopify diga que tarda en reponerse -- no un sleep fijo.
+            if _throttle_available is not None and _throttle_restore_rate:
+                deficit = _estimated_batch_cost - _throttle_available
+                if deficit > 0:
+                    wait_s = min(deficit / _throttle_restore_rate, 10.0)
+                    if wait_s > 0.05:
+                        await asyncio.sleep(wait_s)
 
-                if "errors" in data:
-                    error_msgs = [e.get("message", str(e)) for e in data["errors"]]
-                    logging.error(
-                        f"[ShopifyPrices] GraphQL errors in batch {batch_start}: {error_msgs}"
+            retry_count = 0
+
+            while True:
+                try:
+                    response = await asyncio.to_thread(
+                        requests.post,
+                        graphql_url,
+                        json={"query": bulk_query},
+                        headers=graphql_headers,
+                        timeout=45  # mas tiempo por query mas grande
                     )
-                    continue  # usar fallback REST para este lote
+                    response.raise_for_status()
+                    data = response.json()
 
-                response_data = data.get("data", {})
+                    # FIX: leer el throttleStatus real de Shopify -- viene tanto
+                    # en respuestas exitosas como en 'Throttled' -- para pacing
+                    # de los PROXIMOS batches y para saber cuanto esperar si
+                    # este mismo batch fue throttled.
+                    cost_ext = data.get("extensions", {}).get("cost", {})
+                    throttle_status = cost_ext.get("throttleStatus", {})
+                    if throttle_status:
+                        _throttle_available = throttle_status.get("currentlyAvailable")
+                        _throttle_restore_rate = throttle_status.get("restoreRate")
+                    actual_cost = cost_ext.get("actualQueryCost")
+                    if actual_cost:
+                        _estimated_batch_cost = float(actual_cost)
 
-                # Parsear aliases del lote
-                for idx, product in enumerate(batch):
-                    product_id = str(product.get("id", ""))
-                    for market in ACTIVE_MARKETS:
-                        market_id = market["market_id"]
-                        alias_key = f"p{idx}_{market_id}"
-                        product_node = response_data.get(alias_key)
-                        if not product_node:
-                            continue
+                    if "errors" in data:
+                        error_msgs = [e.get("message", str(e)) for e in data["errors"]]
+                        is_throttled = any("throttl" in m.lower() for m in error_msgs)
 
-                        contextual = product_node.get("contextualPricing", {})
-                        min_price = (
-                            contextual
-                            .get("priceRange", {})
-                            .get("minVariantPrice", {})
+                        if is_throttled and retry_count < MAX_THROTTLE_RETRIES and _throttle_restore_rate:
+                            retry_count += 1
+                            deficit = _estimated_batch_cost - (_throttle_available or 0)
+                            wait_s = min(max(deficit / _throttle_restore_rate, 1.0), 10.0)
+                            logging.warning(
+                                f"[ShopifyPrices] Batch {batch_start} throttled, "
+                                f"reintento {retry_count}/{MAX_THROTTLE_RETRIES} en {wait_s:.1f}s"
+                            )
+                            await asyncio.sleep(wait_s)
+                            continue  # reintenta el MISMO batch
+
+                        logging.error(
+                            f"[ShopifyPrices] GraphQL errors in batch {batch_start}: {error_msgs}"
                         )
-                        amount_str = min_price.get("amount", "0")
-                        currency_code = min_price.get("currencyCode", "")
+                        break  # agoto reintentos o error no-throttle -> fallback REST para este lote
 
-                        try:
-                            amount_float = float(amount_str)
-                        except (TypeError, ValueError):
-                            amount_float = 0.0
+                    response_data = data.get("data", {})
 
-                        if amount_float > 0 and currency_code:
-                            market_price_map[market_id][product_id] = {
-                                "price": amount_float,
-                                "currency": currency_code
-                            }
+                    # Parsear aliases del lote
+                    for idx, product in enumerate(batch):
+                        product_id = str(product.get("id", ""))
+                        for market in ACTIVE_MARKETS:
+                            market_id = market["market_id"]
+                            alias_key = f"p{idx}_{market_id}"
+                            product_node = response_data.get(alias_key)
+                            if not product_node:
+                                continue
 
-                resolved = sum(len(v) for v in market_price_map.values())
-                logging.info(
-                    f"[ShopifyPrices] Batch {batch_start}-{batch_start+len(batch)}: "
-                    f"{resolved} market-prices resolved total"
-                )
+                            contextual = product_node.get("contextualPricing", {})
+                            min_price = (
+                                contextual
+                                .get("priceRange", {})
+                                .get("minVariantPrice", {})
+                            )
+                            amount_str = min_price.get("amount", "0")
+                            currency_code = min_price.get("currencyCode", "")
 
-            except Exception as batch_err:
-                logging.error(
-                    f"[ShopifyPrices] Batch {batch_start} error: {batch_err}",
-                    exc_info=True
-                )
-                # Continuar con el siguiente lote; precio REST sera el fallback
+                            try:
+                                amount_float = float(amount_str)
+                            except (TypeError, ValueError):
+                                amount_float = 0.0
+
+                            if amount_float > 0 and currency_code:
+                                market_price_map[market_id][product_id] = {
+                                    "price": amount_float,
+                                    "currency": currency_code
+                                }
+
+                    resolved = sum(len(v) for v in market_price_map.values())
+                    logging.info(
+                        f"[ShopifyPrices] Batch {batch_start}-{batch_start+len(batch)}: "
+                        f"{resolved} market-prices resolved total"
+                    )
+                    break  # batch resuelto con exito
+
+                except Exception as batch_err:
+                    logging.error(
+                        f"[ShopifyPrices] Batch {batch_start} error: {batch_err}",
+                        exc_info=True
+                    )
+                    # Continuar con el siguiente lote; precio REST sera el fallback
+                    break
 
         # -- PASO 3: Enriquecer productos con precios multi-mercado -----------
         enriched_products = []

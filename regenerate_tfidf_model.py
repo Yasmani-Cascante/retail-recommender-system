@@ -28,6 +28,51 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def load_dotenv_if_present():
+    """
+    FIX (15/09/2026): el script fallaba con "Missing Shopify credentials:
+    SHOPIFY_SHOP_URL or SHOPIFY_ACCESS_TOKEN not set" al correrlo localmente
+    -- confirmado que la causa NO era que las credenciales no existieran
+    (el .env del proyecto ya las tiene, y ya se usan con exito en otros
+    scripts locales como fase0_poc.py), sino que este script nunca las
+    cargaba: asumia que ya estaban exportadas en el shell, sin leer el .env
+    por su cuenta.
+
+    Mismo patron ya validado en fase0_poc.py -- parseo simple KEY=VALUE por
+    linea, sin depender de python-dotenv (no vale la pena la dependencia
+    nueva para esto). Busca ".env" en el directorio actual (este script ya
+    exige correrse desde la raiz del proyecto -- ver el chequeo de
+    "cd C:\\Users\\yasma\\Desktop\\retail-recommender-system" en main() -- por
+    eso no hace falta subir por carpetas padre como si hace fase0_poc.py,
+    que vive varios niveles mas adentro).
+
+    NO sobreescribe variables que ya esten exportadas en el entorno -- si
+    el shell ya tiene SHOPIFY_ACCESS_TOKEN exportado a mano, eso tiene
+    prioridad sobre el .env.
+    """
+    env_path = os.path.join(os.getcwd(), ".env")
+    if not os.path.exists(env_path):
+        logger.warning(
+            f"⚠️ No se encontro .env en {env_path} -- usando solo variables "
+            f"ya exportadas en el entorno, si las hay"
+        )
+        return
+    loaded = 0
+    with open(env_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+                loaded += 1
+    logger.info(f"✅ .env encontrado en {env_path} -- {loaded} variables cargadas")
+
+
 def check_dependencies():
     """Verificar que todas las dependencias estén disponibles"""
     try:
@@ -185,7 +230,13 @@ async def main():
     """Función principal"""
     logger.info("🚀 Iniciando regeneración del modelo TF-IDF")
     logger.info("=" * 60)
-    
+
+    # FIX (15/09/2026): cargar .env ANTES de nada -- init_shopify() (dentro
+    # de load_products_from_shopify()) lee SHOPIFY_SHOP_URL/
+    # SHOPIFY_ACCESS_TOKEN de os.environ directamente, y fallaba en
+    # silencio si el shell no las tenia ya exportadas a mano.
+    load_dotenv_if_present()
+
     # Verificar dependencias
     if not check_dependencies():
         logger.error("❌ Dependencias faltantes. Abortando.")
@@ -210,6 +261,23 @@ async def main():
         if success:
             # Verificar compatibilidad
             verify_model_compatibility()
+
+            # FIX (17/09/2026): resetear el contador de "cambios pendientes
+            # de sincronizar" (Paso C del roadmap de automatizacion). Este es
+            # hoy el UNICO camino de regeneracion real -- cuando exista el
+            # Cloud Run Job de la Opcion B, movera este mismo reset ahi.
+            # Best-effort: si Redis no esta disponible localmente (normal en
+            # una corrida local sin tunel a Redis Cloud), no bloquea el script.
+            try:
+                from src.api.core.redis_service import get_redis_service
+                redis_service = await get_redis_service()
+                if redis_service and redis_service._client:
+                    await redis_service._client.set("catalog:tfidf:changes_since_sync", 0)
+                    logger.info("\u2705 Contador de cambios pendientes reseteado en Redis")
+                else:
+                    logger.warning("\u26a0\ufe0f Redis no disponible -- contador de cambios NO reseteado")
+            except Exception as e:
+                logger.warning(f"\u26a0\ufe0f No se pudo resetear el contador de cambios en Redis: {e}")
             
             logger.info("=" * 60)
             logger.info("🎉 REGENERACIÓN COMPLETADA EXITOSAMENTE")

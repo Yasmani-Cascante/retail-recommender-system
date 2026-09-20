@@ -59,6 +59,11 @@ class RecommenderSettings(BaseSettings):
     # Configuración de recomendadores
     content_weight: float = Field(default=0.5, env="CONTENT_WEIGHT")
     tfidf_model_path: str = Field(default="data/tfidf_model.pkl", env="TFIDF_MODEL_PATH")
+    # FIX (17/09/2026): umbral de "desfase" del catalogo TF-IDF para /health.
+    # Decidido con Yasmani: 30 dias. Vive aqui (config) y no en TFIDFRecommender
+    # a proposito -- es una decision de politica/negocio, no un detalle del
+    # componente de bajo nivel. Ver tfidf_recommender.py::_days_since_sync().
+    tfidf_sync_max_age_days: int = Field(default=30, env="TFIDF_SYNC_MAX_AGE_DAYS")
     
     # Características activables
     metrics_enabled: bool = Field(default=True, env="METRICS_ENABLED")

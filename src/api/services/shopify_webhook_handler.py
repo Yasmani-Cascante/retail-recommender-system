@@ -50,6 +50,14 @@ IDEMPOTENCY_TTL_SECONDS = 300
 # Prefijo para idempotency keys en Redis
 IDEMPOTENCY_KEY_PREFIX = "webhook:idempotency:"
 
+# FIX (17/09/2026): contador de cambios de catalogo pendientes de sincronizar
+# con el modelo TF-IDF. Paso "C" del roadmap de automatizacion (ver
+# Evaluacion_Integral_Sistema_16092026.md). Se incrementa aqui (webhook de
+# productos) y se resetea en regenerate_tfidf_model.py tras una regeneracion
+# exitosa -- o en el futuro Cloud Run Job de la Opcion B. Consumido por
+# /health (bloque tfidf_catalog en main_unified_redis.py).
+TFIDF_CHANGES_COUNTER_KEY = "catalog:tfidf:changes_since_sync"
+
 
 class ShopifyWebhookHandler:
     """
@@ -604,6 +612,20 @@ class ShopifyWebhookHandler:
                 topic=topic,
                 has_image=bool(image_url),
             )
+
+            # FIX (17/09/2026): contar este cambio para el contador de
+            # "cambios pendientes de sincronizar" del catalogo TF-IDF.
+            # Best-effort: si Redis no esta disponible, no bloquea el webhook
+            # (misma filosofia de resiliencia que el resto de este handler).
+            try:
+                _redis_for_counter = await self._get_redis()
+                if _redis_for_counter and _redis_for_counter._client:
+                    await _redis_for_counter._client.incr(TFIDF_CHANGES_COUNTER_KEY)
+            except Exception as _counter_err:
+                logger.warning(
+                    "webhook_product_tfidf_counter_failed",
+                    error=str(_counter_err),
+                )
 
             # ── 1. Invalidar cache de contexto de producto ─────────────────
             # Invalida todos los mercados activos. El handle es el mismo para
