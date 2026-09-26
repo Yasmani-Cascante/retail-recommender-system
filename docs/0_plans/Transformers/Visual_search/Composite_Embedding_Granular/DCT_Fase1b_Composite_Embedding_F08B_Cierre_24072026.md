@@ -77,10 +77,10 @@ Funciones/endpoints de Fase 3b (`*_category_boost`) siguen presentes sin uso —
 
 ---
 
-## 7. Proximos pasos (consolidado, actualizado 26/07/2026 -- ver tambien secciones 8, 9, 10 y 11)
+## 7. Proximos pasos (consolidado, actualizado 17/09/2026 -- ver tambien secciones 8, 9, 10, 11 y 13)
 
 **Backlog activo de esta linea de trabajo:**
-1. **Prioridad revisada al alza (26/07/2026, ver seccion 11.3)**: script de auditoria por centroides FAISS (embedding de imagen de cada producto vs. centroide de su propio `product_type` declarado). Ya no es solo "idea de backlog, no urgente" -- ahora resuelve tres cosas a la vez: (a) deteccion sistematica de mistagging tipo CARTERAS/vestido, (b) confirmar o descartar la duda pendiente del "Tocado Peineta Amaia" (`product_type=AROS`, sin confirmar), y (c) una auditoria de cobertura de `product_taxonomy.py` mas confiable y barata que el metodo manual usado hoy (enumera tipos reales desde el indice FAISS en vez de adivinar nombres de variantes).
+1. **Prioridad revisada al alza (26/07/2026, ver seccion 11.3; ampliada 17/09/2026, ver seccion 13)**: script de auditoria por centroides FAISS (embedding de imagen de cada producto vs. centroide de su propio `product_type` declarado). Ya no es solo "idea de backlog, no urgente" -- ahora resuelve CUATRO cosas a la vez: (a) deteccion sistematica de mistagging tipo CARTERAS/vestido, (b) confirmar o descartar la duda pendiente del "Tocado Peineta Amaia" (`product_type=AROS`, sin confirmar), (c) una auditoria de cobertura de `product_taxonomy.py` mas confiable y barata que el metodo manual usado hoy (enumera tipos reales desde el indice FAISS en vez de adivinar nombres de variantes), y (d) **deteccion de fuentes de taxonomia desincronizadas entre si** (ver seccion 13 -- motivo agregado 17/09/2026 tras descubrir que `CATEGORY_KEYWORDS` ya tenia `NOVIAS CONJUNTOS FALDAS/PANTALONES` registrado ANTES que `product_taxonomy.py`).
 2. Busqueda dirigida por atributos (color) -- documentado en detalle en `BACKLOG_Busqueda_por_Atributos_Color_24072026.md` (mismo directorio).
 3. Iniciativa arquitectonica separada (no urgente, ver seccion 3 del PLAN): config de taxonomia por tenant en base de datos + derivacion automatica por centroide de catalogo.
 
@@ -315,3 +315,21 @@ Diff 100% aditivo en ambos fixes -- cero logica preexistente removida (T8/is_sam
 | Archivo | Cambio |
 |---|---|
 | `src/api/core/mcp_conversation_handler.py` | Fix 1: log de `_b08_recs` vacio (F-08B principal). Fix 2: prioridad de categoria explicita en F-08B.2, via `product_taxonomy.types_in_outfit_slot()` |
+
+---
+
+## 13. Addendum 5 -- Tercer motivo del script de centroides: deteccion de fuentes desincronizadas (17/09/2026)
+
+Durante una sesion posterior de auditoria de cobertura (buscando gaps del mismo patron ya conocido -- ver seccion 11.3), se encontro `NOVIAS CONJUNTOS PANTALONES` (y su hermana `NOVIAS CONJUNTOS FALDAS`) como un tipo real con inventario activo, nunca detectado en la auditoria del 26/07 porque no se probo esa combinacion exacta de sufijo. Agregado a `product_taxonomy.py` -- 30 tipos totales.
+
+**Hallazgo colateral, mas importante que el gap en si**: `CATEGORY_KEYWORDS` (`improved_fallback_exclude_seen.py`) -- la tercera fuente de taxonomia paralela, usada para deteccion de categoria desde el texto de la consulta -- **ya tenia `NOVIAS CONJUNTOS FALDAS/PANTALONES` registrados desde antes**, mas actualizada que `product_taxonomy.py` en este punto especifico. Es decir: la fuente que se suponia mas nueva y "oficial" (Fase 1b) iba *por detras* de una de las fuentes que se suponia iba a reemplazar.
+
+Esto valida con evidencia directa -- no con sospecha -- que la duplicacion de fuentes de verdad sigue generando gaps de forma activa, en ambas direcciones (no solo "la fuente vieja no tiene lo que la nueva si tiene", sino tambien al reves). El script de auditoria por centroides (seccion 11.3, secciones 7 y 9.1) ya iba a enumerar, como efecto colateral de calcular centroides, el inventario real y completo de `product_type` existentes en el catalogo indexado en FAISS. Ese mismo inventario, al ser la fuente de verdad mas confiable de las cuatro (viene directo del catalogo real, no de ningun archivo hardcodeado), puede cruzarse contra `product_taxonomy.py`, `_B08_SHOPIFY_TO_OUTFIT_CAT` y `CATEGORY_KEYWORDS` simultaneamente para senalar automaticamente cualquier tipo ausente o mapeado de forma distinta entre ellas -- en vez de descubrirlo por casualidad, como paso aqui y con el caso `NOVIAS CORTOS/MIDIS` del 26/07.
+
+**Motivos consolidados del script, con esta ampliacion (ver tambien seccion 7, item 1):**
+1. Cobertura -- enumeracion automatica y confiable de tipos reales, sin adivinar nombres de variantes ni pelear con paginacion de 3000+ productos.
+2. Deteccion de mistagging -- comparar el embedding de cada producto contra el centroide de su propio tipo declarado (motivado por el caso CARTERAS/vestido, seccion 9.1).
+3. **Deteccion de fuentes de taxonomia desincronizadas entre si** (este addendum) -- usar el inventario real como arbitro para detectar cuando `product_taxonomy.py`, `_B08_SHOPIFY_TO_OUTFIT_CAT` y `CATEGORY_KEYWORDS` divergen entre si, en cualquier direccion.
+
+**Estado**: script aun no disenado en detalle ni construido -- este addendum documenta el motivo ampliado, no una implementacion. Nota para quien retome esto: revisar tambien si `_OUTFIT_COMPLEMENT_MAP` (F-08B.2) deberia incluirse en el cruce de fuentes del motivo 3, dado que es una cuarta fuente de taxonomia activa, distinta de las tres ya mencionadas (ver Addendum 4, seccion 12.5).
+

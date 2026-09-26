@@ -1071,6 +1071,19 @@ async def get_mcp_conversation_recommendations(
                                 # fix, 11/07/2026), junto con _b08_own_cat -- se reusa aqui tal
                                 # cual para el narrowing de Hallazgo 2, sin redefinirlo.
                                 _b08_query_target_cats = None
+                                # FIX (21/09/2026): igual que en F-08B.2 (20/09/2026) -- si tras
+                                # filtrar la auto-referencia queda UNA sola categoria concreta
+                                # especifica (ej. "aretes" -> AROS), se pierde su especificidad
+                                # al mapearla al bucket completo (accessory) y mandar el bucket
+                                # entero a la busqueda visual. Confirmado en produccion
+                                # (21/09/2026): "aretes" sobre ancla BRAZALETES/COLLARES devolvio
+                                # collares/brazaletes/etc ademas de aros. _b08_single_specific_type
+                                # se usa mas abajo para filtrar los candidatos a ese tipo exacto
+                                # y saltar el boost de tipos hermanos (Fase 1b Paso 4), que existe
+                                # justamente para ampliar cobertura -- lo opuesto de lo que se
+                                # pidio. target_categories (el bucket) se sigue calculando igual,
+                                # porque search_outfit_by_image() solo entiende buckets.
+                                _b08_single_specific_type = None
                                 try:
                                     from src.recommenders.improved_fallback_exclude_seen import (
                                         extract_categories_from_query as _b08_extract_cats,
@@ -1080,6 +1093,25 @@ async def get_mcp_conversation_recommendations(
                                     _b08_detected = _b08_extract_cats(
                                         conversation_query, _b08_available_cats
                                     )
+                                    # FIX (20/09/2026): filtrar auto-referencia -- si la consulta
+                                    # menciona el tipo EXACTO del propio ancla (ej. "esto aros"
+                                    # con ancla de tipo AROS), extract_categories_from_query lo
+                                    # detecta como un pedido nuevo, cuando el usuario se esta
+                                    # refiriendo al producto que ya esta viendo, no pidiendo mas
+                                    # de lo mismo. Confirmado en produccion (mismo patron via
+                                    # F-08B.2, 20/09/2026): "Con que vestidos combina mejor esto
+                                    # aros?" sobre ancla AROS devolvio accesorios ademas de
+                                    # vestidos, porque 'AROS' se colaba en _b08_detected.
+                                    #
+                                    # NOTA: este bloque no esta corriendo en produccion mientras
+                                    # el catalogo TF-IDF no tenga image_url poblado (ver fix
+                                    # separado del 20/09/2026 en shopify_client.py) -- este
+                                    # cambio queda aplicado pero pendiente de validar con
+                                    # evidencia real hasta que vuelva a ejecutarse.
+                                    _b08_detected = [
+                                        c for c in _b08_detected
+                                        if c.upper() != _b08_ptype.upper()
+                                    ]
                                     if _b08_detected:
                                         _b08_mapped_cats = {
                                             _B08_SHOPIFY_TO_OUTFIT_CAT[c.upper()]
@@ -1097,6 +1129,15 @@ async def get_mcp_conversation_recommendations(
                                         _b08_mapped_cats -= _b08_excluded_cats
                                         if _b08_mapped_cats:
                                             _b08_query_target_cats = list(_b08_mapped_cats)
+                                            # FIX (21/09/2026): si la deteccion (ya sin
+                                            # auto-referencia) fue UN solo tipo concreto, guardarlo
+                                            # para filtrar los candidatos mas abajo a ese tipo
+                                            # exacto, en vez de dejar pasar todo el bucket.
+                                            _b08_distinct_detected = list(dict.fromkeys(
+                                                c.upper() for c in _b08_detected
+                                            ))
+                                            if len(_b08_distinct_detected) == 1:
+                                                _b08_single_specific_type = _b08_distinct_detected[0]
                                             logger.info(
                                                 f"F-08B query category detected: "
                                                 f"{_b08_detected} -> {_b08_query_target_cats} "
@@ -1217,6 +1258,41 @@ async def get_mcp_conversation_recommendations(
                                     # 'float' object is not iterable al llegar a latency_ms.
                                     _b08_outfit_cats = _b08_outfit.get("outfit", {})
 
+                                    # FIX (21/09/2026): si la deteccion fue un tipo concreto
+                                    # especifico y unico (_b08_single_specific_type), filtrar los
+                                    # candidatos de cada bucket a solo ese tipo exacto. El pool
+                                    # crudo que devuelve search_outfit_by_image() viene mezclado
+                                    # (todo el bucket sin distincion de tipo), asi que hay que
+                                    # filtrarlo aqui, antes del interleaving/boost de mas abajo.
+                                    if _b08_single_specific_type and _b08_tfidf:
+                                        # FIX (21/09/2026, correccion): _b08_outfit_cats[bucket] es
+                                        # una lista de IDs de producto, NO de diccionarios -- el
+                                        # tipo real se resuelve via _b08_tfidf.id_index (mismo
+                                        # patron ya usado por el diagnostico de mas abajo,
+                                        # "F-08B candidate breakdown"). La primera version de este
+                                        # fix llamaba .get() directo sobre el ID (un string) y
+                                        # crasheaba con "'str' object has no attribute 'get'" en
+                                        # el 100% de los casos -- confirmado en produccion
+                                        # (21/09/2026) para 'accessory' Y 'shoes' por igual.
+                                        _b08_outfit_cats = {
+                                            _b08_bk: (
+                                                [
+                                                    _b08_pid for _b08_pid in _b08_cl
+                                                    if _b08_tfidf.id_index.get(str(_b08_pid), {})
+                                                    .get("product_type", "").upper()
+                                                    == _b08_single_specific_type
+                                                ] if isinstance(_b08_cl, list) else _b08_cl
+                                            )
+                                            for _b08_bk, _b08_cl in _b08_outfit_cats.items()
+                                        }
+                                        logger.info(
+                                            f"F-08B outfit_completion: filtrando candidatos a tipo "
+                                            f"especifico '{_b08_single_specific_type}' (pedido "
+                                            f"explicito, sin expandir por bucket) -- "
+                                            f"{sum(len(v) for v in _b08_outfit_cats.values() if isinstance(v, list))} "
+                                            f"candidatos tras filtrar"
+                                        )
+
                                     # FASE 1B PASO 4 (23/07/2026): complementa el pool generico de
                                     # arriba con candidatos dirigidos por tipo especifico, usando
                                     # product_taxonomy.py (Paso 1) + la busqueda multi-texto
@@ -1249,7 +1325,7 @@ async def get_mcp_conversation_recommendations(
                                     )
                                     _b08_own_type_upper = _b08_ptype.upper() if _b08_ptype else ""
                                     _b08_boost_groups: dict = {}  # alpha -> [(bucket, tipo, texto), ...]
-                                    for _b08_bt_bucket in list(_b08_outfit_cats.keys()):
+                                    for _b08_bt_bucket in ([] if _b08_single_specific_type else list(_b08_outfit_cats.keys())):
                                         for _b08_bt_type in _b08_types_in_outfit_slot(_b08_bt_bucket):
                                             if _b08_bt_type == _b08_own_type_upper:
                                                 continue
@@ -1764,83 +1840,48 @@ async def get_mcp_conversation_recommendations(
 
                                 # FIX (28/07/2026): F-08B.2 siempre usaba su propio mapa
                                 # hardcodeado (_OUTFIT_COMPLEMENT_MAP, keyed por el tipo del
-                                # ANCLA), ignorando por completo si el usuario ya habia sido
-                                # explicito sobre que categoria queria en su consulta. Confirmado
-                                # en produccion (27/07/2026): ancla AROS + "con que vestidos
-                                # combina mejor?" detectaba correctamente ['dress'] mas arriba en
-                                # el flujo (log "F-08B query category detected"), pero F-08B.2 lo
-                                # descartaba en silencio y devolvia solo accesorios (COLLARES,
-                                # CLUTCH, CINTURONES) -- la peticion explicita del usuario nunca
-                                # tuvo prioridad sobre el mapa de complemento del ancla.
-                                #
-                                # _b08_query_target_cats se computa mas arriba (bloque F-08 Fase
-                                # B principal, dentro del gate VISUAL_SEARCH_ENABLED) -- puede no
-                                # estar definida si ese bloque nunca corrio, de ahi el acceso
-                                # seguro via locals().get() en vez de referenciar la variable
-                                # directamente (evita UnboundLocalError/NameError).
-                                _b08b2_query_cats = locals().get("_b08_query_target_cats")
-                                if _b08b2_query_cats:
-                                    # El usuario nombro una categoria explicita -- tiene prioridad
-                                    # absoluta sobre el mapa de complemento del ancla. Se resuelve
-                                    # a tipos Shopify reales via product_taxonomy.py (unica fuente
-                                    # de verdad ya establecida en Fase 1b) en vez de mantener un
-                                    # tercer mapa hardcodeado en paralelo.
+                                # FIX (25/09/2026): logica de decision extraida a un modulo
+                                # puro y testeado -- ver
+                                # src/recommenders/f08b2_category_resolution.py para el
+                                # historial completo (auto-referencia, sobre-expansion, el Fix 2
+                                # original de Fase 1b, y el mapa _OUTFIT_COMPLEMENT_MAP sin
+                                # cambios). Extraido como red de seguridad antes de la decision
+                                # de unificacion de taxonomia (roadmap Fase 2, item 4: "tests
+                                # automatizados antes de refactorizar nada grande") -- mismo
+                                # comportamiento exacto de antes, ahora cubierto por
+                                # tests/unit/test_f08b2_category_resolution.py (14 casos,
+                                # incluyendo los reales de produccion del 20-24/09/2026).
+                                from src.recommenders.f08b2_category_resolution import (
+                                    resolve_f08b2_complement_types as _b08b2_resolve,
+                                )
+                                try:
+                                    from src.recommenders.improved_fallback_exclude_seen import (
+                                        extract_categories_from_query as _b08b2_extract_cats,
+                                        get_concrete_categories as _b08b2_get_concrete_cats,
+                                    )
                                     from src.recommenders.product_taxonomy import (
                                         types_in_outfit_slot as _b08b2_types_in_slot,
                                     )
-                                    _complement_cats = [
-                                        _t
-                                        for _slot in _b08b2_query_cats
-                                        for _t in _b08b2_types_in_slot(_slot)
-                                        if _t != _outfit_product_type
-                                    ]
-                                    logger.info(
-                                        f"F-08B.2 outfit_completion: categoria EXPLICITA de la "
-                                        f"consulta {_b08b2_query_cats} tiene prioridad sobre el "
-                                        f"mapa de complemento del ancla (type={_outfit_product_type!r}) "
-                                        f"-- tipos resueltos: {_complement_cats}"
+                                    _complement_cats = _b08b2_resolve(
+                                        conversation_query=conversation_query,
+                                        outfit_product_type=_outfit_product_type,
+                                        extract_categories_fn=_b08b2_extract_cats,
+                                        get_concrete_categories_fn=_b08b2_get_concrete_cats,
+                                        types_in_outfit_slot_fn=_b08b2_types_in_slot,
                                     )
-                                else:
-                                    # Sin categoria explicita en la consulta -- comportamiento
-                                    # original sin cambios: mapa de complemento keyed por el tipo
-                                    # del ancla.
-                                    _OUTFIT_COMPLEMENT_MAP = {
-                                        "KIMONOS":         ["AROS", "COLLARES", "CLUTCH", "CINTURONES", "BRAZALETES"],
-                                        "TAPADOS":         ["AROS", "COLLARES", "CLUTCH", "CINTURONES", "BRAZALETES"],
-                                        "VESTIDOS LARGOS": ["AROS", "COLLARES", "CLUTCH", "TOCADOS", "CINTURONES"],
-                                        "VESTIDOS CORTOS": ["AROS", "CLUTCH", "CINTURONES", "BRAZALETES"],
-                                        "VESTIDOS MIDIS":  ["AROS", "COLLARES", "CLUTCH", "TOCADOS"],
-                                        "NOVIAS LARGOS":   ["TOCADOS", "CLUTCH", "AROS", "BRAZALETES"],
-                                        "NOVIAS CORTOS":   ["TOCADOS", "AROS", "CLUTCH", "BRAZALETES"],
-                                        "FALDAS":          ["TOPS", "AROS", "CINTURONES", "BRAZALETES"],
-                                        "TOPS":            ["FALDAS", "AROS", "COLLARES", "CLUTCH"],
-                                        "BLUSAS":          ["FALDAS", "AROS", "COLLARES", "CLUTCH"],
-                                        "ENTERITOS LARGOS": ["CINTURONES", "AROS", "CLUTCH", "COLLARES"],
-                                        "ENTERITOS CORTOS": ["CINTURONES", "AROS", "CLUTCH", "BRAZALETES"],
-                                    }
+                                    logger.info(
+                                        f"F-08B.2 outfit_completion: tipos resueltos para "
+                                        f"type={_outfit_product_type!r} -- {_complement_cats}"
+                                    )
+                                except Exception as _b08b2_err:
+                                    logger.warning(
+                                        f"F-08B.2 category resolution failed, usando fallback "
+                                        f"generico: {_b08b2_err}"
+                                    )
                                     _complement_cats = [
-                                        _c for _c in _OUTFIT_COMPLEMENT_MAP.get(
-                                            _outfit_product_type,
-                                            ["AROS", "COLLARES", "CLUTCH", "CINTURONES"],  # fallback genérico
-                                        )
+                                        _c for _c in ["AROS", "COLLARES", "CLUTCH", "CINTURONES"]
                                         if _c != _outfit_product_type
                                     ]
-                                    # FIX (17/07/2026): _OUTFIT_COMPLEMENT_MAP solo tiene entradas
-                                    # para tipos de PRENDA (KIMONOS, VESTIDOS*, TOPS, FALDAS, etc.)
-                                    # -- nunca se agregaron entradas para tipos de ACCESORIO (AROS,
-                                    # COLLARES, CLUTCH, CARTERAS, BRAZALETES, CINTURONES, TOCADOS).
-                                    # Cuando el ancla es un accesorio, .get(_outfit_product_type, ...)
-                                    # no encuentra clave y cae al fallback generico -- que incluye
-                                    # literalmente "AROS", "COLLARES" y "CLUTCH" sin saber cual de
-                                    # esos 3 es el propio ancla. Confirmado con evidencia real de
-                                    # produccion + screenshot (16-17/07/2026): ancla AROS DANAE +
-                                    # "que accesorios combinan con este?" -> F-08B.2 (activo porque
-                                    # F-08B primario fallo con 413) devolvia
-                                    # complement_cats=['AROS','COLLARES','CLUTCH','CINTURONES'],
-                                    # resultando en 4 de 8 productos siendo mas Aros.
-                                    # Este filtro cubre TANTO el fallback generico como cualquier
-                                    # entrada especifica del mapa que en el futuro pudiera incluirse
-                                    # a si misma por error -- misma defensa, un solo lugar.
 
                                 user_events = [
                                     {

@@ -1112,6 +1112,25 @@ async def lifespan(app: FastAPI):
             """
             import requests as _req_lib
 
+            # FIX (22/09/2026): pacing via el limitador de tasa COMPARTIDO --
+            # coordina con el rebuild del catalogo TF-IDF
+            # (shopify_client.py::get_products_with_shopify_prices), que
+            # corre en el mismo proceso/event loop y compite por el mismo
+            # presupuesto de la tienda. Antes, esta funcion solo miraba el
+            # header Retry-After (que Shopify no envia en GraphQL) o caia
+            # siempre al backoff fijo 2**intento, ciega al presupuesto real
+            # de la tienda Y al consumo del otro proceso. Ver docstring
+            # completo: src/api/integrations/shopify_rate_limiter.py
+            from src.api.integrations.shopify_rate_limiter import (
+                get_shopify_rate_limiter,
+                get_shopify_rebuild_priority,
+            )
+            _rate_limiter = get_shopify_rate_limiter()
+            _rebuild_priority = get_shopify_rebuild_priority()
+            _estimated_batch_cost = 300.0  # estimacion inicial (50 aliases
+            # de un solo campo 'collections' -- se ajusta con el costo real
+            # de la primera respuesta).
+
             BATCH_SIZE = 50          # 50 aliases por query — bien dentro del límite de coste
             MAX_RETRIES = 4
 
@@ -1151,6 +1170,23 @@ async def lifespan(app: FastAPI):
                     )
                 query = "query GetCatalogCollections {\n" + "\n".join(alias_parts) + "\n}"
 
+                # FIX (23/09/2026): ceder el paso si hay un rebuild de catalogo
+                # activo -- ANTES de siquiera chequear el presupuesto propio.
+                # Confirmado con evidencia real (23/09/2026): coordinar el
+                # pacing con el limitador compartido no bastaba cuando ambos
+                # procesos demandaban presupuesto al mismo tiempo -- el
+                # rebuild sufrio 60 REST fallbacks (vs 0 en aislamiento) y
+                # este job tardo casi el doble y sufrio su primer fallo
+                # permanente de batch. Ver docstring completo:
+                # src/api/integrations/shopify_rate_limiter.py (ShopifyRebuildPriority)
+                await _rebuild_priority.wait_if_rebuild_active(caller="PASO-4.6-BG")
+
+                # FIX (22/09/2026): pacing via el limitador compartido ANTES
+                # de disparar el batch.
+                await _rate_limiter.wait_for_budget(
+                    _estimated_batch_cost, caller="PASO-4.6-BG"
+                )
+
                 attempt = 0
                 success = False
                 while attempt <= MAX_RETRIES and not success:
@@ -1164,16 +1200,30 @@ async def lifespan(app: FastAPI):
                         resp.raise_for_status()
                         rdata = resp.json()
 
+                        # FIX (22/09/2026): reportar el throttleStatus real al
+                        # limitador compartido -- para pacing de los PROXIMOS
+                        # batches de este proceso Y del rebuild de catalogo.
+                        cost_ext = rdata.get("extensions", {}).get("cost", {})
+                        await _rate_limiter.report_response(
+                            cost_ext.get("throttleStatus", {}), caller="PASO-4.6-BG"
+                        )
+                        actual_cost = cost_ext.get("actualQueryCost")
+                        if actual_cost:
+                            _estimated_batch_cost = float(actual_cost)
+
                         if "errors" in rdata:
                             msgs  = [e.get("message", str(e)) for e in rdata["errors"]]
                             throttled = any("throttl" in m.lower() for m in msgs)
                             if throttled and attempt < MAX_RETRIES:
-                                wait = float(resp.headers.get("Retry-After", 0)) or (2.0 ** (attempt + 1))
                                 logger.warning(
-                                    "⚠️ [PASO 4.6 BG] batch %d throttled (%d/%d), wait %.1fs",
-                                    batch_start, attempt + 1, MAX_RETRIES, wait
+                                    "⚠️ [PASO 4.6 BG] batch %d throttled (%d/%d), "
+                                    "esperando via limitador compartido",
+                                    batch_start, attempt + 1, MAX_RETRIES
                                 )
-                                await asyncio.sleep(wait)
+                                await _rate_limiter.wait_for_budget(
+                                    _estimated_batch_cost,
+                                    caller="PASO-4.6-BG (reintento)",
+                                )
                                 attempt += 1
                                 continue
                             logger.warning(

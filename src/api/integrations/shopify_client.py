@@ -413,240 +413,421 @@ class ShopifyIntegration:
 
         logging.info(f"[ShopifyPrices] Retrieved {len(products)} products from REST")
 
-        # market_price_map[market_id][product_id] = {"price": float, "currency": str}
-        market_price_map: Dict[str, Dict[str, Dict]] = {
-            m["market_id"]: {} for m in ACTIVE_MARKETS
-        }
+        # FIX (23/09/2026): senal de prioridad -- mientras el rebuild usa la
+        # API de Shopify, PASO 4.6 BG (main_unified_redis.py) se pausa en vez
+        # de competir por el mismo presupuesto al mismo tiempo. Confirmado
+        # con evidencia real (23/09/2026): incluso con el pacing compartido
+        # ya coordinando, la contencion genuina hizo que este rebuild
+        # sufriera 60 REST fallbacks (vs 0 en aislamiento) y que PASO 4.6 BG
+        # tardara casi el doble y sufriera su primer fallo permanente de
+        # batch. try/finally garantiza que la senal se libere incluso si
+        # algo falla aqui abajo -- de lo contrario PASO 4.6 BG quedaria
+        # pausado para siempre.
+        from src.api.integrations.shopify_rate_limiter import get_shopify_rebuild_priority
+        _rebuild_priority = get_shopify_rebuild_priority()
+        _rebuild_priority.mark_rebuild_started()
+        try:
 
-        # -- PASO 2: Consultar precios por mercado via GraphQL ----------------
-        #
-        # Usamos aliases GraphQL para consultar todos los productos x mercados
-        # en una sola query por lote.
-        #
-        # Formato de query resultante (2 productos, 2 mercados):
-        #   query GetMultiMarketPrices {
-        #     p0_CL: product(id: "gid://shopify/Product/123") {
-        #       contextualPricing(context: {country: CL}) {
-        #         priceRange { minVariantPrice { amount currencyCode } }
-        #       }
-        #     }
-        #     p0_CH: product(id: "gid://shopify/Product/123") {
-        #       contextualPricing(context: {country: CH}) { ... }
-        #     }
-        #     p1_CL: product(id: "gid://shopify/Product/456") { ... }
-        #   }
-        #
-        # COMPLEJIDAD GraphQL: Shopify limita a ~10.000 puntos/query.
-        # Con lotes de 30 productos x 4 mercados: ~600 puntos -> seguro.
-        BATCH_SIZE = 30
+            # FIX (22/09/2026): desordenar el orden antes de armar los lotes.
+            # Confirmado con datos reales (CSV de 124 productos sin imagen,
+            # 22/09/2026): el 72.6% eran AROS y el 15.3% CONJUNTOS FALDAS -- nada
+            # aleatorio. Shopify pagina productos en (aprox.) orden de creacion,
+            # asi que una coleccion completa cargada de una vez cae en el mismo
+            # lote de 30. Si ESE lote se agota en throttling, se pierde una
+            # coleccion entera de golpe en vez de perder unidades sueltas
+            # repartidas. Desordenar no reduce cuantos productos se pierden, pero
+            # reparte la perdida entre tipos en vez de concentrarla -- barato (una
+            # linea) y sin downside conocido (el orden de 'products' no se usa
+            # para nada mas rio abajo, solo para armar los lotes de aqui).
+            import random
+            random.shuffle(products)
 
-        graphql_url = f"https://{self.shop_url}/admin/api/2025-01/graphql.json"
-        graphql_headers = {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": self.access_token
-        }
+            # market_price_map[market_id][product_id] = {"price": float, "currency": str}
+            market_price_map: Dict[str, Dict[str, Dict]] = {
+                m["market_id"]: {} for m in ACTIVE_MARKETS
+            }
 
-        # FIX (19/09/2026): pacing dinamico + retry con backoff para 'Throttled'.
-        # Shopify expone en cada respuesta GraphQL extensions.cost.throttleStatus
-        # (currentlyAvailable, maximumAvailable, restoreRate) -- el estado REAL
-        # del rate limit de esta tienda. Antes de este fix, el loop disparaba los
-        # ~102 batches sin pausa y, ante 'Throttled', hacia continue() inmediato
-        # -- perpetuaba el throttling en cadena para el resto de la corrida
-        # (confirmado en logs de produccion: 2625/3045 productos cayendo a REST
-        # fallback tras activar --no-cpu-throttling, que acelero el loop lo
-        # suficiente para chocar con el limite real de Shopify).
-        _throttle_available = None       # ultimo currentlyAvailable conocido
-        _throttle_restore_rate = None    # puntos/seg que Shopify repone
-        _estimated_batch_cost = 600.0    # estimacion inicial (ver comentario
-        # original mas arriba: "~600 puntos" por batch de 30 productos x 4
-        # mercados); se ajusta con el costo real (actualQueryCost) del primer
-        # batch exitoso.
-        MAX_THROTTLE_RETRIES = 2
+            # FIX (20/09/2026): image_url_map[product_id] = url de la imagen destacada.
+            # Causa raiz de "opm1_visual_sync_no_images_in_catalog" (100% del catalogo
+            # sin image_url): confirmado con la documentacion oficial de Shopify que
+            # el recurso de imagenes de la REST Admin API esta DEPRECADO desde la
+            # version 2025-01 (la version que usa este cliente) -- el campo 'images'
+            # que _normalize_product_price() (tfidf_recommender.py) intenta leer del
+            # producto REST ya no llega de forma confiable. Se resuelve igual que el
+            # precio: via GraphQL, en el mismo batch/query, reutilizando el mismo
+            # pacing/retry ya validado en produccion (ver bloque de abajo).
+            image_url_map: Dict[str, str] = {}
 
-        for batch_start in range(0, len(products), BATCH_SIZE):
-            batch = products[batch_start: batch_start + BATCH_SIZE]
+            # -- PASO 2: Consultar precios por mercado via GraphQL ----------------
+            #
+            # Usamos aliases GraphQL para consultar todos los productos x mercados
+            # en una sola query por lote.
+            #
+            # Formato de query resultante (2 productos, 2 mercados):
+            #   query GetMultiMarketPrices {
+            #     p0_CL: product(id: "gid://shopify/Product/123") {
+            #       contextualPricing(context: {country: CL}) {
+            #         priceRange { minVariantPrice { amount currencyCode } }
+            #       }
+            #     }
+            #     p0_CH: product(id: "gid://shopify/Product/123") {
+            #       contextualPricing(context: {country: CH}) { ... }
+            #     }
+            #     p1_CL: product(id: "gid://shopify/Product/456") { ... }
+            #   }
+            #
+            # COMPLEJIDAD GraphQL: Shopify limita a ~10.000 puntos/query.
+            # Con lotes de 30 productos x 4 mercados: ~600 puntos -> seguro.
+            BATCH_SIZE = 30
 
-            # Construir aliases: p{idx}_{market_id} para cada producto x mercado
-            alias_fragments = []
-            for idx, product in enumerate(batch):
-                product_id = str(product.get("id", ""))
-                gid = f"gid://shopify/Product/{product_id}"
-                for market in ACTIVE_MARKETS:
-                    country = market["country_code"]
-                    market_id = market["market_id"]
+            graphql_url = f"https://{self.shop_url}/admin/api/2025-01/graphql.json"
+            graphql_headers = {
+                "Content-Type": "application/json",
+                "X-Shopify-Access-Token": self.access_token
+            }
+
+            # FIX (19/09/2026): pacing dinamico + retry con backoff para 'Throttled'.
+            # Shopify expone en cada respuesta GraphQL extensions.cost.throttleStatus
+            # (currentlyAvailable, maximumAvailable, restoreRate) -- el estado REAL
+            # del rate limit de esta tienda. Antes de este fix, el loop disparaba los
+            # ~102 batches sin pausa y, ante 'Throttled', hacia continue() inmediato
+            # -- perpetuaba el throttling en cadena para el resto de la corrida
+            # (confirmado en logs de produccion: 2625/3045 productos cayendo a REST
+            # fallback tras activar --no-cpu-throttling, que acelero el loop lo
+            # suficiente para chocar con el limite real de Shopify).
+            # FIX (22/09/2026): el pacing ahora pasa por el limitador de tasa
+            # COMPARTIDO (shopify_rate_limiter.py) en vez de variables locales --
+            # asi coordina con PASO 4.6 BG (main_unified_redis.py), que corre en
+            # el mismo proceso/event loop y compite por el mismo presupuesto de
+            # la tienda. Antes, cada uno llevaba su propia cuenta ciega al
+            # consumo del otro (ver docstring del modulo para la evidencia real).
+            from src.api.integrations.shopify_rate_limiter import get_shopify_rate_limiter
+            _rate_limiter = get_shopify_rate_limiter()
+            _estimated_batch_cost = 600.0    # estimacion inicial (ver comentario
+            # original mas arriba: "~600 puntos" por batch de 30 productos x 4
+            # mercados); se ajusta con el costo real (actualQueryCost) del primer
+            # batch exitoso.
+            MAX_THROTTLE_RETRIES = 2
+
+            for batch_start in range(0, len(products), BATCH_SIZE):
+                batch = products[batch_start: batch_start + BATCH_SIZE]
+
+                # Construir aliases: p{idx}_{market_id} para cada producto x mercado
+                alias_fragments = []
+                for idx, product in enumerate(batch):
+                    product_id = str(product.get("id", ""))
+                    gid = f"gid://shopify/Product/{product_id}"
+                    for market in ACTIVE_MARKETS:
+                        country = market["country_code"]
+                        market_id = market["market_id"]
+                        alias_fragments.append(
+                            f'p{idx}_{market_id}: product(id: "{gid}") {{\n'
+                            f'  contextualPricing(context: {{country: {country}}}) {{\n'
+                            f'    priceRange {{ minVariantPrice {{ amount currencyCode }} }}\n'
+                            f'  }}\n'
+                            f'}}'
+                        )
+                    # FIX (20/09/2026): un alias mas por PRODUCTO (no por mercado --
+                    # la imagen no depende del mercado), pidiendo featuredImage: el
+                    # reemplazo GraphQL del campo REST 'images' deprecado. Costo
+                    # marginal: +1 alias por producto (30 por batch de 30), no +120
+                    # como seria repetirlo por cada uno de los 4 mercados.
                     alias_fragments.append(
-                        f'p{idx}_{market_id}: product(id: "{gid}") {{\n'
-                        f'  contextualPricing(context: {{country: {country}}}) {{\n'
-                        f'    priceRange {{ minVariantPrice {{ amount currencyCode }} }}\n'
-                        f'  }}\n'
+                        f'img{idx}: product(id: "{gid}") {{\n'
+                        f'  featuredImage {{ url }}\n'
                         f'}}'
                     )
 
-            bulk_query = "query GetMultiMarketPrices {\n" + "\n".join(alias_fragments) + "\n}"
+                bulk_query = "query GetMultiMarketPrices {\n" + "\n".join(alias_fragments) + "\n}"
 
-            # FIX: pacing dinamico ANTES de disparar el batch. Si por el batch
-            # anterior sabemos que el presupuesto no alcanza para este, esperamos
-            # lo que Shopify diga que tarda en reponerse -- no un sleep fijo.
-            if _throttle_available is not None and _throttle_restore_rate:
-                deficit = _estimated_batch_cost - _throttle_available
-                if deficit > 0:
-                    wait_s = min(deficit / _throttle_restore_rate, 10.0)
-                    if wait_s > 0.05:
-                        await asyncio.sleep(wait_s)
+                # FIX (22/09/2026): pacing dinamico via el limitador COMPARTIDO --
+                # ve el consumo real de AMBOS procesos (este y PASO 4.6 BG), no
+                # solo el propio.
+                await _rate_limiter.wait_for_budget(
+                    _estimated_batch_cost, caller="TFIDF-rebuild-precios"
+                )
 
-            retry_count = 0
+                retry_count = 0
 
-            while True:
-                try:
-                    response = await asyncio.to_thread(
-                        requests.post,
-                        graphql_url,
-                        json={"query": bulk_query},
-                        headers=graphql_headers,
-                        timeout=45  # mas tiempo por query mas grande
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-
-                    # FIX: leer el throttleStatus real de Shopify -- viene tanto
-                    # en respuestas exitosas como en 'Throttled' -- para pacing
-                    # de los PROXIMOS batches y para saber cuanto esperar si
-                    # este mismo batch fue throttled.
-                    cost_ext = data.get("extensions", {}).get("cost", {})
-                    throttle_status = cost_ext.get("throttleStatus", {})
-                    if throttle_status:
-                        _throttle_available = throttle_status.get("currentlyAvailable")
-                        _throttle_restore_rate = throttle_status.get("restoreRate")
-                    actual_cost = cost_ext.get("actualQueryCost")
-                    if actual_cost:
-                        _estimated_batch_cost = float(actual_cost)
-
-                    if "errors" in data:
-                        error_msgs = [e.get("message", str(e)) for e in data["errors"]]
-                        is_throttled = any("throttl" in m.lower() for m in error_msgs)
-
-                        if is_throttled and retry_count < MAX_THROTTLE_RETRIES and _throttle_restore_rate:
-                            retry_count += 1
-                            deficit = _estimated_batch_cost - (_throttle_available or 0)
-                            wait_s = min(max(deficit / _throttle_restore_rate, 1.0), 10.0)
-                            logging.warning(
-                                f"[ShopifyPrices] Batch {batch_start} throttled, "
-                                f"reintento {retry_count}/{MAX_THROTTLE_RETRIES} en {wait_s:.1f}s"
-                            )
-                            await asyncio.sleep(wait_s)
-                            continue  # reintenta el MISMO batch
-
-                        logging.error(
-                            f"[ShopifyPrices] GraphQL errors in batch {batch_start}: {error_msgs}"
-                        )
-                        break  # agoto reintentos o error no-throttle -> fallback REST para este lote
-
-                    response_data = data.get("data", {})
-
-                    # Parsear aliases del lote
-                    for idx, product in enumerate(batch):
-                        product_id = str(product.get("id", ""))
-                        for market in ACTIVE_MARKETS:
-                            market_id = market["market_id"]
-                            alias_key = f"p{idx}_{market_id}"
-                            product_node = response_data.get(alias_key)
-                            if not product_node:
-                                continue
-
-                            contextual = product_node.get("contextualPricing", {})
-                            min_price = (
-                                contextual
-                                .get("priceRange", {})
-                                .get("minVariantPrice", {})
-                            )
-                            amount_str = min_price.get("amount", "0")
-                            currency_code = min_price.get("currencyCode", "")
-
-                            try:
-                                amount_float = float(amount_str)
-                            except (TypeError, ValueError):
-                                amount_float = 0.0
-
-                            if amount_float > 0 and currency_code:
-                                market_price_map[market_id][product_id] = {
-                                    "price": amount_float,
-                                    "currency": currency_code
-                                }
-
-                    resolved = sum(len(v) for v in market_price_map.values())
-                    logging.info(
-                        f"[ShopifyPrices] Batch {batch_start}-{batch_start+len(batch)}: "
-                        f"{resolved} market-prices resolved total"
-                    )
-                    break  # batch resuelto con exito
-
-                except Exception as batch_err:
-                    logging.error(
-                        f"[ShopifyPrices] Batch {batch_start} error: {batch_err}",
-                        exc_info=True
-                    )
-                    # Continuar con el siguiente lote; precio REST sera el fallback
-                    break
-
-        # -- PASO 3: Enriquecer productos con precios multi-mercado -----------
-        enriched_products = []
-        fallback_count = 0
-
-        for product in products:
-            product_id = str(product.get("id", ""))
-
-            # Construir dict market_prices para este producto
-            market_prices = {}
-            for market in ACTIVE_MARKETS:
-                market_id = market["market_id"]
-                price_data = market_price_map[market_id].get(product_id)
-                if price_data:
-                    market_prices[market_id] = price_data
-
-            # Precio "principal" del catalogo: siempre CLP (moneda nativa).
-            # Si no tenemos precio CL de GraphQL, extraemos de REST (fallback).
-            if "CL" in market_prices:
-                native_price = market_prices["CL"]["price"]
-                native_currency = market_prices["CL"]["currency"]
-            else:
-                # Fallback REST: extraer desde variants[0].price
-                fallback_count += 1
-                variants = product.get("variants") or []
-                native_price = 0.0
-                native_currency = "CLP"
-                if variants:
+                while True:
                     try:
-                        native_price = float(variants[0].get("price") or "0")
-                    except (TypeError, ValueError):
-                        native_price = 0.0
-                # Asegurar que CL siempre existe en market_prices
-                market_prices["CL"] = {"price": native_price, "currency": native_currency}
+                        response = await asyncio.to_thread(
+                            requests.post,
+                            graphql_url,
+                            json={"query": bulk_query},
+                            headers=graphql_headers,
+                            timeout=45  # mas tiempo por query mas grande
+                        )
+                        response.raise_for_status()
+                        data = response.json()
 
-            enriched_products.append({
-                **product,
-                # -- Precio nativo nivel-raiz (compatibilidad hacia atras) ----
-                # Codigo que no conoce market_prices sigue funcionando igual.
-                "price": native_price,
-                "currency": native_currency,
-                # -- Precios multi-mercado autorizados por Shopify -------------
-                # Consumidos por:
-                #   - mcp_personalization_engine._build_advanced_personalization_prompt()
-                #   - MarketAdapter._adapt_currency()
-                #   - sanitize_rec_for_frontend() (a traves del adapter)
-                "market_prices": market_prices,
-            })
+                        # FIX (22/09/2026): reportar el throttleStatus real al
+                        # limitador COMPARTIDO -- para pacing de los PROXIMOS
+                        # batches de este proceso Y del otro (PASO 4.6 BG).
+                        cost_ext = data.get("extensions", {}).get("cost", {})
+                        throttle_status = cost_ext.get("throttleStatus", {})
+                        await _rate_limiter.report_response(
+                            throttle_status, caller="TFIDF-rebuild-precios"
+                        )
+                        actual_cost = cost_ext.get("actualQueryCost")
+                        if actual_cost:
+                            _estimated_batch_cost = float(actual_cost)
 
-        logging.info(
-            f"[ShopifyPrices] Enrichment complete: "
-            f"{len(enriched_products)} products | "
-            f"GraphQL: CL={len(market_price_map.get('CL', {}))}, "
-            f"CH={len(market_price_map.get('CH', {}))}, "
-            f"MX={len(market_price_map.get('MX', {}))}, "
-            f"ES={len(market_price_map.get('ES', {}))} | "
-            f"REST fallbacks: {fallback_count}"
-        )
+                        if "errors" in data:
+                            error_msgs = [e.get("message", str(e)) for e in data["errors"]]
+                            is_throttled = any("throttl" in m.lower() for m in error_msgs)
 
-        return enriched_products
+                            if is_throttled and retry_count < MAX_THROTTLE_RETRIES:
+                                retry_count += 1
+                                logging.warning(
+                                    f"[ShopifyPrices] Batch {batch_start} throttled, "
+                                    f"reintento {retry_count}/{MAX_THROTTLE_RETRIES} "
+                                    f"(esperando via limitador compartido)"
+                                )
+                                await _rate_limiter.wait_for_budget(
+                                    _estimated_batch_cost,
+                                    caller="TFIDF-rebuild-precios (reintento)",
+                                )
+                                continue  # reintenta el MISMO batch
+
+                            logging.error(
+                                f"[ShopifyPrices] GraphQL errors in batch {batch_start}: {error_msgs}"
+                            )
+                            break  # agoto reintentos o error no-throttle -> fallback REST para este lote
+
+                        response_data = data.get("data", {})
+
+                        # Parsear aliases del lote
+                        for idx, product in enumerate(batch):
+                            product_id = str(product.get("id", ""))
+                            for market in ACTIVE_MARKETS:
+                                market_id = market["market_id"]
+                                alias_key = f"p{idx}_{market_id}"
+                                product_node = response_data.get(alias_key)
+                                if not product_node:
+                                    continue
+
+                                contextual = product_node.get("contextualPricing", {})
+                                min_price = (
+                                    contextual
+                                    .get("priceRange", {})
+                                    .get("minVariantPrice", {})
+                                )
+                                amount_str = min_price.get("amount", "0")
+                                currency_code = min_price.get("currencyCode", "")
+
+                                try:
+                                    amount_float = float(amount_str)
+                                except (TypeError, ValueError):
+                                    amount_float = 0.0
+
+                                if amount_float > 0 and currency_code:
+                                    market_price_map[market_id][product_id] = {
+                                        "price": amount_float,
+                                        "currency": currency_code
+                                    }
+
+                            # FIX (20/09/2026): parsear el alias de imagen (uno por
+                            # producto, no por mercado -- ver construccion del query
+                            # arriba). Nivel de indentacion: dentro del for idx/product,
+                            # fuera del for market -- se ejecuta una vez por producto.
+                            img_node = response_data.get(f"img{idx}")
+                            if img_node:
+                                featured = img_node.get("featuredImage") or {}
+                                img_url = featured.get("url")
+                                if img_url:
+                                    image_url_map[product_id] = img_url
+
+                        resolved = sum(len(v) for v in market_price_map.values())
+                        logging.info(
+                            f"[ShopifyPrices] Batch {batch_start}-{batch_start+len(batch)}: "
+                            f"{resolved} market-prices resolved total"
+                        )
+                        break  # batch resuelto con exito
+
+                    except Exception as batch_err:
+                        logging.error(
+                            f"[ShopifyPrices] Batch {batch_start} error: {batch_err}",
+                            exc_info=True
+                        )
+                        # Continuar con el siguiente lote; precio REST sera el fallback
+                        break
+
+            # -- PASO 2.5: Backfill de imagenes para productos que quedaron sin ---
+            # FIX (22/09/2026): pasada secundaria, mas liviana, SOLO para imagen
+            # (el precio ya tiene su propio fallback REST en el Paso 3 de abajo).
+            # Motivo: confirmado con datos reales (CSV de 124 sin imagen) que las
+            # perdidas se concentran en pocos lotes (ver comentario del shuffle,
+            # arriba) -- una pasada corta, disparada DESPUES de que el loop
+            # principal ya absorbio la rafaga de throttling inicial (el cupo de
+            # la tienda suele estar mas repuesto para este punto), recupera la
+            # mayoria sin alargar mucho la sincronizacion diaria. Deliberadamente
+            # menos agresiva que el loop principal (1 solo reintento, espera fija
+            # de 5s en vez de pacing dinamico) -- si el cupo sigue agotado, se
+            # acepta el residuo en vez de insistir y alargar el job todavia mas.
+            products_missing_image = [
+                p for p in products
+                if str(p.get("id", "")) not in image_url_map
+            ]
+            if products_missing_image:
+                _images_before_backfill = len(image_url_map)
+                logging.info(
+                    f"[ShopifyPrices] Backfill de imagenes: "
+                    f"{len(products_missing_image)} productos sin imagen tras el "
+                    f"lote principal -- reintentando en una pasada separada"
+                )
+                for bf_start in range(0, len(products_missing_image), BATCH_SIZE):
+                    bf_batch = products_missing_image[bf_start: bf_start + BATCH_SIZE]
+                    bf_alias_fragments = []
+                    for bf_idx, bf_product in enumerate(bf_batch):
+                        bf_gid = f"gid://shopify/Product/{bf_product.get('id', '')}"
+                        bf_alias_fragments.append(
+                            f'img{bf_idx}: product(id: "{bf_gid}") {{\n'
+                            f'  featuredImage {{ url }}\n'
+                            f'}}'
+                        )
+                    bf_query = "query BackfillImages {\n" + "\n".join(bf_alias_fragments) + "\n}"
+
+                    bf_retry = 0
+                    # FIX (22/09/2026): pacing via el limitador compartido antes de
+                    # disparar cada batch del backfill tambien -- costo estimado mas
+                    # bajo que el batch principal (~200 puntos: 30 aliases de un solo
+                    # campo featuredImage, sin contextualPricing x4 mercados).
+                    await _rate_limiter.wait_for_budget(
+                        200.0, caller="TFIDF-rebuild-backfill-imagenes"
+                    )
+                    while True:
+                        try:
+                            bf_response = await asyncio.to_thread(
+                                requests.post,
+                                graphql_url,
+                                json={"query": bf_query},
+                                headers=graphql_headers,
+                                timeout=45
+                            )
+                            bf_response.raise_for_status()
+                            bf_data = bf_response.json()
+
+                            bf_cost_ext = bf_data.get("extensions", {}).get("cost", {})
+                            await _rate_limiter.report_response(
+                                bf_cost_ext.get("throttleStatus", {}),
+                                caller="TFIDF-rebuild-backfill-imagenes",
+                            )
+
+                            if "errors" in bf_data:
+                                bf_msgs = [e.get("message", str(e)) for e in bf_data["errors"]]
+                                bf_is_throttled = any("throttl" in m.lower() for m in bf_msgs)
+                                if bf_is_throttled and bf_retry < 1:
+                                    bf_retry += 1
+                                    await _rate_limiter.wait_for_budget(
+                                        200.0,
+                                        caller="TFIDF-rebuild-backfill-imagenes (reintento)",
+                                    )
+                                    continue
+                                logging.warning(
+                                    f"[ShopifyPrices] Backfill batch {bf_start} error: {bf_msgs}"
+                                )
+                                break
+
+                            bf_response_data = bf_data.get("data", {})
+                            for bf_idx, bf_product in enumerate(bf_batch):
+                                bf_pid = str(bf_product.get("id", ""))
+                                bf_node = bf_response_data.get(f"img{bf_idx}")
+                                if bf_node:
+                                    bf_featured = bf_node.get("featuredImage") or {}
+                                    bf_url = bf_featured.get("url")
+                                    if bf_url:
+                                        image_url_map[bf_pid] = bf_url
+                            break
+
+                        except Exception as bf_err:
+                            logging.warning(
+                                f"[ShopifyPrices] Backfill batch {bf_start} exception: {bf_err}"
+                            )
+                            break
+
+                logging.info(
+                    f"[ShopifyPrices] Backfill de imagenes completado: "
+                    f"{len(image_url_map) - _images_before_backfill}/"
+                    f"{len(products_missing_image)} recuperadas -- "
+                    f"{len(image_url_map)}/{len(products)} con imagen en total"
+                )
+
+            # -- PASO 3: Enriquecer productos con precios multi-mercado -----------
+            enriched_products = []
+            fallback_count = 0
+
+            for product in products:
+                product_id = str(product.get("id", ""))
+
+                # Construir dict market_prices para este producto
+                market_prices = {}
+                for market in ACTIVE_MARKETS:
+                    market_id = market["market_id"]
+                    price_data = market_price_map[market_id].get(product_id)
+                    if price_data:
+                        market_prices[market_id] = price_data
+
+                # Precio "principal" del catalogo: siempre CLP (moneda nativa).
+                # Si no tenemos precio CL de GraphQL, extraemos de REST (fallback).
+                if "CL" in market_prices:
+                    native_price = market_prices["CL"]["price"]
+                    native_currency = market_prices["CL"]["currency"]
+                else:
+                    # Fallback REST: extraer desde variants[0].price
+                    fallback_count += 1
+                    variants = product.get("variants") or []
+                    native_price = 0.0
+                    native_currency = "CLP"
+                    if variants:
+                        try:
+                            native_price = float(variants[0].get("price") or "0")
+                        except (TypeError, ValueError):
+                            native_price = 0.0
+                    # Asegurar que CL siempre existe en market_prices
+                    market_prices["CL"] = {"price": native_price, "currency": native_currency}
+
+                # FIX (20/09/2026): image_url via GraphQL featuredImage -- el
+                # reemplazo del campo REST 'images' deprecado desde API 2025-01.
+                # Solo se agrega si GraphQL efectivamente devolvio una URL; si no,
+                # el producto se queda sin 'image_url' a este nivel y
+                # _normalize_product_price() (tfidf_recommender.py) intenta su
+                # propio fallback a product['images'] como red de seguridad final
+                # (aunque ya sabemos que ese campo no es confiable en esta version
+                # de API -- se deja como esta por si Shopify lo repara mas adelante).
+                image_url = image_url_map.get(product_id)
+
+                enriched_products.append({
+                    **product,
+                    # -- Precio nativo nivel-raiz (compatibilidad hacia atras) ----
+                    # Codigo que no conoce market_prices sigue funcionando igual.
+                    "price": native_price,
+                    "currency": native_currency,
+                    # -- Precios multi-mercado autorizados por Shopify -------------
+                    # Consumidos por:
+                    #   - mcp_personalization_engine._build_advanced_personalization_prompt()
+                    #   - MarketAdapter._adapt_currency()
+                    #   - sanitize_rec_for_frontend() (a traves del adapter)
+                    "market_prices": market_prices,
+                    # -- Imagen destacada via GraphQL (reemplaza REST deprecado) --
+                    **({"image_url": image_url} if image_url else {}),
+                })
+
+            images_resolved = len(image_url_map)
+            logging.info(
+                f"[ShopifyPrices] Enrichment complete: "
+                f"{len(enriched_products)} products | "
+                f"GraphQL: CL={len(market_price_map.get('CL', {}))}, "
+                f"CH={len(market_price_map.get('CH', {}))}, "
+                f"MX={len(market_price_map.get('MX', {}))}, "
+                f"ES={len(market_price_map.get('ES', {}))} | "
+                f"REST fallbacks: {fallback_count} | "
+                f"images resolved: {images_resolved}/{len(enriched_products)}"
+            )
+
+            return enriched_products
+        finally:
+            _rebuild_priority.mark_rebuild_finished()
 
     async def get_prices_for_products(
         self,
