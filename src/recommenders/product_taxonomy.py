@@ -10,12 +10,47 @@ Reemplaza (ver PLAN_Fase1b_Revision_Arquitectonica_23072026.md, Paso 1-2):
     monolito, enviado ya resuelto via boost_text).
   - _B08_SHOPIFY_TO_OUTFIT_CAT (antes inline en mcp_conversation_handler.py)
 
+DECISION DE UNIFICACION (26/09/2026, ver DCT_Fase1b_Composite_Embedding_F08B_
+Cierre_24072026.md, Addendum 6, y taxonomy_centroid_audit.py motivo 2 sobre
+datos reales del catalogo):
+  - _B08_SHOPIFY_TO_OUTFIT_CAT y _B08B2_SHOPIFY_TO_OUTFIT_CAT (mcp_conversation_
+    handler.py, f08b2_category_resolution.py) quedan RETIRADOS -- donde
+    coincidian con este archivo, coincidian sin excepcion (confirmado por el
+    script de auditoria); donde no, este archivo ya era mas completo (8 gaps
+    contra 14). Ambos ahora llaman a get_outfit_slot()/types_in_outfit_slot()
+    de aqui en vez de mantener copias propias.
+  - _OUTFIT_COMPLEMENT_MAP (mcp_conversation_handler.py, F-08B.2) queda
+    RETIRADO -- 19 de 29 tipos de prenda ya caian a su fallback generico de
+    4 items; en la practica funcionaba como una version incompleta de "todo
+    el bucket accessory+bag", que es exactamente lo que
+    types_in_outfit_slot() ya resuelve, probado y en produccion.
+  - CATEGORY_KEYWORDS (improved_fallback_exclude_seen.py) se mantiene
+    SEPARADO, a proposito -- hace deteccion de categoria desde texto libre
+    con sinonimos, un problema distinto a tipo->outfit_slot. No se fusiona.
+
+MEJORA ESTRUCTURAL (27/09/2026, ver DCT_Cierre_Fase2_Unificacion_Taxonomia_
+27092026.md): _B08_FULL_CANDIDATE_CATS (mcp_conversation_handler.py) era una
+lista manual y separada de buckets candidatos para sugerencias GENERICAS de
+"completa el outfit" (F-08B, sin categoria explicita pedida) -- distinta del
+concepto de "que buckets existen" (eso ya lo resuelve PRODUCT_TAXONOMY). Al
+agregar el bucket "intimates" (26/09/2026) nadie decidio explicitamente si
+debia aparecer ahi o no -- quedo excluido por OMISION (la lista es anterior
+al bucket), no por una decision consciente, aunque resulto ser la decision
+correcta (mismo principio que "lingerie", ya excluido a proposito desde el
+13/07/2026). Para que esto no vuelva a pasar en silencio, esa lista ahora se
+CALCULA desde aqui (generic_suggestion_candidate_slots()) en vez de
+mantenerse escrita a mano en otro archivo: un bucket nuevo en
+PRODUCT_TAXONOMY aparece automaticamente en sugerencias genericas salvo que
+se agregue explicitamente a GENERIC_SUGGESTION_EXCLUDED_SLOTS -- la omision
+silenciosa deja de ser posible, cualquier exclusion queda documentada aqui
+mismo.
+
 Para onboardear un tenant nuevo: este es el unico archivo a reescribir hoy.
 Direccion futura (config por tenant en DB, derivacion por centroide de
 catalogo en vez de texto escrito a mano): ver PLAN_Fase1b_Revision_Arquitectonica_23072026.md,
 seccion 3 (explicitamente diferido, no construir todavia).
 """
-from typing import Dict, List, Optional, TypedDict
+from typing import Dict, List, Optional, Set, TypedDict
 
 
 class TypeTaxonomyEntry(TypedDict, total=False):
@@ -87,7 +122,26 @@ PRODUCT_TAXONOMY: Dict[str, TypeTaxonomyEntry] = {
     "NOVIAS CORTOS":    {"outfit_slot": "dress"},
     "NOVIAS MIDIS":     {"outfit_slot": "dress"},
     "NOVIAS ENTERITOS": {"outfit_slot": "enterito"},
+
+    # AGREGADO (26/09/2026): 6 tipos reales confirmados por
+    # taxonomy_centroid_audit.py (motivo 2, corrida contra el catalogo real
+    # 26/09/2026) sin outfit_slot asignado -- 154 productos combinados sin
+    # bucket. CHAQUETAS y LEGGINGS van con buckets ya existentes; CALZONES,
+    # LENCERIA, REDUCTORES y PIJAMAS son un bucket nuevo ("intimates") --
+    # no encajan de forma natural en ninguno de los existentes.
+    "CHAQUETAS":  {"outfit_slot": "outerwear"},
+    "LEGGINGS":   {"outfit_slot": "bottom"},
+    "CALZONES":   {"outfit_slot": "intimates"},
+    "LENCERIA":   {"outfit_slot": "intimates"},
+    "REDUCTORES": {"outfit_slot": "intimates"},
+    "PIJAMAS":    {"outfit_slot": "intimates"},
 }
+
+# AGREGADO (26/09/2026): tipos reales del catalogo que EXISTEN pero no son
+# prendas "combinables" en el sentido de outfit completion (F-08B) -- no
+# deberian tener outfit_slot. taxonomy_centroid_audit.py los excluye
+# explicitamente de sus reportes de gap por esta lista, no por descuido.
+NON_APPLICABLE_TYPES: Set[str] = {"AROMAS", "PACK"}
 
 
 def get_steering_text(shopify_type: str) -> Optional[str]:
@@ -123,3 +177,69 @@ def types_with_steering_text() -> List[str]:
 def types_in_outfit_slot(outfit_slot: str) -> List[str]:
     """Todos los tipos Shopify que pertenecen a un bucket de outfit dado."""
     return [t for t, e in PRODUCT_TAXONOMY.items() if e.get("outfit_slot") == outfit_slot]
+
+
+def is_non_applicable_type(shopify_type: str) -> bool:
+    """
+    True si el tipo es real (existe en el catalogo) pero no aplica al
+    concepto de outfit_slot (ej. AROMAS, PACK) -- no es un gap de cobertura.
+    """
+    if not shopify_type:
+        return False
+    return shopify_type.upper() in NON_APPLICABLE_TYPES
+
+
+# AGREGADO (27/09/2026): buckets que existen en PRODUCT_TAXONOMY pero se
+# excluyen A PROPOSITO de las sugerencias GENERICAS de "completa el outfit"
+# (F-08B, mcp_conversation_handler.py, cuando el usuario NO pidio una
+# categoria explicita) -- decision de producto, no limitacion tecnica. Un
+# bucket ausente de aqui SIEMPRE debe ser una decision consciente: si se
+# agrega un bucket nuevo a PRODUCT_TAXONOMY y no se agrega aqui, aparecera
+# en sugerencias genericas por defecto ("no excluido" = "incluido").
+GENERIC_SUGGESTION_EXCLUDED_SLOTS: Set[str] = {
+    # (26/09/2026, confirmado 27/09/2026): mismo principio que "lingerie",
+    # ya excluido a proposito desde el 13/07/2026 -- LENCERIA/CALZONES/
+    # REDUCTORES/PIJAMAS son ropa intima; sugerirla sin que el usuario la
+    # pida explicitamente puede sentirse invasivo. No es un gap, es la
+    # aplicacion correcta de un principio ya establecido, solo que "intimates"
+    # no existia como bucket formal cuando se escribio ese principio.
+    "intimates",
+}
+# NOTA (27/09/2026): "conjunto" (Gap 3, 13/07/2026) estuvo aqui y se retiro
+# tras resolver la causa raiz de la preocupacion original -- no estaba
+# integrado en _B08_SLOT_CONFLICTS (mcp_conversation_handler.py) como
+# alternativa de prenda principal junto a dress/enterito/top/bottom, asi que
+# un "conjunto" no conflictuaba con ellos ni viceversa. Con ese conflicto ya
+# registrado, sugerir un conjunto para un ancla que SI conflictua (dress/top/
+# bottom/enterito) queda excluido automaticamente por el sistema de
+# conflictos -- la exclusion aqui ya no tenia ninguna razon activa detras.
+# Ver DCT_Cierre_Fase2_Unificacion_Taxonomia_27092026.md, seccion 7.1, para
+# el analisis completo. Nota para features futuras con filosofia distinta a
+# F-08B (ej. una funcion de "Inspiracion" mencionada 27/09/2026, que
+# explicitamente NO quiere restriccion de categoria y SI quiere incluir
+# conjuntos): este conjunto (GENERIC_SUGGESTION_EXCLUDED_SLOTS) es especifico
+# de la filosofia de F-08B (un ancla + complementos coherentes) -- no debe
+# reusarse sin repensarlo para una feature con objetivos de diseno distintos.
+
+
+def all_outfit_slots() -> List[str]:
+    """Todos los buckets distintos definidos en PRODUCT_TAXONOMY."""
+    return sorted({
+        e["outfit_slot"] for e in PRODUCT_TAXONOMY.values() if e.get("outfit_slot")
+    })
+
+
+def generic_suggestion_candidate_slots() -> List[str]:
+    """
+    Buckets elegibles para sugerencias GENERICAS de "completa el outfit"
+    (F-08B, sin categoria explicita pedida por el usuario) -- todos los
+    buckets existentes, menos los marcados en GENERIC_SUGGESTION_EXCLUDED_SLOTS.
+
+    Reemplaza a _B08_FULL_CANDIDATE_CATS (antes una lista manual y separada
+    en mcp_conversation_handler.py) -- se deriva automaticamente de
+    PRODUCT_TAXONOMY para que un bucket nuevo nunca quede incluido o
+    excluido por omision silenciosa, como paso con "intimates" el
+    26/09/2026 (resulto ser la exclusion correcta, pero nadie la decidio a
+    proposito en su momento).
+    """
+    return [s for s in all_outfit_slots() if s not in GENERIC_SUGGESTION_EXCLUDED_SLOTS]

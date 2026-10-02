@@ -18,6 +18,8 @@ config/envs/.env.*
 .env.redis_labs
 .env.test
 
+embedding-service-key.json
+
 # Directorios de caché Python
 __pycache__/
 *.py[cod]

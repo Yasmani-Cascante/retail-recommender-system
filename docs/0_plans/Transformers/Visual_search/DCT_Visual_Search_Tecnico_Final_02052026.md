@@ -171,3 +171,15 @@ Fix: \_colbert\_client\_singleton = None a nivel de modulo. La primera llamada a
 Sistema de Visual Search completamente operativo. Autenticacion IAM activa. Indexacion incremental disponible. Batch size adaptativo funcionando. Todas las metricas dentro de los umbrales del plan original.
 
 Revision activa: retail-embedding-service-00029-skv | Fecha: 02/05/2026 | Autor: Equipo de Ingenieria
+
+---
+
+# 8. Correccion (29/09/2026): EMBEDDING_AUTH_DISABLED no funciona con --no-allow-unauthenticated desplegado
+
+La seccion 5 de este documento dice: *"EMBEDDING_AUTH_DISABLED | (no configurada) | Ausente = false = auth IAM activa. Poner 'true' solo para dev local sin ADC."* -- probado directamente el 29/09/2026 y **no funciona**, con el embedding-service desplegado como esta hoy.
+
+Por que no: esa variable solo evita que el CLIENTE (`colbert_client.py`) intente anadir el header `Authorization`. El embedding-service esta desplegado con `--no-allow-unauthenticated` (confirmado en `src/api/services/embedding-service/deploy.sh`, el script de deploy real) -- Cloud Run rechaza peticiones sin token valido **a nivel de infraestructura**, antes de que el codigo de la aplicacion (y por tanto esa variable) tengan ninguna oportunidad de intervenir. Confirmado empiricamente: con `EMBEDDING_AUTH_DISABLED=true`, la peticion sale sin intentar autenticarse y aun asi recibe 403 -- el mismo resultado que sin la variable.
+
+Para desarrollo local real contra el embedding-service desplegado, ver `DCT_Cierre_Fase2_Unificacion_Taxonomia_27092026.md` (directorio `Evaluacion_Integral_16092026`), seccion 7.5 -- la solucion que si funciono fue un fix de codigo en `_fetch_id_token_sync()` (`colbert_client.py`) para reconocer credenciales de impersonacion de GCP, mas un permiso IAM especifico (`roles/iam.serviceAccountOpenIdTokenCreator`).
+
+No se elimina el texto original de la seccion 5 -- queda como registro de lo que se penso en su momento. Esta seccion es la correccion, no un reemplazo.

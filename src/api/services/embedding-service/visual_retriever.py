@@ -1282,3 +1282,110 @@ class FashionSigLIPRetriever:
     def category_map_size(self) -> int:
         """S1: Número de productos con categoría de outfit asignada."""
         return sum(1 for c in self._category_map if c)
+
+    async def export_embeddings(
+        self,
+        product_ids: Optional[List[str]] = None,
+        limit: int = 500,
+        cursor: Optional[str] = None,
+    ) -> dict:
+        """
+        FIX (28/09/2026): exporta embeddings crudos del indice -- para
+        auditoria offline de calidad de tipificacion (ver
+        taxonomy_centroid_audit.py en el monolito, motivo 3: mistagging).
+        NO se usa en el flujo de busqueda en vivo -- es una ruta de solo
+        lectura, pensada para uso periodico/manual, sin necesidad de
+        optimizarse para latencia baja como los metodos de busqueda.
+
+        Contrato completo documentado en taxonomy_centroid_audit.py
+        (monolito) y en colbert_client.py (LFM2ColBERTClient.export_embeddings()
+        -- el cliente que consume este metodo via la ruta HTTP correspondiente).
+
+        Dos modos, igual que search_by_product_id() para la parte de
+        reconstruccion de vector -- mismo patron (_id_map.index(pid) +
+        _faiss_index.reconstruct(pos)), sin inventar un mecanismo nuevo:
+
+        - TARGETED (product_ids no es None): reconstruye el vector de cada
+          ID pedido que este en el indice. Busqueda O(n) por ID en
+          _id_map -- igual que search_by_product_id(), aceptable para uso
+          de auditoria ocasional, no un hot path que justifique mantener
+          un indice inverso adicional.
+        - BULK (product_ids es None): pagina sobre TODO el indice en el
+          orden de _id_map, usando cursor como offset entero codificado a
+          string. Necesario porque el catalogo completo como una sola
+          respuesta es un payload grande (miles de productos x
+          self._embed_dim floats).
+
+        Returns:
+            {
+              "embeddings": {product_id: [float, ...]},
+              "dimension": int,
+              "model": str,
+              "count": int,
+              "not_found": [ids pedidos que no estan en el indice] (modo targeted),
+              "next_cursor": str o None (modo bulk; None si no hay mas paginas),
+            }
+        """
+        model_name = 'Marqo/marqo-fashionSigLIP'
+
+        if self._faiss_index is None or not self._id_map:
+            return {
+                'embeddings': {},
+                'dimension': self._embed_dim,
+                'model': model_name,
+                'count': 0,
+                'not_found': list(product_ids) if product_ids else [],
+                'next_cursor': None,
+            }
+
+        loop = asyncio.get_running_loop()
+
+        if product_ids is not None:
+            def _export_targeted():
+                import numpy as _np
+                embeddings = {}
+                not_found = []
+                for pid in product_ids:
+                    pid = str(pid)
+                    try:
+                        pos = self._id_map.index(pid)
+                    except ValueError:
+                        not_found.append(pid)
+                        continue
+                    vec = self._faiss_index.reconstruct(pos)
+                    embeddings[pid] = [float(x) for x in _np.array(vec, dtype=_np.float32)]
+                return embeddings, not_found
+
+            embeddings, not_found = await loop.run_in_executor(None, _export_targeted)
+            return {
+                'embeddings': embeddings,
+                'dimension': self._embed_dim,
+                'model': model_name,
+                'count': len(embeddings),
+                'not_found': not_found,
+                'next_cursor': None,
+            }
+
+        # Modo BULK -- paginar en el orden estable de _id_map.
+        offset = int(cursor) if cursor else 0
+        end = min(offset + limit, len(self._id_map))
+
+        def _export_bulk(start, stop):
+            import numpy as _np
+            embeddings = {}
+            for pos in range(start, stop):
+                pid = self._id_map[pos]
+                vec = self._faiss_index.reconstruct(pos)
+                embeddings[pid] = [float(x) for x in _np.array(vec, dtype=_np.float32)]
+            return embeddings
+
+        embeddings = await loop.run_in_executor(None, _export_bulk, offset, end)
+        next_cursor = str(end) if end < len(self._id_map) else None
+        return {
+            'embeddings': embeddings,
+            'dimension': self._embed_dim,
+            'model': model_name,
+            'count': len(embeddings),
+            'not_found': [],
+            'next_cursor': next_cursor,
+        }

@@ -333,3 +333,51 @@ Esto valida con evidencia directa -- no con sospecha -- que la duplicacion de fu
 
 **Estado**: script aun no disenado en detalle ni construido -- este addendum documenta el motivo ampliado, no una implementacion. Nota para quien retome esto: revisar tambien si `_OUTFIT_COMPLEMENT_MAP` (F-08B.2) deberia incluirse en el cruce de fuentes del motivo 3, dado que es una cuarta fuente de taxonomia activa, distinta de las tres ya mencionadas (ver Addendum 4, seccion 12.5).
 
+---
+
+## 14. Addendum 6 -- Decision de unificacion de taxonomia CERRADA, con datos reales (26/09/2026)
+
+El script de auditoria por centroides (disenado en la seccion 13) se construyo (`taxonomy_centroid_audit.py`, raiz del repo) con sus motivos 1 (cobertura) y 2 (desincronizacion) completamente funcionales -- el motivo 3 (mistagging) quedo disenado pero sin construir, bloqueado por la ausencia de un endpoint de exportacion de embeddings en el embedding-service (confirmado revisando `colbert_client.py`: solo expone busqueda/indexacion, ningun metodo de exportacion cruda).
+
+Corrido contra el catalogo real (26/09/2026, 3045 productos, 38 tipos distintos), el motivo 2 dio la evidencia que faltaba para cerrar la pregunta abierta desde el Addendum 4 (seccion 12.5): "decidir el destino de `_OUTFIT_COMPLEMENT_MAP` y F-08B.2 en general".
+
+### 14.1 -- El dato que decidio la forma de la unificacion
+
+`product_taxonomy.py` y `_B08B2_SHOPIFY_TO_OUTFIT_CAT` (el stand-in auditado para la pareja `_B08_SHOPIFY_TO_OUTFIT_CAT`/`_B08B2_SHOPIFY_TO_OUTFIT_CAT`, identicas por diseno) dieron: **"OK: sin desacuerdos de bucket entre las dos fuentes"** para los 38 tipos reales. No era una negociacion de criterios distintos -- era una fuente completa (`product_taxonomy.py`, 8 gaps) y una copia parcial de la misma (14 gaps, incluyendo las 6 variantes de NOVIAS completas -- 241 productos). Eso convirtio "unificar" en una sustitucion mecanica, no un rediseño.
+
+### 14.2 -- Decision, fuente por fuente
+
+- **`_B08_SHOPIFY_TO_OUTFIT_CAT` / `_B08B2_SHOPIFY_TO_OUTFIT_CAT` -- RETIRADOS.** Sustituidos por `product_taxonomy.get_outfit_slot()` / `types_in_outfit_slot()` en los 2 puntos de uso (bloque F-08B principal y F-08B.2).
+- **`_OUTFIT_COMPLEMENT_MAP` -- RETIRADO.** 19 de 29 tipos de prenda reales ya caian a su fallback generico de 4 items -- en la practica era una version incompleta de "todo el bucket accessory+bag". F-08B.2 sin categoria explicita ahora usa `types_in_outfit_slot("accessory") + types_in_outfit_slot("bag")`, el mismo mecanismo ya validado en produccion para pedidos amplios ("accesorios").
+- **`CATEGORY_KEYWORDS` -- se mantiene SEPARADO, a proposito.** Hace deteccion de categoria desde texto libre con sinonimos, un problema distinto a tipo->outfit_slot. Se le cerraron sus 4 gaps (`BRAZALETE`, `NOVIAS CONJUNTOS FALDAS/PANTALONES/ENTERITOS`) sin fusionarla con nada.
+- **`product_taxonomy.py` -- confirmado como fuente unica para tipo->outfit_slot.** Sus 8 gaps se cerraron: `CHAQUETAS`->`outerwear`, `LEGGINGS`->`bottom`, y un bucket nuevo `intimates` para `CALZONES`/`LENCERIA`/`REDUCTORES`/`PIJAMAS` (154 productos combinados, ninguno de los 4 encajaba de forma natural en un bucket existente). `AROMAS`/`PACK` quedaron marcados como `NON_APPLICABLE_TYPES` (no son prendas combinables) en vez de forzarlos a un bucket -- el script de auditoria ya no los reporta como gap.
+
+### 14.3 -- Validacion
+
+15 tests automatizados (`tests/unit/test_f08b2_category_resolution.py`), corridos con `pytest` de verdad contra los archivos exactos que quedaron en el repo -- 15/15 pasan, cubriendo tanto el comportamiento preservado (auto-referencia, especificidad, pedidos amplios) como el nuevo fallback amplio que reemplaza a `_OUTFIT_COMPLEMENT_MAP`. Sintaxis validada (`ast.parse`) en los 4 archivos tocados. Confirmado, via `grep`, cero referencias colgantes a los 3 diccionarios retirados en todo `mcp_conversation_handler.py`.
+
+**Pendiente**: desplegar y volver a correr `taxonomy_centroid_audit.py` contra el catalogo real para confirmar que los gaps reportados el 26/09 efectivamente desaparecieron -- el mismo script que encontro el problema, usado para confirmar el arreglo.
+
+**ACTUALIZACION (26/09/2026, misma tarde) -- confirmado con la corrida real, con un bug propio en el camino:**
+
+Corrido contra el catalogo real de produccion tras el deploy: `product_taxonomy.py` paso de 8 gaps a 2 (`AROMAS`, `PACK` -- los unicos dos que quedan, y son intencionales), y `CATEGORY_KEYWORDS` paso de 4 gaps a 0 ("OK: cubre todos los tipos reales del catalogo"). Los 6 tipos nuevos y las 4 entradas de `CATEGORY_KEYWORDS` quedaron confirmados en el catalogo real, no solo en simulacion.
+
+Pero la corrida tambien revelo que el propio script quedo desactualizado: seguia intentando importar `_B08B2_SHOPIFY_TO_OUTFIT_CAT` y `_OUTFIT_COMPLEMENT_MAP` desde `f08b2_category_resolution.py` -- nombres que la seccion 14.2 de este mismo addendum retiro. El import fallaba, capturado por el propio manejo de errores del script (no rompio el resto del reporte), pero salteo en silencio toda la seccion de acuerdo de bucket entre fuentes. Ademas, `is_non_applicable_type()` (agregado en 14.2 especificamente para que `AROMAS`/`PACK` dejaran de reportarse como gap) nunca se conecto al script -- por eso la primera corrida los seguia mostrando como `[GAP]`.
+
+**Corregido en el mismo dia**: `taxonomy_centroid_audit.py` actualizado -- ya no referencia las fuentes retiradas (la seccion de acuerdo de bucket ya no aplica, con una sola fuente de outfit_slot no hay nada que comparar), y ahora excluye `NON_APPLICABLE_TYPES` del reporte de `product_taxonomy.py` especificamente (no de `CATEGORY_KEYWORDS`, que legitimamente si necesita conocer `AROMAS`/`PACK` para busqueda por texto). Validado con un catalogo sintetico que incluia un gap real (`TURBANTES`) junto a los dos tipos no-aplicables, confirmando que el filtro no oculta gaps genuinos, solo los ya decididos como fuera de alcance.
+
+### 14.4 -- Hallazgo relacionado, NO resuelto en este addendum (a proposito)
+
+`_B08_FULL_CANDIDATE_CATS` (bloque F-08B principal, lista separada de buckets candidatos para sugerencias genericas sin categoria explicita) no incluye `"intimates"` ni `"conjunto"` -- gap preexistente a esta sesion, distinto del que motivo esta unificacion (ese usaba `_OUTFIT_COMPLEMENT_MAP`, ya resuelto). No se toco sin que se pidiera explicitamente -- anotado para una proxima sesion.
+
+### 14.5 -- Archivos modificados en este addendum
+
+| Archivo | Cambio |
+|---|---|
+| `src/recommenders/product_taxonomy.py` | +6 tipos (`CHAQUETAS`, `LEGGINGS`, `CALZONES`, `LENCERIA`, `REDUCTORES`, `PIJAMAS`), +bucket `intimates`, +`NON_APPLICABLE_TYPES`/`is_non_applicable_type()` |
+| `src/recommenders/improved_fallback_exclude_seen.py` | +4 entradas `CATEGORY_KEYWORDS` (`BRAZALETE`, `NOVIAS CONJUNTOS FALDAS/PANTALONES`, `NOVIAS ENTERITOS`) |
+| `src/recommenders/f08b2_category_resolution.py` | Retirados `_B08B2_SHOPIFY_TO_OUTFIT_CAT` y `_OUTFIT_COMPLEMENT_MAP`; nuevo parametro `get_outfit_slot_fn`; fallback amplio via `types_in_outfit_slot` |
+| `src/api/core/mcp_conversation_handler.py` | Retirado `_B08_SHOPIFY_TO_OUTFIT_CAT` (bloque F-08B principal); ambos puntos de uso migrados a `product_taxonomy.get_outfit_slot()` |
+| `tests/unit/test_f08b2_category_resolution.py` | Reescrito -- nuevo parametro inyectado, nuevas aserciones para el fallback amplio |
+| `taxonomy_centroid_audit.py` (raiz) | Script nuevo -- motivos 1 y 2 funcionales, motivo 3 disenado y bloqueado (ver 14 intro) |
+

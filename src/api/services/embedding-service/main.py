@@ -122,6 +122,29 @@ class MultiTextBoostResponse(BaseModel):
     visual_index_size: int
 
 
+class ExportEmbeddingsRequest(BaseModel):
+    """
+    FIX (28/09/2026): dos modos -- ver export_embeddings() en
+    visual_retriever.py para el detalle completo.
+
+    TARGETED (product_ids presente): devuelve exactamente esos IDs (los que
+    existan en el indice). BULK (product_ids ausente/None): pagina sobre
+    TODO el indice con limit + cursor.
+    """
+    product_ids: Optional[List[str]] = None
+    limit:       int                 = 500
+    cursor:      Optional[str]       = None
+
+
+class ExportEmbeddingsResponse(BaseModel):
+    embeddings:  dict            # {product_id: [float, ...]}
+    dimension:   int
+    model:       str
+    count:       int
+    not_found:   List[str]       # solo relevante en modo targeted
+    next_cursor: Optional[str]   # solo relevante en modo bulk
+
+
 # ── Startup / shutdown ─────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -576,3 +599,35 @@ async def search_by_product_id_with_multi_text_boost(request: MultiTextBoostRequ
         latency_ms=latency_ms,
         visual_index_size=visual_retriever.index_size(),
     )
+
+
+@app.post('/v1/embed/export-embeddings', response_model=ExportEmbeddingsResponse)
+async def export_embeddings(req: ExportEmbeddingsRequest):
+    """
+    FIX (28/09/2026): exporta embeddings crudos del indice visual -- para
+    auditoria offline de calidad de tipificacion (taxonomy_centroid_audit.py
+    en el monolito, motivo 3: mistagging). NO se usa en el flujo de busqueda
+    en vivo.
+
+    Contrato y ambos modos (targeted / bulk paginado) documentados en
+    visual_retriever.export_embeddings() y en taxonomy_centroid_audit.py
+    (monolito).
+    """
+    if not visual_retriever or not visual_retriever.is_ready():
+        raise HTTPException(503, 'Visual index not ready')
+
+    t0 = time.time()
+    result = await visual_retriever.export_embeddings(
+        product_ids=req.product_ids,
+        limit=req.limit,
+        cursor=req.cursor,
+    )
+    latency_ms = round((time.time() - t0) * 1000, 1)
+
+    log.info(
+        'export_embeddings: mode=%s count=%d not_found=%d next_cursor=%s latency=%.1fms',
+        'targeted' if req.product_ids is not None else 'bulk',
+        result['count'], len(result['not_found']), result['next_cursor'], latency_ms,
+    )
+
+    return ExportEmbeddingsResponse(**result)

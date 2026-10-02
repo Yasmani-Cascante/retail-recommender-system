@@ -934,262 +934,60 @@ async def get_mcp_conversation_recommendations(
                                     _img_r.raise_for_status()
                                     _img_bytes_b08 = _img_r.content
 
-                                # GAP B FIX (11/07/2026): _B08_TYPE_TO_CAT (el diccionario
-                                # que vivia aqui antes) usaba claves genericas en espanol
-                                # ("accesorios", "bolsos", "calzado") que NUNCA calzaban con
-                                # ningun product_type real de Shopify (los reales son "AROS",
-                                # "CARTERAS", "ZAPATOS", etc. -- confirmado revisando cada
-                                # clave contra el catalogo real). Efecto: _b08_own_cat quedaba
-                                # "" (vacio) para casi cualquier producto ancla de accesorios,
-                                # bolsos, zapatos o enteritos, y la exclusion de "no recomendar
-                                # la propia categoria del producto ancla" nunca se aplicaba en
-                                # esos casos -- ej. viendo un producto AROS, "completa el
-                                # outfit" buscaba accesorios (bucket "accessory") sin
-                                # excluirlo, aunque el ancla ya fuera un accesorio.
-                                #
-                                # Fix: eliminar el diccionario duplicado y mover aqui
-                                # _B08_SHOPIFY_TO_OUTFIT_CAT (antes solo se definia mas abajo,
-                                # para el narrowing de Hallazgo 2) como unica fuente de verdad
-                                # -- ya esta alineado 1:1 con los product_type reales del
-                                # catalogo, a diferencia del diccionario viejo.
-                                _B08_SHOPIFY_TO_OUTFIT_CAT = {
-                                    "AROS": "accessory", "COLLARES": "accessory",
-                                    "BRAZALETES": "accessory", "BRAZALETE": "accessory",
-                                    "CINTURONES": "accessory", "TOCADOS": "accessory",
-                                    "ALAS DE NOVIA": "accessory",
-                                    "CARTERAS": "bag", "CLUTCH": "bag",
-                                    "VESTIDOS CORTOS": "dress", "VESTIDOS LARGOS": "dress",
-                                    "VESTIDOS MIDIS": "dress",
-                                    "ENTERITOS CORTOS": "enterito", "ENTERITOS LARGOS": "enterito",
-                                    "TOPS": "top", "BRALETTES": "top",
-                                    "PANTALONES": "bottom", "FALDAS": "bottom",
-                                    "CAPAS BORDADAS": "outerwear", "CAPAS GASA": "outerwear",
-                                    "KIMONOS": "outerwear",
-                                    "ZAPATOS": "shoes",
-                                    "CONJUNTOS FALDAS": "conjunto",
-                                    "CONJUNTOS PANTALONES": "conjunto",
-                                }
-                                # _b08_ptype llega en minusculas (linea anterior) -- .upper()
-                                # para calzar con las claves (mayusculas) del diccionario.
-                                _b08_own_cat = _B08_SHOPIFY_TO_OUTFIT_CAT.get(_b08_ptype.upper(), "")
-
-                                # GAP 2 FIX (13/07/2026): grupos de conflicto de "slot" de
-                                # prenda. Antes solo se excluia _b08_own_cat (la categoria
-                                # exacta del producto ancla), sin modelar que otras categorias
-                                # ocupan el MISMO slot corporal y por tanto tampoco son
-                                # complementarias. Confirmado con evidencia real de produccion
-                                # (13/07/2026): ancla VESTIDOS CORTOS (dress) devolvia
-                                # categories=['top','accessory','bag','enterito','outerwear'] --
-                                # "top" y "enterito" son incompatibles con un vestido (prenda de
-                                # cuerpo completo), no complementos.
-                                #
-                                # dress/enterito son prendas de cuerpo completo -- conflictan
-                                # entre si y con "top" (no tiene sentido sugerir un top sobre/
-                                # bajo un vestido o enterito). top/bottom se necesitan
-                                # mutuamente pero no a dress/enterito (serian "otro outfit
-                                # completo", no un complemento). accessory/bag/outerwear/shoes
-                                # son compatibles con cualquier prenda base -- sin conflictos,
-                                # no aparecen como llaves aqui.
-                                #
-                                # Se aplica de forma UNIVERSAL: tanto a la lista amplia por
-                                # defecto como a la categoria detectada explicitamente por texto
-                                # (ver _b08_mapped_cats mas abajo) -- decision de producto
-                                # consciente (sesion 13/07/2026): la deteccion de categoria por
-                                # texto ya tuvo falsos positivos por colision de keywords en
-                                # esta misma sesion (ej. "outfit" disparando CONJUNTOS), asi que
-                                # confiar ciegamente en una "peticion explicita" puede estar
-                                # propagando un bug de deteccion en vez de una intencion real
-                                # del usuario. Consistente con el principio de coherencia
-                                # categorica estricta (strict_category=True) ya establecido en
-                                # otras partes del sistema.
-                                _B08_SLOT_CONFLICTS = {
-                                    "dress":    {"top", "bottom", "enterito"},
-                                    "enterito": {"top", "bottom", "dress"},
-                                    "top":      {"dress", "enterito"},
-                                    "bottom":   {"dress", "enterito"},
-                                }
-                                # FIX (14/07/2026): "accessory" y "bag" son buckets MULTI-TIPO
-                                # -- varios product_type concretos de Shopify caen en el mismo
-                                # bucket (AROS/COLLARES/BRAZALETES/CINTURONES/TOCADOS/ALAS DE
-                                # NOVIA -> accessory; CARTERAS/CLUTCH -> bag). Auto-excluir el
-                                # bucket ENTERO cuando el ancla es de ese bucket bloqueaba
-                                # combinaciones legitimas entre tipos hermanos (ej. ancla AROS
-                                # nunca podia sugerir un COLLAR; ancla CLUTCH nunca podia
-                                # sugerir una CARTERA), ademas del bug ya confirmado en
-                                # produccion (13/07/2026): ancla AROS + "que accesorios
-                                # combinan" devolvia SOLO 'bag' (5 clutch, sin variedad),
-                                # porque 'accessory' -- lo unico que el usuario pidio -- se
-                                # auto-excluia por ser tambien la categoria del ancla.
-                                #
-                                # A diferencia de dress/enterito/top/bottom (una sola prenda de
-                                # ese tipo por outfit), accessory y bag son inherentemente
-                                # multi-item: aretes+collar+pulsera es un combo de estilismo
-                                # normal, y una cartera+clutch son piezas intercambiables, no
-                                # conflictivas. La exclusion del MISMO tipo concreto (ej. no
-                                # mas AROS si el ancla ya es AROS, no mas CLUTCH si el ancla ya
-                                # es CLUTCH) se maneja aparte, a nivel de producto individual,
-                                # con _b08_is_same_type() mas abajo -- no a nivel de bucket.
-                                _b08_excluded_cats = (
-                                    _B08_SLOT_CONFLICTS.get(_b08_own_cat, set())
-                                    | (set() if _b08_own_cat in {"accessory", "bag"} else {_b08_own_cat})
+                                # FIX (28/09/2026): logica de resolucion de categorias
+                                # objetivo extraida a un modulo puro y testeado -- ver
+                                # src/recommenders/f08b_target_categories.py para el
+                                # historial completo (conflictos de slot desde 13/07/2026,
+                                # excepcion accessory/bag desde 14/07/2026, auto-referencia
+                                # y especificidad desde 20-21/09/2026, "conjunto" integrado
+                                # 27/09/2026). Extraido como segundo incremento de la red de
+                                # seguridad de tests (primer incremento: F-08B.2,
+                                # 25/09/2026) -- mismo comportamiento exacto de antes, ahora
+                                # cubierto por tests/unit/test_f08b_target_categories.py
+                                # (13 casos).
+                                from src.recommenders.f08b_target_categories import (
+                                    resolve_f08b_target_categories as _b08_resolve_target_cats,
                                 )
-
-                                # HALLAZGO 2 FIX (06/07/2026): leer la categoria especifica
-                                # que el usuario pidio en su consulta, en vez de siempre usar
-                                # la lista fija de 6 categorias.
-                                #
-                                # Por que: _b08_target_cats era SIEMPRE la misma lista fija
-                                # (menos la categoria propia del producto), sin importar si
-                                # el usuario pidio "completa el outfit" (amplio) o "que
-                                # accesorios combinan" (especifico). Confirmado con evidencia
-                                # real (sesion 05/07/2026): "Que accesorios combinan con este
-                                # vestido?" devolvio categories=['top','accessory','bag',
-                                # 'enterito','outerwear'] -- 4 categorias que el usuario nunca
-                                # pidio, mezcladas con los accesorios que si pidio.
-                                #
-                                # Mecanismo: reusa extract_categories_from_query() (ya usada
-                                # en F-08C y en el bloque Standard recommendations) para
-                                # detectar si el usuario menciono una categoria Shopify
-                                # explicita (ej. "accesorios" -> expande via CATEGORY_KEYWORDS
-                                # a AROS/COLLARES/BRAZALETES/etc). Si detecta algo, mapea esos
-                                # tipos concretos a su bucket de outfit-category
-                                # (accessory/bag/dress/top/enterito/outerwear/bottom) y usa
-                                # SOLO esos como target_categories -- nunca la categoria
-                                # propia del producto ancla. Si no detecta nada (consulta
-                                # generica tipo "completa el outfit"), mantiene el
-                                # comportamiento amplio actual sin cambios.
-                                #
-                                # Import lazy: mismo patron defensivo ya usado para
-                                # get_parent_categories en F-08 Fase A (BUG-REFACTOR-1,
-                                # 18/06/2026) -- extract_categories_from_query y
-                                # get_concrete_categories estan importados arriba SOLO
-                                # dentro del bloque "if use_diversification:" (Turn 2+).
-                                # F-08B puede activarse en Turn 1 tambien (ver comentario de
-                                # trigger arriba), donde esa rama nunca ejecuta -- sin este
-                                # import lazy, usarlas aqui lanzaria UnboundLocalError.
-                                # _B08_SHOPIFY_TO_OUTFIT_CAT ya quedo definido arriba (Gap B
-                                # fix, 11/07/2026), junto con _b08_own_cat -- se reusa aqui tal
-                                # cual para el narrowing de Hallazgo 2, sin redefinirlo.
-                                _b08_query_target_cats = None
-                                # FIX (21/09/2026): igual que en F-08B.2 (20/09/2026) -- si tras
-                                # filtrar la auto-referencia queda UNA sola categoria concreta
-                                # especifica (ej. "aretes" -> AROS), se pierde su especificidad
-                                # al mapearla al bucket completo (accessory) y mandar el bucket
-                                # entero a la busqueda visual. Confirmado en produccion
-                                # (21/09/2026): "aretes" sobre ancla BRAZALETES/COLLARES devolvio
-                                # collares/brazaletes/etc ademas de aros. _b08_single_specific_type
-                                # se usa mas abajo para filtrar los candidatos a ese tipo exacto
-                                # y saltar el boost de tipos hermanos (Fase 1b Paso 4), que existe
-                                # justamente para ampliar cobertura -- lo opuesto de lo que se
-                                # pidio. target_categories (el bucket) se sigue calculando igual,
-                                # porque search_outfit_by_image() solo entiende buckets.
-                                _b08_single_specific_type = None
                                 try:
                                     from src.recommenders.improved_fallback_exclude_seen import (
                                         extract_categories_from_query as _b08_extract_cats,
                                         get_concrete_categories as _b08_get_concrete_cats,
                                     )
-                                    _b08_available_cats = _b08_get_concrete_cats()
-                                    _b08_detected = _b08_extract_cats(
-                                        conversation_query, _b08_available_cats
+                                    from src.recommenders.product_taxonomy import (
+                                        get_outfit_slot as _b08_get_outfit_slot,
+                                        generic_suggestion_candidate_slots as _b08_generic_slots,
                                     )
-                                    # FIX (20/09/2026): filtrar auto-referencia -- si la consulta
-                                    # menciona el tipo EXACTO del propio ancla (ej. "esto aros"
-                                    # con ancla de tipo AROS), extract_categories_from_query lo
-                                    # detecta como un pedido nuevo, cuando el usuario se esta
-                                    # refiriendo al producto que ya esta viendo, no pidiendo mas
-                                    # de lo mismo. Confirmado en produccion (mismo patron via
-                                    # F-08B.2, 20/09/2026): "Con que vestidos combina mejor esto
-                                    # aros?" sobre ancla AROS devolvio accesorios ademas de
-                                    # vestidos, porque 'AROS' se colaba en _b08_detected.
-                                    #
-                                    # NOTA: este bloque no esta corriendo en produccion mientras
-                                    # el catalogo TF-IDF no tenga image_url poblado (ver fix
-                                    # separado del 20/09/2026 en shopify_client.py) -- este
-                                    # cambio queda aplicado pero pendiente de validar con
-                                    # evidencia real hasta que vuelva a ejecutarse.
-                                    _b08_detected = [
-                                        c for c in _b08_detected
-                                        if c.upper() != _b08_ptype.upper()
-                                    ]
-                                    if _b08_detected:
-                                        _b08_mapped_cats = {
-                                            _B08_SHOPIFY_TO_OUTFIT_CAT[c.upper()]
-                                            for c in _b08_detected
-                                            if c.upper() in _B08_SHOPIFY_TO_OUTFIT_CAT
-                                        }
-                                        # GAP 2 FIX (13/07/2026): antes solo .discard(_b08_own_cat)
-                                        # -- se cambia a resta de conjunto completa
-                                        # (_b08_excluded_cats incluye _b08_own_cat + conflictos de
-                                        # slot) para que una categoria detectada por texto que
-                                        # sea incompatible con el ancla (ej. "top" detectado sobre
-                                        # un vestido) tampoco pase, aplicando el mismo criterio
-                                        # que a la lista amplia por defecto (ver comentario
-                                        # completo junto a _B08_SLOT_CONFLICTS mas arriba).
-                                        _b08_mapped_cats -= _b08_excluded_cats
-                                        if _b08_mapped_cats:
-                                            _b08_query_target_cats = list(_b08_mapped_cats)
-                                            # FIX (21/09/2026): si la deteccion (ya sin
-                                            # auto-referencia) fue UN solo tipo concreto, guardarlo
-                                            # para filtrar los candidatos mas abajo a ese tipo
-                                            # exacto, en vez de dejar pasar todo el bucket.
-                                            _b08_distinct_detected = list(dict.fromkeys(
-                                                c.upper() for c in _b08_detected
-                                            ))
-                                            if len(_b08_distinct_detected) == 1:
-                                                _b08_single_specific_type = _b08_distinct_detected[0]
-                                            logger.info(
-                                                f"F-08B query category detected: "
-                                                f"{_b08_detected} -> {_b08_query_target_cats} "
-                                                f"(narrowing target_categories)"
+                                    (
+                                        _b08_target_cats,
+                                        _b08_single_specific_type,
+                                        _b08_was_explicit_request,
+                                    ) = _b08_resolve_target_cats(
+                                        conversation_query=conversation_query,
+                                        anchor_product_type=_b08_ptype,
+                                        extract_categories_fn=_b08_extract_cats,
+                                        get_concrete_categories_fn=_b08_get_concrete_cats,
+                                        get_outfit_slot_fn=_b08_get_outfit_slot,
+                                        generic_suggestion_candidate_slots_fn=_b08_generic_slots,
+                                    )
+                                    if _b08_was_explicit_request:
+                                        logger.info(
+                                            f"F-08B query category detected -> "
+                                            f"{_b08_target_cats} (narrowing target_categories)"
+                                            + (
+                                                f", tipo especifico: {_b08_single_specific_type}"
+                                                if _b08_single_specific_type else ""
                                             )
-                                except Exception as _b08_detect_err:
-                                    logger.debug(
-                                        f"F-08B category detection from query failed "
-                                        f"(using default broad categories): {_b08_detect_err}"
+                                        )
+                                except Exception as _b08_resolve_err:
+                                    logger.warning(
+                                        f"F-08B target category resolution failed, usando "
+                                        f"fallback generico: {_b08_resolve_err}"
                                     )
-
-                                # GAP 2 FIX (13/07/2026): lista de candidatos ampliada de 6 a
-                                # 8 categorias:
-                                #   + "bottom" (pantalones/faldas) -- NUNCA se habia agregado
-                                #     pese a estar probada y funcionando en el embedding-service
-                                #     desde la implementacion original de S1 (13/05/2026):
-                                #     CATEGORY_TEXT_PROMPTS la incluye, tiene 69 productos
-                                #     mapeados (2.3% del catalogo). Confirmado en la
-                                #     documentacion del proyecto -- era un olvido de
-                                #     implementacion, no una limitacion tecnica. Sin esto,
-                                #     ningun producto TOP recibia jamas una recomendacion de
-                                #     pantalon/falda desde F-08B.
-                                #   + "shoes" -- antes solo alcanzable via narrowing explicito
-                                #     por texto ("que zapatos combinan"). No conflictua con
-                                #     nada (slot independiente, "pies") y ya esta validado en
-                                #     produccion (fix ZAPATOS->shoes, sesion 11/07/2026). Los 9
-                                #     prompts de categoria ya estan precalculados en el warmup
-                                #     del embedding-service (_text_embed_cache), asi que
-                                #     agregarla no anade llamadas de encoding, solo una busqueda
-                                #     FAISS adicional sobre vectores ya en cache.
-                                #
-                                # Deliberadamente FUERA de la lista por defecto (decision de
-                                # producto, no limitacion tecnica):
-                                #   - "conjunto": es un set de dos piezas vendido como unidad,
-                                #     no un "complemento" -- mostrar conjuntos random en un
-                                #     "completa el outfit" generico no tiene el mismo sentido
-                                #     que sugerir zapatos/accesorios. Investigacion dedicada
-                                #     pendiente (Gap 3, sesion 13/07/2026).
-                                #   - "lingerie": mezclar ropa interior en sugerencias
-                                #     genericas puede sentirse invasivo si el usuario no lo
-                                #     pidio explicitamente. Ninguna de las dos aparece mapeada
-                                #     como target en _B08_SHOPIFY_TO_OUTFIT_CAT, asi que ya
-                                #     estaban excluidas por omision -- no requirio cambio
-                                #     adicional de codigo.
-                                _B08_FULL_CANDIDATE_CATS = [
-                                    "dress", "top", "bottom", "accessory", "bag",
-                                    "enterito", "outerwear", "shoes",
-                                ]
-                                _b08_target_cats = _b08_query_target_cats if _b08_query_target_cats else [
-                                    c for c in _B08_FULL_CANDIDATE_CATS
-                                    if c not in _b08_excluded_cats
-                                ]
+                                    from src.recommenders.product_taxonomy import (
+                                        generic_suggestion_candidate_slots as _b08_generic_slots,
+                                    )
+                                    _b08_target_cats = list(_b08_generic_slots())
+                                    _b08_single_specific_type = None
 
                                 # GAP 1 FIX (13/07/2026): _b08_shown_ids = productos ya
                                 # mostrados en la sesion (shown_products, calculado mas arriba
@@ -1860,6 +1658,7 @@ async def get_mcp_conversation_recommendations(
                                         get_concrete_categories as _b08b2_get_concrete_cats,
                                     )
                                     from src.recommenders.product_taxonomy import (
+                                        get_outfit_slot as _b08b2_get_outfit_slot,
                                         types_in_outfit_slot as _b08b2_types_in_slot,
                                     )
                                     _complement_cats = _b08b2_resolve(
@@ -1867,6 +1666,7 @@ async def get_mcp_conversation_recommendations(
                                         outfit_product_type=_outfit_product_type,
                                         extract_categories_fn=_b08b2_extract_cats,
                                         get_concrete_categories_fn=_b08b2_get_concrete_cats,
+                                        get_outfit_slot_fn=_b08b2_get_outfit_slot,
                                         types_in_outfit_slot_fn=_b08b2_types_in_slot,
                                     )
                                     logger.info(
@@ -2776,14 +2576,21 @@ async def get_mcp_conversation_recommendations(
                                 # en produccion para F-08C.
                                 #
                                 # Alcance de este fix: SOLO la expansion a categorias
-                                # hermanas. El mecanismo de relleno con smart_fallback
-                                # restringido (sprint F-08C del 17/06/2026) NO se porta aqui
-                                # -- si el pool expandido sigue siendo insuficiente, el
-                                # codigo no retorna temprano y cae al fallback estandar
-                                # (hybrid_recommender.get_recommendations), igual que hacia
-                                # F-08C antes del sprint del 17/06. Evaluar el relleno
-                                # restringido como fix adicional en una sesion futura si la
-                                # expansion de categorias por si sola no es suficiente.
+                                # hermanas.
+                                #
+                                # ACTUALIZADO (02/10/2026 -- nota obsoleta corregida): el texto
+                                # original de este parrafo decia que el relleno restringido
+                                # (sprint F-08C del 17/06/2026) "NO se porta aqui" y pedia
+                                # evaluarlo "en una sesion futura". Esa nota quedo obsoleta el
+                                # MISMO dia (03/07/2026): un segundo fix de esa sesion SI porto
+                                # el relleno restringido a F-08 Fase A -- ver el bloque
+                                # "HALLAZGO 1 / OPCION A FIX" mas abajo en este mismo bloque
+                                # (eventos sinteticos, peso extra al ancla, user_query=None,
+                                # strict_category=True, category_exhausted_info). La nota sin
+                                # actualizar llego a inducir una conclusion erronea en el DCT de
+                                # cierre del 01/10/2026 (seccion 4) -- corregida en su Addendum.
+                                # Ver DCT_Cierre_Sesion_01102026.md, Addendum A (02/10/2026),
+                                # para el mapa completo de divergencias reales F-08A vs F-08C.
                                 _f08_expanded_cats = [_f08_type_upper] if _f08_type_upper else []
                                 if _f08_type_upper:
                                     try:

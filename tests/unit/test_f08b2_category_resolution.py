@@ -3,12 +3,12 @@ Tests para f08b2_category_resolution.resolve_f08b2_complement_types
 ======================================================================
 
 Cubre, con los casos REALES reproducidos en produccion (20-21/09/2026), los
-dos bugs corregidos esta semana y confirma que el comportamiento original
-(mapa _OUTFIT_COMPLEMENT_MAP, casos amplios como "accesorios"/"vestidos")
-sigue exactamente igual, sin regresiones.
+dos bugs corregidos esa semana y confirma que el comportamiento amplio
+("accesorios"/"vestidos") sigue igual tras la decision de unificacion de
+taxonomia del 26/09/2026 (retiro de _B08B2_SHOPIFY_TO_OUTFIT_CAT y
+_OUTFIT_COMPLEMENT_MAP en favor de product_taxonomy.py).
 
-Sirve como red de seguridad antes de la refactorizacion de unificacion de
-taxonomia (Fase 2, roadmap) -- ver docstring de
+Sirve como red de seguridad para esa refactorizacion -- ver docstring de
 src/recommenders/f08b2_category_resolution.py para el contexto completo.
 
 Ejecutar:
@@ -16,10 +16,7 @@ Ejecutar:
 """
 import pytest
 
-from src.recommenders.f08b2_category_resolution import (
-    resolve_f08b2_complement_types,
-    _OUTFIT_COMPLEMENT_MAP,
-)
+from src.recommenders.f08b2_category_resolution import resolve_f08b2_complement_types
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -28,10 +25,9 @@ from src.recommenders.f08b2_category_resolution import (
 #
 # Replican, para las frases exactas usadas en estos tests, el comportamiento
 # real de extract_categories_from_query() / get_concrete_categories() /
-# types_in_outfit_slot() -- confirmado contra los logs de produccion del
-# 20-24/09/2026, no inventado. No son un reemplazo de esas funciones reales;
-# si su comportamiento cambia de forma incompatible, estos stubs deben
-# actualizarse para seguir reflejando la realidad.
+# product_taxonomy.get_outfit_slot() / types_in_outfit_slot() -- confirmado
+# contra los logs de produccion del 20-24/09/2026 y el catalogo real via
+# taxonomy_centroid_audit.py (26/09/2026), no inventado.
 
 _AVAILABLE_CATEGORIES = {
     "ZAPATOS", "VESTIDOS LARGOS", "VESTIDOS CORTOS", "VESTIDOS MIDIS",
@@ -48,6 +44,12 @@ _SLOT_TYPES = {
               "NOVIAS LARGOS", "NOVIAS CORTOS", "NOVIAS MIDIS"],
     "shoes": ["ZAPATOS"],
 }
+
+_TYPE_TO_SLOT = {t: slot for slot, types in _SLOT_TYPES.items() for t in types}
+
+# Todo accessory+bag junto (usado en varias aserciones de "sin categoria
+# explicita" -- el nuevo fallback, reemplazo de _OUTFIT_COMPLEMENT_MAP).
+_ALL_ACCESSORY_AND_BAG = set(_SLOT_TYPES["accessory"]) | set(_SLOT_TYPES["bag"])
 
 
 def stub_extract_categories(query: str, available):
@@ -83,17 +85,22 @@ def stub_get_concrete_categories():
     return set(_AVAILABLE_CATEGORIES)
 
 
+def stub_get_outfit_slot(t: str):
+    return _TYPE_TO_SLOT.get(t.upper())
+
+
 def stub_types_in_outfit_slot(slot: str):
     return list(_SLOT_TYPES.get(slot, []))
 
 
 def resolve(query: str, anchor_type: str):
-    """Helper para no repetir las 3 dependencias inyectadas en cada test."""
+    """Helper para no repetir las 4 dependencias inyectadas en cada test."""
     return resolve_f08b2_complement_types(
         conversation_query=query,
         outfit_product_type=anchor_type,
         extract_categories_fn=stub_extract_categories,
         get_concrete_categories_fn=stub_get_concrete_categories,
+        get_outfit_slot_fn=stub_get_outfit_slot,
         types_in_outfit_slot_fn=stub_types_in_outfit_slot,
     )
 
@@ -155,14 +162,15 @@ class TestEspecificidadNoSeExpande:
 
 
 # ════════════════════════════════════════════════════════════════════
-# Comportamiento original preservado: pedidos amplios SI expanden
+# Comportamiento amplio preservado: pedidos amplios SI expanden
 # ════════════════════════════════════════════════════════════════════
 
 class TestPedidoAmplioSiExpande:
     """
     Un pedido amplio (la deteccion YA devuelve multiples tipos, senal de
     que el usuario no fue especifico) debe seguir expandiendo por bucket,
-    exactamente como antes de los fixes de esta semana -- sin regresion.
+    igual que antes de la unificacion -- ahora via product_taxonomy.py en
+    vez de la copia local retirada, sin cambio de resultado.
     """
 
     def test_accesorios_amplio_expande_a_todo_el_bucket_accessory_y_bag(self):
@@ -190,45 +198,51 @@ class TestCasoHistoricoT8:
     """
     El caso que origino el "Fix 2" documentado en
     DCT_Fase1b_Composite_Embedding_F08B_Cierre_24072026.md, seccion 12.4:
-    ancla AROS (accesorio) pidiendo una prenda (direccion nunca contemplada
-    por _OUTFIT_COMPLEMENT_MAP, que solo tiene entradas para prendas).
+    ancla AROS (accesorio) pidiendo una prenda -- direccion que el retirado
+    _OUTFIT_COMPLEMENT_MAP nunca contemplo (solo tenia entradas de prenda).
     """
 
     def test_t8_ancla_aros_pidiendo_vestidos_ya_no_cae_al_mapa_de_accesorios(self):
         result = resolve("con que vestidos combina mejor?", "AROS")
-        # Antes del Fix 2 original: ['COLLARES', 'CLUTCH', 'CINTURONES']
-        assert "COLLARES" not in result or "VESTIDOS LARGOS" in result
         assert any("VESTIDOS" in t or "NOVIAS" in t for t in result)
+        assert "COLLARES" not in result
 
 
 # ════════════════════════════════════════════════════════════════════
-# Sin categoria explicita: comportamiento original del mapa, sin cambios
+# Sin categoria explicita: nuevo fallback (26/09/2026) -- reemplazo de
+# _OUTFIT_COMPLEMENT_MAP (retirado en la decision de unificacion)
 # ════════════════════════════════════════════════════════════════════
 
-class TestMapaOriginalSinCategoriaExplicita:
+class TestSinCategoriaExplicita:
     """
-    Cuando la consulta no tiene ninguna categoria explicita detectable,
-    el comportamiento debe ser IDENTICO al de antes de los fixes de esta
-    semana -- el mapa _OUTFIT_COMPLEMENT_MAP, sin tocar.
+    Cuando la consulta no tiene ninguna categoria explicita detectable, el
+    fallback -- desde la decision de unificacion de taxonomia (26/09/2026)
+    -- es TODO el bucket accessory+bag, menos el propio tipo del ancla.
+    Reemplaza al retirado _OUTFIT_COMPLEMENT_MAP, que tenia 19 de 29 tipos
+    de prenda ya cayendo a su fallback generico de solo 4 items de todas
+    formas -- esto amplia esa cobertura a los 9 tipos reales del bucket,
+    usando el mismo mecanismo ya validado para pedidos como "accesorios".
     """
 
-    def test_consulta_generica_usa_el_mapa_para_tipo_de_prenda_conocido(self):
+    def test_ancla_tipo_prenda_devuelve_todo_accessory_mas_bag(self):
         result = resolve("que combina con esto?", "VESTIDOS LARGOS")
-        assert result == _OUTFIT_COMPLEMENT_MAP["VESTIDOS LARGOS"]
+        assert set(result) == _ALL_ACCESSORY_AND_BAG
 
-    def test_ancla_tipo_accesorio_sin_entrada_cae_al_fallback_generico(self):
+    def test_ancla_tipo_accesorio_excluye_su_propio_tipo(self):
         """
-        Caso real documentado (16-17/07/2026): ancla AROS DANAE (accesorio,
-        sin entrada en el mapa) + consulta generica -> cae al fallback
-        generico ["AROS", "COLLARES", "CLUTCH", "CINTURONES"], filtrando el
-        propio tipo del ancla si coincide.
+        Antes (mapa retirado): AROS no tenia entrada -> fallback generico de
+        4 items ["AROS","COLLARES","CLUTCH","CINTURONES"] (incluyendo,
+        incorrectamente, al propio AROS antes del filtro final). Ahora:
+        todo el bucket, correctamente sin el propio tipo.
         """
         result = resolve("que combina con esto?", "AROS")
-        assert result == ["COLLARES", "CLUTCH", "CINTURONES"]  # AROS excluido (es el ancla)
+        assert "AROS" not in result
+        assert set(result) == _ALL_ACCESSORY_AND_BAG - {"AROS"}
 
-    def test_ancla_sin_entrada_ni_coincidencia_con_fallback_devuelve_los_4(self):
+    def test_ancla_tipo_bolso_excluye_su_propio_tipo(self):
         result = resolve("que combina con esto?", "CARTERAS")
-        assert result == ["AROS", "COLLARES", "CLUTCH", "CINTURONES"]
+        assert "CARTERAS" not in result
+        assert set(result) == _ALL_ACCESSORY_AND_BAG - {"CARTERAS"}
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -237,29 +251,32 @@ class TestMapaOriginalSinCategoriaExplicita:
 
 class TestCasosLimite:
 
-    def test_deteccion_vacia_no_rompe_cae_al_mapa(self):
-        """Si extract_categories_fn no encuentra nada, cae al mapa original."""
+    def test_deteccion_vacia_no_rompe_cae_al_fallback_amplio(self):
+        """Si extract_categories_fn no encuentra nada, cae al fallback amplio."""
         def empty_extract(query, available):
             return []
         result = resolve_f08b2_complement_types(
             "asdkjhaskjdh", "VESTIDOS LARGOS",
-            empty_extract, stub_get_concrete_categories, stub_types_in_outfit_slot,
+            empty_extract, stub_get_concrete_categories,
+            stub_get_outfit_slot, stub_types_in_outfit_slot,
         )
-        assert result == _OUTFIT_COMPLEMENT_MAP["VESTIDOS LARGOS"]
+        assert set(result) == _ALL_ACCESSORY_AND_BAG
 
-    def test_deteccion_solo_auto_referencia_queda_vacia_cae_al_mapa(self):
+    def test_deteccion_solo_auto_referencia_queda_vacia_cae_al_fallback_amplio(self):
         """
         Si lo unico detectado es el propio tipo del ancla (auto-referencia
-        pura, sin ningun pedido real), debe caer al mapa -- no a una lista
-        vacia silenciosa.
+        pura, sin ningun pedido real), debe caer al fallback amplio -- no a
+        una lista vacia silenciosa.
         """
         def only_self_extract(query, available):
             return ["AROS"]
         result = resolve_f08b2_complement_types(
             "esto aros", "AROS",
-            only_self_extract, stub_get_concrete_categories, stub_types_in_outfit_slot,
+            only_self_extract, stub_get_concrete_categories,
+            stub_get_outfit_slot, stub_types_in_outfit_slot,
         )
-        assert result == ["COLLARES", "CLUTCH", "CINTURONES"]
+        assert "AROS" not in result
+        assert set(result) == _ALL_ACCESSORY_AND_BAG - {"AROS"}
 
     def test_anchor_type_en_minuscula_se_normaliza(self):
         """El tipo del ancla puede llegar en minuscula -- debe normalizarse."""
@@ -277,3 +294,13 @@ class TestCasosLimite:
         for query, anchor in casos:
             result = resolve(query, anchor)
             assert anchor.upper() not in result
+
+    def test_ancla_sin_bucket_conocido_aun_asi_cae_al_fallback_amplio(self):
+        """
+        Un tipo de ancla que get_outfit_slot_fn no reconoce (ej. un tipo
+        nuevo sin taxonomia asignada todavia) no debe romper -- el fallback
+        amplio no depende de conocer el bucket del ancla, solo lo usa para
+        decidir si excluirlo de accessory/bag (no aplica si no es ninguno).
+        """
+        result = resolve("que combina con esto?", "TURBANTES")
+        assert set(result) == _ALL_ACCESSORY_AND_BAG

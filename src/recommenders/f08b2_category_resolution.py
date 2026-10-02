@@ -13,83 +13,50 @@ Por que existe este modulo:
     compartido -- imposible de testear de forma aislada sin invocar toda la
     maquina de conversacion (Redis, TF-IDF, embedding-service, etc.).
 
-    Se extrae aqui SIN CAMBIAR EL COMPORTAMIENTO -- mismo codigo, misma
-    logica, solo movido a una funcion pura con firma explicita -- para poder
-    escribir tests automatizados reales antes de la refactorizacion mayor de
-    unificacion de taxonomia (roadmap Fase 2, item 4: "tests automatizados...
-    antes de refactorizar nada grande").
+    Se extrajo el 25/09/2026 SIN CAMBIAR EL COMPORTAMIENTO, para poder
+    escribir tests automatizados reales antes de la refactorizacion mayor
+    de unificacion de taxonomia (roadmap Fase 2, item 4).
 
-    Las dependencias reales (extract_categories_from_query,
-    get_concrete_categories, types_in_outfit_slot) se inyectan como
-    parametros en vez de importarse directamente -- mantiene este modulo
-    sin dependencias pesadas (sklearn, etc.) y trivialmente testeable con
-    stubs simples, mientras el llamador real (mcp_conversation_handler.py)
-    pasa las funciones reales sin cambiar su comportamiento.
+ACTUALIZADO (26/09/2026) -- decision de unificacion de taxonomia CERRADA:
+    _B08B2_SHOPIFY_TO_OUTFIT_CAT y _OUTFIT_COMPLEMENT_MAP quedaron
+    RETIRADOS de este modulo (ver DCT_Fase1b_Composite_Embedding_F08B_
+    Cierre_24072026.md, Addendum 6, y taxonomy_centroid_audit.py corrido
+    contra el catalogo real, 26/09/2026):
+      - _B08B2_SHOPIFY_TO_OUTFIT_CAT: donde coincidia con product_taxonomy.py
+        coincidia sin excepcion (confirmado por el script de auditoria);
+        donde no, product_taxonomy.py ya era mas completo (8 gaps contra 14
+        -- entre ellos, las 6 variantes de NOVIAS, 241 productos, ausentes
+        SOLO de la copia que vivia aqui).
+      - _OUTFIT_COMPLEMENT_MAP: 19 de 29 tipos de prenda reales ya caian a
+        su fallback generico de 4 items -- en la practica era una version
+        incompleta de "todo el bucket accessory+bag", que es exactamente lo
+        que types_in_outfit_slot_fn ya resuelve, probado y en produccion
+        desde hace semanas para pedidos amplios ("accesorios").
 
-Cubre los dos bugs reales encontrados y corregidos esta semana (20-21/09/2026),
-mas el comportamiento original (mapa _OUTFIT_COMPLEMENT_MAP) que nunca cambio:
+    Esta funcion ahora recibe get_outfit_slot_fn ademas de
+    types_in_outfit_slot_fn (ambas equivalentes a funciones de
+    product_taxonomy.py) -- ya no mantiene ninguna copia propia de
+    taxonomia. Las dependencias siguen inyectadas como parametros (no
+    importadas directamente) para mantener este modulo trivialmente
+    testeable con stubs simples, sin acoplarlo a la forma exacta en que el
+    llamador real las obtiene.
+
+Cubre los dos bugs reales encontrados y corregidos la semana del
+20-21/09/2026:
     1. Auto-referencia: la consulta menciona el tipo exacto del propio ancla
        ("esto aros" con ancla AROS) -- se filtra antes de mapear, no se trata
        como un pedido nuevo.
     2. Sobre-expansion: una categoria concreta unica y especifica ("aretes")
        se mapeaba a su bucket completo (todo "accessory") en vez de respetar
-       la especificidad del pedido -- ahora se usa el tipo exacto sin expandir.
-    3. Sin categoria explicita utilizable: comportamiento original sin
-       cambios -- mapa _OUTFIT_COMPLEMENT_MAP keyed por el tipo del ancla,
-       con su limitacion ya documentada (solo cubre tipos de PRENDA, nunca
-       tuvo entradas para anclas de tipo ACCESORIO).
-
-NOTA sobre deuda tecnica heredada (no resuelta aqui, a proposito):
-    _B08B2_SHOPIFY_TO_OUTFIT_CAT es una duplicacion temporal y ya documentada
-    de _B08_SHOPIFY_TO_OUTFIT_CAT (el diccionario homologo del bloque F-08B
-    principal). _OUTFIT_COMPLEMENT_MAP es una CUARTA fuente de taxonomia
-    activa, distinta de product_taxonomy.py, _B08_SHOPIFY_TO_OUTFIT_CAT y
-    CATEGORY_KEYWORDS. Resolver esa duplicacion es, precisamente, el alcance
-    de la decision de unificacion de taxonomia (Fase 2) -- este modulo no la
-    resuelve, solo la hace segura de tocar cuando llegue el momento.
+       la especificidad del pedido -- se usa el tipo exacto sin expandir.
+    3. Sin categoria explicita utilizable: desde el 26/09/2026, devuelve
+       TODO el bucket accessory+bag (menos el propio tipo del ancla) -- el
+       mismo mecanismo ya validado para pedidos amplios como "accesorios",
+       en vez del retirado _OUTFIT_COMPLEMENT_MAP (que nunca cubrio anclas
+       de tipo accesorio y tenia 19 de 29 tipos de prenda sin entrada
+       propia de todas formas).
 """
 from typing import Callable, List, Optional, Set
-
-
-# Mismo diccionario usado hoy en mcp_conversation_handler.py (F-08B.2) --
-# duplicado temporal de _B08_SHOPIFY_TO_OUTFIT_CAT (bloque F-08B principal),
-# documentado como tal. NO se resuelve aqui -- ver docstring del modulo.
-_B08B2_SHOPIFY_TO_OUTFIT_CAT = {
-    "AROS": "accessory", "COLLARES": "accessory",
-    "BRAZALETES": "accessory", "BRAZALETE": "accessory",
-    "CINTURONES": "accessory", "TOCADOS": "accessory",
-    "ALAS DE NOVIA": "accessory",
-    "CARTERAS": "bag", "CLUTCH": "bag",
-    "VESTIDOS CORTOS": "dress", "VESTIDOS LARGOS": "dress",
-    "VESTIDOS MIDIS": "dress",
-    "ENTERITOS CORTOS": "enterito", "ENTERITOS LARGOS": "enterito",
-    "TOPS": "top", "BRALETTES": "top",
-    "PANTALONES": "bottom", "FALDAS": "bottom",
-    "CAPAS BORDADAS": "outerwear", "CAPAS GASA": "outerwear",
-    "KIMONOS": "outerwear",
-    "ZAPATOS": "shoes",
-    "CONJUNTOS FALDAS": "conjunto",
-    "CONJUNTOS PANTALONES": "conjunto",
-}
-
-# Mapa original de F-08B.2 (comportamiento sin cambios desde antes de esta
-# semana) -- usado solo cuando no hay categoria explicita utilizable en la
-# consulta. Limitacion ya documentada (17/07/2026): solo tiene entradas para
-# tipos de PRENDA, nunca para tipos de ACCESORIO como ancla.
-_OUTFIT_COMPLEMENT_MAP = {
-    "KIMONOS":          ["AROS", "COLLARES", "CLUTCH", "CINTURONES", "BRAZALETES"],
-    "TAPADOS":          ["AROS", "COLLARES", "CLUTCH", "CINTURONES", "BRAZALETES"],
-    "VESTIDOS LARGOS":  ["AROS", "COLLARES", "CLUTCH", "TOCADOS", "CINTURONES"],
-    "VESTIDOS CORTOS":  ["AROS", "CLUTCH", "CINTURONES", "BRAZALETES"],
-    "VESTIDOS MIDIS":   ["AROS", "COLLARES", "CLUTCH", "TOCADOS"],
-    "NOVIAS LARGOS":    ["TOCADOS", "CLUTCH", "AROS", "BRAZALETES"],
-    "NOVIAS CORTOS":    ["TOCADOS", "AROS", "CLUTCH", "BRAZALETES"],
-    "FALDAS":           ["TOPS", "AROS", "CINTURONES", "BRAZALETES"],
-    "TOPS":             ["FALDAS", "AROS", "COLLARES", "CLUTCH"],
-    "BLUSAS":           ["FALDAS", "AROS", "COLLARES", "CLUTCH"],
-    "ENTERITOS LARGOS": ["CINTURONES", "AROS", "CLUTCH", "COLLARES"],
-    "ENTERITOS CORTOS": ["CINTURONES", "AROS", "CLUTCH", "BRAZALETES"],
-}
 
 
 def resolve_f08b2_complement_types(
@@ -97,6 +64,7 @@ def resolve_f08b2_complement_types(
     outfit_product_type: str,
     extract_categories_fn: Callable[[str, Set[str]], List[str]],
     get_concrete_categories_fn: Callable[[], Set[str]],
+    get_outfit_slot_fn: Callable[[str], Optional[str]],
     types_in_outfit_slot_fn: Callable[[str], List[str]],
 ) -> List[str]:
     """
@@ -112,6 +80,7 @@ def resolve_f08b2_complement_types(
             improved_fallback_exclude_seen.extract_categories_from_query.
         get_concrete_categories_fn: equivalente a
             improved_fallback_exclude_seen.get_concrete_categories.
+        get_outfit_slot_fn: equivalente a product_taxonomy.get_outfit_slot.
         types_in_outfit_slot_fn: equivalente a
             product_taxonomy.types_in_outfit_slot.
 
@@ -120,7 +89,7 @@ def resolve_f08b2_complement_types(
         ancla). Puede estar vacia si no hay complemento disponible.
     """
     outfit_product_type = outfit_product_type.upper()
-    own_bucket = _B08B2_SHOPIFY_TO_OUTFIT_CAT.get(outfit_product_type, "")
+    own_bucket = get_outfit_slot_fn(outfit_product_type) or ""
 
     available_cats = get_concrete_categories_fn()
     detected = extract_categories_fn(conversation_query, available_cats)
@@ -138,11 +107,11 @@ def resolve_f08b2_complement_types(
             # usar el tipo concreto tal cual, SIN expandir por bucket.
             query_cats = distinct
         else:
-            mapped = {
-                _B08B2_SHOPIFY_TO_OUTFIT_CAT[c]
-                for c in distinct
-                if c in _B08B2_SHOPIFY_TO_OUTFIT_CAT
-            }
+            mapped = set()
+            for c in distinct:
+                slot = get_outfit_slot_fn(c)
+                if slot:
+                    mapped.add(slot)
             # No sugerir el propio bucket del ancla, salvo que sea
             # multi-tipo (accessory/bag).
             if own_bucket not in ("accessory", "bag"):
@@ -162,12 +131,13 @@ def resolve_f08b2_complement_types(
             if t != outfit_product_type
         ]
 
-    # Sin categoria explicita utilizable -- comportamiento original sin
-    # cambios: mapa de complemento keyed por el tipo del ancla.
+    # FIX (26/09/2026): sin categoria explicita utilizable -- antes caia al
+    # retirado _OUTFIT_COMPLEMENT_MAP. Ahora usa el mismo mecanismo ya
+    # validado para pedidos amplios: todo el bucket accessory+bag, menos el
+    # propio tipo del ancla.
     return [
-        c for c in _OUTFIT_COMPLEMENT_MAP.get(
-            outfit_product_type,
-            ["AROS", "COLLARES", "CLUTCH", "CINTURONES"],  # fallback generico
-        )
-        if c != outfit_product_type
+        t
+        for slot in ("accessory", "bag")
+        for t in types_in_outfit_slot_fn(slot)
+        if t != outfit_product_type
     ]

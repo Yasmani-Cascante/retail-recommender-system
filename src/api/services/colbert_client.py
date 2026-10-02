@@ -13,10 +13,11 @@ Características:
   - Autenticación IAM service-to-service (01/05/2026)
   - Timeout conservador para búsqueda visual (8s vs 5s para texto)
 
+────────────────────────────────────────────────────────────────────────
+AUTENTICACIÓN IAM SERVICE-TO-SERVICE (01/05/2026, corregida 29/09/2026)
 ──────────────────────────────────────────────────────────────────
-AUTENTICACIÓN IAM SERVICE-TO-SERVICE (01/05/2026)
-──────────────────────────────────────────────────────────────────
-El embedding-service corre con --no-allow-unauthenticated.
+El embedding-service corre con --no-allow-unauthenticated (confirmado en
+el deploy real, src/api/services/embedding-service/deploy.sh).
 Este cliente añade automáticamente el header:
   Authorization: Bearer <google-id-token>
 
@@ -24,15 +25,74 @@ Cómo funciona en Cloud Run:
   - En el monolito (Cloud Run): el metadata server de GCP devuelve el
     ID token de la SA del monolito (178362262166-compute@developer...).
     No se necesitan credenciales explícitas — ADC lo resuelve solo.
-  - En local: necesita GOOGLE_APPLICATION_CREDENTIALS o ADC configurado
-    (gcloud auth application-default login). Si ninguno está disponible,
-    el cliente falla silenciosamente con WARNING y sigue sin auth.
-  - Para desarrollo sin GCP: poner EMBEDDING_AUTH_DISABLED=true en .env.
+
+CÓMO CONFIGURAR DESARROLLO LOCAL (receta confirmada 29/09/2026 --
+sesión real de troubleshooting, ver DCT_Cierre_Fase2_Unificacion_
+Taxonomia_27092026.md, sección 9, para el detalle completo de cómo se
+llegó a esto):
+
+  CORRECCIÓN IMPORTANTE: la fila "EMBEDDING_AUTH_DISABLED=true" de las
+  DCT de mayo (DCT_Visual_Search_Tecnico_Final_02052026.md) y el
+  comentario original de este archivo decían que esa variable servía
+  para "desarrollo local sin ADC". CONFIRMADO POR PRUEBA DIRECTA
+  (29/09/2026) que esto es FALSO una vez que --no-allow-unauthenticated
+  está activo: esa variable solo evita que el CLIENTE añada el header
+  de autenticación -- Cloud Run rechaza la petición con 403 a nivel de
+  infraestructura ANTES de que le importe nada del lado del cliente,
+  con o sin esa variable. No usarla pensando que resuelve esto.
+
+  La receta que SÍ funciona, en orden, probada de punta a punta:
+
+  1. Autenticarse impersonando la SA del monolito (NO un login normal --
+     un login normal genera credenciales de usuario, que
+     fetch_id_token() no sabe usar, ver docstring de
+     _fetch_id_token_sync() más abajo):
+       gcloud auth application-default login \
+         --impersonate-service-account=178362262166-compute@developer.gserviceaccount.com
+
+     ADVERTENCIA: si después de este paso volvés a correr
+     'gcloud auth application-default login' SIN la bandera
+     --impersonate-service-account (por ejemplo, siguiendo la sugerencia
+     automática de otro comando de gcloud que falló), esto SOBREESCRIBE
+     el archivo de credenciales y pierde la impersonación configurada
+     aquí, sin ningún aviso. Si el error de "ID token" vuelve a aparecer
+     después de haber hecho este paso, lo primero a revisar es si este
+     comando se repitió sin la bandera.
+
+  2. Otorgar el permiso específico para generar ID tokens (NO alcanza
+     con la impersonación del paso 1 sola -- ese login no valida el
+     permiso en el momento, solo lo intenta la primera vez que el
+     código pide un token de verdad):
+       gcloud iam service-accounts add-iam-policy-binding \
+         178362262166-compute@developer.gserviceaccount.com \
+         --member="user:TU_CORREO@gmail.com" \
+         --role="roles/iam.serviceAccountOpenIdTokenCreator"
+
+     NOTA: NO usar 'roles/iam.serviceAccountTokenCreator' (el rol más
+     amplio) a menos que se necesiten otros tipos de token además de
+     OpenID -- el más acotado ('...OpenIdTokenCreator') es exactamente
+     lo que este cliente necesita, y sigue el principio de mínimo
+     privilegio.
+
+  3. Esperar 1-2 minutos. Los cambios de permisos IAM de Google NO son
+     instantáneos aunque la consola confirme "Updated IAM policy" de
+     inmediato -- correr el script justo después del paso 2 puede dar
+     el mismo error de permiso denegado por pura propagación, no por
+     configuración incorrecta.
+
+  NOTA -- creación de llave de cuenta de servicio (alternativa que NO
+  aplica en este proyecto): la vía "clásica" para esto es descargar una
+  llave JSON de la SA y apuntar GOOGLE_APPLICATION_CREDENTIALS a ella.
+  En este proyecto esa vía está BLOQUEADA por política de organización
+  (constraints/iam.disableServiceAccountKeyCreation) -- confirmado por
+  el error real "Key creation is not allowed on this service account"
+  al intentarlo (29/09/2026). No perder tiempo en esa vía aquí.
 
 El token tiene TTL de 1h. Lo cacheamos y lo renovamos 5 minutos antes
 de que expire para evitar requests con token caducado.
 
-Permisos IAM necesarios (ejecutar una sola vez):
+Permisos IAM necesarios para que el MONOLITO (no un desarrollador local)
+invoque el embedding-service en producción (ejecutar una sola vez):
   Método A — gcloud:
     gcloud run services add-iam-policy-binding retail-embedding-service \\
       --region us-central1 --project retail-recommendations-449216 \\
@@ -72,7 +132,7 @@ import os
 import asyncio
 import logging
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -142,27 +202,77 @@ class LFM2ColBERTClient:
           No se necesita ninguna credencial explícita.
 
         En desarrollo local:
-          Requiere GOOGLE_APPLICATION_CREDENTIALS o 'gcloud auth app-default login'.
-          Si no está configurado, devuelve None y el cliente funciona sin auth.
+          fetch_id_token() (intento primario, abajo) solo reconoce DOS
+          fuentes: un archivo de llave de cuenta de servicio
+          (GOOGLE_APPLICATION_CREDENTIALS) o el metadata server de GCP --
+          confirmado en la documentacion oficial de google-auth
+          (https://googleapis.dev/python/google-auth/latest/reference/google.oauth2.id_token.html).
+          NO reconoce credenciales de impersonacion
+          (`gcloud auth application-default login --impersonate-service-account=...`)
+          -- limitacion reconocida por los propios mantenedores de la
+          libreria (google-auth-library-python#1331: "doesn't support
+          impersonated or external credentials"), no un error de
+          configuracion nuestro.
+
+          FIX (29/09/2026): cuando la organizacion de GCP tiene bloqueada
+          la creacion de llaves de cuenta de servicio
+          (constraints/iam.disableServiceAccountKeyCreation -- este es el
+          caso de este proyecto, confirmado por el error
+          'Key creation is not allowed on this service account' al
+          intentarlo), la UNICA fuente que fetch_id_token() sabe leer deja
+          de estar disponible del todo. Se agrega un fallback: leer las
+          credenciales por defecto via google.auth.default() (que SI
+          reconoce impersonacion correctamente) y envolverlas a mano en
+          impersonated_credentials.IDTokenCredentials -- mismo patron que
+          el propio equipo de google-auth-library-python documento como
+          workaround en el issue de arriba, mientras la libreria no lo
+          soporte de forma nativa.
 
         Por qué fetch_id_token y no access_token:
           Cloud Run IAM verifica ID tokens (JWT firmados por Google con audience
           específico), NO access tokens de OAuth2. Los access tokens son para
           APIs de Google (Sheets, Storage, etc.), no para Cloud Run services.
         """
+        from google.auth.transport.requests import Request
+        request = Request()
+
         try:
-            from google.auth.transport.requests import Request
             from google.oauth2.id_token import fetch_id_token
-            return fetch_id_token(Request(), self._base_url)
+            return fetch_id_token(request, self._base_url)
         except Exception as e:
-            # Non-fatal: si no hay ADC, logueamos pero no crasheamos.
-            # En Cloud Run, esto NUNCA debería ocurrir (metadata server siempre disponible).
-            # En local sin ADC, el request al embedding-service fallará con 403,
-            # que el circuit-breaker capturará como un fallo normal.
+            primary_error = e
+
+        # FIX (29/09/2026): fallback para credenciales de impersonacion --
+        # ver docstring de arriba. Solo se intenta si el camino primario
+        # (metadata server / GOOGLE_APPLICATION_CREDENTIALS) fallo.
+        try:
+            import google.auth
+            from google.auth import impersonated_credentials
+
+            source_creds, _ = google.auth.default()
+            if not isinstance(source_creds, impersonated_credentials.Credentials):
+                raise ValueError(
+                    f'Credencial de tipo {type(source_creds).__name__} no '
+                    f'soportada por este fallback (solo impersonated_credentials.Credentials)'
+                )
+
+            id_creds = impersonated_credentials.IDTokenCredentials(
+                source_creds, target_audience=self._base_url, include_email=True
+            )
+            id_creds.refresh(request)
+            log.info('ColBERT IAM: ID token obtenido via impersonated_credentials (fallback)')
+            return id_creds.token
+        except Exception as fallback_error:
+            # Non-fatal: si ninguna de las dos vias funciona, logueamos pero
+            # no crasheamos. En Cloud Run, esto NUNCA deberia ocurrir
+            # (metadata server siempre disponible). En local sin ADC, el
+            # request al embedding-service fallara con 403, que el
+            # circuit-breaker capturara como un fallo normal.
             log.warning(
-                'ColBERT IAM: no se pudo obtener ID token (ADC no disponible): %s. '
-                'Requests al embedding-service irán sin Authorization header.',
-                e
+                'ColBERT IAM: no se pudo obtener ID token ni por fetch_id_token '
+                '(%s) ni por impersonated_credentials (%s). Requests al '
+                'embedding-service irán sin Authorization header.',
+                primary_error, fallback_error
             )
             return None
 
@@ -654,3 +764,105 @@ class LFM2ColBERTClient:
             self._handle_visual_failure(e)
             log.error('Outfit search request failed: %s', e, exc_info=True)
             return None
+
+    # ────────────────────────────────────────────────────────────────
+    # EXPORTACION DE EMBEDDINGS CRUDOS -- para auditoria offline (NO uso en el
+    # flujo de recomendaciones en vivo)
+    # ────────────────────────────────────────────────────────────────
+
+    async def export_embeddings(
+        self,
+        product_ids: Optional[List[str]] = None,
+        batch_size: int = 500,
+    ) -> Dict[str, List[float]]:
+        """
+        Exporta embeddings visuales crudos del indice -- pensado para
+        auditoria periodica de calidad de tipificacion (ver
+        taxonomy_centroid_audit.py, motivo 3: mistagging), NO para el flujo
+        de recomendaciones en vivo.
+
+        FIX (28/09/2026): metodo nuevo del lado del cliente para el
+        endpoint POST /v1/embed/export-embeddings -- contrato completo
+        documentado en taxonomy_centroid_audit.py (docstring del modulo).
+        El endpoint en si TODAVIA NO EXISTE del lado del embedding-service
+        a la fecha de este commit -- este metodo queda listo, sin uso real
+        hasta que se construya esa ruta (fuera del alcance de este repo).
+
+        Dos modos, seleccionados por si se pasa product_ids o no:
+
+        - TARGETED (product_ids no es None): pide exactamente esos IDs, en
+          lotes de batch_size (el llamador puede pasar una lista arbitraria
+          de tamano; el chunking interno evita un payload de request
+          enorme si la lista es larga).
+        - BULK (product_ids es None): pagina sobre TODO el indice usando
+          cursor, en paginas de batch_size -- evita una unica respuesta
+          gigante (ej. 3045 productos x 768 floats ~= 19MB crudos).
+
+        Args:
+            product_ids: IDs especificos a exportar, o None para exportar
+                todo el indice.
+            batch_size: tamano de lote tanto para el chunking en modo
+                targeted como para el limit por pagina en modo bulk.
+
+        Returns:
+            {product_id: [float, ...]} -- union de todos los lotes/paginas.
+            Dict vacio si el circuit-breaker visual esta abierto o hay error
+            de red (mismo criterio que los demas metodos visuales de este
+            cliente).
+        """
+        if self._visual_circuit_open:
+            log.debug('ColBERT VISUAL circuit open — export_embeddings skipped')
+            return {}
+
+        all_embeddings: Dict[str, List[float]] = {}
+
+        try:
+            if product_ids is not None:
+                # Modo TARGETED -- chunking en el cliente, sin paginacion del
+                # lado del servidor (cada lote es una peticion independiente,
+                # el servidor no necesita mantener estado de cursor entre
+                # ellas).
+                for i in range(0, len(product_ids), batch_size):
+                    chunk = product_ids[i:i + batch_size]
+                    auth = await self._auth_headers()
+                    resp = await self._http.post(
+                        '/v1/embed/export-embeddings',
+                        headers={**auth, 'Content-Type': 'application/json'},
+                        json={'product_ids': chunk},
+                        timeout=30.0,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    all_embeddings.update(data.get('embeddings', {}))
+            else:
+                # Modo BULK -- paginacion con cursor hasta agotar el indice.
+                cursor = None
+                while True:
+                    body: Dict[str, object] = {'limit': batch_size}
+                    if cursor:
+                        body['cursor'] = cursor
+                    auth = await self._auth_headers()
+                    resp = await self._http.post(
+                        '/v1/embed/export-embeddings',
+                        headers={**auth, 'Content-Type': 'application/json'},
+                        json=body,
+                        timeout=30.0,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    all_embeddings.update(data.get('embeddings', {}))
+                    cursor = data.get('next_cursor')
+                    if not cursor:
+                        break
+
+            self._visual_failures = 0
+            log.info(
+                'export_embeddings_completed: %d embeddings exportados',
+                len(all_embeddings)
+            )
+            return all_embeddings
+
+        except Exception as e:
+            self._handle_visual_failure(e)
+            log.error('Export embeddings request failed: %s', e, exc_info=True)
+            return {}

@@ -416,6 +416,22 @@ CATEGORY_KEYWORDS = {
         ]
     },
     
+    # AGREGADO (26/09/2026): variante singular del mismo tipo real que
+    # BRAZALETES -- confirmado por taxonomy_centroid_audit.py (motivo 2)
+    # como ausente de esta fuente pese a tener productos reales. Mismos
+    # keywords que BRAZALETES (mismo producto, nombre Shopify distinto --
+    # ver product_taxonomy.py, comentario 26/07/2026, mismo patron).
+    "BRAZALETE": {
+        "type": "concrete",
+        "keywords": [
+            "brazalete", "brazaletes",
+            "pulsera", "pulseras",
+            "bracelet", "bracelets",
+            "manilla", "manillas",
+            "tobillera", "tobilleras",
+        ]
+    },
+    
     "COLLARES": {
         "type": "concrete",
         "keywords": [
@@ -630,6 +646,40 @@ CATEGORY_KEYWORDS = {
             "conjunto pantalon",
             "set pants",
             "two piece pants",
+        ]
+    },
+    
+    # AGREGADO (26/09/2026): confirmados por taxonomy_centroid_audit.py
+    # (motivo 2) como ausentes de esta fuente pese a tener productos reales.
+    # Ya estaban listados como subcategorias del padre "CONJUNTOS" (linea
+    # ~120) -- pero sin entrada "concrete" propia, get_concrete_categories()
+    # los descartaba en el filtro final aunque la expansion por "conjunto"/
+    # "set" ya los alcanzara. Mismo patron NOVIAS_* + base ya usado arriba
+    # para NOVIAS LARGOS/CORTOS/MIDIS.
+    "NOVIAS CONJUNTOS FALDAS": {
+        "type": "concrete",
+        "keywords": [
+            "conjunto de novia falda",
+            "conjunto novia falda",
+            "bridal set skirt",
+        ]
+    },
+    
+    "NOVIAS CONJUNTOS PANTALONES": {
+        "type": "concrete",
+        "keywords": [
+            "conjunto de novia pantalon",
+            "conjunto novia pantalon",
+            "bridal set pants",
+        ]
+    },
+    
+    "NOVIAS ENTERITOS": {
+        "type": "concrete",
+        "keywords": [
+            "enterito de novia",
+            "enterizo de novia",
+            "bridal jumpsuit",
         ]
     },
     
