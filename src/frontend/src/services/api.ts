@@ -1,4 +1,4 @@
-import type { WidgetConfig, Message, ProductRecommendation, RecapTurn, OutfitResult } from '../types/widget';
+import type { WidgetConfig, Message, ProductRecommendation, RecapTurn, OutfitResult, RecommendationBlocks } from '../types/widget';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS — defensive normalization of backend responses
@@ -133,6 +133,30 @@ function normalizeRecommendation(raw: Record<string, unknown>): ProductRecommend
     image_url = String(src.images[0]);
   }
 
+  // FASE 3.2 / 4 (13/10/2026) — preservar procedencia y parecido REAL.
+  //
+  // El backend ya enviaba estos campos (el saneador del router hace spread de
+  // todo lo que no normaliza), pero ESTE normalizador los perdia: construye un
+  // objeto nuevo con los campos canonicos y descarta el resto.
+  //
+  // visualScore es la similitud COSENO real y SOLO existe para origin
+  // 'visual'. Se deja en null — no en 0 — cuando no hay: 0 significaria
+  // "medido y pesimo", y null significa "no hay medida". ProductCard usa esa
+  // diferencia para decidir si muestra porcentaje.
+  const rawVisualScore = src.visual_score;
+  const visualScore =
+    typeof rawVisualScore === 'number' && isFinite(rawVisualScore)
+      ? Math.min(1, Math.max(0, rawVisualScore))
+      : null;
+  const rawVisualRank = src.visual_rank;
+  const visualRank =
+    typeof rawVisualRank === 'number' && isFinite(rawVisualRank) ? rawVisualRank : null;
+  const rawOrigin = src.origin;
+  const origin =
+    rawOrigin === 'visual' || rawOrigin === 'catalog' || rawOrigin === 'behavioral'
+      ? rawOrigin
+      : undefined;
+
   return {
     id:          String(src.id ?? 'unknown'),
     title:       String(src.title ?? src.localized_title ?? 'Producto'),
@@ -145,6 +169,9 @@ function normalizeRecommendation(raw: Record<string, unknown>): ProductRecommend
     vendor:      String(src.vendor ?? ''),
     score,
     image_url,
+    origin,
+    visualScore,
+    visualRank,
     url:         typeof src.url === 'string' && src.url ? src.url : undefined,
   };
 }
@@ -157,6 +184,13 @@ interface ConversationRequest {
   session_id?: string;
   market_id?: string;
   language: string;
+  /**
+   * REINICIO POR CATEGORIA (16/10/2026). product_type a reiniciar, en
+   * mayusculas (p. ej. "CALZONES"). El backend olvida lo ya mostrado de esa
+   * categoria ANTES de calcular, asi que esta misma respuesta trae los
+   * productos renovados. Ausente en el 99% de las peticiones.
+   */
+  reset_category?: string;
   widget_context?: {
     page_url: string;
     page_type: string;
@@ -170,6 +204,12 @@ interface ConversationRequest {
 interface ConversationResponse {
   answer: unknown;           // typed as unknown — we always pass through extractAnswer()
   recommendations: unknown[];
+  /**
+   * FASE 3.1 (13/10/2026): como agrupar `recommendations` en los dos bloques.
+   * null cuando el backend no construyo contrato (rutas de outfit, estandar, o
+   * turnos sin recomendaciones) — el widget pinta entonces la rejilla unica.
+   */
+  recommendation_blocks?: RecommendationBlocks | null;
   kb_document?: string;
   session_metadata: {
     session_id: string;
@@ -194,7 +234,17 @@ export class ConversationAPI {
     this.userId = this.generateUserId();
   }
 
-  async sendMessage(message: string, productHandle?: string): Promise<Message> {
+  /**
+   * sendMessage — envia una consulta al backend.
+   *
+   * @param resetCategory  REINICIO POR CATEGORIA (16/10/2026). Cuando el
+   *   usuario pulsa "ver <categoria> otra vez", se envia el product_type y el
+   *   backend olvida lo ya mostrado DE ESA CATEGORIA antes de calcular, de
+   *   modo que esta misma respuesta ya trae los productos renovados.
+   *   El alcance es por categoria a proposito: reiniciar pantalones no debe
+   *   devolver los vestidos que el usuario ya descarto.
+   */
+  async sendMessage(message: string, productHandle?: string, resetCategory?: string): Promise<Message> {
     try {
       const request: ConversationRequest = {
         query: message,
@@ -202,6 +252,7 @@ export class ConversationAPI {
         session_id: this.sessionId,
         market_id: this.config.marketId || 'US',
         language: navigator.language.split('-')[0],
+        ...(resetCategory ? { reset_category: resetCategory } : {}),
         widget_context: {
           page_url: window.location.href,
           page_type: this.detectPageType(),
@@ -280,6 +331,8 @@ export class ConversationAPI {
         content:         answerText,
         timestamp:       Date.now(),
         recommendations,
+        // FASE 3.2: null/undefined => el widget pinta la rejilla unica.
+        recommendationBlocks: data.recommendation_blocks ?? null,
         kb_document:     data.kb_document,
         metadata: {
           sessionId:      this.sessionId,

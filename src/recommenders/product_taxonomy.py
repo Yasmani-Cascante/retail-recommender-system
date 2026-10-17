@@ -243,3 +243,324 @@ def generic_suggestion_candidate_slots() -> List[str]:
     proposito en su momento).
     """
     return [s for s in all_outfit_slots() if s not in GENERIC_SUGGESTION_EXCLUDED_SLOTS]
+
+
+# =============================================================================
+# FAMILIAS DE SIMILITUD (07/10/2026) -- "que cuenta como MAS DE ESTO"
+# =============================================================================
+# Tercera taxonomia del sistema, con un proposito distinto a las otras dos.
+# Conviene no confundirlas:
+#
+#   CATEGORY_KEYWORDS (improved_fallback_exclude_seen.py)
+#       -> que ESCRIBIO el usuario. Deteccion por texto.
+#   outfit_slot (arriba, en PRODUCT_TAXONOMY)
+#       -> que COMPLETA un conjunto. Responde a "que hueco ocupa".
+#   SIMILARITY_FAMILIES (aqui)
+#       -> que es LO MISMO que esto. Responde a "mas de esto".
+#
+# POR QUE HIZO FALTA (evidencia de produccion, 07/10/2026):
+# Pidiendo "similares" sobre un clutch, el CLUTCH LEONOR aparecio en 4a
+# posicion, por debajo de dos pares de aros. Causa: el contrato definia "lo
+# pedido" como el tipo EXACTO del ancla (CARTERAS), y en el catalogo CLUTCH es
+# otro product_type -- aunque para quien compra sea el mismo bolso.
+#
+# Los dos candidatos existentes no servian:
+#   - tipo exacto: demasiado estrecho (separa carteras de clutches).
+#   - grupo padre de CATEGORY_KEYWORDS: demasiado amplio (ACCESSORIES mete
+#     aros, cinturones y tocados en la misma bolsa que los bolsos).
+#   - outfit_slot: acierta en `bag` y `top`, pero `dress` mezcla novia con
+#     invitada y `accessory` tiene el mismo problema que el grupo padre.
+# De ahi un campo propio en vez de reutilizar ninguno.
+#
+# DOS NIVELES, NO UNO (importante para entender el efecto):
+#   Nivel 1 -- que entra en el POOL: lo sigue decidiendo el grupo padre de
+#       CATEGORY_KEYWORDS. NO cambia con esto.
+#   Nivel 2 -- que cuenta como PRINCIPAL dentro de ese pool: esta tabla.
+#   Consecuencia: estrechar una familia NO hace desaparecer a las hermanas --
+#   las baja al bloque de alternativas, etiquetadas como tales.
+#
+# CRITERIO: ante la duda, ESTRECHO. Una familia demasiado amplia reproduce el
+# defecto que esto corrige (pedir bolsos y recibir aros). Una estrecha solo
+# adelanta el agotamiento del bloque principal -- y desde el fix G1 el
+# agotamiento se detecta consultando el catalogo y se comunica al usuario, en
+# vez de disimularse.
+#
+# DEFAULT: un tipo que no aparezca aqui es su propia familia. Anadir un tipo
+# nuevo al catalogo nunca lo agrupa con otros por omision.
+#
+# Decisiones de producto de Yasmani (07/10/2026):
+#   - AROS / COLLARES / BRAZALETES: NO son una familia. Viendo unos aros, el
+#     usuario no quiere collares.
+#   - TOCADOS + ALAS DE NOVIA: SI, accesorios nupcionales de cabeza.
+#   - TOPS y BRALETTES: cosas distintas.
+#   - PANTALONES y LEGGINGS: no son lo mismo.
+#   - Vestidos por largo: SEPARADOS. El largo es una decision, no un matiz --
+#     quien mira un vestido largo para una boda de noche no esta a un clic de
+#     uno corto. Los otros largos siguen disponibles como alternativas.
+SIMILARITY_FAMILIES: Dict[str, List[str]] = {
+    # El caso que motivo todo esto: dos product_type, un solo bolso.
+    "BOLSOS": ["CARTERAS", "CLUTCH"],
+
+    # PROBLEMA DE DATOS (detectado 07/10/2026): BRAZALETES y BRAZALETE son
+    # singular y plural del MISMO producto, registrados como dos tipos
+    # distintos. Agruparlos aqui es una tirita; lo correcto seria unificarlos
+    # en el catalogo Shopify. Anotado como gap aparte.
+    "BRAZALETES": ["BRAZALETES", "BRAZALETE"],
+
+    # Accesorios nupcionales de cabeza. ALAS DE NOVIA estaba en el grupo
+    # padre ACCESSORIES junto a aros y cinturones, pese a ser una pieza
+    # nupcial muy especifica.
+    "TOCADOS_NUPCIALES": ["TOCADOS", "ALAS DE NOVIA"],
+
+    # Ya eran grupo padre en CATEGORY_KEYWORDS; se conserva el criterio.
+    "CAPAS": ["CAPAS BORDADAS", "CAPAS GASA"],
+
+    # ENTERITOS y CONJUNTOS estuvieron aqui agrupados hasta el 10/10/2026.
+    # Se separaron al detectar una incoherencia con la regla de los vestidos:
+    #   - Enteritos: se agrupaban cortos y largos, mientras los vestidos iban
+    #     separados por largo. Si "el largo es una decision, no un matiz"
+    #     (Yasmani, 07/10), vale igual para un enterito. Separarlos es ademas
+    #     lo que permite que la alternativa respete el largo: enterito largo ->
+    #     vestido largo, enterito corto -> vestido corto.
+    #   - Conjuntos: faldas y pantalones son siluetas distintas, con 41 y 22
+    #     productos respectivamente -- volumen de sobra para que cada uno se
+    #     sostenga solo. Juntarlos obligaba a una alternativa generica
+    #     ("bottoms") que acabaria ofreciendo pantalones a quien mira un
+    #     conjunto con falda.
+    # Al quedarse con un solo miembro, ya no se declaran: el default de
+    # get_similarity_family() (cada tipo, su propia familia) hace el trabajo.
+
+    # Novia SIEMPRE separado de invitada. outfit_slot los mete en el mismo
+    # bucket (`conjunto`), que es correcto para completar un outfit pero no
+    # para "mas de esto".
+    # Estos dos SI siguen juntos: 10 productos en total, sin volumen para
+    # sostener dos familias.
+    "CONJUNTOS_NOVIA": ["NOVIAS CONJUNTOS FALDAS", "NOVIAS CONJUNTOS PANTALONES"],
+}
+
+
+def get_similarity_family(shopify_type: str) -> List[str]:
+    """
+    Tipos que cuentan como "lo mismo" al pedir similares a este.
+
+    Devuelve SIEMPRE una lista que incluye al propio tipo. Si no pertenece a
+    ninguna familia declarada, devuelve [tipo] -- su propia familia.
+
+    El tipo se normaliza a mayusculas; la lista se devuelve en mayusculas,
+    porque el consumidor (el contrato de recomendaciones) compara asi.
+
+    Con tipo vacio o None devuelve [] -- sin ancla no hay criterio de
+    pertenencia, y el contrato lo interpreta como "todo cuenta" (generic).
+    """
+    if not shopify_type:
+        return []
+    key = shopify_type.upper()
+    for members in SIMILARITY_FAMILIES.values():
+        upper = [m.upper() for m in members]
+        if key in upper:
+            return upper
+    return [key]
+
+
+def similarity_family_name(shopify_type: str) -> Optional[str]:
+    """Nombre de la familia a la que pertenece el tipo, o None si va solo."""
+    if not shopify_type:
+        return None
+    key = shopify_type.upper()
+    for name, members in SIMILARITY_FAMILIES.items():
+        if key in [m.upper() for m in members]:
+            return name
+    return None
+
+
+# =============================================================================
+# FAMILIAS ALTERNATIVAS (10/10/2026) -- "si no queda de esto, que ofrezco"
+# =============================================================================
+# CUARTA y ultima pieza del reparto de responsabilidades:
+#
+#   CATEGORY_KEYWORDS    -> que ESCRIBIO el usuario
+#   outfit_slot          -> que COMPLETA un conjunto
+#   SIMILARITY_FAMILIES  -> que es LO MISMO que esto      (bloque principal)
+#   ALTERNATIVE_FAMILIES -> que SUSTITUYE a esto          (bloque alternativas)
+#
+# POR QUE HIZO FALTA
+# ------------------
+# Hasta hoy las alternativas salian del GRUPO PADRE de CATEGORY_KEYWORDS, con
+# dos consecuencias malas, ambas verificadas el 10/10/2026:
+#
+#   1. En 17 de los 36 tipos el grupo padre COINCIDE con la familia, asi que
+#      el bloque de alternativas era estructuralmente imposible. Entre ellos
+#      PANTALONES, KIMONOS, FALDAS, TOPS y ZAPATOS. Cuando esos tipos se
+#      agotaban no habia nada que ofrecer y el turno caia al fallback
+#      generico: a una consulta de pantalones se respondio con ropa interior
+#      reductora, ademas sin stock.
+#   2. El grupo padre CRUZA novia e invitada. Verificado: un conjunto de
+#      invitada ofrecia los conjuntos de NOVIA como alternativa, violando el
+#      invariante que SIMILARITY_FAMILIES si respeta.
+#
+# POR QUE NO SE USA outfit_slot
+# -----------------------------
+# Se evaluo y se descarto. Los hermanos de slot son SUSTITUTOS del mismo hueco
+# (pantalon/falda/legging), no complementos -- lo que completa un outfit esta
+# en OTROS slots, y de eso se encarga F-08B. Como regla general falla en dos
+# sitios criticos:
+#   - slot `intimates` agrupa REDUCTORES, CALZONES, LENCERIA y PIJAMAS: seria
+#     codificar como diseno justo el defecto que se acaba de contener.
+#   - slot `enterito` incluye NOVIAS ENTERITOS: cruzaria novia e invitada.
+#
+# CRITERIO
+# --------
+# Decisiones de estilismo de Yasmani (10/10/2026). Default: SIN alternativas.
+# Un tipo que no aparezca aqui no ofrece nada -- es preferible un bloque vacio
+# a una sugerencia que el usuario no entienda.
+#
+# Los valores se declaran al nivel en que piensa un estilista ("brazaletes") y
+# get_alternative_types() expande cada uno a su familia completa, de modo que
+# las rarezas del catalogo (BRAZALETE singular) no haya que repetirlas aqui.
+ALTERNATIVE_FAMILIES: Dict[str, List[str]] = {
+    # -- Joyeria: acotada a joyeria (Yasmani, 10/10) ------------------------
+    # Antes, via grupo padre ACCESSORIES, unos aros ofrecian ademas bolsos,
+    # cinturones y tocados. Se estrecho a proposito: quien mira unos aros no
+    # viene buscando un bolso.
+    "AROS": ["COLLARES", "BRAZALETES"],
+    "COLLARES": ["AROS", "BRAZALETES"],
+    "BRAZALETES": ["AROS", "COLLARES"],
+    "BRAZALETE": ["AROS", "COLLARES"],
+
+    # -- Complementos: conservan el alcance que ya tenian --------------------
+    # ASIMETRIA DELIBERADA, pendiente de revisar viendo la pantalla: un clutch
+    # ofrece aros, pero unos aros ya NO ofrecen clutch. Puede ser legitimo --
+    # al componer un look de invitada se salta de bolso a pendiente mas que al
+    # reves -- pero conviene confirmarlo con la UI delante.
+    "CARTERAS": ["AROS", "COLLARES", "BRAZALETES", "CINTURONES", "TOCADOS"],
+    "CLUTCH": ["AROS", "COLLARES", "BRAZALETES", "CINTURONES", "TOCADOS"],
+    "CINTURONES": ["CARTERAS", "AROS", "COLLARES", "BRAZALETES", "TOCADOS"],
+    "TOCADOS": ["AROS", "COLLARES", "BRAZALETES", "CARTERAS", "CINTURONES"],
+    "ALAS DE NOVIA": ["AROS", "COLLARES", "BRAZALETES", "CARTERAS", "CINTURONES"],
+
+    # -- Vestidos y prendas de una pieza ------------------------------------
+    # Entre largos de vestido SI hay alternativa: el largo es una decision
+    # para el bloque PRINCIPAL, pero un largo distinto es una sugerencia
+    # razonable cuando va etiquetada.
+    # El cruce a enteritos respeta el largo. VESTIDOS MIDIS no lo lleva
+    # porque no existe un enterito midi en el catalogo.
+    "VESTIDOS LARGOS": ["VESTIDOS MIDIS", "VESTIDOS CORTOS", "ENTERITOS LARGOS"],
+    "VESTIDOS MIDIS": ["VESTIDOS LARGOS", "VESTIDOS CORTOS"],
+    "VESTIDOS CORTOS": ["VESTIDOS LARGOS", "VESTIDOS MIDIS", "ENTERITOS CORTOS"],
+    "ENTERITOS LARGOS": ["VESTIDOS LARGOS"],
+    "ENTERITOS CORTOS": ["VESTIDOS CORTOS"],
+
+    # -- Conjuntos de dos piezas --------------------------------------------
+    # "Quien mira un conjunto de dos piezas puede estar considerando
+    # componerlo por separado" (Yasmani, 10/10). Cada conjunto apunta a SU
+    # pieza inferior, no a un "bottom" generico: por eso se separaron las dos
+    # familias (41 y 22 productos, volumen de sobra para sostenerse solas).
+    "CONJUNTOS FALDAS": ["FALDAS", "TOPS"],
+    "CONJUNTOS PANTALONES": ["PANTALONES", "TOPS"],
+
+    # -- Inferiores ----------------------------------------------------------
+    # Nota de inventario (10/10/2026): FALDAS tiene 57 productos y PANTALONES
+    # solo 6. La alternativa de un pantalon sera escasa, pero eso es el
+    # inventario, no la regla.
+    "PANTALONES": ["FALDAS", "LEGGINGS"],
+    "FALDAS": ["PANTALONES", "LEGGINGS"],
+    "LEGGINGS": ["PANTALONES", "FALDAS"],
+
+    # -- Superiores ----------------------------------------------------------
+    # Son tipos distintos para el bloque principal (decision del 07/10), pero
+    # si valen como alternativa etiquetada el uno del otro (10/10).
+    "TOPS": ["BRALETTES"],
+    "BRALETTES": ["TOPS"],
+
+    # -- Abrigo ligero -------------------------------------------------------
+    # CAPAS BORDADAS y CAPAS GASA son la misma familia, asi que entre ellas no
+    # son alternativa sino principal. Se declara una vez por tipo.
+    "CAPAS BORDADAS": ["KIMONOS", "CHAQUETAS"],
+    "CAPAS GASA": ["KIMONOS", "CHAQUETAS"],
+    "KIMONOS": ["CAPAS BORDADAS", "CHAQUETAS"],
+    "CHAQUETAS": ["CAPAS BORDADAS", "KIMONOS"],
+
+    # -- Novia: nunca sale de novia ------------------------------------------
+    "NOVIAS LARGOS": ["NOVIAS MIDIS", "NOVIAS CORTOS"],
+    "NOVIAS MIDIS": ["NOVIAS LARGOS", "NOVIAS CORTOS"],
+    "NOVIAS CORTOS": ["NOVIAS LARGOS", "NOVIAS MIDIS"],
+    "NOVIAS ENTERITOS": ["NOVIAS LARGOS", "NOVIAS CORTOS"],
+    "NOVIAS CONJUNTOS FALDAS": ["NOVIAS LARGOS", "NOVIAS CORTOS"],
+    "NOVIAS CONJUNTOS PANTALONES": ["NOVIAS LARGOS", "NOVIAS CORTOS"],
+
+    # -- SIN alternativas, a proposito ---------------------------------------
+    # ZAPATOS: no hay nada comparable en el catalogo.
+    # CALZONES, LENCERIA, PIJAMAS, REDUCTORES: ropa interior. Son compras con
+    #   intenciones muy distintas entre si (faja, pijama, lenceria), y es la
+    #   familia por la que se colo el defecto del 10/10. Dejarlas sin
+    #   alternativas es mas seguro que acertar a medias.
+    # AROMAS, PACK y cualquier tipo nuevo: default, sin alternativas.
+}
+
+
+# -----------------------------------------------------------------------------
+# Tipos NUPCIALES -- frontera que ninguna alternativa puede cruzar
+# -----------------------------------------------------------------------------
+# La mayoria de tipos de novia se reconocen por el prefijo "NOVIAS", pero NO
+# todos: ALAS DE NOVIA es estrictamente nupcial y no lo lleva.
+#
+# Detectado el 10/10/2026 al revisar el mapa recien escrito: un bolso de
+# INVITADA ofrecia ALAS DE NOVIA como alternativa. No estaba declarado asi --
+# se colo por la expansion a familia, porque ALAS DE NOVIA comparte la familia
+# TOCADOS_NUPCIALES con TOCADOS, y TOCADOS si es una alternativa legitima de
+# un bolso.
+#
+# Por eso la frontera se aplica POR CONSTRUCCION en get_alternative_types() y
+# no confiando en que el mapa este bien escrito: cualquier entrada futura, o
+# cualquier agrupacion de familia que alguien anada, queda cubierta sin tener
+# que acordarse de esta regla.
+_BRIDAL_TYPES = frozenset({
+    t.upper() for t in PRODUCT_TAXONOMY if t.upper().startswith("NOVIAS")
+} | {"ALAS DE NOVIA"})
+
+
+def is_bridal_type(shopify_type: str) -> bool:
+    """True si el tipo es estrictamente nupcial (incluye ALAS DE NOVIA)."""
+    return bool(shopify_type) and shopify_type.upper() in _BRIDAL_TYPES
+
+
+def get_alternative_types(shopify_type: str) -> List[str]:
+    """
+    Tipos aceptables como ALTERNATIVA cuando no queda de lo pedido.
+
+    Cada entrada declarada se expande a su familia de similitud completa, de
+    modo que declarar "BRAZALETES" cubre tambien "BRAZALETE" sin repetirlo.
+
+    Tres filtros, en este orden:
+      1. Nunca incluye tipos de la propia familia del ancla: esos son
+         `principal`, no alternativa.
+      2. Nunca cruza la frontera nupcial, en ningun sentido: un ancla de
+         invitada no recibe tipos de novia, y una de novia no recibe de
+         invitada. Aplicado por construccion -- ver _BRIDAL_TYPES.
+      3. Sin duplicados, preservando el orden declarado (es el de preferencia
+         del estilista).
+
+    Devuelve [] para un tipo sin alternativas declaradas, que es el default.
+    """
+    if not shopify_type:
+        return []
+    key = shopify_type.upper()
+    declarado = None
+    for t, alts in ALTERNATIVE_FAMILIES.items():
+        if t.upper() == key:
+            declarado = alts
+            break
+    if declarado is None:
+        return []
+
+    propia = {m.upper() for m in get_similarity_family(key)}
+    ancla_nupcial = is_bridal_type(key)
+    salida: List[str] = []
+    for alt in declarado:
+        for miembro in get_similarity_family(alt):
+            if miembro in propia or miembro in salida:
+                continue
+            if is_bridal_type(miembro) != ancla_nupcial:
+                continue
+            salida.append(miembro)
+    return salida

@@ -225,3 +225,80 @@
   background: #333;
   color: #ffffff;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   VARIANTE COMPACTA — bloque de ALTERNATIVAS (15/10/2026)
+
+   Con los dos bloques ya separados por titulo, las tarjetas seguian siendo
+   identicas: el peso visual decia "todo esto es lo mismo" mientras el titulo
+   decia lo contrario. Cuando forma y texto se contradicen, gana la forma.
+
+   Esta tarjeta es VERTICAL y FLEXIBLE (flex: 1 0 180px / max-width: 225px),
+   con una imagen de 260px de alto. En una tarjeta asi la masa visual la manda
+   la ALTURA DE IMAGEN, no el ancho: por eso es la palanca principal.
+
+   Tres senales, de mayor a menor peso:
+     1. ALTURA DE IMAGEN — 260px -> 185px (~71%). Lo que mas se nota de un
+        vistazo, y lo que hace que el bloque ocupe menos sin desordenar nada.
+     2. ANCHO — base 180->140px y tope 225->170px (~75%). Al ser flex, la
+        tarjeta sigue adaptandose al contenedor en lugar de romper la rejilla.
+     3. TIPOGRAFIA un punto menor, y sin descripcion.
+
+   NO se tocan precio ni titulo: son los datos por los que el usuario decide.
+   Degradar la jerarquia no es esconder informacion.
+
+   Funciona en los DOS modos sin reglas aparte: en contraido el carrusel es
+   flex-nowrap con scroll horizontal, y una tarjeta mas estrecha deja ver antes
+   que hay mas a la derecha; en expandido es flex-wrap y caben mas por fila.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.cardCompact {
+  flex: 1 0 140px;
+  max-width: 170px;
+}
+
+.cardCompact .imageBox {
+  height: 185px;
+  /* CALIBRACION (16/10/2026): estaba en saturate(0.92) y era INVISIBLE.
+     Un 8% de desaturacion no se percibe en miniaturas de moda, donde la
+     mayoria de prendas ya son negras o neutras. Subido a 0.80 y con un leve
+     velo de opacidad, que es lo que de verdad separa un plano del otro.
+     Sigue lejos del aspecto "agotado": eso empieza por debajo de 0.5. */
+  filter: saturate(0.8);
+  opacity: 0.88;
+  transition: filter 0.18s ease, opacity 0.18s ease;
+}
+
+/* Si el usuario se interesa por una alternativa, deja de ser secundaria. */
+.cardCompact:hover .imageBox {
+  filter: none;
+  opacity: 1;
+}
+
+.cardCompact .title {
+  /* CALIBRACION (16/10/2026): 11.5px era un punto por debajo de 12.5px y no
+     se distinguia. Un punto de tamano no se percibe; lo que si se percibe es
+     el PESO. Bajar de 600 a 500 hace mas por la jerarquia que el tamano. */
+  font-size: 11px;
+  font-weight: 500;
+  color: #4a4a4a;
+}
+
+.cardCompact .description {
+  display: none;
+}
+
+.cardCompact .price {
+  font-size: 12px;
+}
+
+.cardCompact .score {
+  font-size: 9.5px;
+  padding: 1px 5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cardCompact .imageBox {
+    transition: none;
+  }
+}

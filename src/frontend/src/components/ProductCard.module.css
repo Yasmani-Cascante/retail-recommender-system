@@ -234,3 +234,9 @@
   background: #333;
   color: #ffffff;
 }
+
+/* NOTA (15/10/2026): este archivo NO se usa. ProductCard.tsx importa
+   ProductCard_V.module.css; la linea de import de este quedo comentada.
+   La variante compacta del bloque de alternativas vive alli, no aqui.
+   Se dejo constancia tras perder un ciclo de despliegue editando este
+   fichero por error. Si algun dia se reactiva, habra que portarla. */

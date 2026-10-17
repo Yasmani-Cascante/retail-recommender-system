@@ -53,3 +53,5 @@ DATABASE_URL: "postgresql://postgres.imhjtqxtumfkqdricbrf:supabaseadmin@aws-1-us
 GPT4O_MINI_FALLBACK_ENABLED: "true"
 FORCE_GPT4O_MINI_FALLBACK: "false"
 GCS_BUCKET_NAME: "retail-recommendations-449216-tfidf-model"
+RECS_VISUAL_POOL_BASE: "100"
+RECS_MAX_ALTERNATIVES: "8"

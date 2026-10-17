@@ -238,7 +238,23 @@ def sanitize_rec_for_frontend(rec: Any) -> Dict[str, Any]:
 
     # ── description ───────────────────────────────────────────────────────────
     # El catálogo puede guardar body_html con etiquetas HTML residuales.
-    raw_desc = str(rec.get("description") or rec.get("body_html") or "")
+    #
+    # FIX (16/10/2026): buscar tambien dentro de `product_data`.
+    # normalize_recommendation_dict() devuelve un esquema canonico plano
+    # (id, title, score, handle, image_url, source) y ANIDA el dict crudo del
+    # catalogo bajo `product_data`. La descripcion vive ahi, no en la raiz, asi
+    # que este `rec.get("description")` devolvia siempre cadena vacia y la
+    # tarjeta nunca pintaba descripcion -- `{product.description && ...}` era
+    # falso. No se habia detectado porque el fallo es MUDO: no falta un campo,
+    # llega vacio.
+    _rec_pd = rec.get("product_data") if isinstance(rec.get("product_data"), dict) else {}
+    raw_desc = str(
+        rec.get("description")
+        or rec.get("body_html")
+        or _rec_pd.get("description")
+        or _rec_pd.get("body_html")
+        or ""
+    )
     description = _re.sub(r'<[^>]+>', '', raw_desc).strip()[:300]
 
     # ── image_url ─────────────────────────────────────────────────────────────
@@ -331,6 +347,19 @@ class ConversationRequest(BaseModel):
     # Sin este campo, Pydantic lo descartaba — ahora se recibe correctamente.
     widget_context: Optional[Dict[str, Any]] = None
 
+    # REINICIO POR CATEGORIA (16/10/2026).
+    #
+    # Lo envia el widget cuando el usuario pulsa "ver <categoria> otra vez",
+    # junto a la consulta normal. Va como CAMPO y no como endpoint aparte a
+    # proposito: el reinicio se aplica ANTES de calcular, asi que el mismo
+    # turno ya devuelve los productos renovados. Una sola ida y vuelta, y
+    # ningun estado intermedio en el que el reinicio este hecho pero el
+    # usuario no vea nada.
+    #
+    # Valor: el product_type tal cual (p. ej. "CALZONES"). None en el 99% de
+    # las peticiones.
+    reset_category: Optional[str] = None
+
 class ConversationResponse(BaseModel):
     """Modelo para respuestas conversacionales.
     
@@ -345,6 +374,31 @@ class ConversationResponse(BaseModel):
     """
     answer: str
     recommendations: List[Dict[str, Any]]
+
+    # FASE 3.1 (13/10/2026): como agrupar `recommendations` en los dos bloques
+    # del contrato -- lo que el usuario pidio y las alternativas.
+    #
+    # Lleva IDENTIFICADORES, no productos: `recommendations` sigue siendo la
+    # unica fuente de items y ya viene ordenada principal-y-luego-alternativas.
+    # Duplicar los productos crearia dos fuentes de verdad que pueden divergir
+    # en silencio, ademas de doblar el tamano del payload.
+    #
+    # Forma:
+    #   {
+    #     "intent": "similarity" | "outfit_complement" | "category_query" | "generic",
+    #     "principal":    {"product_ids": [...], "categories": [...], "exhausted": bool},
+    #     "alternatives": {"product_ids": [...], "categories": [...]},
+    #     "meta": {"anchor_id", "anchor_type", "n_requested", "route", ...}
+    #   }
+    #
+    # None cuando el turno no construyo contrato (rutas de outfit, estandar, o
+    # sin recomendaciones). El frontend DEBE tratar None como "pinta la lista
+    # plana como siempre" -- es lo que permite que el widget actual siga
+    # funcionando sin cambios mientras migra.
+    #
+    # `exhausted` es la condicion del boton "ver <categoria> otra vez": True
+    # SOLO si se consulto al catalogo y no quedaban mas de lo pedido.
+    recommendation_blocks: Optional[Dict[str, Any]] = None
 
     # FIX (26/03/2026): kb_document was missing from the Pydantic model.
     # The handler returns it inside response_dict (key 'kb_document') and the
@@ -902,6 +956,44 @@ async def process_conversation(
                 or None
             )
 
+            # ── REINICIO POR CATEGORIA (16/10/2026) ──────────────────────────
+            # Se registra ANTES de llamar al handler: asi el mismo turno ya
+            # devuelve los productos renovados, sin un segundo viaje ni un
+            # estado intermedio donde el reinicio este hecho y el usuario no
+            # vea nada.
+            #
+            # Guardar la marca es best-effort: si fallara, el turno sigue
+            # adelante y el usuario ve los mismos productos que antes. Es
+            # molesto pero inocuo; tumbar la conversacion lo seria mucho mas.
+            if conversation.reset_category:
+                _reset_cat = str(conversation.reset_category).strip().upper()
+                try:
+                    # `conversation_session` y `state_manager` ya estan resueltos
+                    # mas arriba en este mismo handler (get_or_create_session).
+                    # Se reutilizan en vez de recargar: el objeto es el mismo que
+                    # luego registra el turno.
+                    if state_manager and conversation_session is not None:
+                        if getattr(conversation_session, "category_resets", None) is None:
+                            conversation_session.category_resets = {}
+                        conversation_session.category_resets[_reset_cat] = time.time()
+                        await state_manager.save_conversation_state(conversation_session)
+                        logger.info(
+                            "reinicio por categoria registrado: %s (sesion %s). "
+                            "Los productos de esa categoria mostrados ANTES de ahora "
+                            "vuelven a estar disponibles.",
+                            _reset_cat, real_session_id,
+                        )
+                    else:
+                        logger.warning(
+                            "reinicio por categoria %s: sin sesion activa (%s)",
+                            _reset_cat, real_session_id,
+                        )
+                except Exception as _reset_err:
+                    logger.warning(
+                        "reinicio por categoria %s fallido (se continua sin el): %s",
+                        _reset_cat, _reset_err,
+                    )
+
             response_dict = await get_mcp_conversation_recommendations(
                 validated_user_id=validated_user_id,
                 validated_product_id=validated_product_id,
@@ -911,6 +1003,9 @@ async def process_conversation(
                 session_id=real_session_id,
                 language=detected_language,  # Idioma detectado
                 customer_id=_customer_id,    # F-04: perfil de cliente
+                # 16/10/2026: el handler lo marca en el contexto para que el
+                # redactor reconozca el reinicio en su respuesta.
+                reset_category=conversation.reset_category,
             )
 
             # ✅ NUEVO: Log para confirmar que se pasó correctamente
@@ -948,6 +1043,21 @@ async def process_conversation(
                                 "kb_contextualised": metadata.get("kb_contextualised", False),
                                 "market_id": conversation.market_id,
                                 "source": "mcp_router_early_return",
+                                # GAP B1 (13/10/2026): el producto que el usuario tenia
+                                # delante. Sin esto, un ancla vuelve a ser recomendable en
+                                # cuanto el contexto se mueve -- reproducido en produccion
+                                # el 13/10 con la sesion de pantalones.
+                                #
+                                # FIX DEL FIX (13/10): NO usar validated_product_id, que es el
+                                # HANDLE que manda el widget ("palazzo-silvia-negro").
+                                # shown_products contiene ids NUMERICOS, asi que el handle
+                                # nunca coincide y la exclusion no surte efecto -- sin error,
+                                # porque ambos son str y `in` devuelve False en silencio.
+                                # El handler expone el id ya resuelto en
+                                # resolved_anchor_product_id; None si no habia contexto de
+                                # producto, y entonces es mejor no excluir nada que excluir
+                                # una cadena que no corresponde a ningun producto.
+                                "anchor_product_id": response_dict.get("resolved_anchor_product_id"),
                             }
                         )
                         await state_manager.save_conversation_state(updated_session)
@@ -1028,7 +1138,10 @@ async def process_conversation(
                             "personalization_applied": metadata.get("personalization_applied", False),
                             "market_id": conversation.market_id,
                             "source": "mcp_router_centralized",
-                            "processing_time_ms": metadata.get("processing_time_ms", 0)
+                            "processing_time_ms": metadata.get("processing_time_ms", 0),
+                            # GAP B1 (13/10/2026) -- ver comentario en el early return.
+                            # Id NUMERICO resuelto por el handler, nunca el handle.
+                            "anchor_product_id": response_dict.get("resolved_anchor_product_id"),
                         }
                     )
                     
@@ -1064,6 +1177,10 @@ async def process_conversation(
                 return {
                     "answer": str(ai_response) if ai_response is not None else "",
                     "recommendations": safe_recs,
+                    # FASE 3.1: como agrupar `recommendations` en los dos bloques.
+                    # None si el handler no construyo contrato -> el widget pinta
+                    # la lista plana como siempre.
+                    "recommendation_blocks": response_dict.get("recommendation_blocks"),
                     "session_metadata": {
                         "session_id": real_session_id,
                         "turn_number": turn_number,
@@ -1683,7 +1800,13 @@ async def process_conversation(
                     metadata={
                         "diversification_applied": metadata.get("diversification_applied", False),
                         "market_id": conversation.market_id,
-                        "source": "centralized_state_management"
+                        "source": "centralized_state_management",
+                        # GAP B1 (13/10/2026) -- ver comentario en el early return.
+                        # Id NUMERICO resuelto por el handler, nunca el handle.
+                        "anchor_product_id": (
+                            response_dict.get("resolved_anchor_product_id")
+                            if isinstance(response_dict, dict) else None
+                        ),
                     }
                 )
 
@@ -1744,6 +1867,13 @@ async def process_conversation(
         response = {
             "answer": extract_answer_from_claude_response(ai_response),  # 🔧 CRITICAL FIX: Transform complex response to string
             "recommendations": safe_recommendations,
+            # FASE 3.1: como agrupar `recommendations` en los dos bloques.
+            # None si el handler no construyo contrato -> el widget pinta la
+            # lista plana como siempre.
+            "recommendation_blocks": (
+                response_dict.get("recommendation_blocks")
+                if isinstance(response_dict, dict) else None
+            ),
             
             # ✅ AÑADIR: session_metadata esperado por tests
             "session_metadata": {

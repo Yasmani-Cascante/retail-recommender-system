@@ -725,6 +725,8 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     chip?: { label: string; image_url?: string },
     explicitProductHandle?: string,
     shouldAutoGenerateChip: boolean = false,
+    resetCategory?: string,
+    displayText?: string,
   ) => {
     lastInteractionRef.current = Date.now();
     setShowInactivityWarning(false);
@@ -739,7 +741,17 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     const userMessage: Message = {
       id: `user_${Date.now()}`,
       type: 'user',
-      content: messageText,
+      // displayText (16/10/2026): lo que se MUESTRA en el chat puede diferir de
+      // lo que se ENVIA al backend. Son dos cosas distintas: la consulta es un
+      // detalle de implementacion; la burbuja es el registro de lo que hizo la
+      // persona.
+      //
+      // Caso que lo motivo: al pulsar "Ver pantalones otra vez" el chat
+      // mostraba "Recomendame productos similares a este" -- una frase que el
+      // usuario no dijo, y que ademas apuntaba a un "este" sin referente
+      // visible. Ahora la burbuja dice lo que hizo y la consulta de similitud
+      // sigue viajando al backend sin cambios.
+      content: displayText ?? messageText,
       timestamp: Date.now(),
       // Guardar el chip que originó este mensaje (si viene de uno)
       suggestionChip: finalChip,
@@ -758,7 +770,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     try {
       // Pasar productHandle a api.sendMessage() — si es undefined,
       // api.ts usará extractProductId() de la URL (comportamiento por defecto)
-      const assistantMessage = await api.sendMessage(messageText, productHandle);
+      const assistantMessage = await api.sendMessage(messageText, productHandle, resetCategory);
       setState(prev => ({
         ...prev,
         messages: [...prev.messages, assistantMessage],
@@ -895,6 +907,55 @@ export function ChatWidget({ config }: ChatWidgetProps) {
     // El chip lleva label + image_url para renderizar la imagen en la burbuja.
     handleSendMessage(queryText, { label: chipText, image_url: product.image_url }, handle);
   }, [handleSendMessage]);
+
+  /**
+   * handleResetCategory — "ver <categoria> otra vez" (16/10/2026).
+   *
+   * Se repite la ULTIMA consulta de similitud en vez de mandar "muestrame
+   * calzones" (decision de Yasmani, 16/10). El motivo: cambiar el texto
+   * cambiaria la INTENCION de similitud a consulta por categoria, y el backend
+   * devolveria otra cosa. El usuario pidio ver lo mismo otra vez, no una
+   * busqueda distinta.
+   *
+   * El ancla se mantiene por el mismo motivo: activeProductContext sigue
+   * vigente y handleSendMessage lo resuelve como siempre.
+   */
+  const handleResetCategory = useCallback((categoria: string) => {
+    const _lang = (navigator.language || 'es').split('-')[0].toLowerCase();
+    const _SIMILAR_QUERIES: Record<string, string> = {
+      es: 'Recoméndame productos similares a este',
+      en: 'Show me similar products to this one',
+      fr: 'Montrez-moi des produits similaires à celui-ci',
+      de: 'Zeige mir ähnliche Produkte wie dieses',
+      it: 'Mostrami prodotti simili a questo',
+    };
+    const queryText = _SIMILAR_QUERIES[_lang] ?? _SIMILAR_QUERIES['es'];
+
+    // Texto MOSTRADO: lo que el usuario realmente hizo (16/10/2026).
+    // Debe coincidir con la etiqueta del boton que acaba de pulsar, o el chat
+    // le atribuye una frase que no dijo.
+    const _cat = (categoria || '').toLowerCase();
+    const _RESET_LABELS: Record<string, string> = {
+      es: _cat ? `Ver ${_cat} otra vez` : 'Volver a ver la coleccion',
+      en: _cat ? `See ${_cat} again` : 'Browse the collection again',
+      fr: _cat ? `Revoir ${_cat}` : 'Revoir la collection',
+      de: _cat ? `${_cat} erneut ansehen` : 'Kollektion erneut ansehen',
+      it: _cat ? `Rivedi ${_cat}` : 'Rivedi la collezione',
+    };
+    const displayText = _RESET_LABELS[_lang] ?? _RESET_LABELS['es'];
+
+    // Chip del ancla: devuelve el referente que faltaba. Sin el, la consulta
+    // de similitud apunta a un producto que no se ve por ninguna parte.
+    // activeProductContext puede estar vacio si el turno anterior lo limpio;
+    // en ese caso no se fuerza nada y el backend resuelve el ancla como
+    // siempre (producto de la URL).
+    const chip = activeProductContext
+      ? { label: activeProductContext.title, image_url: activeProductContext.image_url }
+      : undefined;
+    const handle = activeProductContext?.handle ?? undefined;
+
+    handleSendMessage(queryText, chip, handle, false, categoria, displayText);
+  }, [handleSendMessage, activeProductContext]);
 
   /**
    * handleClearContext — el usuario hace click en × del chip de contexto.
@@ -1467,6 +1528,7 @@ export function ChatWidget({ config }: ChatWidgetProps) {
                 isExpanded={isExpanded}
                 onChatAbout={handleChatAbout}
                 onShowSimilar={handleShowSimilar}
+                onResetCategory={handleResetCategory}
                 onSuggestionClick={(text) => handleSendMessage(text, undefined, undefined, true)}
                 isServiceDown={serviceStatus === 'down'}
                 warmingHint={showInlineWarmingHint}

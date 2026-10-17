@@ -17,7 +17,7 @@ import logging
 import hashlib
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field, fields as dataclass_fields
 from enum import Enum
 
 # Redis connection en state manager
@@ -57,6 +57,53 @@ class ConversationTurn:
     recommendations_provided: List[str]
     market_context: Dict[str, Any]
     processing_time_ms: float
+
+    # GAP B1 (13/10/2026) -- producto que el usuario tenia DELANTE en este turno.
+    #
+    # Hasta hoy solo se guardaba lo RECOMENDADO. Las anclas no se registraban en
+    # ningun sitio, asi que un producto que fue ancla volvia a ser elegible en
+    # cuanto el contexto se movia, y el sistema se lo recomendaba de vuelta al
+    # usuario que lo tenia abierto.
+    #
+    # Reproducido en produccion (13/10/2026, sesion de pantalones):
+    #   T1 ancla = Palazzo Silvia   (aterrizaje)
+    #   T2 ancla = Palazzo Ariel    -> RECOMIENDA Palazzo Silvia
+    #   T4 ancla = Palazzo Silvia   -> el usuario acaba donde empezo
+    # Con 6 pantalones en catalogo no es un caso raro: era el unico pantalon
+    # sin mostrar que quedaba.
+    #
+    # Opcional con default None para que los turnos ya persistidos en Redis
+    # (sin esta clave) se deserialicen sin tocar nada.
+    anchor_product_id: Optional[str] = None
+
+def _turn_from_dict(turn_data: Dict[str, Any]) -> ConversationTurn:
+    """
+    Reconstruye un ConversationTurn desde su forma persistida, TOLERANDO claves
+    que no conoce.
+
+    Antes se hacia `ConversationTurn(**turn_data)` directamente, lo que crea un
+    riesgo asimetrico cada vez que se anade un campo:
+      - Hacia atras funciona bien: un turno viejo sin la clave nueva usa el
+        default.
+      - Hacia DELANTE revienta: si se despliega el campo nuevo, se escriben
+        turnos con esa clave en Redis, y despues se hace rollback, el codigo
+        antiguo recibe un argumento inesperado y lanza TypeError al cargar la
+        sesion.
+
+    Filtrar por los campos declarados elimina ese riesgo de forma permanente,
+    no solo para `anchor_product_id` (13/10/2026) sino para cualquier campo
+    futuro. El coste es que un typo en una clave pasa desapercibido en vez de
+    fallar ruidosamente; a cambio, un rollback nunca deja sesiones ilegibles.
+    """
+    conocidos = {f.name for f in dataclass_fields(ConversationTurn)}
+    descartadas = set(turn_data) - conocidos
+    if descartadas:
+        logger.debug(
+            "ConversationTurn: ignorando claves desconocidas %s "
+            "(probablemente de una version mas nueva)", sorted(descartadas)
+        )
+    return ConversationTurn(**{k: v for k, v in turn_data.items() if k in conocidos})
+
 
 @dataclass
 class UserMarketPreferences:
@@ -99,6 +146,38 @@ class MCPConversationContext:
     initial_market_id: str
     current_market_id: str
     device_type: str
+
+    # ========================================================================
+    # REINICIO POR CATEGORIA (16/10/2026)
+    # ========================================================================
+    # {categoria_en_mayusculas: timestamp_del_reinicio}
+    #
+    # `shown_products` NO se almacena: se deriva de los turnos
+    # (recommendations_provided + anchor_product_id). Asi que "reiniciar" no
+    # puede ser borrar nada; es marcar DESDE CUANDO vuelven a contar.
+    #
+    # Un producto se ignora al construir shown_products si su categoria tiene
+    # una marca POSTERIOR al turno que lo mostro:
+    #
+    #     turno T (t=100) mostro CALZON A
+    #     reinicio de CALZONES en t=150
+    #     -> CALZON A deja de contar como visto
+    #     turno U (t=200) vuelve a mostrar CALZON A
+    #     -> a partir de ahi SI cuenta otra vez
+    #
+    # POR QUE UNA MARCA TEMPORAL y no una lista de "productos perdonados":
+    # la marca se mantiene sola. Con una lista de ids habria que limpiarla al
+    # volver a mostrarlos, porque si no el usuario veria los mismos productos
+    # en bucle para siempre. La marca hace que los turnos posteriores al
+    # reinicio vuelvan a contar con normalidad, sin mantenimiento.
+    #
+    # Alcance POR CATEGORIA a proposito (decision del 06/10/2026): con 40
+    # productos vistos entre pantalones, vestidos y joyas, reiniciar pantalones
+    # no puede devolver vestidos que el usuario ya descarto.
+    #
+    # Default mutable via field(): un dict compartido entre instancias seria
+    # un error dificil de ver -- el reinicio de una sesion afectaria a otras.
+    category_resets: Dict[str, float] = field(default_factory=dict)
 
     # ============================================================================
     # ✅ CRITICAL FIX: Compatibility Properties
@@ -224,7 +303,7 @@ class MCPConversationContext:
         # Determinar si es formato enterprise o formato del fix
         if "total_turns" in data and "turns" in data:
             # Formato enterprise - usar deserialización enterprise
-            turns = [ConversationTurn(**turn_data) for turn_data in data.get("turns", [])]
+            turns = [_turn_from_dict(turn_data) for turn_data in data.get("turns", [])]
             
             market_prefs = {}
             for market_id, prefs_data in data.get("market_preferences", {}).items():
@@ -706,6 +785,34 @@ class MCPConversationStateManager:
         
         logger.info(f"🎯 Creating turn with {len(valid_ids)} recommendation IDs: {valid_ids}")
         
+        # GAP B1 (13/10/2026): registrar el ancla del turno. Llega por metadata
+        # para no cambiar la firma del metodo ni la de sus 3 call sites.
+        # Se normaliza a str o None: el router puede mandar "", "null" o
+        # "undefined" cuando el widget no tiene producto en contexto.
+        _anchor_raw = metadata.get("anchor_product_id")
+        _anchor = str(_anchor_raw).strip() if _anchor_raw else ""
+        _anchor_id = _anchor if _anchor and _anchor.lower() not in (
+            "null", "undefined", "none", "string"
+        ) else None
+
+        # GUARDA DE FORMATO (13/10/2026). `shown_products` contiene ids
+        # NUMERICOS de Shopify; un handle ('palazzo-silvia-negro') nunca
+        # coincidira y la exclusion fallara EN SILENCIO -- ambos son str, y
+        # `in` sobre un set devuelve False sin avisar. Paso exactamente eso
+        # el 13/10: el log mostraba el ancla guardada y la exclusion no hacia
+        # nada.
+        #
+        # Aqui se rechaza lo que no parezca un id y se deja constancia. Mejor
+        # no excluir nada que creer que se excluye algo: un fallo visible en
+        # los logs es recuperable, uno silencioso no.
+        if _anchor_id and not _anchor_id.isdigit():
+            logger.warning(
+                "anchor_product_id descartado por formato: %r no es un id numerico "
+                "(probablemente un handle). La exclusion B1 no se aplicara a este turno.",
+                _anchor_id,
+            )
+            _anchor_id = None
+
         # ✅ CREAR ConversationTurn con datos completos
         new_turn = ConversationTurn(
             turn_number=len(session.turns) + 1,
@@ -721,7 +828,8 @@ class MCPConversationStateManager:
                 "diversification_applied": metadata.get("diversification_applied", False),
                 "personalization_applied": metadata.get("personalization_applied", False)
             },
-            processing_time_ms=metadata.get("processing_time_ms", 0)
+            processing_time_ms=metadata.get("processing_time_ms", 0),
+            anchor_product_id=_anchor_id,
         )
         
         # ✅ ACTUALIZAR sesión
@@ -1112,12 +1220,15 @@ class MCPConversationStateManager:
             "user_agent": context.user_agent,
             "initial_market_id": context.initial_market_id,
             "current_market_id": context.current_market_id,
-            "device_type": context.device_type
+            "device_type": context.device_type,
+            # REINICIO POR CATEGORIA (16/10/2026) -- debe sobrevivir en Redis,
+            # o el reinicio se perderia en el turno siguiente.
+            "category_resets": dict(getattr(context, "category_resets", {}) or {}),
         }
     
     def _deserialize_context(self, data: Dict[str, Any]) -> MCPConversationContext:
         """Deserializa el contexto conversacional desde almacenamiento."""
-        turns = [ConversationTurn(**turn_data) for turn_data in data.get("turns", [])]
+        turns = [_turn_from_dict(turn_data) for turn_data in data.get("turns", [])]
         
         market_prefs = {}
         for market_id, prefs_data in data.get("market_preferences", {}).items():
@@ -1141,7 +1252,10 @@ class MCPConversationStateManager:
             user_agent=data.get("user_agent", "unknown"),
             initial_market_id=data.get("initial_market_id", "default"),
             current_market_id=data.get("current_market_id", "default"),
-            device_type=data.get("device_type", "unknown")
+            device_type=data.get("device_type", "unknown"),
+            # Las sesiones guardadas ANTES de este campo no lo traen: dict vacio
+            # significa "sin reinicios", que es el comportamiento de siempre.
+            category_resets=dict(data.get("category_resets", {}) or {}),
         )
     
     def _detect_device_type(self, user_agent: str) -> str:

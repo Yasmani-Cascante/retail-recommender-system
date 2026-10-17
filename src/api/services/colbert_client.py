@@ -132,11 +132,58 @@ import os
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Union
 
 import httpx
 
 log = logging.getLogger(__name__)
+
+# Tipo de retorno de las busquedas visuales (06/10/2026).
+#
+# with_scores=False (default) -> List[str], identico al comportamiento previo.
+# with_scores=True            -> List[Tuple[product_id, Optional[score]]],
+#                                donde score es la similitud COSENO real.
+#
+# El score es Optional a proposito: el embedding-service y el monolito se
+# despliegan por SEPARADO. Si el servicio todavia no devuelve 'scores' (o lo
+# devuelve desalineado), el cliente entrega (pid, None) en vez de fallar. Aguas
+# abajo, None significa exactamente "no hay parecido medido" -- que es lo que
+# el contrato de recomendaciones ya sabe representar, y lo que impide volver a
+# mostrar un porcentaje inventado.
+#
+# Ver SPEC_Contrato_Recomendaciones_06102026.md, seccion 2.3.
+VisualResults = Union[List[str], List[Tuple[str, Optional[float]]]]
+
+
+def _unpack_visual_results(data: Dict, with_scores: bool) -> VisualResults:
+    """
+    Normaliza la respuesta del embedding-service a la forma pedida.
+
+    Centralizado para no triplicar esta logica en los tres metodos de busqueda
+    -- la duplicacion entre rutas de busqueda es justo lo que costo una semana
+    de divergencias en el monolito (ver DCT_Cierre_Sesion_01102026, Addendum A).
+
+    Degradacion: si 'scores' falta o no esta alineado 1:1 con 'product_ids',
+    se devuelven todos los scores a None y se deja constancia en el log. Nunca
+    se emparejan a ciegas: un score desalineado es peor que ningun score,
+    porque cada producto mostraria el parecido de otro.
+    """
+    ids = data.get('product_ids') or []
+    if not with_scores:
+        return ids
+
+    scores = data.get('scores')
+    if scores is None:
+        # Servicio aun sin desplegar con el campo nuevo: degradacion esperada.
+        log.debug("embedding-service sin 'scores' en la respuesta -- usando None")
+        return [(pid, None) for pid in ids]
+    if len(scores) != len(ids):
+        log.warning(
+            "'scores' desalineado con 'product_ids' (%d vs %d) -- descartando scores",
+            len(scores), len(ids),
+        )
+        return [(pid, None) for pid in ids]
+    return [(pid, float(s)) for pid, s in zip(ids, scores)]
 
 
 class LFM2ColBERTClient:
@@ -416,13 +463,17 @@ class LFM2ColBERTClient:
         self,
         product_id: str,
         top_k: int = 8,
-    ) -> Optional[List[str]]:
+        with_scores: bool = False,
+    ) -> Optional[VisualResults]:
         """
         Busca visualmente similares usando el vector FAISS existente del producto.
 
         Mas rapido que search_by_image (elimina fetch CDN ~200ms + encode ~435ms).
         Latencia tipica: ~50ms. Devuelve None si circuit breaker abierto,
         [] si el producto no esta en el indice FAISS todavia.
+
+        with_scores: ver VisualResults arriba. Default False = comportamiento
+        identico al previo al 06/10/2026.
         """
         if self._visual_circuit_open:
             log.debug('ColBERT VISUAL circuit open — search_by_product_id skipped')
@@ -442,7 +493,7 @@ class LFM2ColBERTClient:
                 'search_by_product_id: %d results in %.1fms for product_id=%s',
                 len(data['product_ids']), data['latency_ms'], product_id,
             )
-            return data['product_ids']
+            return _unpack_visual_results(data, with_scores)
         except Exception as e:
             self._handle_visual_failure(e)
             return None
@@ -453,7 +504,8 @@ class LFM2ColBERTClient:
         boost_text: str,
         alpha: float = 0.5,
         top_k: int = 8,
-    ) -> Optional[List[str]]:
+        with_scores: bool = False,
+    ) -> Optional[VisualResults]:
         """
         Igual que search_by_product_id_with_category_boost(), pero envia el
         texto de composite embedding YA RESUELTO (boost_text) en vez de una
@@ -464,6 +516,9 @@ class LFM2ColBERTClient:
 
         Devuelve None si circuit breaker abierto, [] si el producto no esta
         en el indice FAISS todavia -- mismo contrato que search_by_product_id().
+
+        with_scores: ver VisualResults arriba. El score es el del COMPOSITE
+        (imagen + texto), no el de la imagen sola.
         """
         if self._visual_circuit_open:
             log.debug('ColBERT VISUAL circuit open — search_by_product_id_with_text_boost skipped')
@@ -489,7 +544,7 @@ class LFM2ColBERTClient:
                 'for product_id=%s',
                 len(data['product_ids']), data['latency_ms'], product_id,
             )
-            return data['product_ids']
+            return _unpack_visual_results(data, with_scores)
         except Exception as e:
             self._handle_visual_failure(e)
             return None
@@ -552,7 +607,8 @@ class LFM2ColBERTClient:
         self,
         image_bytes: bytes,
         top_k: int = 8,
-    ) -> Optional[List[str]]:
+        with_scores: bool = False,
+    ) -> Optional[VisualResults]:
         """
         Busca productos visualmente similares a la imagen proporcionada.
 
@@ -586,7 +642,7 @@ class LFM2ColBERTClient:
                 len(data['product_ids']), data['latency_ms'],
                 data.get('visual_index_size', 0)
             )
-            return data['product_ids']
+            return _unpack_visual_results(data, with_scores)
         except Exception as e:
             self._handle_visual_failure(e)
             return None

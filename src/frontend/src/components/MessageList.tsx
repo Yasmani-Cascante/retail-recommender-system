@@ -928,6 +928,206 @@ function OutfitCardSlider({
  * Renderiza un OutfitCardSlider por cada categoría encontrada.
  * Recibe los callbacks de acción para propagarlos a cada carta.
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// RecommendationBlocksView — FASE 3.2 (13/10/2026)
+//
+// Pinta las recomendaciones en DOS bloques con titulo propio: lo que el usuario
+// pidio, y las alternativas.
+//
+// POR QUE EXISTE
+// --------------
+// Hasta hoy el widget pintaba una sola rejilla bajo "Recomendado para ti", y el
+// usuario no tenia forma de saber que es cada tarjeta. Evidencia de produccion
+// (07/10/2026): pidiendo similares a un clutch, la lista traia 1 bolso, luego
+// dos pares de aros, y DESPUES otro bolso. Todo con el mismo peso visual.
+//
+// El backend ya separa los dos grupos (contrato principal/alternatives) y los
+// manda en `recommendationBlocks`. Aqui solo se traduce esa estructura a
+// pantalla: ningun criterio de agrupacion vive en el frontend.
+//
+// DEGRADACION
+// -----------
+// Si `blocks` es null/undefined -- rutas de outfit, estandar, o backend sin
+// desplegar -- se pinta la rejilla UNICA de siempre. Es lo que permite
+// desplegar el widget sin coordinar con el backend.
+// Tambien se cae a la rejilla unica si no hay alternativas: un solo bloque con
+// titulo y nada debajo seria ruido.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Textos de cabecera por intencion. Son presentacion, no dato: el backend
+ *  manda la intencion y aqui se decide como llamarla. */
+function blockHeadings(
+  intent: string | undefined,
+  lang: string,
+): { principal: string; alternatives: string } {
+  const code = (lang || 'es').split('-')[0].toLowerCase();
+  const porIntencion: Record<string, Record<string, { principal: string; alternatives: string }>> = {
+    similarity: {
+      es: { principal: 'Similares a este', alternatives: 'También podría combinar' },
+      en: { principal: 'Similar to this', alternatives: 'Might also go well' },
+    },
+    category_query: {
+      es: { principal: 'Lo que tenemos', alternatives: 'También podría interesarte' },
+      en: { principal: 'What we have', alternatives: 'You might also like' },
+    },
+    outfit_complement: {
+      es: { principal: 'Para completar el look', alternatives: 'También podría combinar' },
+      en: { principal: 'To complete the look', alternatives: 'Might also go well' },
+    },
+    generic: {
+      es: { principal: 'Recomendado para ti', alternatives: 'También podría interesarte' },
+      en: { principal: 'Recommended for you', alternatives: 'You might also like' },
+    },
+  };
+  const porIdioma = porIntencion[intent ?? 'generic'] ?? porIntencion.generic;
+  return porIdioma[code] ?? porIdioma.es;
+}
+
+function RecommendationBlocksView({
+  recommendations,
+  blocks,
+  isExpanded,
+  onChatAbout,
+  onShowSimilar,
+  onResetCategory,
+  isLastMessage,
+}: {
+  recommendations: import('../types/widget').ProductRecommendation[];
+  blocks?: import('../types/widget').RecommendationBlocks | null;
+  isExpanded: boolean;
+  onChatAbout?: (p: import('../types/widget').ProductRecommendation) => void;
+  onShowSimilar?: (p: import('../types/widget').ProductRecommendation) => void;
+  /** Reinicia lo ya visto de esa categoria. Si no llega, el boton se pinta
+   *  DESHABILITADO: visible para revisar el diseno, pero sin prometer una
+   *  accion que todavia no existe. */
+  onResetCategory?: (categoria: string) => void;
+  /** isLastMessage (16/10/2026): el boton de reinicio SOLO se pinta en el
+   *  ultimo turno. En turnos anteriores ya no tiene sentido -- la
+   *  conversacion siguio -- y verlo repetido invita a pulsarlo sin efecto
+   *  visible. Es una accion del momento, no parte del historial. */
+  isLastMessage?: boolean;
+}) {
+  const grid = `${styles.productsList} ${isExpanded ? styles.productsListExpanded : ''}`;
+
+  const altIds = new Set(blocks?.alternatives?.product_ids ?? []);
+
+  // Camino de degradacion: SIN contrato, rejilla unica, exactamente como antes
+  // de la fase 3.2. Rutas de outfit, estandar, o backend sin desplegar.
+  if (!blocks) {
+    return (
+      <>
+        <span className={styles.recoLabel}>Recomendado para ti</span>
+        <div className={grid}>
+          {recommendations.slice(0, 8).map((product) => (
+            <ProductCard
+              key={product.id}
+              product={product}
+              onChatAbout={onChatAbout}
+              onShowSimilar={onShowSimilar}
+              showDescription={isExpanded}
+            />
+          ))}
+        </div>
+      </>
+    );
+  }
+
+  // Se reparte la lista PLANA segun los ids del contrato. `recommendations` es
+  // la unica fuente de productos y ya viene ordenada principal-y-luego-
+  // alternativas; aqui no se reordena nada, solo se corta en dos.
+  const principales = recommendations.filter((p) => !altIds.has(String(p.id)));
+  const alternativas = recommendations.filter((p) => altIds.has(String(p.id)));
+
+  const titulos = blockHeadings(blocks?.intent, navigator.language || 'es');
+  const categoriaPedida =
+    blocks?.meta?.anchor_type || blocks?.principal?.categories?.[0] || '';
+  // El boton solo tiene sentido si el catalogo esta REALMENTE agotado, no si el
+  // bloque quedo vacio porque el pool visual se quedo corto. Esa distincion es
+  // justo lo que aporta `exhausted` -- ver el contrato del backend.
+  //
+  // FIX (15/10/2026): antes esta rama era inalcanzable con cero productos,
+  // porque la funcion caia al camino de degradacion cuando no habia
+  // alternativas. En el turno de calzones agotados el usuario no vio ni
+  // mensaje ni boton.
+  // Condicion del boton: catalogo REALMENTE agotado (no un pool corto) Y sin
+  // principal que mostrar Y es el ULTIMO turno.
+  //
+  // isLastMessage (16/10/2026): en turnos anteriores el boton ya no procede --
+  // la conversacion siguio y pulsarlo reiniciaria algo que el usuario dejo
+  // atras hace rato. Verlo repetido por el historial invita a pulsarlo sin
+  // efecto visible. Es una accion del momento, no parte del registro.
+  const mostrarReinicio = (
+    !!blocks?.principal?.exhausted
+    && principales.length === 0
+    && isLastMessage !== false
+  );
+
+  return (
+    <>
+      {principales.length > 0 && (
+        <>
+          <span className={styles.recoLabel}>{titulos.principal}</span>
+          <div className={grid}>
+            {principales.slice(0, 8).map((product) => (
+              <ProductCard
+                key={product.id}
+                product={product}
+                onChatAbout={onChatAbout}
+                onShowSimilar={onShowSimilar}
+                /* Extracto SOLO en expandido (17/10/2026): en el carrusel
+                   contraido aprieta demasiado la tarjeta, y en el bloque de
+                   alternativas no se muestra nunca -- ahi la razon original
+                   de 10/04/2026 sigue vigente. */
+                showDescription={isExpanded}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      {alternativas.length > 0 && (
+        <>
+          {/* Etiqueta ATENUADA: el bloque es subordinado, y el titulo es la
+              primera senal que lo dice. */}
+          <span className={`${styles.recoLabel} ${styles.recoLabelAlt}`}>
+            {titulos.alternatives}
+          </span>
+          <div className={`${grid} ${styles.productsListAlt}`}>
+            {alternativas.slice(0, 8).map((product) => (
+              <ProductCard
+                key={product.id}
+                product={product}
+                variant="compact"
+                onChatAbout={onChatAbout}
+                onShowSimilar={onShowSimilar}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* El boton va AL FINAL (16/10/2026). Leyendo de arriba abajo, la
+          secuencia natural es: lo que hay -> lo que podria encajar -> y si
+          nada convence, volver a empezar. Arriba tendria mas visibilidad,
+          pero interrumpiria la lectura de las alternativas justo cuando el
+          usuario las esta evaluando. */}
+      {mostrarReinicio && (
+        <button
+          type="button"
+          className={styles.resetPill}
+          disabled={!onResetCategory}
+          title={onResetCategory ? undefined : 'Disponible proximamente'}
+          onClick={() => onResetCategory && onResetCategory(categoriaPedida)}
+        >
+          {categoriaPedida
+            ? `Ver ${categoriaPedida.toLowerCase()} otra vez`
+            : 'Volver a ver la coleccion'}
+        </button>
+      )}
+    </>
+  );
+}
+
 function OutfitPanel({
   outfitResult,
   onChatAbout,
@@ -981,6 +1181,14 @@ interface MessageListProps {
    * Envía automáticamente una petición de productos similares (Sabor 2).
    */
   onShowSimilar?: (product: import('../types/widget').ProductRecommendation) => void;
+  /**
+   * onResetCategory — "ver <categoria> otra vez" (16/10/2026).
+   * Se propaga hasta RecommendationBlocksView, que solo pinta el boton
+   * ACTIVO si este callback llega. Sin el, se pinta deshabilitado: un boton
+   * que parece pulsable y no hace nada frustra mas que uno claramente
+   * pendiente.
+   */
+  onResetCategory?: (categoria: string) => void;
   onSuggestionClick?: (text: string) => void;
   isExpanded?: boolean;
   /** isServiceDown — when true, all message bubbles are faded (Case 2b) */
@@ -997,7 +1205,7 @@ interface MessageListProps {
   warmingHint?: boolean;
 }
 
-export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onShowSimilar, onSuggestionClick, isServiceDown, bottomContent, warmingHint }: MessageListProps) {
+export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onShowSimilar, onResetCategory, onSuggestionClick, isServiceDown, bottomContent, warmingHint }: MessageListProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [expandedKbId, setExpandedKbId] = useState<string | null>(null);
 
@@ -1176,20 +1384,24 @@ export function MessageList({ messages, isLoading, isExpanded, onChatAbout, onSh
                 </div>
               )}
 
-              {/* Tarjetas de productos recomendados */}
-              {message.recommendations && message.recommendations.length > 0 && (
+              {/* Tarjetas de productos recomendados.
+                  FIX (15/10/2026): tambien se entra con CERO productos si el
+                  contrato dice que la categoria se agoto. Antes la condicion
+                  era solo `length > 0`, asi que en el turno sin resultados no
+                  se pintaba NADA -- ni el mensaje de agotamiento ni el boton
+                  de volver a la coleccion. El usuario veia un vacio. */}
+              {((message.recommendations && message.recommendations.length > 0) ||
+                message.recommendationBlocks?.principal?.exhausted) && (
                 <div className={isServiceDown ? styles.bubbleInactive : ''}>
-                  <span className={styles.recoLabel}>Recomendado para ti</span>
-                  <div className={`${styles.productsList} ${isExpanded ? styles.productsListExpanded : ''}`}>
-                    {message.recommendations.slice(0, 8).map((product) => (
-                      <ProductCard
-                        key={product.id}
-                        product={product}
-                        onChatAbout={onChatAbout}
-                        onShowSimilar={onShowSimilar}
-                      />
-                    ))}
-                  </div>
+                  <RecommendationBlocksView
+                    recommendations={message.recommendations ?? []}
+                    blocks={message.recommendationBlocks}
+                    isExpanded={isExpanded}
+                    onChatAbout={onChatAbout}
+                    onShowSimilar={onShowSimilar}
+                    onResetCategory={onResetCategory}
+                    isLastMessage={isLastMessage}
+                  />
                 </div>
               )}
 

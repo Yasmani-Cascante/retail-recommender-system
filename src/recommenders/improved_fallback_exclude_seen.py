@@ -728,6 +728,22 @@ CATEGORY_KEYWORDS = {
             "cartera", "carteras",
             "handbag", "handbags",
             "bolso mano",
+            # FIX (02/10/2026 -- gap "bolsos" no alcanzaba CARTERAS):
+            # "bolso"/"bolsos" estaban SOLO en CLUTCH, asi que una query como
+            # "Muestrame bolsos similares a este" resolvia a ['CLUTCH'] y las
+            # CARTERAS del catalogo quedaban inalcanzables por esa via, aunque
+            # existen (breakdown real del 02/10/2026: 'CARTERAS': 5 en un pool
+            # FAISS). Consecuencia observada en produccion ese mismo dia: con el
+            # unico CLUTCH disponible ya mostrado, la categoria quedo en cero y
+            # el usuario recibio 8 productos de otras categorias.
+            # El solapamiento NO es nuevo ni asimetrico tras este fix: CLUTCH ya
+            # incluia "cartera"/"carteras", por lo que "Muestrame carteras" ya
+            # devolvia ['CLUTCH', 'CARTERAS'] desde antes. Esto solo completa la
+            # simetria en el sentido contrario.
+            # Verificado (02/10/2026) sobre un corpus de 29 queries: solo cambian
+            # las que contienen "bolso"/"bolsos" (ahora ['CLUTCH', 'CARTERAS']);
+            # las otras 22 quedan identicas.
+            "bolso", "bolsos",
         ]
     },
     
@@ -1051,9 +1067,56 @@ def get_concrete_categories() -> Set[str]:
 def get_parent_categories() -> Dict[str, List[str]]:
     """
     Devuelve mapeo de categorías padre → subcategorías.
-    
+
     Returns:
         Dict[str, List[str]]: {categoria_padre: [sub1, sub2, ...]}
+
+    CONTRATO IMPLICITO -- LEER ANTES DE REORDENAR CATEGORY_KEYWORDS
+    ================================================================
+    (documentado el 08/10/2026; el comportamiento es anterior)
+
+    Varios tipos pertenecen a DOS grupos padre a la vez:
+
+        AROS, COLLARES, BRAZALETES, BRAZALETE  ->  ACCESSORIES  Y  JOYAS
+
+    Los consumidores resuelven el grupo con un `next(...)` que toma el PRIMER
+    padre que contenga el tipo, y "primero" significa orden de insercion de
+    este diccionario. Hoy gana ACCESSORIES (9 tipos) unica y exclusivamente
+    porque esta definido antes que JOYAS (4 tipos) en el archivo.
+
+    CONSECUENCIA: mover el bloque JOYAS por encima de ACCESSORIES cambiaria
+    el comportamiento de "similar a estos aros" de 9 tipos candidatos a 4,
+    sin tocar una sola linea de logica.
+
+    QUE ALCANCE TIENE HOY -- mas pequeno que antes:
+    Desde G2 (07/10/2026) hay DOS niveles separados:
+
+        Nivel 1 -- que entra en el POOL de busqueda: lo decide esta funcion.
+                   AFECTADO por el orden del diccionario.
+        Nivel 2 -- que cuenta como LO PEDIDO (bloque principal): lo decide
+                   SIMILARITY_FAMILIES en product_taxonomy.py.
+                   INMUNE al orden del diccionario.
+
+    Verificado el 08/10/2026: con ancla AROS, reordenar este diccionario
+    cambia el nivel 1 de 9 tipos a 4, pero el nivel 2 sigue siendo ['AROS']
+    en ambos casos. El conflicto ya NO puede alterar lo que el usuario recibe
+    como respuesta a lo que pidio; solo cuanto material queda disponible para
+    el bloque de alternativas.
+
+    POR QUE NO SE ARREGLA AHORA (decision, 08/10/2026):
+    El arreglo correcto no es quitar el solapamiento, sino decidir de forma
+    EXPLICITA que entra en el pool -- y eso pertenece al nivel 2 del plan E5
+    (filtro de categoria DENTRO de la busqueda; ver seccion 12.1 de
+    SPEC_Contrato_Recomendaciones_06102026.md). Tocarlo antes seria un parche
+    sobre un mecanismo que se va a sustituir.
+    Ademas, en la sesion del 08/10 el solapamiento jugo A FAVOR: gracias a
+    los 9 tipos hubo material para alternativas en los turnos finales; con
+    JOYAS (4 tipos) no lo habria habido.
+
+    SI HAY QUE CAMBIARLO ANTES: hacerlo explicito (p. ej. un campo `priority`
+    por grupo) en vez de depender del orden, y actualizar
+    tests/unit/test_f08_similarity_resolution.py::TestDobleGrupoPadre, que
+    fija el comportamiento actual a proposito.
     """
     parents = {}
     for category, config in CATEGORY_KEYWORDS.items():
@@ -2089,6 +2152,49 @@ class ImprovedFallbackStrategies:
         # PRIORIDAD 3: DIVERSE CATEGORY RECOMMENDATIONS
         # ═══════════════════════════════════════════════════════════════════════════
         
+        # FRONTERA DE strict_category — GAP B2, ARREGLO DE RAIZ (17/10/2026)
+        #
+        # Aqui termina lo que respeta la categoria (P1 query-driven, P2 historial)
+        # y empieza lo que NO la respeta por naturaleza: P3 diversifica a
+        # proposito y P4 devuelve lo popular. Con strict_category=True ninguna de
+        # las dos es aceptable.
+        #
+        # EL DEFECTO QUE CIERRA:
+        # strict_category se honraba en los caminos PARCIALES -- el top-up de P2
+        # y smart_sample_across_categories -- pero NO en los VACIOS. Dos agujeros:
+        #   P1: `if query_driven_products:` ... else -> continua
+        #   P2: `if personalized_products:`  ... (sin else) -> continua
+        # Con cero productos de lo pedido, ambos caian hasta aqui y devolvian
+        # "diverse": productos de cualquier categoria.
+        #
+        # EVIDENCIA DE PRODUCCION (10/10/2026, ancla PANTALONES):
+        #     Preferred categories: ['PANTALONES']
+        #     Using diverse category recommendations
+        #     Generated 8 diverse recommendations
+        # Los 8 eran ropa interior reductora, ademas A CERO DE STOCK, para quien
+        # pedia pantalones.
+        #
+        # Es la MISMA forma de fallo que tuvo F-08C en su rama vacia el 08/10: el
+        # camino parcial cableado y el vacio olvidado. Cuando una condicion se
+        # maneja "si hay algo", hay que preguntarse siempre que pasa cuando no
+        # hay nada -- es una rama real, no un caso imposible.
+        #
+        # Hasta hoy estaba CONTENIDO en la frontera de las rutas de similitud
+        # (filter_fill_to_request, 10/10), que descartaba la basura DESPUES de
+        # recibirla. Eso protegia a F-08C y Fase A, pero no a las demas rutas.
+        # Arreglarlo aqui lo cierra para todas, y ademas deja de gastarse el
+        # trabajo de construir productos que se iban a tirar.
+        #
+        # Devolver [] es la respuesta honesta: no hay nada de lo pedido. El
+        # llamador ya sabe interpretarlo -- marca exhausted y avisa al usuario.
+        if strict_category:
+            logger.info(
+                f"✅ strict_category=True: las estrategias con coherencia de "
+                f"categoria (P1 query-driven, P2 historial) no encontraron nada. "
+                f"NO se amplia a diverse/popular -- devolviendo [] para user {user_id}."
+            )
+            return []
+
         logger.info(f"🌈 Using diverse category recommendations for user {user_id}")
         
         diverse_products = await ImprovedFallbackStrategies.get_diverse_category_products(

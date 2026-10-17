@@ -36,7 +36,25 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
+
+# Tipo de retorno de las busquedas visuales. Con with_scores=False (default)
+# devuelven List[str] -- exactamente igual que antes del 06/10/2026. Con
+# with_scores=True devuelven pares (product_id, score), donde score es la
+# similitud COSENO real que FAISS ya venia calculando.
+#
+# POR QUE (06/10/2026): el indice es IndexFlatIP con vectores normalizados, asi
+# que faiss.search() devuelve (distancias, indices) donde las distancias SON la
+# similitud coseno. Hasta hoy las cinco busquedas las descartaban en origen:
+#     _, indices = self._faiss_index.search(vec, top_k + 1)
+# Ese guion bajo tiraba la unica medida de parecido real del sistema. Aguas
+# abajo, el monolito fabricaba un "% match" a partir de la POSICION en la lista
+# (score_start - rank * step), lo que producia porcentajes inventados -- un
+# producto traido del catalogo por categoria, sin ninguna vecindad visual
+# medida, mostraba "87% match" igual que uno realmente parecido.
+#
+# Ver SPEC_Contrato_Recomendaciones_06102026.md, seccion 2.3.
+SearchResults = Union[List[str], List[Tuple[str, float]]]
 
 import numpy as np
 from PIL import Image
@@ -835,8 +853,20 @@ class FashionSigLIPRetriever:
     # SEARCH — búsqueda visual individual (existente, sin cambios)
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def search_by_image(self, image_bytes: bytes, top_k: int = 8) -> List[str]:
-        """Encodea la imagen del usuario y busca los K productos más similares."""
+    async def search_by_image(
+        self,
+        image_bytes: bytes,
+        top_k: int = 8,
+        with_scores: bool = False,
+    ) -> SearchResults:
+        """
+        Encodea la imagen del usuario y busca los K productos más similares.
+
+        with_scores=False (default): devuelve List[str], identico al
+        comportamiento previo al 06/10/2026.
+        with_scores=True: devuelve List[Tuple[product_id, score]] con la
+        similitud coseno real -- ver SearchResults arriba.
+        """
         if self._faiss_index is None:
             log.warning('Visual index not built — returning empty.')
             return []
@@ -849,15 +879,23 @@ class FashionSigLIPRetriever:
                 embed = self._model.encode_image(tensor)
                 embed = embed / embed.norm(dim=-1, keepdim=True)
             query = embed.float().cpu().numpy()
-            _, indices = self._faiss_index.search(query, top_k)
-            return [
-                self._id_map[idx]
-                for idx in indices[0]
+            # scores e indices son arrays PARALELOS: hay que zippearlos ANTES
+            # de filtrar, o las puntuaciones se desalinean de los IDs.
+            scores, indices = self._faiss_index.search(query, top_k)
+            pairs = [
+                (self._id_map[idx], float(score))
+                for idx, score in zip(indices[0], scores[0])
                 if 0 <= idx < len(self._id_map)
             ]
+            return pairs if with_scores else [p for p, _ in pairs]
         return await loop.run_in_executor(None, _encode_and_search, image_bytes)
 
-    async def search_by_product_id(self, product_id: str, top_k: int = 8) -> List[str]:
+    async def search_by_product_id(
+        self,
+        product_id: str,
+        top_k: int = 8,
+        with_scores: bool = False,
+    ) -> SearchResults:
         """
         Busca productos visualmente similares usando el vector FAISS ya almacenado
         del producto, sin necesidad de re-encodear su imagen desde el CDN.
@@ -868,6 +906,11 @@ class FashionSigLIPRetriever:
 
         Fallback natural: si product_id no esta en _id_map (producto nuevo aun
         no indexado), devuelve [] y el llamante puede usar search_by_image.
+
+        with_scores=False (default): devuelve List[str], identico al
+        comportamiento previo al 06/10/2026.
+        with_scores=True: devuelve List[Tuple[product_id, score]] con la
+        similitud coseno real -- ver SearchResults arriba.
         """
         if self._faiss_index is None or not self._id_map:
             log.warning('[search_by_product_id] Index not ready — returning empty.')
@@ -889,12 +932,15 @@ class FashionSigLIPRetriever:
             vec = self._faiss_index.reconstruct(pos)
             vec = _np.array(vec, dtype=_np.float32).reshape(1, -1)
             # Buscar top_k+1 vecinos (el primero sera el propio producto, sim=1.0)
-            _, indices = self._faiss_index.search(vec, top_k + 1)
-            return [
-                self._id_map[idx]
-                for idx in indices[0]
+            # scores e indices son arrays PARALELOS: hay que zippearlos ANTES de
+            # filtrar el propio pid, o las puntuaciones se desalinean de los IDs.
+            scores, indices = self._faiss_index.search(vec, top_k + 1)
+            pairs = [
+                (self._id_map[idx], float(score))
+                for idx, score in zip(indices[0], scores[0])
                 if 0 <= idx < len(self._id_map) and self._id_map[idx] != pid
             ][:top_k]
+            return pairs if with_scores else [p for p, _ in pairs]
 
         return await loop.run_in_executor(None, _reconstruct_and_search, position)
 
@@ -904,7 +950,8 @@ class FashionSigLIPRetriever:
         boost_text: str,
         alpha: float = 0.5,
         top_k: int = 8,
-    ) -> List[str]:
+        with_scores: bool = False,
+    ) -> SearchResults:
         """
         Igual que search_by_product_id_with_category_boost(), pero recibe el
         texto de composite embedding YA RESUELTO por el llamante (boost_text),
@@ -933,6 +980,12 @@ class FashionSigLIPRetriever:
           - product_id no esta en el indice FAISS -> []
           - boost_text vacio/None -> degrada a busqueda pura de imagen
             (delega directamente a search_by_product_id).
+
+        with_scores=False (default): devuelve List[str], identico al
+        comportamiento previo al 06/10/2026.
+        with_scores=True: devuelve List[Tuple[product_id, score]] con la
+        similitud coseno real del COMPOSITE (imagen + texto), no de la imagen
+        sola -- ver SearchResults arriba.
         """
         if self._faiss_index is None or not self._id_map:
             log.warning('[search_by_product_id_with_text_boost] Index not ready.')
@@ -953,7 +1006,9 @@ class FashionSigLIPRetriever:
                 '[search_by_product_id_with_text_boost] boost_text vacio -- '
                 'degrading to plain image search'
             )
-            return await self.search_by_product_id(pid, top_k=top_k)
+            return await self.search_by_product_id(
+                pid, top_k=top_k, with_scores=with_scores
+            )
 
         loop = asyncio.get_running_loop()
 
@@ -979,12 +1034,15 @@ class FashionSigLIPRetriever:
             norm      = _np.linalg.norm(composite, axis=-1, keepdims=True)
             composite = (composite / norm).astype(_np.float32)
 
-            _, indices = self._faiss_index.search(composite, top_k + 1)
-            return [
-                self._id_map[idx]
-                for idx in indices[0]
+            # scores e indices son arrays PARALELOS: hay que zippearlos ANTES de
+            # filtrar el propio pid, o las puntuaciones se desalinean de los IDs.
+            scores, indices = self._faiss_index.search(composite, top_k + 1)
+            pairs = [
+                (self._id_map[idx], float(score))
+                for idx, score in zip(indices[0], scores[0])
                 if 0 <= idx < len(self._id_map) and self._id_map[idx] != pid
             ][:top_k]
+            return pairs if with_scores else [p for p, _ in pairs]
 
         return await loop.run_in_executor(None, _reconstruct_text_boost_and_search, position)
 

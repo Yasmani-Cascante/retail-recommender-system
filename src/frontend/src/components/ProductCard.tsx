@@ -37,9 +37,41 @@ interface ProductCardProps {
    * a este producto, sin que el usuario tenga que escribir nada.
    */
   onShowSimilar?: (product: ProductRecommendation) => void;
+  /**
+   * variant — jerarquia visual de la tarjeta (15/10/2026).
+   *
+   *   'default' — bloque PRINCIPAL: lo que el usuario pidio.
+   *   'compact' — bloque de ALTERNATIVAS: mas estrecha, con la imagen algo
+   *               atenuada y sin descripcion.
+   *
+   * POR QUE: con los dos bloques ya separados por titulo, las tarjetas seguian
+   * siendo identicas, asi que el peso visual decia "todo esto es lo mismo"
+   * mientras el titulo decia lo contrario. Cuando forma y texto se contradicen,
+   * gana la forma. La tarjeta compacta alinea las dos senales.
+   *
+   * No se recorta informacion util: titulo y precio se mantienen. Solo se quita
+   * la descripcion, que en este bloque es ruido.
+   */
+  variant?: 'default' | 'compact';
+  /**
+   * showDescription — extracto del producto (17/10/2026).
+   *
+   * Solo en modo EXPANDIDO / MAXIMIZADO. En el chat contraido la tarjeta vive
+   * en un carrusel estrecho y el extracto, aun recortado a 2 lineas, apreta
+   * demasiado el conjunto: esa fue la razon de quitarlo el 10/04/2026 y sigue
+   * siendo cierta ahi. Con el chat expandido hay sitio de sobra, y entonces el
+   * extracto ayuda a decidir sin salir de la conversacion.
+   *
+   * Se controla por PROP y no por CSS a proposito: el estado expandido vive en
+   * MessageList.module.css y la descripcion en ProductCard_V.module.css. Con
+   * CSS Modules cada archivo tiene su propio hash, asi que un selector
+   * descendente entre ambos no casaria -- fallaria en silencio, que es justo
+   * el modo de fallo que ya nos costo dos ciclos esta semana.
+   */
+  showDescription?: boolean;
 }
 
-export function ProductCard({ product, onChatAbout, onShowSimilar }: ProductCardProps) {
+export function ProductCard({ product, onChatAbout, onShowSimilar, variant = 'default', showDescription = false }: ProductCardProps) {
   /**
    * formatPrice — locale-aware currency display.
    * Currency comes from the normalized recommendation (always a valid ISO 4217
@@ -85,14 +117,34 @@ export function ProductCard({ product, onChatAbout, onShowSimilar }: ProductCard
   };
 
   const hasPrice = product.price > 0;
-  const hasScore = product.score > 0;
+
+  // FASE 4 (13/10/2026) — el "% match" solo donde hay una medida REAL.
+  //
+  // Hasta hoy se usaba `product.score`, que NO mide parecido: el backend lo
+  // genera como score_start menos 0.02 por posicion en la lista. Verificado
+  // contra pantalla el 07/10: los porcentajes eran 100, 98, 96, 94, 92, 87,
+  // 85, 83 -- exactamente esa escalera. Un producto traido del catalogo por
+  // categoria, sin ninguna vecindad visual medida, lucia un "87% match" igual
+  // de convincente que uno realmente parecido.
+  //
+  // `visualScore` SI es la similitud coseno real que calcula FAISS, y llega
+  // solo para origin === 'visual'. Se distingue null de 0 a proposito: null
+  // es "no hay medida" y 0 seria "medido y pesimo".
+  //
+  // Regla: sin medida, no se muestra porcentaje. Preferimos no decir nada a
+  // decir un numero inventado.
+  const measuredScore =
+    typeof product.visualScore === 'number' && isFinite(product.visualScore)
+      ? product.visualScore
+      : null;
+  const hasScore = measuredScore !== null && measuredScore > 0;
 
   // Mostrar la barra de botones solo cuando al menos uno de los callbacks está disponible
   const showActionBar = Boolean(onChatAbout || onShowSimilar);
 
   return (
     <div
-      className={`${styles.card} ${showActionBar ? styles.cardWithActions : ''}`}
+      className={`${styles.card} ${showActionBar ? styles.cardWithActions : ''} ${variant === 'compact' ? styles.cardCompact : ''}`}
       onClick={handleCardClick}
       role={product.url ? 'button' : 'article'}
       tabIndex={product.url ? 0 : undefined}
@@ -182,14 +234,32 @@ export function ProductCard({ product, onChatAbout, onShowSimilar }: ProductCard
 
           <div className={styles.title}>{product.title}</div>
 
-          {/* CAMBIO (10/04/2026): descripción eliminada de la carta.
-              Razones: (a) el espacio es limitado en el widget,
-              (b) la descripción ya aparece al hacer click en el producto,
-              (c) la vendor + título + precio son suficientes para identificar el item.
-          {product.description && (
+          {/* DESCRIPCION (16/10/2026) -- reactivada SOLO en el bloque principal.
+
+              Historia: se elimino el 10/04/2026 con tres razones validas en su
+              momento: (a) el espacio del widget es limitado, (b) la descripcion
+              ya aparece al abrir el producto, (c) vendor + titulo + precio
+              bastaban para identificar el item.
+
+              Que cambio: desde el 15/10 hay DOS bloques con jerarquia distinta
+              (lo pedido / alternativas). La razon (c) seguia siendo cierta para
+              IDENTIFICAR, pero el bloque principal ya no solo identifica: es la
+              respuesta a lo que el usuario pidio, y ahi un extracto ayuda a
+              decidir sin salir del chat. En las alternativas la razon original
+              sigue en pie, y por eso la variante compacta la oculta por CSS.
+
+              La razon (a) se respeta con el recorte a 2 lineas de
+              `.description` (-webkit-line-clamp: 2): el extracto nunca empuja
+              el precio fuera de la tarjeta.
+
+              Nota: durante meses esto no se habria visto aunque se
+              descomentara, porque `description` llegaba SIEMPRE vacia -- el
+              saneador del router la buscaba en la raiz del item y vive dentro
+              de `product_data`. Corregido el 16/10/2026. */}
+              
+          {showDescription && product.description && (
             <div className={styles.description}>{product.description}</div>
           )}
-          */}
 
           <div className={styles.priceRow}>
             {hasPrice && (
@@ -199,7 +269,7 @@ export function ProductCard({ product, onChatAbout, onShowSimilar }: ProductCard
             )}
             {hasScore && (
               <span className={styles.score}>
-                {Math.round(product.score * 100)}% match
+                {Math.round((measuredScore as number) * 100)}% match
               </span>
             )}
           </div>

@@ -410,6 +410,7 @@
   flex-direction: column;
   gap: 12px;
   margin: 12px auto;
+  margin-right: 0;
   width: 95%;
 }
 
@@ -490,4 +491,93 @@
 .bubbleInactive {
   opacity: 0.45;
   filter: grayscale(0.3);
+}
+
+/* ═════════════════════════════════════════════════════════════════════════
+   BLOQUE DE ALTERNATIVAS — jerarquia visual (15/10/2026)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Etiqueta del bloque subordinado: un punto mas clara que la principal.
+   Suficiente para marcar jerarquia sin que parezca deshabilitada. */
+.recoLabelAlt {
+  color: #a8a8a8;
+  font-weight: 500;
+  margin-top: 14px;
+}
+
+/* Separacion del bloque principal: el aire es lo que hace que se lean como
+   dos grupos y no como una lista con un titulo intercalado. */
+.productsListAlt {
+  margin-top: 2px;
+  opacity: 0;
+  animation: altBlockIn 0.34s ease-out 0.22s forwards;
+}
+
+/* Entrada RETRASADA respecto al bloque principal. El orden de aparicion
+   comunica subordinacion antes de que el usuario lea el titulo: primero lo
+   que pidio, y un instante despues lo demas.
+
+   CALIBRACION (16/10/2026): estaba en 6px / 0.28s / 0.12s de retraso y pasaba
+   desapercibido. Dos motivos: el desplazamiento era menor que el ruido visual
+   de una rejilla de imagenes cargando, y 120ms queda por debajo del umbral en
+   el que una secuencia se lee como secuencia. Subido a 14px y 220ms.
+
+   Si sigue sin notarse, lo mas probable es que el sistema operativo tenga
+   activado "reducir movimiento" -- en Windows, Configuracion > Accesibilidad
+   > Efectos visuales. La media query de abajo lo respeta a proposito. */
+@keyframes altBlockIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Boton "volver a ver la coleccion". Se separa de las tarjetas porque es una
+   accion, no un producto: pegarlo a la rejilla lo haria parecer una ficha mas. */
+.resetPill {
+  display: block;
+  margin: 10px 0 4px 2px;
+  margin-left: auto;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 16px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #1c1c1c;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, transform 0.12s ease;
+  white-space: nowrap;
+}
+
+.resetPill:hover:not(:disabled) {
+  background: #1c1c1c;
+  border-color: #1c1c1c;
+  color: #ffffff;
+}
+
+.resetPill:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* Estado DESHABILITADO: la funcionalidad de reinicio llega en un paso
+   posterior. Se muestra apagado y con `not-allowed` a proposito -- un boton
+   que parece pulsable y no hace nada frustra mas que uno claramente pendiente. */
+.resetPill:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .productsListAlt {
+    opacity: 1;
+    animation: none;
+  }
+  .resetPill {
+    transition: none;
+  }
 }

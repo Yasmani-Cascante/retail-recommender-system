@@ -2663,6 +2663,61 @@ class MCPPersonalizationEngine:
         # mantiene sin cambios para la supresion de upsell (esa SI es especifica a
         # cuando hay mezcla real).
         _category_exhausted_active = bool(_exhausted_info_early)
+        # NOTA (10/10/2026): aqui hubo un campo `kind` que distinguia dos
+        # significados de category_exhausted_info -- "catalog_exhausted" y
+        # "result_mixed" (fix del 04/10, tras el incidente de la Capa de Gasa
+        # Champagne). Se elimino al quedar un solo emisor posible: la
+        # composicion del resultado ya no viaja por esta senal, sino por la
+        # ESTRUCTURA del contrato (_facts, mas abajo). Lo que llega hoy por
+        # `category_exhausted_info` siempre significa agotamiento respaldado.
+
+        # ── G4 / FASE 2 del contrato de recomendaciones (08/10/2026) ──────────
+        # El handler deja en mcp_context.recommendation_set un objeto con DOS
+        # bloques ya separados: `principal` (lo que el usuario pidio) y
+        # `alternatives` (lo demas). Cuando existe, es una fuente MEJOR que
+        # category_exhausted_info, por dos razones:
+        #
+        #   1. Lleva las cuentas de ambos bloques y sus categorias reales, no
+        #      un unico par shown/total que hay que reinterpretar.
+        #   2. Su `exhausted` es un booleano con UN solo significado: el
+        #      catalogo se consulto y no habia mas. category_exhausted_info
+        #      mezclaba eso con "la composicion no es pura" (arreglado el
+        #      04/10 con `kind`, pero sigue siendo un parche sobre una senal
+        #      que nacio ambigua).
+        #
+        # POR QUE HACIA FALTA ESTO, y no bastaba con mejorar el prompt:
+        # El fix del 04/10 logro que el LLM dejara de AFIRMAR EN FALSO el
+        # agotamiento. No logro que REVELARA la mezcla: el 05/10, en el unico
+        # turno donde la senal se emitio, el LLM no la menciono pese a que el
+        # prompt se lo pedia explicitamente. Una instruccion entre muchas es
+        # opcional para el modelo. Entregarle dos bloques con sus cuentas es
+        # distinto: mencionar lo que uno tiene delante es lo natural.
+        #
+        # MIGRACION: solo F-08C construye el contrato hoy. Las demas rutas
+        # (Fase A, outfit, estandar) siguen por el camino antiguo intacto --
+        # de ahi que todo lo de abajo este guardado por `if _facts:` con el
+        # `elif` historico detras. Cuando todas las rutas lo construyan, el
+        # camino antiguo y `category_exhausted_info` podran retirarse juntos.
+        _recommendation_set = getattr(mcp_context, "recommendation_set", None)
+        try:
+            _facts = _recommendation_set.to_prompt_facts() if _recommendation_set else None
+        except Exception as _facts_err:  # degradacion: nunca romper el prompt
+            logger.warning("recommendation_set sin hechos utilizables: %s", _facts_err)
+            _facts = None
+
+        if _facts:
+            # Con el contrato, "hay mezcla" es un hecho contable, no una
+            # inferencia a partir de shown/total.
+            _category_mixing_active = _facts["alternatives_count"] > 0
+            _category_exhausted_active = bool(
+                _facts["catalog_exhausted"] or _facts["alternatives_count"] > 0
+            )
+            logger.info(
+                "prompt_facts_from_contract intent=%s principal=%d%s alternatives=%d%s exhausted=%s",
+                _facts["intent"], _facts["principal_count"], _facts["principal_categories"],
+                _facts["alternatives_count"], _facts["alternatives_categories"],
+                _facts["catalog_exhausted"],
+            )
 
         # Solo las 3 mejores recomendaciones con datos minimos.
         #
@@ -3151,7 +3206,104 @@ class MCPPersonalizationEngine:
         # funcion para gatear las instrucciones de upsell de F-01) en vez de
         # volver a leer el atributo -- una sola fuente de verdad.
         _exhausted_info = _exhausted_info_early
-        if _exhausted_info:
+        if _facts:
+            # REINICIO POR CATEGORIA (16/10/2026): este turno viene de que el
+            # usuario pulso "ver <categoria> otra vez". Hay que decirlo, o los
+            # productos repetidos parecen un fallo del sistema en vez de una
+            # accion suya.
+            _reset_notice = getattr(mcp_context, "category_reset_notice", None)
+            if _reset_notice:
+                prompt += (
+                    f"\nCONTEXTO DE ESTE TURNO (interno): el usuario acaba de pedir\n"
+                    f"VOLVER A VER los productos de esta categoria desde el principio,\n"
+                    f"asi que vera articulos que ya le mostraste antes. EMPIEZA\n"
+                    f"reconociendolo en una frase corta y natural (algo como \"te los\n"
+                    f"muestro otra vez desde el principio\"), y sigue con la\n"
+                    f"recomendacion normal. NO te disculpes ni lo presentes como un\n"
+                    f"problema: fue una peticion suya.\n"
+                )
+
+            # G4 (08/10/2026): HECHOS, no instrucciones de comportamiento.
+            # Se le dice al modelo QUE TIENE DELANTE y se le deja redactar.
+            # Las unicas prohibiciones son sobre afirmaciones que NO podemos
+            # respaldar con datos -- no sobre como contarlo.
+            _f_pri = _facts["principal_count"]
+            _f_alt = _facts["alternatives_count"]
+            _f_cat = _facts["requested_category"] or "lo que pediste"
+            _f_altcats = ", ".join(_facts["alternatives_categories"]) or "otras categorias"
+
+            if _f_alt > 0 or _facts["catalog_exhausted"]:
+                prompt += (
+                    f"\nHECHOS SOBRE ESTA RESPUESTA (internos -- NO los cites "
+                    f"literalmente, traducelos a lenguaje natural):\n"
+                    f"- Productos de '{_f_cat}', que es lo que el usuario pidio: {_f_pri}.\n"
+                    f"- Productos de otras categorias ({_f_altcats}): {_f_alt}.\n"
+                )
+                if _f_pri == 0 and _f_alt == 0:
+                    # SIN NADA QUE MOSTRAR (10/10/2026). Ocurre en los tipos cuyo
+                    # grupo padre coincide con su familia -- 17 de 36 en el
+                    # catalogo actual, entre ellos PANTALONES, KIMONOS, FALDAS y
+                    # ZAPATOS -- cuando ademas el catalogo se agota: no hay
+                    # principal y tampoco hermanas que ofrecer como alternativa.
+                    #
+                    # Antes el turno caia al fallback generico y mostraba
+                    # cualquier cosa (10/10, T3-T4: ropa interior sin stock para
+                    # una consulta de pantalones). Ahora se devuelven CERO
+                    # productos, que es lo honesto -- pero cero productos y punto
+                    # seria un callejon sin salida. Esta instruccion es la
+                    # version por TEXTO del boton "ver <categoria> otra vez"
+                    # (fase 3): no requiere frontend y evita que la conversacion
+                    # muera aqui.
+                    prompt += (
+                        f"- NO hay NINGUN producto que mostrar en esta respuesta: "
+                        f"la lista va vacia a proposito.\n"
+                        f"Dilo con naturalidad y brevedad, sin disculparte en "
+                        f"exceso, y OFRECE UNA SALIDA concreta: preguntale si "
+                        f"quiere volver a ver desde el principio lo que ya le "
+                        f"mostraste, o si prefiere buscar otra cosa (sugiere una "
+                        f"o dos opciones razonables segun lo que estaba viendo). "
+                        f"La respuesta NO puede terminar sin una via para "
+                        f"continuar.\n"
+                    )
+                elif _f_alt > 0:
+                    prompt += (
+                        f"Presenta los dos grupos de forma natural y DIFERENCIADA: "
+                        f"primero lo que pidio, y luego las otras piezas dejando "
+                        f"claro que son afines pero de otro tipo. El usuario debe "
+                        f"poder distinguir que es cada cosa sin adivinar.\n"
+                    )
+                if _facts["catalog_exhausted"]:
+                    # Unico caso en que afirmar agotamiento esta respaldado:
+                    # se consulto al catalogo con coherencia estricta y no
+                    # habia mas. Ver Block.exhausted en recommendation_set.py.
+                    #
+                    # REDACCION (10/10/2026, feedback Yasmani): decir "no
+                    # quedan mas EN EL CATALOGO" y no "en la categoria X".
+                    # El LLM producia frases como "no tengo mas clutchs en la
+                    # categoria de carteras", que suena a jerga interna: el
+                    # usuario no piensa en terminos de categorias del
+                    # catalogo, y ademas mezclaba el nombre del producto con
+                    # el de su categoria. "Ya te he mostrado todos los que
+                    # tengo" es mas simple y mas natural.
+                    prompt += (
+                        f"- Ya se los has mostrado TODOS: no queda ninguno mas "
+                        f"en el catalogo. Dilo de forma simple y natural, en "
+                        f"terminos de lo que el usuario esta buscando y SIN "
+                        f"nombrar categorias internas del catalogo ni decir "
+                        f"'en la categoria X'. Sin dramatismo, y ofrece las "
+                        f"otras piezas como alternativa, no como sustituto "
+                        f"equivalente.\n"
+                    )
+                else:
+                    prompt += (
+                        f"- PROHIBIDO afirmar o insinuar que son los ultimos "
+                        f"articulos, que ya se los mostraste todos, o cualquier "
+                        f"cosa sobre stock o disponibilidad: NO LO SABES. Estos "
+                        f"son los mas parecidos encontrados en esta busqueda y es "
+                        f"probable que el catalogo tenga mas. Tampoco uses "
+                        f"urgencia ('date prisa', 'quedan pocos') -- seria falsa.\n"
+                    )
+        elif _exhausted_info:
             _ex_cat = _exhausted_info.get("category", "esta categoria")
             _ex_shown = _exhausted_info.get("shown_count", 0)
             _ex_total = _exhausted_info.get("total_count", _ex_shown)
@@ -3263,7 +3415,52 @@ class MCPPersonalizationEngine:
         # completa" relacionada con la busqueda -- la instruccion de cierre, al
         # ser la mas reciente, ganaba el conflicto. Con mezcla activa, se usa una
         # instruccion de cierre distinta que refuerza (no contradice) el aviso.
-        if _category_exhausted_active:
+        if _facts and _category_exhausted_active:
+            # G4 (08/10/2026): cierre coherente con los HECHOS de arriba.
+            # La instruccion de cierre es la ULTIMA del prompt y por tanto la
+            # de mas peso: si contradijera al bloque de hechos, ganaria ella.
+            # Es exactamente lo que paso el 04/10, cuando el cierre obligaba a
+            # afirmar "ya le mostraste TODOS" aunque el bloque de arriba ya no
+            # lo pidiera.
+            _f_cat_close = _facts["requested_category"] or "lo que pediste"
+            prompt += (
+                f"Historial conversacional (ultimos 3 turnos):\n{last_query}\n"
+                f"Construir sobre la conversacion, manteniendo coherencia durante todo el flujo.\n"
+                f"Moneda: {market_config.currency}\n"
+                f"Productos recomendados: {recs_summary}\n\n"
+            )
+            if _facts["principal_count"] == 0 and _facts["alternatives_count"] == 0:
+                prompt += (
+                    f"- NO hay productos en esta respuesta. No menciones ni "
+                    f"inventes ninguno, y NO describas precios.\n"
+                    f"- Termina SIEMPRE ofreciendo una via para continuar.\n"
+                )
+            else:
+                prompt += (
+                    f"- LO PRIMERO que dices debe reflejar los HECHOS de arriba: "
+                    f"cuantos son de lo que pidio y cuantos de otro tipo. Hablale "
+                    f"en sus terminos (p. ej. 'bolsos'), NO con el nombre interno "
+                    f"de la categoria del catalogo.\n"
+                    f"- Despues explica brevemente por que encajan, destacando alguna "
+                    f"pieza con su precio.\n"
+                )
+            if not _facts["catalog_exhausted"]:
+                prompt += (
+                    f"- NO afirmes nada sobre stock, agotamiento ni ultimas "
+                    f"unidades: no dispones de esa informacion.\n"
+                )
+            prompt += (
+                f"- NO repitas literalmente los marcadores en mayusculas de "
+                f"arriba (son instrucciones internas para ti, NO texto para el "
+                f"usuario).\n"
+                f"Respuesta directa sin JSON:"
+            )
+            logger.info(
+                "contract_closing_instruction_applied principal=%d alternatives=%d exhausted=%s",
+                _facts["principal_count"], _facts["alternatives_count"],
+                _facts["catalog_exhausted"],
+            )
+        elif _category_exhausted_active:
             prompt += (
                 f"Historial conversacional (ultimos 3 turnos):\n{last_query}\n"
                 f"Construir sobre la conversacion, manteniendo coherencia durante todo el flujo.\n"

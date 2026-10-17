@@ -49,6 +49,13 @@ export interface Message {
    * Undefined para mensajes normales o de búsqueda visual simple.
    */
   outfitResult?: OutfitResult;
+
+  /**
+   * recommendationBlocks — como agrupar `recommendations` (fase 3.2).
+   * undefined cuando el backend no construyo contrato: el widget pinta
+   * entonces la rejilla unica de siempre.
+   */
+  recommendationBlocks?: RecommendationBlocks | null;
 }
 
 export interface ProductRecommendation {
@@ -66,10 +73,72 @@ export interface ProductRecommendation {
   vendor: string;
   score: number;
   image_url?: string;
+
+  /**
+   * FASE 3.2 / 4 (13/10/2026) — procedencia y parecido REAL.
+   *
+   * origin indica de donde salio el producto:
+   *   'visual'     — del pool de vecinos visuales (FAISS). Es el unico con
+   *                  parecido medido.
+   *   'catalog'    — traido del catalogo por categoria. NO tiene parecido
+   *                  visual medido.
+   *   'behavioral' — de preferencias historicas del usuario.
+   *
+   * visualScore es la similitud COSENO real, en [0,1]. Llega SOLO para
+   * origin === 'visual'; en los demas casos es null.
+   *
+   * POR QUE IMPORTA: hasta hoy ProductCard mostraba un "% match" que no medía
+   * nada — era la posicion en la lista (1.0 menos 0.02 por puesto), asi que un
+   * producto traido del catalogo sin ninguna vecindad visual medida lucia un
+   * "87% match" igual de convincente que uno realmente parecido.
+   * La regla ahora: mostrar porcentaje SOLO si visualScore no es null/undefined.
+   */
+  origin?: 'visual' | 'catalog' | 'behavioral';
+  visualScore?: number | null;
+  visualRank?: number | null;
+
   // FIX (27/03/2026): url field added so ProductCard can navigate to the product
   // page when the backend supplies it. The backend returns it inconsistently —
   // it is optional here and the card renders without it gracefully.
   url?: string;
+}
+
+/**
+ * RecommendationBlocks — como agrupar `recommendations` en los dos bloques del
+ * contrato del backend (fase 3.1, 13/10/2026).
+ *
+ * Lleva IDENTIFICADORES, no productos: `Message.recommendations` sigue siendo
+ * la unica fuente de items y YA viene ordenada principal-y-luego-alternativas.
+ * Duplicar los productos crearia dos fuentes de verdad que pueden divergir.
+ *
+ * undefined/null cuando el backend no construyo contrato (rutas de outfit,
+ * estandar, o turnos sin recomendaciones). En ese caso el widget debe pintar
+ * la rejilla unica de siempre -- es lo que permite desplegar sin coordinar.
+ */
+export interface RecommendationBlocks {
+  intent: 'similarity' | 'outfit_complement' | 'category_query' | 'generic';
+  principal: {
+    product_ids: string[];
+    categories: string[];
+    /**
+     * true SOLO si se consulto al catalogo y no quedaban mas de lo pedido.
+     * Es la condicion del boton "ver <categoria> otra vez": no basta con que
+     * el bloque principal este vacio, porque puede estarlo simplemente
+     * porque el pool visual se quedo corto.
+     */
+    exhausted: boolean;
+  };
+  alternatives: {
+    product_ids: string[];
+    categories: string[];
+  };
+  meta: {
+    anchor_id?: string | null;
+    anchor_type?: string | null;
+    n_requested?: number;
+    route?: string;
+    requested_categories?: string[];
+  };
 }
 
 /**

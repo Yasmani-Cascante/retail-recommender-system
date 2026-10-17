@@ -105,6 +105,22 @@ class SearchImageResponse(BaseModel):
     product_ids: List[str]
     latency_ms: float
     visual_index_size: int
+    # FIX (06/10/2026): similitud COSENO real, alineada 1:1 con product_ids.
+    #
+    # El indice es IndexFlatIP con vectores normalizados, asi que faiss.search()
+    # ya venia devolviendo estas puntuaciones -- y las tres busquedas las
+    # descartaban en origen con `_, indices = ...`. Aguas abajo, el monolito
+    # fabricaba un "% match" a partir de la POSICION en la lista, de modo que un
+    # producto traido del catalogo por categoria (sin vecindad visual medida)
+    # mostraba un porcentaje igual de convincente que uno realmente parecido.
+    #
+    # COMPATIBILIDAD: campo OPCIONAL y aditivo. Los clientes que solo leen
+    # data['product_ids'] (hoy: colbert_client) no se enteran. Se puebla a
+    # partir de este despliegue; el monolito lo consumira en un cambio
+    # posterior e independiente.
+    #
+    # Ver SPEC_Contrato_Recomendaciones_06102026.md, seccion 2.3.
+    scores: Optional[List[float]] = None
 
 
 class MultiTextBoostRequest(BaseModel):
@@ -472,7 +488,13 @@ async def search_by_image(
         )
 
     t0 = time.time()
-    product_ids = await visual_retriever.search_by_image(image_bytes, top_k=top_k)
+    # with_scores=True: devuelve pares (product_id, score). Se desempaquetan en
+    # dos listas alineadas 1:1 para el modelo de respuesta.
+    _results    = await visual_retriever.search_by_image(
+        image_bytes, top_k=top_k, with_scores=True
+    )
+    product_ids = [pid for pid, _ in _results]
+    scores      = [score for _, score in _results]
     latency_ms  = round((time.time() - t0) * 1000, 1)
 
     log.info('visual_search: found=%d top_k=%d latency=%.1fms size=%dKB',
@@ -480,6 +502,7 @@ async def search_by_image(
 
     return SearchImageResponse(
         product_ids=product_ids,
+        scores=scores,
         latency_ms=latency_ms,
         visual_index_size=visual_retriever.index_size(),
     )
@@ -502,7 +525,11 @@ async def search_by_product_id(
         raise HTTPException(503, 'Visual index not ready')
 
     t0 = time.time()
-    product_ids = await visual_retriever.search_by_product_id(product_id, top_k=top_k)
+    _results    = await visual_retriever.search_by_product_id(
+        product_id, top_k=top_k, with_scores=True
+    )
+    product_ids = [pid for pid, _ in _results]
+    scores      = [score for _, score in _results]
     latency_ms  = round((time.time() - t0) * 1000, 1)
 
     log.info('search_by_product_id: product_id=%s found=%d latency=%.1fms',
@@ -510,6 +537,7 @@ async def search_by_product_id(
 
     return SearchImageResponse(
         product_ids=product_ids,
+        scores=scores,
         latency_ms=latency_ms,
         visual_index_size=visual_retriever.index_size(),
     )
@@ -540,9 +568,12 @@ async def search_by_product_id_with_text_boost(
         raise HTTPException(503, 'Visual index not ready')
 
     t0 = time.time()
-    product_ids = await visual_retriever.search_by_product_id_with_text_boost(
+    _results    = await visual_retriever.search_by_product_id_with_text_boost(
         product_id, boost_text=boost_text, alpha=alpha, top_k=top_k,
+        with_scores=True,
     )
+    product_ids = [pid for pid, _ in _results]
+    scores      = [score for _, score in _results]
     latency_ms  = round((time.time() - t0) * 1000, 1)
 
     log.info(
@@ -553,6 +584,7 @@ async def search_by_product_id_with_text_boost(
 
     return SearchImageResponse(
         product_ids=product_ids,
+        scores=scores,
         latency_ms=latency_ms,
         visual_index_size=visual_retriever.index_size(),
     )
