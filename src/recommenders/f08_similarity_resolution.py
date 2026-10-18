@@ -52,11 +52,20 @@ PASO 1 = SIN CAMBIO DE COMPORTAMIENTO (deliberado):
     service devolviera ints), la forma con str() es la unica correcta.
 
 Dependencias:
-    Ninguna importada. Todo lo externo llega inyectado como parametro
-    (get_parent_categories_fn, type_of) -- mismo criterio que
-    f08b2_category_resolution.py y f08b_target_categories.py: modulo
-    trivialmente testeable con stubs, sin acoplarlo a como el llamador real
-    obtiene sus datos (CATEGORY_KEYWORDS, TF-IDF id_index, etc.).
+    Las FUENTES DE DATOS llegan inyectadas como parametro
+    (get_parent_categories_fn, type_of, similarity_family_fn,
+    alternative_types_fn) -- mismo criterio que f08b2_category_resolution.py
+    y f08b_target_categories.py: modulo trivialmente testeable con stubs,
+    sin acoplarlo a como el llamador real obtiene sus datos
+    (CATEGORY_KEYWORDS, TF-IDF id_index, product_taxonomy, etc.).
+
+    Unica importacion de proyecto (17/10/2026, E5 nivel 2 paso 2): las
+    constantes INTENT_* de recommendation_set, usadas por
+    build_pool_request(). Son VOCABULARIO del contrato, no una fuente de
+    datos: copiarlas como literales crearia una segunda fuente de verdad, e
+    inyectarlas anadiria ruido sin ganar testeabilidad. recommendation_set
+    solo importa la libreria estandar y no importa este modulo, asi que no
+    hay riesgo de ciclo ni de arrastrar dependencias pesadas.
 
 Contrato de type_of (usado por varias funciones):
     type_of(pid) -> str: el product_type Shopify del producto, o "" si el
@@ -106,6 +115,14 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import logging as _logging
 import os as _os
+
+# Vocabulario del contrato (ver "Dependencias" en el docstring del modulo).
+# Solo lo usa build_pool_request().
+from src.recommenders.recommendation_set import (
+    INTENT_CATEGORY_QUERY as _INTENT_CATEGORY_QUERY,
+    INTENT_GENERIC as _INTENT_GENERIC,
+    INTENT_SIMILARITY as _INTENT_SIMILARITY,
+)
 
 _log = _logging.getLogger(__name__)
 
@@ -619,6 +636,143 @@ def _resolve_query_first(
     if anchor_type and anchor_type.upper() in [c.upper() for c in query_cats]:
         ranking = anchor_type.upper()
     return CategoryResolution(query_cats, ranking, "query_text")
+
+
+# =============================================================================
+# Etapa 1c -- que se pidio y que puede entrar al pool (17/10/2026)
+# =============================================================================
+# PROBLEMA: desde el 10/10/2026 F-08 Fase A y F-08C calculaban INLINE, y por
+# duplicado, la intencion del turno, "lo pedido" (la familia del ancla) y lo
+# que puede entrar al pool (lo pedido + sus alternativas declaradas). Dos
+# copias de la misma regla son dos sitios donde olvidar un arreglo: es el
+# patron que causo la divergencia A/C (Addendum A.2 del DCT).
+#
+# MOTIVO DE EXTRAERLO AHORA: E5 nivel 2 (SPEC_E5_Nivel2_Busqueda_Filtrada_
+# 17102026.md) necesita conocer pool_cats ANTES de la busqueda FAISS, para
+# filtrar dentro de ella. Hoy se calcula despues, dentro del bloque que
+# procesa los resultados. Una funcion pura se puede llamar en cualquier punto.
+#
+# EQUIVALENCIA: tests/characterization/equiv_harness_pool_request.py compara
+# esta funcion con copias LITERALES de los dos bloques inline (20.000 casos
+# por ruta) e incluye auto-verificacion por mutantes.
+
+@dataclass(frozen=True)
+class PoolRequest:
+    """
+    Resultado de build_pool_request(). Cinco campos, los cinco que el resto
+    del bloque de cada ruta consumia de las variables inline:
+
+    intent:
+        Una de las constantes INTENT_* de recommendation_set. Decide como el
+        contrato interpreta el turno (ver RecommendationSet.build).
+    requested_ordered:
+        "Lo pedido", en orden. En similitud: el tipo del ancla PRIMERO y
+        despues el resto de su familia. El orden importa:
+        build_partial_exhaustion_info etiqueta el agotamiento con el primer
+        elemento (bug A.3.a, 07/10/2026).
+    requested:
+        set(requested_ordered), para pertenencia O(1) en el contrato.
+    alt_types:
+        Alternativas declaradas de CADA miembro de lo pedido, sin
+        duplicados y en orden de aparicion (el orden de ALTERNATIVE_FAMILIES
+        es el de preferencia del estilista).
+    pool_cats:
+        requested_ordered + alt_types: todo lo que puede entrar al pool.
+        Es el criterio del filtro de la etapa 2 desde el 10/10/2026, y sera
+        el del filtro DENTRO de la busqueda en E5 nivel 2.
+
+    frozen=True impide reasignar campos, pero las listas siguen siendo
+    listas: el llamador las recibe tal como las recibia de las variables
+    inline. Verificado el 17/10 que ningun consumidor las muta despues.
+    """
+
+    intent: str
+    requested_ordered: List[str]
+    requested: Set[str]
+    alt_types: List[str]
+    pool_cats: List[str]
+
+
+def build_pool_request(
+    resolution: CategoryResolution,
+    anchor_type: Optional[str],
+    *,
+    similarity_family_fn: Callable[[str], List[str]],
+    alternative_types_fn: Callable[[str], List[str]],
+) -> PoolRequest:
+    """
+    Decide la intencion del turno, lo pedido y lo que admite el pool.
+
+    Args:
+        resolution: salida de resolve_similarity_categories() para la ruta.
+            Se usan solo `source` y `categories`.
+        anchor_type: product_type del ancla tal como llega del contexto
+            ("" o None si no hay ancla).
+        similarity_family_fn: product_taxonomy.get_similarity_family en
+            produccion (inyectado: ver "Dependencias" en el docstring).
+        alternative_types_fn: product_taxonomy.get_alternative_types en
+            produccion.
+
+    Reglas, por `resolution.source`:
+        "query_text"  -> el usuario NOMBRO categorias ("muestrame bolsos"):
+                         intent CATEGORY_QUERY; lo pedido son esas, en su orden.
+        "parent_group" / "exact_type"
+                      -> similitud con el ancla: intent SIMILARITY; lo pedido
+                         es la familia del ancla, con el ancla primero.
+        "none" (o cualquier otro valor)
+                      -> sin ancla ni texto: intent GENERIC; nada pedido.
+
+    Equivalencia con el codigo inline que reemplaza:
+      - F-08C decidia exactamente por `resolution.source`: identico.
+      - Fase A decidia con `if _f08_type_upper:` y nunca tiene "query_text"
+        (F08A_ROUTE.use_query_categories=False). _resolve_anchor_only()
+        devuelve "none" si y solo si el tipo en mayusculas es vacio, asi que
+        ambas condiciones coinciden. Lo comprueba el oraculo; no se confia
+        solo en esta lectura.
+      - Familia: Fase A llamaba con el tipo en mayusculas y F-08C con el tipo
+        tal cual; get_similarity_family() normaliza a mayusculas, asi que el
+        resultado es el mismo. Aqui se llama siempre en mayusculas.
+    """
+    source = resolution.source
+
+    if source == "query_text":
+        intent = _INTENT_CATEGORY_QUERY
+        # Copia, no la misma lista: el llamador inline hacia list(...) y la
+        # resolucion no debe quedar compartida con lo que se devuelve.
+        requested_ordered = list(resolution.categories)
+    elif source in ("parent_group", "exact_type"):
+        intent = _INTENT_SIMILARITY
+        anchor_up = (anchor_type or "").upper()
+        if anchor_up:
+            family = similarity_family_fn(anchor_up)
+            # El ancla primero, el resto de su familia despues (orden de la
+            # familia preservado, sin repetir el ancla).
+            requested_ordered = [anchor_up] + [t for t in family if t != anchor_up]
+        else:
+            # Defensivo: con estos source el ancla nunca llega vacia (ver
+            # _resolve_anchor_only y _resolve_query_first), pero F-08C ya se
+            # protegia de ello y se conserva esa proteccion.
+            requested_ordered = []
+    else:
+        intent = _INTENT_GENERIC
+        requested_ordered = []
+
+    # Alternativas de CADA miembro de lo pedido, sin duplicados y en orden de
+    # aparicion. Bucle explicito (y no un set) a proposito: el orden es parte
+    # del contrato.
+    alt_types: List[str] = []
+    for requested_type in requested_ordered:
+        for alternative in alternative_types_fn(requested_type):
+            if alternative not in alt_types:
+                alt_types.append(alternative)
+
+    return PoolRequest(
+        intent=intent,
+        requested_ordered=requested_ordered,
+        requested=set(requested_ordered),
+        alt_types=alt_types,
+        pool_cats=list(requested_ordered) + alt_types,
+    )
 
 
 # =============================================================================

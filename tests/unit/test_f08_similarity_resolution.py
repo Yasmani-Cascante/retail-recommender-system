@@ -27,8 +27,10 @@ from src.recommenders.f08_similarity_resolution import (
     POOL_HAPPY,
     POOL_PARTIAL,
     SIGNAL_CATALOG_EXHAUSTED,
+    CategoryResolution,
     _read_visual_pool_cap,
     build_fill_exclusion,
+    build_pool_request,
     build_partial_exhaustion_info,
     build_partial_fill_events,
     candidate_breakdown,
@@ -639,3 +641,106 @@ class TestTipoDeSenal:
         """
         dict_sin_kind = {"category": "CLUTCH", "shown_count": 0, "total_count": 8}
         assert dict_sin_kind.get("kind", SIGNAL_CATALOG_EXHAUSTED) == SIGNAL_CATALOG_EXHAUSTED
+
+
+# ════════════════════════════════════════════════════════════════════
+# build_pool_request (17/10/2026, E5 nivel 2 paso 2)
+# ════════════════════════════════════════════════════════════════════
+#
+# La EQUIVALENCIA con los dos bloques inline que reemplaza la demuestra
+# tests/characterization/equiv_harness_pool_request.py (40.000 casos +
+# mutantes). Estos tests cumplen otra funcion: documentar las reglas con
+# ejemplos legibles. Usan stubs de taxonomia (no product_taxonomy real)
+# para no romperse cuando cambien las familias declaradas: lo que se
+# prueba es la logica, no los datos.
+
+from src.recommenders.recommendation_set import (  # noqa: E402
+    INTENT_CATEGORY_QUERY,
+    INTENT_GENERIC,
+    INTENT_SIMILARITY,
+)
+
+# Familias stub con la forma real: CARTERAS y CLUTCH son el mismo bolso
+# (caso que motivo G2, 07/10); AROS va sola.
+_FAMILIES = {"CARTERAS": ["CARTERAS", "CLUTCH"], "CLUTCH": ["CARTERAS", "CLUTCH"]}
+# Alternativas stub. AROS y COLLARES se ofrecen mutuamente, y CLUTCH
+# comparte una alternativa con CARTERAS (AROS) para probar la deduplicacion.
+_ALTS = {
+    "CARTERAS": ["AROS", "CINTURONES"],
+    "CLUTCH": ["AROS", "TOCADOS"],
+    "AROS": ["COLLARES"],
+}
+
+
+def _family(t):
+    # Mismo contrato que product_taxonomy.get_similarity_family: devuelve
+    # siempre una lista que incluye al propio tipo, en mayusculas.
+    return list(_FAMILIES.get(t.upper(), [t.upper()])) if t else []
+
+
+def _alts(t):
+    return list(_ALTS.get(t.upper(), []))
+
+
+def _build(source, categories, anchor):
+    return build_pool_request(
+        CategoryResolution(categories, None, source),
+        anchor,
+        similarity_family_fn=_family,
+        alternative_types_fn=_alts,
+    )
+
+
+class TestBuildPoolRequest:
+
+    def test_similitud_ancla_primero_y_resto_de_la_familia(self):
+        """El ancla va PRIMERO: la etiqueta de agotamiento usa el primer
+        elemento (bug A.3.a). Con ancla CLUTCH se pide CLUTCH y luego CARTERAS."""
+        req = _build("parent_group", ["AROS", "CLUTCH", "CARTERAS"], "clutch")
+        assert req.intent == INTENT_SIMILARITY
+        assert req.requested_ordered == ["CLUTCH", "CARTERAS"]
+        assert req.requested == {"CLUTCH", "CARTERAS"}
+
+    def test_alternativas_de_cada_miembro_sin_duplicados_y_en_orden(self):
+        """CLUTCH aporta AROS y TOCADOS; CARTERAS aporta AROS (repetida, se
+        omite) y CINTURONES. El orden es el de aparicion."""
+        req = _build("exact_type", ["CLUTCH"], "CLUTCH")
+        assert req.alt_types == ["AROS", "TOCADOS", "CINTURONES"]
+        assert req.pool_cats == ["CLUTCH", "CARTERAS", "AROS", "TOCADOS", "CINTURONES"]
+
+    def test_query_text_lo_pedido_es_lo_nombrado_no_la_familia_del_ancla(self):
+        """'Muestrame aros' viendo un clutch: se pide AROS, no bolsos."""
+        req = _build("query_text", ["AROS"], "CLUTCH")
+        assert req.intent == INTENT_CATEGORY_QUERY
+        assert req.requested_ordered == ["AROS"]
+        assert req.pool_cats == ["AROS", "COLLARES"]
+
+    def test_query_text_devuelve_una_copia_de_las_categorias(self):
+        """La lista de la resolucion no debe quedar compartida con la salida
+        (el codigo inline hacia list(...))."""
+        cats = ["AROS"]
+        req = _build("query_text", cats, "")
+        assert req.requested_ordered == cats
+        assert req.requested_ordered is not cats
+
+    def test_sin_ancla_ni_texto_es_generico_y_no_pide_nada(self):
+        req = _build("none", [], "")
+        assert req.intent == INTENT_GENERIC
+        assert req.requested_ordered == []
+        assert req.requested == set()
+        assert req.alt_types == []
+        assert req.pool_cats == []
+
+    def test_source_similitud_con_ancla_vacia_no_pide_nada(self):
+        """Defensa heredada de F-08C: con source de similitud y ancla vacia
+        (no deberia ocurrir) no se inventa un tipo vacio."""
+        req = _build("exact_type", [], "")
+        assert req.intent == INTENT_SIMILARITY
+        assert req.requested_ordered == []
+        assert req.pool_cats == []
+
+    def test_tipo_sin_familia_ni_alternativas_es_su_propia_familia(self):
+        req = _build("exact_type", ["TURBANTES"], "Turbantes")
+        assert req.requested_ordered == ["TURBANTES"]
+        assert req.alt_types == []
+        assert req.pool_cats == ["TURBANTES"]

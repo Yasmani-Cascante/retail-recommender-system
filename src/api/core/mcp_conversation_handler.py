@@ -2014,10 +2014,9 @@ async def get_mcp_conversation_recommendations(
                                         # Con el contrato el bolso va en principal y el cinturon en
                                         # alternatives, y to_flat_list() concatena en ese orden: ya
                                         # no es una regla de ranking que algo pueda saltarse.
+                                        # INTENT_* ya no se importan aqui (17/10/2026): la
+                                        # intencion la decide build_pool_request(), mas abajo.
                                         from src.recommenders.recommendation_set import (
-                                            INTENT_CATEGORY_QUERY as _C08_INTENT_CATEGORY_QUERY,
-                                            INTENT_GENERIC as _C08_INTENT_GENERIC,
-                                            INTENT_SIMILARITY as _C08_INTENT_SIMILARITY,
                                             ORIGIN_CATALOG as _C08_ORIGIN_CATALOG,
                                             ORIGIN_VISUAL as _C08_ORIGIN_VISUAL,
                                             RecommendationSet as _C08_RecommendationSet,
@@ -2029,6 +2028,7 @@ async def get_mcp_conversation_recommendations(
                                             get_similarity_family as _c08_similarity_family,
                                         )
                                         from src.recommenders.f08_similarity_resolution import (
+                                            build_pool_request as _c08_build_pool_request,
                                             filter_fill_to_request as _c08_filter_fill,
                                             principal_first_enabled as _c08_principal_first,
                                             split_candidates_by_request as _c08_split_by_request,
@@ -2048,21 +2048,28 @@ async def get_mcp_conversation_recommendations(
                                         # etiqueta el agotamiento con categories[0], asi que esto cierra
                                         # de paso el bug A.3.a para esta ruta -- antes, con ancla
                                         # CAPAS GASA se reportaba "CAPAS BORDADAS".
-                                        if _c08_resolution.source == "query_text":
-                                            _c08_intent = _C08_INTENT_CATEGORY_QUERY
-                                            _c08_requested_ordered = list(_c08_query_cats)
-                                        elif _c08_resolution.source in ("parent_group", "exact_type"):
-                                            _c08_intent = _C08_INTENT_SIMILARITY
-                                            _c08_family = _c08_similarity_family(_c08_ctx_type)
-                                            _c08_anchor_up = (_c08_ctx_type or "").upper()
-                                            _c08_requested_ordered = (
-                                                [_c08_anchor_up]
-                                                + [t for t in _c08_family if t != _c08_anchor_up]
-                                            ) if _c08_anchor_up else []
-                                        else:
-                                            _c08_intent = _C08_INTENT_GENERIC
-                                            _c08_requested_ordered = []
-                                        _c08_requested = set(_c08_requested_ordered)
+                                        #
+                                        # EXTRAIDO (17/10/2026, E5 nivel 2 paso 2): la intencion, lo
+                                        # pedido y lo que admite el pool se calculaban aqui inline y
+                                        # POR DUPLICADO con Fase A. Ahora los decide
+                                        # build_pool_request() en f08_similarity_resolution.py --
+                                        # mismas reglas, una sola copia. E5 nivel 2 necesita ademas
+                                        # poder calcularlos ANTES de la busqueda FAISS, para filtrar
+                                        # dentro de ella (SPEC_E5_Nivel2_Busqueda_Filtrada_17102026).
+                                        # Equivalencia: tests/characterization/
+                                        # equiv_harness_pool_request.py (20.000 casos por ruta,
+                                        # copias literales del codigo que habia aqui, + mutantes).
+                                        # Las variables conservan sus nombres: el resto del bloque no
+                                        # cambia.
+                                        _c08_pool_req = _c08_build_pool_request(
+                                            _c08_resolution,
+                                            _c08_ctx_type,
+                                            similarity_family_fn=_c08_similarity_family,
+                                            alternative_types_fn=_c08_alternative_types,
+                                        )
+                                        _c08_intent = _c08_pool_req.intent
+                                        _c08_requested_ordered = _c08_pool_req.requested_ordered
+                                        _c08_requested = _c08_pool_req.requested
 
                                         # Que puede entrar en el POOL (10/10/2026): lo pedido MAS
                                         # sus alternativas declaradas. Sustituye al grupo padre de
@@ -2077,12 +2084,9 @@ async def get_mcp_conversation_recommendations(
                                         # De paso, esto saca del camino de similitud la dependencia
                                         # del ORDEN de CATEGORY_KEYWORDS (contrato implicito
                                         # ACCESSORIES/JOYAS, gap B6).
-                                        _c08_alt_types = []
-                                        for _c08_req_t in _c08_requested_ordered:
-                                            for _c08_a in _c08_alternative_types(_c08_req_t):
-                                                if _c08_a not in _c08_alt_types:
-                                                    _c08_alt_types.append(_c08_a)
-                                        _c08_pool_cats = list(_c08_requested_ordered) + _c08_alt_types
+                                        # Calculado por build_pool_request() (ver arriba).
+                                        _c08_alt_types = _c08_pool_req.alt_types
+                                        _c08_pool_cats = _c08_pool_req.pool_cats
 
                                         # El log de expansion se emite DESPUES de calcular
                                         # _c08_pool_cats (10/10/2026) para que describa lo que el
@@ -2983,9 +2987,9 @@ async def get_mcp_conversation_recommendations(
                                 # consulta el texto de la query (F08A_ROUTE.use_query_categories
                                 # =False, gap B7 abierto como decision de producto). Por eso aqui
                                 # no hay rama query_text, a diferencia de F-08C.
+                                # INTENT_* ya no se importan aqui (17/10/2026): la
+                                # intencion la decide build_pool_request(), mas abajo.
                                 from src.recommenders.recommendation_set import (
-                                    INTENT_GENERIC as _F08_INTENT_GENERIC,
-                                    INTENT_SIMILARITY as _F08_INTENT_SIMILARITY,
                                     ORIGIN_CATALOG as _F08_ORIGIN_CATALOG,
                                     ORIGIN_VISUAL as _F08_ORIGIN_VISUAL,
                                     RecommendationSet as _F08_RecommendationSet,
@@ -2997,22 +3001,27 @@ async def get_mcp_conversation_recommendations(
                                     get_similarity_family as _f08_similarity_family,
                                 )
                                 from src.recommenders.f08_similarity_resolution import (
+                                    build_pool_request as _f08_build_pool_request,
                                     filter_fill_to_request as _f08_filter_fill,
                                     principal_first_enabled as _f08_principal_first,
                                     split_candidates_by_request as _f08_split_by_request,
                                 )
 
-                                if _f08_type_upper:
-                                    _f08_intent = _F08_INTENT_SIMILARITY
-                                    _f08_family = _f08_similarity_family(_f08_type_upper)
-                                    _f08_requested_ordered = (
-                                        [_f08_type_upper]
-                                        + [t for t in _f08_family if t != _f08_type_upper]
-                                    )
-                                else:
-                                    _f08_intent = _F08_INTENT_GENERIC
-                                    _f08_requested_ordered = []
-                                _f08_requested = set(_f08_requested_ordered)
+                                # EXTRAIDO (17/10/2026, E5 nivel 2 paso 2): ver el comentario
+                                # equivalente en F-08C. Aqui la decision era `if _f08_type_upper:`;
+                                # build_pool_request() decide por _f08_resolution.source, que en
+                                # Fase A vale "none" si y solo si el tipo en mayusculas esta vacio
+                                # (_resolve_anchor_only). Equivalencia comprobada por el oraculo
+                                # tests/characterization/equiv_harness_pool_request.py.
+                                _f08_pool_req = _f08_build_pool_request(
+                                    _f08_resolution,
+                                    _f08_ptype,
+                                    similarity_family_fn=_f08_similarity_family,
+                                    alternative_types_fn=_f08_alternative_types,
+                                )
+                                _f08_intent = _f08_pool_req.intent
+                                _f08_requested_ordered = _f08_pool_req.requested_ordered
+                                _f08_requested = _f08_pool_req.requested
 
                                 # Que puede entrar en el POOL (10/10/2026): lo pedido MAS sus
                                 # alternativas declaradas -- ver el comentario equivalente en
@@ -3020,12 +3029,10 @@ async def get_mcp_conversation_recommendations(
                                 # TURNO 1 y, al no haber nada mostrado, el pool no se amplia con
                                 # el nivel 1. Para un ancla PANTALONES el pool pasa de admitir
                                 # solo PANTALONES a admitir tambien FALDAS y LEGGINGS.
-                                _f08_alt_types = []
-                                for _f08_req_t in _f08_requested_ordered:
-                                    for _f08_a in _f08_alternative_types(_f08_req_t):
-                                        if _f08_a not in _f08_alt_types:
-                                            _f08_alt_types.append(_f08_a)
-                                _f08_pool_cats = list(_f08_requested_ordered) + _f08_alt_types
+                                # Calculado por build_pool_request() (ver arriba). A diferencia de
+                                # F-08C, Fase A no necesita alt_types por separado: solo lo usaba
+                                # para construir pool_cats (y su log de expansion no lo imprime).
+                                _f08_pool_cats = _f08_pool_req.pool_cats
 
                                 def _f08_item_type_of(_item):
                                     # El contrato recibe items ya normalizados; el tipo vive en
