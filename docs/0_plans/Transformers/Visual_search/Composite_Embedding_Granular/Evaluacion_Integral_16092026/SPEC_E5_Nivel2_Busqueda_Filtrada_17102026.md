@@ -441,7 +441,9 @@ validado con tres anclas que cubren sus dos ramas y no distingue por tipo;
 | H-6 | El 404 de OpenRouter (LFM2) sigue activo: cada llamada al LLM pierde 0,4-1,2 s antes del fallback | pendiente (final) |
 | H-7 | Los logs van en `jsonPayload.event`, no en `textPayload`: las consultas `gcloud logging read` deben filtrar por `jsonPayload.event` y usar `--format=json` | aplicado |
 | H-8 | El unico producto `CLUTCH` de la tienda (CLUTCH LEONOR) esta ARCHIVADO: hoy la familia G2 de CARTERAS no aporta productos CLUTCH | informativo |
-| H-9 | **Escrituras reales en Google Retail API desde la suite unitaria.** `test_currency_validation.py` (un script manual con forma de test, sin asserts) se ejecutaba en cada pase de pytest (`asyncio_mode = auto`) y, con `GOOGLE_PROJECT_NUMBER` en `.env` y credenciales ADC en la maquina (ambas confirmadas el 19/10), llamaba a `UserEventServiceClient.write_user_event` con 5 eventos `purchase-complete` FALSOS (visitantes `test_currency_0..4`). Duracion medida del test: 3,6 s (mediana del resto: 0,004 s) | escrituras cortadas en el paso 2b; pendiente comprobar el catalogo en modo solo lectura (14.3) |
+| H-9 | **Escrituras reales en Google Retail API desde la suite unitaria.** `test_currency_validation.py` (un script manual con forma de test, sin asserts) se ejecutaba en cada pase de pytest (`asyncio_mode = auto`) y, con `GOOGLE_PROJECT_NUMBER` en `.env` y credenciales ADC en la maquina (ambas confirmadas el 19/10), llamaba a `UserEventServiceClient.write_user_event` con 5 eventos `purchase-complete` FALSOS (visitantes `test_currency_0..4`). Duracion medida del test: 3,6 s (mediana del resto: 0,004 s) | escrituras cortadas en el paso 2b. **Cerrado 20/10 sin limpieza** (14.4): con las ADC actuales la suite no podia escribir, y las rutas conversacionales de produccion no usan Retail API |
+| H-10 | Produccion inicializa el singleton de Retail API al arrancar (`Retail API recommender singleton created`, una vez por instancia), pero ninguno de los 35 mensajes de log de `retail_api.py` (`get_recommendations`/`predict` y `record_user_event`/`write_user_event`) aparece en 4.378 entradas de las revisiones 00328/00329 que recorren todas las rutas conversacionales. Posible dependencia muerta (coste de arranque y credenciales) | pendiente: confirmar si algun endpoint no conversacional la usa |
+| H-11 | Las ADC locales son `impersonated_service_account` (configuradas el 29/09/2026) y la suplantacion falla: `iam.serviceAccounts.getAccessToken` denegado. Toda herramienta local que use APIs de Google falla al obtener el token | pendiente (configuracion local) |
 
 ### 13.5 Lecciones de proceso
 
@@ -504,7 +506,32 @@ script original. Probado con un cliente simulado, incluida la mutacion
 `FORCE = True` (0 peticiones enviadas). La limpieza, si hiciera falta, sera
 una decision aparte.
 
-### 14.4 Lecciones
+### 14.4 Resultado de la comprobacion y cierre de H-9 (20/10/2026)
+
+La comprobacion no llego a Retail API: fallo al obtener credenciales
+(`Unable to acquire impersonated credentials`, `iam.serviceAccounts.getAccessToken`
+denegado). Las ADC son de suplantacion desde el 29/09/2026 (H-11).
+
+H-9 se cierra SIN limpieza del catalogo:
+
+1. El script de moneda usaba las mismas ADC (`UserEventServiceClient()` sin
+   parametros), asi que desde el 29/09 sus escrituras fallaban igual (los
+   3,6 s medidos encajan con 5 fallos rapidos).
+2. Antes del 29/09 no se puede saber sin otras credenciales.
+3. Aunque existan eventos falsos, las rutas conversacionales de produccion no
+   consultan Retail API (H-10): 0 de 35 mensajes de `retail_api.py` en 4.378
+   entradas que cubren Fase A, F-08C, Estandar y los tipos de rama.
+
+Riesgo residual aceptado: el guion no ejercito endpoints no conversacionales.
+**Si se reactiva Retail API** para recomendaciones, ejecutar antes
+`check_retail_test_events.py` con credenciales validas y limpiar los visitantes
+`test_currency_0..4` si aparecen.
+
+Nota del mismo diagnostico: la linea 198 del `.env` local empieza por `*` en
+lugar de `#` y python-dotenv no la puede interpretar (la descarta; era un
+comentario y no se pierde ninguna variable).
+
+### 14.5 Lecciones
 
 1. **Un test sin asserts no es un test**, y uno que escribe en un servicio
    externo no pertenece a la suite unitaria.
