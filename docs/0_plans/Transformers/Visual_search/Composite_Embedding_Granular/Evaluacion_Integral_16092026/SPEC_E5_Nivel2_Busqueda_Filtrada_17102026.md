@@ -1,9 +1,11 @@
 # SPEC -- E5 nivel 2: busqueda visual filtrada por el catalogo
 
 **Fecha:** 17/10/2026
-**Estado:** DISENO aprobado (opcion 1, busqueda unica). Paso 0 hecho y paso 2
-aplicado al repo el 17/10/2026 (pendiente de despliegue y validacion en
-produccion). Pasos 1, 3 y 4 sin implementar.
+**Estado:** DISENO aprobado (opcion 1, busqueda unica). Paso 0 hecho. Paso 2
+VALIDADO EN PRODUCCION el 19/10/2026 (commit `b286d25`, revision
+`retail-recommender-00329-mlt`; cierre en la seccion 13). Paso 2b (higiene de
+tests) VALIDADO el 19/10/2026 (cierre en la seccion 14). Pasos 1, 3 y 4 sin
+implementar.
 **Gap:** E5 nivel 2 (pendiente A del prompt de continuidad).
 **Relacionado:** `DCT_Cierre_Sesion_01102026.md` (addendum A.16 = estado valido),
 `BACKLOG_Busqueda_por_Atributos_Color_24072026.md` (ver seccion 10).
@@ -287,7 +289,16 @@ fallback como hoy.
 
 ### 8.5 Existentes
 
-`tests/unit` (228) y `equiv_harness_f08.py` (40.000) en verde antes y despues.
+`equiv_harness_f08.py` (40.000) en verde antes y despues.
+
+**Correccion (18/10/2026):** la cifra "228 tests" del prompt de continuidad no
+corresponde a `tests/unit`, que recoge 723 tests con 36-37 fallos y 5 errores
+PREVIOS y ajenos a E5 (seccion 13.4, H-2). Con fallos previos, "en verde" no es
+un criterio util. El criterio es DIFERENCIAL: ejecutar la suite con y sin el
+cambio, guardar cada resultado con `--junitxml` y comparar los CONJUNTOS de
+fallos por identificador (nunca por mensaje: contienen direcciones de memoria).
+Herramienta: `compare_junit.py` (fuera del repo por ahora; ver 13.5).
+Veredicto exigido: 0 fallos nuevos y 0 fallos que desaparezcan sin explicacion.
 
 ---
 
@@ -297,7 +308,8 @@ fallback como hoy.
 |---|---|---|
 | 0 | Leer la version de faiss de la imagen: `docker run --rm gcr.io/retail-recommendations-449216/retail-embedding-service pip show faiss-cpu` | **HECHO 17/10: faiss-cpu 1.15.1.** Pendiente: confirmar en el paso 1 que el digest local coincide con el desplegado |
 | 1 | Servicio: 5.1-5.3. Desplegar | `curl.exe` a `/search-filtered` sin filtro == `/search-by-id`; con filtro, exactitud en 3 anclas reales (CHAQUETAS, CARTERAS, AROS) |
-| 2 | Monolito: solo `build_pool_request` (refactor). **APLICADO AL REPO 17/10** (validado en entorno aislado: 172 tests unitarios, oraculo 02/10 y oraculo 8.3 en verde, pyflakes diferencial sin avisos nuevos; ficheros del repo verificados por hash contra la version validada) | oraculo 8.3 + logs de produccion identicos a los actuales |
+| 2 | Monolito: solo `build_pool_request` (refactor). **VALIDADO EN PRODUCCION 19/10** -- commit `b286d25`, revision `00329-mlt`. Evidencia completa en la seccion 13 | oraculo 8.3 + logs de produccion identicos a los actuales |
+| 2b | Higiene de tests (prerequisito del 3): cortar la fuga de `.env` hacia toda la sesion de pytest y aislar `TestTamanoDelPoolVisual` del entorno (13.4, H-1). **VALIDADO 19/10** (seccion 14) | comparacion diferencial: los 6 fallos de `TestTamanoDelPoolVisual` desaparecen y no aparece ningun fallo nuevo |
 | 3 | Monolito: filtro + cliente + entrada al bloque, flag `0`. Desplegar | sin cambios observables con flag apagado |
 | 4 | Flag `1` en produccion | logs `E5 filtro`, warning defensivo = 0, sesiones reales de las anclas del 05/10 y 07/10 |
 
@@ -362,3 +374,148 @@ por largo. Salida CSV para limpieza en Shopify Admin.
 
 1,5-2 sesiones: servicio ~0,5; monolito ~0,75 (la mayor parte, reordenar dos
 rutas y la rama vacia); oraculos y tests ~0,5; despliegue y validacion aparte.
+
+---
+
+## 13. Cierre del paso 2 (19/10/2026)
+
+### 13.1 Que se entrego
+
+Commit `b286d25` en `feature/visual_search` (5 ficheros, +1048 -48), subido a
+GitHub el 19/10. Desplegado como `retail-recommender-00329-mlt` el 18/10.
+
+| Fichero | Cambio |
+|---|---|
+| `src/recommenders/f08_similarity_resolution.py` | `PoolRequest` + `build_pool_request()`; docstring de dependencias corregido |
+| `src/api/core/mcp_conversation_handler.py` | las dos copias inline (Fase A y F-08C) sustituidas por una llamada cada una |
+| `tests/unit/test_f08_similarity_resolution.py` | +7 tests `TestBuildPoolRequest` |
+| `tests/characterization/equiv_harness_pool_request.py` | oraculo nuevo con auto-verificacion por mutantes |
+| esta spec | creada |
+
+### 13.2 Evidencia
+
+| Capa | Resultado |
+|---|---|
+| Codigo | Oraculo 8.3: 40.000 casos, 0 divergencias, 7 combinaciones ruta/source/intent cubiertas, 8/8 mutantes detectados. Oraculo 02/10 sin cambios. pyflakes diferencial: 0 avisos nuevos |
+| Integridad | Ficheros del repo verificados por hash contra la version validada; tras la recuperacion de git (13.5), `git diff` identico byte a byte al parche de respaldo |
+| Suite | Comparacion diferencial por `--junitxml`: 716 tests comunes con el MISMO resultado, 0 fallos nuevos, 0 que desaparecen, 7 tests nuevos en `passed` |
+| Produccion | Linea base `00328-44n` (18/10) frente a `00329-mlt` (18-19/10), mismo script de extraccion para ambas |
+
+Turnos comparados en produccion (campos `reparto`, `contrato`, `pool admite`,
+`category expansion`):
+
+| Turno | Ancla | Ruta / rama | Resultado |
+|---|---|---|---|
+| B-1 | `palazzo-silvia-negro` | Fase A / exact_type | identico caracter a caracter, recuentos incluidos |
+| B-2 | `palazzo-ariel-satin-verde-oscuro` | F-08C / exact_type, camino vacio | identico |
+| C-1 | `aros-alana-multicolor-rosado` | Fase A / parent_group | identico |
+| C-2 | `aros-alba-piedras-colgante-rose-gold` | F-08C / query_text (8 categorias) | identico |
+| D-1 | `vestido-corto-amparo-champagne` | Fase A / parent_group nupcial | identico |
+| A-2 (x2) | anclas CARTERAS | F-08C / parent_group | linea `pool admite` identica en las dos apariciones; familia G2 `['CARTERAS', 'CLUTCH']` identica |
+| A-4 | otra ancla AROS | F-08C / query_text | `pedido`, `intent`, `contrato` identicos (`en_pool` 123 -> 124: ancla distinta y relleno aleatorio previo) |
+| extra | `maxi-falda-pascuala-...` (FALDAS) | F-08C / exact_type | conforme a la prediccion del codigo real |
+
+Los mensajes de B-1, B-2 y D-1 se escribieron en otro idioma o con otra frase y
+el resultado fue identico: en estas rutas decide el ancla, no el texto.
+
+### 13.3 Hueco residual (aceptado)
+
+La combinacion **Fase A x ancla CARTERAS** (A-1) no se ejercito: la ejecucion
+del 19/10 reutilizo la sesion del 18/10 (`LOADED existing MCP context ... with 4
+turns`) y los turnos de bolsos pasaron por F-08C. Se acepta sin repetir porque:
+(a) `build_pool_request` es pura y no depende de la ruta; para CARTERAS sin
+texto ambas rutas resuelven `parent_group` con la misma entrada; (b) esa misma
+llamada dio resultado identico en F-08C; (c) el cableado de Fase A esta
+validado con tres anclas que cubren sus dos ramas y no distingue por tipo;
+(d) el oraculo cubre la combinacion.
+
+### 13.4 Hallazgos fuera de alcance
+
+| Id | Hallazgo | Estado |
+|---|---|---|
+| H-1 | **Fuga de entorno en tests.** `tests/unit/test_currency_validation.py` linea 18 llama a `load_dotenv()` a nivel de modulo: se ejecuta en la RECOLECCION y carga el `.env` de la raiz (incluido `RECS_VISUAL_POOL_BASE=100`) para toda la sesion. Por eso los 6 tests de `TestTamanoDelPoolVisual` fallan en la suite completa y pasan aislados. Ademas `tests/unit/test_config.py` vacia todo `os.environ` (lineas 31, 40, 85, 94, 123) y lo restaura. Diagnosticado el 18/10 con un espia sobre `os.environ.__setitem__/__delitem__` | **resuelto en el paso 2b** (seccion 14). Los `os.environ.clear()` de `test_config.py` siguen: restauran el entorno y hoy no causan fallos |
+| H-2 | `tests/unit` tiene 36-37 fallos y 5 errores previos, ajenos a E5 (tests desfasados: `factories.get_settings`, `ShopifyKBSyncService._use_content_versioning`, mocks asincronos de `market_context_manager`...). `test_inference_latency_under_15ms` (MiniLM) depende del tiempo de la maquina | pendiente |
+| H-3 | `src/api/_health_patch.py` no es analizable por coverage (`couldnt-parse`) | pendiente de revisar si produccion lo importa |
+| H-4 | Stash antiguo `feature/phase1-extend-servicefactory` ("Creada infraestructura de FastAPI Dependency Injection") sigue en la pila | revisar y decidir |
+| H-5 | **Caso de referencia del camino vacio:** sesion B, turno 2 (`palazzo-silvia-negro` y despues `palazzo-ariel-satin-verde-oscuro`) produce `principal=0[] alternatives=8['FALDAS'] exhausted=True`. Debe mantenerse identico en los pasos 3 y 4 (hallazgo F7) | usar en 3/4 |
+| H-6 | El 404 de OpenRouter (LFM2) sigue activo: cada llamada al LLM pierde 0,4-1,2 s antes del fallback | pendiente (final) |
+| H-7 | Los logs van en `jsonPayload.event`, no en `textPayload`: las consultas `gcloud logging read` deben filtrar por `jsonPayload.event` y usar `--format=json` | aplicado |
+| H-8 | El unico producto `CLUTCH` de la tienda (CLUTCH LEONOR) esta ARCHIVADO: hoy la familia G2 de CARTERAS no aporta productos CLUTCH | informativo |
+| H-9 | **Escrituras reales en Google Retail API desde la suite unitaria.** `test_currency_validation.py` (un script manual con forma de test, sin asserts) se ejecutaba en cada pase de pytest (`asyncio_mode = auto`) y, con `GOOGLE_PROJECT_NUMBER` en `.env` y credenciales ADC en la maquina (ambas confirmadas el 19/10), llamaba a `UserEventServiceClient.write_user_event` con 5 eventos `purchase-complete` FALSOS (visitantes `test_currency_0..4`). Duracion medida del test: 3,6 s (mediana del resto: 0,004 s) | escrituras cortadas en el paso 2b; pendiente comprobar el catalogo en modo solo lectura (14.3) |
+
+### 13.5 Lecciones de proceso
+
+1. **Validar contra la lista de turnos ESPERADOS, no contra los que aparecen.**
+   Una descarga de logs empezo a mitad de sesion y omitio A-1/A-2; otra
+   ejecucion reutilizo una sesion antigua. Ambas cosas solo se detectaron
+   porque el extractor marca los turnos truncados y se comprueba la
+   precondicion (turno 1 real) en la propia evidencia.
+2. **Consumir salidas estructuradas.** Filtrar la consola con `Select-String`
+   produjo un fichero vacio en silencio; `--junitxml` resolvio la comparacion.
+3. **`git stash` es una pila.** Un segundo `pop` saco un stash antiguo y dejo
+   conflictos (`dependencies.py` con marcas `<<<<<<<`: codigo invalido). Se
+   recupero sin perdidas probando antes la secuencia en un repositorio de
+   laboratorio. Para comparaciones antes/despues se usa en su lugar: copiar
+   fuera del repo -> verificar por hash -> `git restore` -> ejecutar -> copiar
+   de vuelta -> verificar por hash.
+4. **Verificar antes de destruir:** comprobar que lo que se descarta esta
+   guardado (stash, copia por hash) antes de cada operacion destructiva.
+5. **Activar el venv y comprobarlo** (`Get-Command python`): dos ejecuciones
+   de pytest fallaron por usar el Python global.
+6. **Herramientas de esta ronda** (fuera del repo): `compare_junit.py`
+   (comparacion diferencial de suites) y el extractor de turnos de logs. Queda
+   por decidir si se incorporan al repo, por ejemplo en `tools/`.
+
+---
+
+## 14. Cierre del paso 2b -- higiene de tests (19/10/2026)
+
+### 14.1 Cambio
+
+| Fichero | Cambio |
+|---|---|
+| `tests/unit/test_currency_validation.py` | `load_dotenv()` pasa del nivel de modulo al bloque `__main__`; el modulo se marca `skip` (+ `integration`, `google`) para pytest con el motivo visible. Como script manual se comporta igual |
+| `tests/unit/test_f08_similarity_resolution.py` | fixture `autouse` en `TestTamanoDelPoolVisual` que borra `RECS_VISUAL_POOL_BASE` y `RECS_VISUAL_POOL_CAP` (mismo patron que los tests de `RECS_PRINCIPAL_FIRST` del fichero) |
+
+Las dos capas son necesarias: la defensa sola arreglaria los 6 tests pero
+mantendria la fuga y las escrituras en Retail API; el arreglo de origen solo
+no protege frente a variables exportadas en la terminal.
+
+### 14.2 Evidencia
+
+| Capa | Resultado |
+|---|---|
+| Laboratorio con el `pytest.ini` real | original: 6 fallos + 5 llamadas a Retail API (stub); cambiado: 0 fallos, 1 omitido, 0 llamadas; con variables exportadas: 0 fallos; sonda: el `.env` ya no llega a los tests; uso como script: identico |
+| Aplicacion al repo | contenido identico al validado (hash del contenido normalizado); finales de linea uniformes |
+| Suite (diferencial `--junitxml`) | 723 tests en ambas: **0 fallos nuevos**; desaparecen exactamente los 6 de `TestTamanoDelPoolVisual`; unico cambio de estado: `test_currency_validation` passed -> skipped. Fallos previos: 36 -> 30 |
+
+Ningun otro test dependia en silencio de las variables que filtraba el `.env`
+(era el riesgo vigilado: el espia solo registraba la familia `RECS_*`).
+
+### 14.3 Pendiente: eventos falsos en el catalogo (H-9)
+
+Comprobacion de SOLO LECTURA con `check_retail_test_events.py` (fuera del
+repo): llama a `userEvents.purge` con `force=false`, que segun la referencia
+oficial devuelve el numero de eventos que se borrarian sin borrar ninguno.
+Salvaguardas: constante `FORCE = False` que el script se niega a ejecutar si
+se altera, `assert` por peticion, filtro por `visitorId` concreto (nunca por
+tiempo o tipo, que incluirian eventos reales), y el mismo catalogo que el
+script original. Probado con un cliente simulado, incluida la mutacion
+`FORCE = True` (0 peticiones enviadas). La limpieza, si hiciera falta, sera
+una decision aparte.
+
+### 14.4 Lecciones
+
+1. **Un test sin asserts no es un test**, y uno que escribe en un servicio
+   externo no pertenece a la suite unitaria.
+2. **Los efectos a nivel de modulo en ficheros de test afectan a toda la
+   sesion**: pytest importa todos los ficheros en la recoleccion, antes de
+   ejecutar ninguno.
+3. **Medir los finales de linea con Python**, no con `grep -c $'\r$'`: el
+   `sh` del entorno de analisis no interpreta esa sintaxis y los recuentos
+   eran invalidos. Para verificar ficheros entre maquinas, comparar el hash
+   del contenido normalizado y comprobar que los finales de linea son
+   uniformes.
+4. **Una herramienta de comparacion tambien puede tener puntos ciegos**:
+   `compare_junit.py` no informaba de cambios `passed -> skipped`; se amplio
+   antes de usarla en este paso.

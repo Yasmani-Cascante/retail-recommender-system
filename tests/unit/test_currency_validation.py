@@ -5,17 +5,49 @@ Script para probar la validación de códigos de moneda en eventos de compra
 import os
 import asyncio
 import logging
+import pytest
 from dotenv import load_dotenv
 from src.recommenders.retail_api import RetailAPIRecommender
+
+# ════════════════════════════════════════════════════════════════════
+# NO ES UN TEST UNITARIO (19/10/2026, paso 2b de la SPEC E5 nivel 2)
+# ════════════════════════════════════════════════════════════════════
+# Este fichero es un SCRIPT MANUAL que quedo dentro de tests/unit. Pytest lo
+# recogia y lo ejecutaba en cada pase de la suite (asyncio_mode = auto), con
+# tres consecuencias, verificadas el 18-19/10/2026:
+#
+#   1. FUGA DE ENTORNO: el load_dotenv() estaba a nivel de modulo y se
+#      ejecutaba durante la RECOLECCION, cargando el .env de la raiz en TODA
+#      la sesion de pytest. Asi entraba RECS_VISUAL_POOL_BASE=100 y fallaban
+#      6 tests de TestTamanoDelPoolVisual (pasaban ejecutados aislados).
+#      Diagnosticado con un espia sobre os.environ: el primer SET de la
+#      variable salia de la linea de load_dotenv() de este fichero.
+#   2. ESCRITURAS REALES: si el entorno trae GOOGLE_PROJECT_NUMBER, crea un
+#      RetailAPIRecommender real y envia 5 eventos purchase-complete FALSOS
+#      (visitantes test_currency_0..4) a Google Retail API via
+#      UserEventServiceClient.write_user_event.
+#   3. NUNCA FALLA: no tiene asserts; los errores solo se imprimen. Como test,
+#      siempre "pasaba" sin comprobar nada.
+#
+# Por eso: (a) pytest lo marca como omitido, con el motivo visible en el
+# informe (no se oculta con __test__ = False: un skip queda registrado);
+# (b) el .env solo se carga al ejecutarlo como script, en el bloque
+# __main__ del final. Como script se comporta igual que antes: el import de
+# RetailAPIRecommender ya ocurria ANTES de cargar el .env.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.google,
+    pytest.mark.skip(
+        reason="Script manual de integracion (escribe eventos reales en Google "
+               "Retail API y no tiene asserts). Ejecutar a mano como script."
+    ),
+]
 
 # Configurar logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
-
-# Cargar variables de entorno
-load_dotenv()
 
 async def test_currency_validation():
     """Prueba la validación de códigos de moneda en eventos de compra."""
@@ -108,4 +140,7 @@ async def test_currency_validation():
         return {"status": "error", "error": str(e)}
 
 if __name__ == "__main__":
+    # Cargar variables de entorno SOLO al ejecutarlo como script (antes estaba
+    # a nivel de modulo y contaminaba toda la sesion de pytest: ver cabecera).
+    load_dotenv()
     asyncio.run(test_currency_validation())

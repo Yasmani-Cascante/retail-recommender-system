@@ -385,6 +385,26 @@ class TestTamanoDelPoolVisual:
     catalogo material sin mostrar.
     """
 
+    @pytest.fixture(autouse=True)
+    def _sin_configuracion_del_entorno(self, monkeypatch):
+        """
+        Aisla TODOS los tests de esta clase de las variables RECS_VISUAL_POOL_*
+        que pueda traer el entorno (19/10/2026, paso 2b de la SPEC E5 nivel 2).
+
+        Los tests de valores por defecto (== 50, == 30...) suponian un entorno
+        sin esas variables, pero no lo garantizaban: en la suite completa
+        fallaban 6 porque otro fichero cargaba el .env de la raiz, con
+        RECS_VISUAL_POOL_BASE=100 (la configuracion de produccion). Tambien
+        fallarian en cualquier terminal que exporte esas variables.
+
+        Mismo patron que los tests de RECS_PRINCIPAL_FIRST de este fichero
+        (delenv antes de comprobar el valor por defecto). Los tests de
+        configuracion siguen funcionando: su monkeypatch.setenv se ejecuta
+        DESPUES de este fixture, dentro del propio test.
+        """
+        monkeypatch.delenv("RECS_VISUAL_POOL_BASE", raising=False)
+        monkeypatch.delenv("RECS_VISUAL_POOL_CAP", raising=False)
+
     def test_sin_nada_mostrado_es_el_base(self):
         assert visual_pool_size(F08C_ROUTE, 0, cap=200) == 50
         assert visual_pool_size(F08A_ROUTE, 0, cap=200) == 30
