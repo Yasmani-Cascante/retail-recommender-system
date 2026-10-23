@@ -1,0 +1,37 @@
+# Entorno de TESTS del embedding service (20/10/2026, E5 nivel 2 paso 1;
+# revisado 21/10/2026 para usar constraints.txt).
+# NO se instala en la imagen: .dockerignore lo deja fuera del build.
+#
+# Que cubre: lo que necesita tests/test_search_filtered.py. Los tests NO
+# cargan los modelos (FashionSigLIP, ColBERT) ni necesitan torch: crean el
+# retriever sin __init__ y simulan el modelo de texto.
+#
+# VERSIONES: las fija constraints.txt (las EXACTAS de produccion). Asi el
+# entorno de tests no puede desalinearse de produccion en ningun paquete
+# compartido. (Motivo del cambio: la primera version de este fichero fijaba
+# numpy 2.4.4 y pillow 12.2.0, lo que tenia venv_fase0, cuando produccion
+# tiene 2.4.6 y 12.3.0. Los 77 tests pasan con las versiones de produccion.)
+# Solo pytest y pytest-asyncio, que no existen en produccion, llevan version
+# propia.
+#
+# Instalacion (desde la raiz del repo), sobre el entorno del servicio:
+#   .\src\api\services\embedding-service\venv_fase0\Scripts\python.exe -m pip install -r src\api\services\embedding-service\requirements-test.txt
+# Ejecucion: DESDE LA CARPETA DEL SERVICIO, para que se aplique su pytest.ini
+# (y no el del monolito, en la raiz del repo):
+#   cd src\api\services\embedding-service
+#   .\venv_fase0\Scripts\python.exe -m pytest tests -q
+
+-c constraints.txt
+
+# ── Lo que usan los tests (version: la de produccion, via constraints.txt) ──
+faiss-cpu
+fastapi
+pydantic
+numpy
+pillow
+httpx
+python-multipart
+
+# ── Solo para tests (no estan en produccion) ─────────────────────────────────
+pytest==9.1.1
+pytest-asyncio==1.4.0

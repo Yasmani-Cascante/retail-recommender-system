@@ -37,7 +37,13 @@ huggingface-hub==0.36.2
 open-clip-torch==3.3.0
 
 # ── Visual search ──────────────────────────────────────────────────────────────
-faiss-cpu>=1.7.4
+# Fijado el 20/10/2026 (E5 nivel 2 paso 1). Antes era ">=1.7.4": cada build
+# instalaba la ultima version publicada, distinta segun el dia. 1.15.1 es la
+# version LEIDA de la imagen en produccion (revision 00056-2qr, digest
+# sha256:4a5185404e96...) con `pip show faiss-cpu`, y con la que se validaron
+# los tests de tests/test_search_filtered.py. search_filtered() usa
+# SearchParameters(sel=IDSelector...), disponible desde faiss 1.7.3.
+faiss-cpu==1.15.1
 Pillow>=10.0.0
 httpx>=0.27.0
 python-multipart>=0.0.6

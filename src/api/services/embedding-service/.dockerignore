@@ -1,0 +1,27 @@
+# .dockerignore del embedding service (20/10/2026, E5 nivel 2 paso 1).
+#
+# LISTA BLANCA: se excluye todo y solo se permite lo que la imagen necesita.
+# Un fichero nuevo en esta carpeta NO entra en la imagen salvo que se anada
+# aqui de forma explicita.
+#
+# Por que: el Dockerfile hace `COPY . .` y, sin este fichero, copiaba la
+# carpeta entera. La imagen en produccion (revision 00056-2qr) llevaba
+# venv_fase0 -- un entorno virtual de WINDOWS, inservible en Linux --
+# ocupando 2,1 GB de 6,56 GB, ademas de Dockerfile, Dockerfile.backup,
+# deploy.sh, requirements.txt.backup y __pycache__. Con min-instances 0,
+# cada arranque en frio descargaba ese peso extra.
+#
+# Lo que la imagen NECESITA (verificado en el Dockerfile y en el codigo):
+#   requirements.txt      -> Dockerfile: COPY requirements.txt (instalacion)
+#   constraints.txt       -> Dockerfile: pip install -c (versiones de produccion)
+#   main.py               -> CMD uvicorn main:app
+#   visual_retriever.py   -> importado por main.py
+#   colbert_retriever.py  -> importado por main.py
+# Los modelos se descargan durante el build y los indices viven en /tmp,
+# fuera de /app.
+*
+!requirements.txt
+!constraints.txt
+!main.py
+!visual_retriever.py
+!colbert_retriever.py

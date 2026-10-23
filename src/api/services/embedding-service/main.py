@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from typing import List, Literal, Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logging.basicConfig(
     level=logging.INFO,
@@ -134,6 +134,42 @@ class MultiTextBoostRequest(BaseModel):
 
 class MultiTextBoostResponse(BaseModel):
     results: List[List[str]]  # alineado 1:1 con el orden de boost_texts recibido
+    latency_ms: float
+    visual_index_size: int
+
+
+# Limites de la busqueda filtrada (E5 nivel 2 paso 1, 20/10/2026). Protegen el
+# servicio frente a peticiones desproporcionadas: el catalogo actual ronda los
+# 3.000 productos, asi que 20.000 ids deja mucho margen (spec E5, seccion 11:
+# por encima de ~20.000-30.000 productos conviene replantear el transporte).
+_FILTERED_MAX_IDS = 20000
+_FILTERED_MAX_TOP_K = 10000
+
+
+class FilteredSearchRequest(BaseModel):
+    """E5 nivel 2 paso 1 (20/10/2026): busqueda visual filtrada DENTRO de FAISS.
+    Ver visual_retriever.search_filtered() para la semantica completa.
+
+    include_ids=None significa SIN restriccion de tipo (todo el indice); una
+    lista, solo esos productos. exclude_ids nunca se devuelven. El ancla se
+    excluye siempre."""
+    product_id: str
+    include_ids: Optional[List[str]] = Field(default=None, max_length=_FILTERED_MAX_IDS)
+    exclude_ids: List[str] = Field(default_factory=list, max_length=_FILTERED_MAX_IDS)
+    top_k: int = Field(default=100, ge=1, le=_FILTERED_MAX_TOP_K)
+    boost_text: Optional[str] = None
+    alpha: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class FilteredSearchResponse(BaseModel):
+    product_ids: List[str]
+    scores: List[float]          # coseno real, alineado 1:1 con product_ids
+    # anchor_found separa "ancla no indexada" (el llamante cae al fallback) de
+    # "no queda nada elegible" (camino vacio + contrato exhausted). Una lista
+    # vacia sola no distingue ambas (hallazgo F7 de la spec E5).
+    anchor_found: bool
+    eligible_count: int          # productos distintos del indice que pasan el filtro
+    unknown_ids: int             # ids de include_ids que el indice no conoce
     latency_ms: float
     visual_index_size: int
 
@@ -628,6 +664,57 @@ async def search_by_product_id_with_multi_text_boost(request: MultiTextBoostRequ
 
     return MultiTextBoostResponse(
         results=results,
+        latency_ms=latency_ms,
+        visual_index_size=visual_retriever.index_size(),
+    )
+
+
+@app.post('/v1/embed/search-filtered', response_model=FilteredSearchResponse)
+async def search_filtered(request: FilteredSearchRequest):
+    """
+    E5 nivel 2 paso 1 (20/10/2026): vecinos visuales de product_id buscando
+    SOLO entre los productos admitidos (filtro dentro de FAISS con un
+    IDSelector), en vez de pedir top_k globales y filtrar despues.
+
+    POST con body JSON por la misma razon que search-by-id-with-multi-text-boost:
+    las listas de ids no caben bien en query params.
+
+    Endpoint ADITIVO: ningun endpoint existente cambia. Con include_ids=None y
+    exclude_ids vacio devuelve lo mismo que search-by-id (comprobado en tests).
+
+    anchor_found=false con lista vacia NO es un error: el producto no esta en
+    el indice y el llamante decide (fallback). anchor_found=true con lista
+    vacia significa que no queda nada elegible.
+    """
+    if not visual_retriever or not visual_retriever.is_ready():
+        raise HTTPException(503, 'Visual index not ready')
+
+    t0 = time.time()
+    result = await visual_retriever.search_filtered(
+        request.product_id,
+        include_ids=request.include_ids,
+        exclude_ids=request.exclude_ids,
+        top_k=request.top_k,
+        boost_text=request.boost_text,
+        alpha=request.alpha,
+    )
+    latency_ms = round((time.time() - t0) * 1000, 1)
+
+    log.info(
+        'search_filtered: product_id=%s include=%s exclude=%d eligible=%d '
+        'unknown=%d anchor_found=%s found=%d boost=%s latency=%.1fms',
+        request.product_id,
+        'all' if request.include_ids is None else len(request.include_ids),
+        len(request.exclude_ids), result.eligible_count, result.unknown_ids,
+        result.anchor_found, len(result.pairs), bool(request.boost_text), latency_ms,
+    )
+
+    return FilteredSearchResponse(
+        product_ids=[p for p, _ in result.pairs],
+        scores=[s for _, s in result.pairs],
+        anchor_found=result.anchor_found,
+        eligible_count=result.eligible_count,
+        unknown_ids=result.unknown_ids,
         latency_ms=latency_ms,
         visual_index_size=visual_retriever.index_size(),
     )

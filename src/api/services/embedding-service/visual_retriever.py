@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -55,6 +56,32 @@ from typing import Dict, List, Optional, Tuple, Union
 #
 # Ver SPEC_Contrato_Recomendaciones_06102026.md, seccion 2.3.
 SearchResults = Union[List[str], List[Tuple[str, float]]]
+
+
+@dataclass(frozen=True)
+class FilteredSearchResult:
+    """
+    Resultado de search_filtered() -- E5 nivel 2 paso 1 (20/10/2026).
+    Ver SPEC_E5_Nivel2_Busqueda_Filtrada_17102026.md (repo del monolito), 4.3.
+
+    anchor_found:
+        El ancla esta en el indice. Es la pieza que separa dos situaciones
+        OPUESTAS que una lista vacia no distingue (hallazgo F7 de la spec):
+        "ancla no indexada" (el llamante cae al fallback) frente a "no queda
+        nada elegible" (el llamante recorre el camino vacio y construye el
+        contrato con exhausted).
+    pairs:
+        (product_id, similitud coseno) en orden de similitud.
+    eligible_count:
+        Productos DISTINTOS del indice que pasan el filtro (sin el ancla).
+    unknown_ids:
+        Ids de include_ids que el indice no conoce (observabilidad del
+        desfase catalogo / indice).
+    """
+    anchor_found: bool
+    pairs: List[Tuple[str, float]]
+    eligible_count: int
+    unknown_ids: int
 
 import numpy as np
 from PIL import Image
@@ -264,6 +291,9 @@ class FashionSigLIPRetriever:
         # Vacío en índices construidos antes de S1 (backward compatible).
         self._category_map: List[str]      = []
         self._indexation_running: bool     = False
+        # E5 nivel 2 paso 1 (20/10/2026): cache id -> posicion para la busqueda
+        # filtrada. Guarda (lista_origen, longitud, mapa). Ver _positions().
+        self._pos_cache: Optional[Tuple[List[str], int, Dict[str, int]]] = None
 
         # S1 LATENCIA: Caché de text embeddings pre-computados en warmup().
         # CATEGORY_TEXT_PROMPTS es estático — siempre produce el mismo vector.
@@ -1013,26 +1043,11 @@ class FashionSigLIPRetriever:
         loop = asyncio.get_running_loop()
 
         def _reconstruct_text_boost_and_search(pos):
-            import numpy as _np
-            image_vec = self._faiss_index.reconstruct(pos)
-            image_np  = _np.array(image_vec, dtype=_np.float32).reshape(1, -1)
-
-            cached_text_np = self._text_boost_cache.get(boost_text)
-            if cached_text_np is not None:
-                text_np = cached_text_np
-            else:
-                import torch as _torch
-                tokens = self._tokenizer([boost_text])
-                with _torch.no_grad():
-                    text_embed = self._model.encode_text(tokens)
-                    text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
-                text_np = text_embed.float().cpu().numpy()
-                # Cachear para proximas llamadas con este mismo texto exacto.
-                self._text_boost_cache[boost_text] = text_np
-
-            composite = alpha * image_np + (1.0 - alpha) * text_np
-            norm      = _np.linalg.norm(composite, axis=-1, keepdims=True)
-            composite = (composite / norm).astype(_np.float32)
+            # E5 nivel 2 paso 1 (20/10/2026): la construccion del vector
+            # compuesto se extrajo SIN CAMBIOS a _composite_query(), para que
+            # search_filtered() use la misma y no una copia. Paridad
+            # comprobada en tests/test_search_filtered.py.
+            composite = self._composite_query(pos, boost_text, alpha)
 
             # scores e indices son arrays PARALELOS: hay que zippearlos ANTES de
             # filtrar el propio pid, o las puntuaciones se desalinean de los IDs.
@@ -1045,6 +1060,190 @@ class FashionSigLIPRetriever:
             return pairs if with_scores else [p for p, _ in pairs]
 
         return await loop.run_in_executor(None, _reconstruct_text_boost_and_search, position)
+
+    # ════════════════════════════════════════════════════════════════════
+    # E5 nivel 2 paso 1 (20/10/2026): busqueda filtrada DENTRO de FAISS
+    # ════════════════════════════════════════════════════════════════════
+    # Contexto: SPEC_E5_Nivel2_Busqueda_Filtrada_17102026.md (repo del
+    # monolito), secciones 3-5. Hasta ahora el monolito pedia top_k vecinos
+    # globales y filtraba DESPUES; en categorias pequenas el presupuesto se
+    # gastaba en tipos ajenos o en productos ya vistos. Aqui el filtro se
+    # aplica DENTRO de la busqueda con un IDSelector de FAISS, de modo que
+    # los k resultados son los k mejores de entre los ADMITIDOS.
+    #
+    # Este servicio sigue sin conocer la taxonomia (principio de la Fase 1b):
+    # recibe ids, nunca tipos. El monolito resuelve que productos admite.
+
+    def _positions(self) -> Dict[str, int]:
+        """
+        Mapa product_id -> posicion en el indice FAISS (que es el id interno de
+        FAISS: el indice se construye con add(), sin add_with_ids).
+
+        Se reconstruye solo cuando _id_map cambia, detectado SIN tocar los tres
+        sitios que lo modifican:
+          - carga desde disco e indexacion completa REASIGNAN la lista
+            -> cambia el objeto;
+          - la indexacion incremental la EXTIENDE -> cambia la longitud.
+
+        Se guarda una REFERENCIA a la lista, no su id(): mientras la cache la
+        retenga, Python no puede liberarla ni reutilizar su direccion de
+        memoria para una lista nueva de igual longitud (con id() eso podria
+        devolver un mapa obsoleto).
+
+        Conserva la PRIMERA aparicion de cada id, igual que list.index(), que
+        es lo que usan las busquedas existentes para localizar el ancla.
+        """
+        cache = getattr(self, '_pos_cache', None)  # getattr: instancias de test sin __init__
+        id_map = self._id_map
+        n = len(id_map)
+        if cache is not None and cache[0] is id_map and cache[1] == n:
+            return cache[2]
+        mapping: Dict[str, int] = {}
+        for i, pid in enumerate(id_map):
+            mapping.setdefault(pid, i)
+        self._pos_cache = (id_map, n, mapping)
+        return mapping
+
+    def _composite_query(self, pos: int, boost_text: str, alpha: float) -> np.ndarray:
+        """
+        Vector de consulta compuesto: imagen del producto en `pos` + texto de
+        refuerzo, mezclados con `alpha` y normalizados. Forma (1, dim), float32.
+
+        EXTRAIDO SIN CAMBIOS (20/10/2026) de
+        search_by_product_id_with_text_boost(), que ahora lo usa, para que la
+        busqueda filtrada construya EXACTAMENTE el mismo vector. La paridad con
+        el bloque original se comprueba en tests/test_search_filtered.py. Ver
+        en aquel metodo el razonamiento de la cache por texto exacto.
+        """
+        import numpy as _np
+        image_vec = self._faiss_index.reconstruct(pos)
+        image_np  = _np.array(image_vec, dtype=_np.float32).reshape(1, -1)
+
+        cached_text_np = self._text_boost_cache.get(boost_text)
+        if cached_text_np is not None:
+            text_np = cached_text_np
+        else:
+            import torch as _torch
+            tokens = self._tokenizer([boost_text])
+            with _torch.no_grad():
+                text_embed = self._model.encode_text(tokens)
+                text_embed = text_embed / text_embed.norm(dim=-1, keepdim=True)
+            text_np = text_embed.float().cpu().numpy()
+            # Cachear para proximas llamadas con este mismo texto exacto.
+            self._text_boost_cache[boost_text] = text_np
+
+        composite = alpha * image_np + (1.0 - alpha) * text_np
+        norm      = _np.linalg.norm(composite, axis=-1, keepdims=True)
+        composite = (composite / norm).astype(_np.float32)
+        return composite
+
+    async def search_filtered(
+        self,
+        product_id: str,
+        include_ids: Optional[List[str]] = None,
+        exclude_ids: Optional[List[str]] = None,
+        top_k: int = 100,
+        boost_text: Optional[str] = None,
+        alpha: float = 0.5,
+    ) -> FilteredSearchResult:
+        """
+        Vecinos visuales del producto `product_id`, buscando SOLO entre los
+        admitidos por el filtro.
+
+        Semantica del filtro (identica a la del monolito, spec seccion 3):
+          - include_ids=None  -> sin restriccion de tipo (todo el indice).
+            NO equivale a "todo el catalogo": un producto que este en el
+            indice aunque el catalogo del monolito no lo conozca tambien vale.
+          - include_ids=[...] -> solo esos productos.
+          - exclude_ids       -> nunca se devuelven (vistos). El ancla se
+            excluye siempre.
+        Propiedad garantizada (spec P2, comprobada en los tests):
+            resultado == busqueda COMPLETA del indice filtrada despues, [:top_k]
+
+        boost_text no vacio -> consulta compuesta imagen+texto (la misma que
+        search_by_product_id_with_text_boost); vacio -> solo imagen.
+
+        Concurrencia: igual que las busquedas existentes, se comprueba que cada
+        posicion devuelta tenga id (0 <= idx < len(_id_map)). La indexacion
+        incremental puede anadir vectores mientras se busca; eso es una carrera
+        ANTERIOR a este metodo (H-13 de la spec) y este metodo no la agrava.
+        """
+        if self._faiss_index is None or not self._id_map:
+            log.warning('[search_filtered] Index not ready.')
+            return FilteredSearchResult(False, [], 0, 0)
+
+        pid = str(product_id)
+        id_map = self._id_map          # misma lista: se lee su longitud actual en la guarda
+        positions = self._positions()
+
+        # Ids excluidos (vistos + ancla) a nivel de ID: tambien sirven para
+        # descartar vectores DUPLICADOS de un id excluido en otra posicion,
+        # que el selector (por posicion) no cubriria.
+        excluded_ids = {str(e) for e in (exclude_ids or [])}
+        excluded_ids.add(pid)
+        excluded_pos = {positions[e] for e in excluded_ids if e in positions}
+
+        unknown = 0
+        if include_ids is not None:
+            allowed_pos = set()
+            for e in include_ids:
+                p = positions.get(str(e))
+                if p is None:
+                    unknown += 1
+                else:
+                    allowed_pos.add(p)
+            allowed_pos -= excluded_pos
+            eligible = len(allowed_pos)
+        else:
+            allowed_pos = None
+            eligible = len(positions) - len(excluded_pos)
+
+        anchor_pos = positions.get(pid)
+        if anchor_pos is None:
+            log.debug('[search_filtered] product_id=%s not in FAISS index', pid)
+            return FilteredSearchResult(False, [], eligible, unknown)
+
+        k = min(int(top_k), eligible)
+        if k <= 0:
+            # Rama vacia: el ancla existe pero no queda nada admisible. No se
+            # gasta una busqueda FAISS.
+            return FilteredSearchResult(True, [], 0, unknown)
+
+        loop = asyncio.get_running_loop()
+
+        def _filtered_search(apos):
+            import faiss as _faiss
+            import numpy as _np
+            if boost_text:
+                query = self._composite_query(apos, boost_text, alpha)
+            else:
+                query = _np.array(self._faiss_index.reconstruct(apos), dtype=_np.float32).reshape(1, -1)
+
+            # Los selectores son objetos C++ envueltos: se mantienen en
+            # variables locales hasta despues de search() para que Python no
+            # los libere mientras FAISS los usa (IDSelectorNot solo guarda un
+            # puntero al selector interior).
+            if allowed_pos is not None:
+                inner = None
+                selector = _faiss.IDSelectorBatch(_np.fromiter(allowed_pos, dtype=_np.int64))
+            else:
+                inner = _faiss.IDSelectorBatch(_np.fromiter(excluded_pos, dtype=_np.int64))
+                selector = _faiss.IDSelectorNot(inner)
+            params = _faiss.SearchParameters(sel=selector)
+
+            scores, indices = self._faiss_index.search(query, k, params=params)
+            del inner  # explicito: ya no hace falta despues de la busqueda
+
+            # FAISS rellena con -1 si hay menos de k resultados: la guarda de
+            # rango los descarta, igual que en las busquedas existentes.
+            return [
+                (id_map[idx], float(score))
+                for idx, score in zip(indices[0], scores[0])
+                if 0 <= idx < len(id_map) and id_map[idx] not in excluded_ids
+            ]
+
+        pairs = await loop.run_in_executor(None, _filtered_search, anchor_pos)
+        return FilteredSearchResult(True, pairs, eligible, unknown)
 
     async def search_by_product_id_with_multi_text_boost(
         self,

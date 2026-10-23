@@ -8,7 +8,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ git && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# constraints.txt (21/10/2026, E5 nivel 2 paso 1): versiones EXACTAS de
+# produccion, incluidas las transitivas. Ver la cabecera de ese fichero.
+COPY requirements.txt constraints.txt ./
 
 # ── Paso 1: torch + torchvision CPU-only ──────────────────────────────────────────
 # Instalar los dos juntos desde el índice de PyTorch (builds CPU-only).
@@ -30,12 +32,19 @@ RUN pip install --no-cache-dir \
 
 # ── Paso 2: resto de dependencias ──────────────────────────────────────────
 # --no-deps en torch NO funciona aquí porque torch es dependencia transitiva de
-# fastkmeans (vía pylate). La protección real viene de tener torch==2.1.0+cpu
+# fastkmeans (vía pylate). La protección real viene de tener torch==2.7.0+cpu
 # en requirements.txt Y ya instalado — pip respetará la versión existente.
+# (Corregido 21/10/2026: este comentario decia 2.1.0+cpu; requirements.txt
+# fija 2.7.0+cpu desde la migracion a ese torch.)
 # Si pip intenta actualizar torch durante esta etapa, el build fallará con
 # conflicto de versión (error visible en logs) en lugar de hacer override
 # silencioso como ocurrió antes.
-RUN pip install --no-cache-dir -r requirements.txt
+#
+# -c constraints.txt (21/10/2026, E5 nivel 2 paso 1): fija TODAS las versiones
+# (directas y transitivas) a las de produccion. Sin el, un rebuild resolvia 14
+# paquetes en versiones nuevas y no probadas. torch==2.7.0+cpu figura en el
+# fichero y ya esta instalado por el paso 1, asi que pip no lo descarga.
+RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
 
 COPY . .
 
