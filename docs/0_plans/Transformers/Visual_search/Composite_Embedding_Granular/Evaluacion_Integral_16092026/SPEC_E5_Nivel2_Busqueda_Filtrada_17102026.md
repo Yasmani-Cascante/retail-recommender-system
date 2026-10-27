@@ -4,8 +4,10 @@
 **Estado:** DISENO aprobado (opcion 1, busqueda unica). Paso 0 hecho. Paso 2
 VALIDADO EN PRODUCCION el 19/10/2026 (commit `b286d25`, revision
 `retail-recommender-00329-mlt`; cierre en la seccion 13). Paso 2b (higiene de
-tests) VALIDADO el 19/10/2026 (cierre en la seccion 14). Pasos 1, 3 y 4 sin
-implementar.
+tests) VALIDADO el 19/10/2026 (cierre en la seccion 14). Paso 1 (endpoint
+`/v1/embed/search-filtered`) VALIDADO EN PRODUCCION el 26/10/2026 (revision
+`retail-embedding-service-00062-kvd`; cierre en la seccion 15). Pasos 3 y 4
+sin implementar.
 **Gap:** E5 nivel 2 (pendiente A del prompt de continuidad).
 **Relacionado:** `DCT_Cierre_Sesion_01102026.md` (addendum A.16 = estado valido),
 `BACKLOG_Busqueda_por_Atributos_Color_24072026.md` (ver seccion 10).
@@ -306,8 +308,8 @@ Veredicto exigido: 0 fallos nuevos y 0 fallos que desaparezcan sin explicacion.
 
 | Paso | Que | Validacion |
 |---|---|---|
-| 0 | Leer la version de faiss de la imagen: `docker run --rm gcr.io/retail-recommendations-449216/retail-embedding-service pip show faiss-cpu` | **HECHO 17/10: faiss-cpu 1.15.1.** Pendiente: confirmar en el paso 1 que el digest local coincide con el desplegado |
-| 1 | Servicio: 5.1-5.3. Desplegar | `curl.exe` a `/search-filtered` sin filtro == `/search-by-id`; con filtro, exactitud en 3 anclas reales (CHAQUETAS, CARTERAS, AROS) |
+| 0 | Leer la version de faiss de la imagen: `docker run --rm gcr.io/retail-recommendations-449216/retail-embedding-service pip show faiss-cpu` | **HECHO 17/10: faiss-cpu 1.15.1.** Confirmado el 21/10 directamente sobre la imagen DESPLEGADA (`pip show` sobre su digest `sha256:4a5185404e96...`) |
+| 1 | Servicio: 5.1-5.3. Desplegar. **VALIDADO EN PRODUCCION 26/10** -- revision `00062-kvd`, imagen `sha256:63df725e...`. Evidencia en la seccion 15 | `validate_search_filtered.py check`: 19/19 (incluye `/search-by-id` identico al baseline previo al despliegue) |
 | 2 | Monolito: solo `build_pool_request` (refactor). **VALIDADO EN PRODUCCION 19/10** -- commit `b286d25`, revision `00329-mlt`. Evidencia completa en la seccion 13 | oraculo 8.3 + logs de produccion identicos a los actuales |
 | 2b | Higiene de tests (prerequisito del 3): cortar la fuga de `.env` hacia toda la sesion de pytest y aislar `TestTamanoDelPoolVisual` del entorno (13.4, H-1). **VALIDADO 19/10** (seccion 14) | comparacion diferencial: los 6 fallos de `TestTamanoDelPoolVisual` desaparecen y no aparece ningun fallo nuevo |
 | 3 | Monolito: filtro + cliente + entrada al bloque, flag `0`. Desplegar | sin cambios observables con flag apagado |
@@ -546,3 +548,94 @@ comentario y no se pierde ninguna variable).
 4. **Una herramienta de comparacion tambien puede tener puntos ciegos**:
    `compare_junit.py` no informaba de cambios `passed -> skipped`; se amplio
    antes de usarla en este paso.
+
+---
+
+## 15. Cierre del paso 1 -- endpoint `/search-filtered` (26/10/2026)
+
+### 15.1 Que se entrego
+
+Commit del paso 1 en `feature/visual_search` (mensaje `feat(embedding-service):
+busqueda visual filtrada en FAISS (E5 nivel 2 paso 1); imagen sin venv_fase0
+(.dockerignore); versiones de produccion fijadas (constraints.txt)`), 9
+ficheros en `src/api/services/embedding-service/`:
+
+| Fichero | Cambio |
+|---|---|
+| `visual_retriever.py` | `FilteredSearchResult`, `_positions()` (cache id -> posicion), `_composite_query()` (extraida sin cambios del text boost), `search_filtered()` |
+| `main.py` | `POST /v1/embed/search-filtered` (limites: 20.000 ids, `top_k` 1-10.000, `alpha` 0-1) |
+| `requirements.txt` | `faiss-cpu>=1.7.4` -> `==1.15.1` (la de produccion) |
+| `Dockerfile` | instala con `-c constraints.txt`; corregido un comentario que citaba torch 2.1.0 (es 2.7.0) |
+| `.dockerignore` (nuevo) | lista BLANCA: solo `requirements.txt`, `constraints.txt` y los 3 `.py` |
+| `constraints.txt` (nuevo) | las 95 versiones exactas del `pip freeze` de la imagen desplegada |
+| `pytest.ini` (nuevo) | raiz de pytest en la carpeta del servicio (sin el, se aplicaba el del monolito) |
+| `requirements-test.txt` (nuevo) | entorno de tests con `-c constraints.txt` (no puede desalinearse de produccion) |
+| `tests/test_search_filtered.py` (nuevo) | 77 tests |
+
+Configuracion de despliegue: sonda de arranque 16 x 15 s = 240 s (H-15).
+
+### 15.2 Evidencia
+
+| Capa | Resultado |
+|---|---|
+| Codigo | 77 tests en verde en el laboratorio y en `venv_fase0` (Windows), con las versiones de produccion. Exactitud frente a "busqueda completa filtrada despues" en 50 casos; 15/15 mutantes detectados; pyflakes sin avisos nuevos |
+| Codigo desplegado previo | `sha256sum` de `main.py`, `visual_retriever.py` y `colbert_retriever.py` en la imagen de produccion == los del repo (base real del diff) |
+| Imagen nueva | `/app` con 5 ficheros, hashes == repo; `pip freeze` == produccion (95 paquetes, 0 diferencias); 3 modelos de HuggingFace con la MISMA revision que produccion; tamano 6,56 GB -> 4,44 GB |
+| Imagen subida | `RepoDigests` de la imagen local == digest de la revision desplegada (`sha256:63df725e...`) |
+| Produccion | `validate_search_filtered.py check`: 19/19 en 3 anclas reales (CARTERAS `9978484031797`, PANTALONES `9978565329205`, AROS `9978475839797`): `/search-by-id` identico al baseline tomado ANTES de desplegar; endpoint nuevo exacto; ramas vacia, desconocida e ids desconocidos correctas. Latencia 0,5-1,7 ms (5,1 ms la primera llamada) |
+
+### 15.3 Historial de despliegue
+
+| Revision | Imagen | Sonda | Resultado |
+|---|---|---|---|
+| 00056-2qr | antigua `4a518540...` | 9 x 15 s | en produccion desde el 07/10; fallo 56 de 64 arranques (H-15) |
+| 00057, 00058, 00059, 00060 | nueva `63df725e...` | 9 x 15 s | 4 intentos (23-25/10), todos rechazados por la sonda (134-139 s) |
+| 00061-f88 | antigua `4a518540...` | **16 x 15 s** | 25/10. Solo cambia la sonda: corrige H-15 sin tocar el codigo. C1 3/3 |
+| **00062-kvd** | nueva `63df725e...` | **16 x 15 s** | 26/10. Paso 1 en produccion. 19/19 |
+
+Los dos intentos del 26/10 con el texto literal `<DIGEST>` fueron rechazados
+por Cloud Run al validar la peticion (`code 3`), sin crear revision.
+
+Comando de despliegue validado (PowerShell, desde la raiz del repo):
+1. `docker build -t gcr.io/retail-recommendations-449216/retail-embedding-service:latest -f src/api/services/embedding-service/Dockerfile src/api/services/embedding-service`
+2. `docker push gcr.io/retail-recommendations-449216/retail-embedding-service:latest`
+3. Leer el digest subido: `docker image inspect gcr.io/retail-recommendations-449216/retail-embedding-service:latest --format "{{json .RepoDigests}}"`
+4. `gcloud beta run deploy retail-embedding-service --image gcr.io/retail-recommendations-449216/retail-embedding-service@sha256:<digest del punto 3> --project retail-recommendations-449216 --region us-central1 --memory 4Gi --cpu 1 --cpu-boost --min-instances 0 --max-instances 1 --timeout 300 --no-allow-unauthenticated --ingress all --startup-probe="httpGet.path=/health/startup-probe,httpGet.port=8080,initialDelaySeconds=10,periodSeconds=15,timeoutSeconds=3,failureThreshold=16" --set-env-vars VISUAL_INDEX_BUCKET=retail-recommendations-449216-visual-index`
+5. Comprobar que `status.imageDigest` de la revision nueva == digest del punto 3.
+
+### 15.4 Hallazgos
+
+| Id | Hallazgo | Estado |
+|---|---|---|
+| H-12 | `deploy.sh`: comentarios que contradicen a los flags (cpu 2 / min-instances 1 frente a cpu 1 / 0), shebang fuera de la primera linea, finales CRLF (bash no los admite), `failureThreshold=9`, despliegue por etiqueta y health check sin autenticacion (siempre rechazado) | revisado el 26/10 (hace lo mismo que el despliegue validado; 12/12 flags identicos en simulacion; shellcheck sin avisos); pendiente de aplicar |
+| H-13 | Carrera latente: la indexacion incremental hace `add()` en el indice mientras otros hilos buscan. La wiki de FAISS exige exclusion mutua para operaciones que modifican el indice; el comentario de `_add_to_faiss` afirma lo contrario. `search_filtered()` no la agrava (misma guarda `0 <= idx`) | pendiente (cambio aparte) |
+| H-14 | La imagen en produccion llevaba `venv_fase0` (entorno virtual de Windows, 2,1 GB de 6,56 GB) y ficheros sobrantes, por `COPY . .` sin `.dockerignore` | **resuelto** en el paso 1 |
+| H-15 | **Incidente de produccion:** sonda de arranque de ~130 s frente a arranques MEDIDOS de 104-140 s (hasta ~175 s ESTIMADOS para los que la sonda interrumpio: fase ColBERT de hasta 134,9 s + resto). La revision 00056 fallo 56 de 64 arranques en frio (18-25/10; 51 solo el 23/10). Corte exacto: todos los correctos <= 129,9 s, todos los fallidos que terminaron >= 130,3 s. `--cpu-boost` ya estaba activo | **resuelto** el 25/10 (revision 00061, solo sonda 16 x 15 s). Arranques posteriores: 115,8 s y 126,0 s, aceptados en el 9.o intento (margen ~110 s) |
+| H-16 | Un rebuild resolvia 14 paquetes en versiones distintas a produccion (3 con salto mayor) y anadia `tzdata`: las dependencias transitivas no estaban fijadas | **resuelto** con `constraints.txt` |
+| H-17 | Los modelos se descargan en el build en su ultima revision publicada (sin fijar). Hoy coinciden con produccion (verificado por hash de revision); un cambio en HuggingFace desalinearia los vectores del indice FAISS con el texto codificado | pendiente: fijar la revision de cada modelo en el `Dockerfile` |
+| H-18 | El repo no tiene `.gitattributes`: con `core.autocrlf=true`, en Windows los `.sh` salen con CRLF y no se pueden ejecutar con bash | pendiente (p. ej. `*.sh text eol=lf`) |
+
+### 15.5 Abierto
+
+- **Tendencia del arranque:** la fase de ColBERT paso de 72,6 s (18/10) a 84-135 s
+  (21-25/10). Causa desconocida. Seguir el margen frente a la sonda de 240 s.
+- H-12 (aplicar), H-13, H-17 y H-18.
+- Pasos 3 y 4 de esta spec.
+
+### 15.6 Lecciones
+
+1. **Comparar artefactos, no suponer.** Codigo, paquetes y modelos de la imagen
+   nueva se compararon con los de la imagen desplegada antes de subirla; asi
+   aparecieron H-14, H-16 y la verificacion de H-17.
+2. **Ante un fallo tras un despliegue, preguntar si ya pasaba antes.** Los
+   logs de UNA revision sugerian "la imagen nueva arranca mas lento"; los del
+   servicio completo mostraron que produccion llevaba dias fallando (H-15).
+3. **Un cambio por despliegue.** La sonda se corrigio primero con la imagen
+   antigua (00061) y el codigo nuevo despues (00062): cada resultado tiene una
+   sola causa posible.
+4. **Vigilar el margen, no solo el exito.** "Aceptada en el 9.o intento" en
+   00061 y 00062 significa que con la sonda antigua habrian pasado por poco.
+5. **Comandos sin huecos que rellenar.** Un `<DIGEST>` literal llego a Cloud
+   Run. Dar comandos completos cuando el valor ya se conoce.
+6. **Consultas que filtran sin que se vea.** El enlace del error de despliegue
+   filtraba por revision; ampliar el rango de tiempo no cambiaba nada.
