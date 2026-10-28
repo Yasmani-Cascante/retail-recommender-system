@@ -607,19 +607,20 @@ Comando de despliegue validado (PowerShell, desde la raiz del repo):
 
 | Id | Hallazgo | Estado |
 |---|---|---|
-| H-12 | `deploy.sh`: comentarios que contradicen a los flags (cpu 2 / min-instances 1 frente a cpu 1 / 0), shebang fuera de la primera linea, finales CRLF (bash no los admite), `failureThreshold=9`, despliegue por etiqueta y health check sin autenticacion (siempre rechazado) | revisado el 26/10 (hace lo mismo que el despliegue validado; 12/12 flags identicos en simulacion; shellcheck sin avisos); pendiente de aplicar |
+| H-12 | `deploy.sh`: comentarios que contradicen a los flags (cpu 2 / min-instances 1 frente a cpu 1 / 0), shebang fuera de la primera linea, finales CRLF (bash no los admite), `failureThreshold=9`, despliegue por etiqueta y health check sin autenticacion (siempre rechazado) | **resuelto** el 26/10: `deploy.sh` revisado y aplicado (contenido `076bdbf4...`); hace lo mismo que el despliegue validado (12/12 flags identicos en simulacion; shellcheck sin avisos) |
 | H-13 | Carrera latente: la indexacion incremental hace `add()` en el indice mientras otros hilos buscan. La wiki de FAISS exige exclusion mutua para operaciones que modifican el indice; el comentario de `_add_to_faiss` afirma lo contrario. `search_filtered()` no la agrava (misma guarda `0 <= idx`) | pendiente (cambio aparte) |
 | H-14 | La imagen en produccion llevaba `venv_fase0` (entorno virtual de Windows, 2,1 GB de 6,56 GB) y ficheros sobrantes, por `COPY . .` sin `.dockerignore` | **resuelto** en el paso 1 |
 | H-15 | **Incidente de produccion:** sonda de arranque de ~130 s frente a arranques MEDIDOS de 104-140 s (hasta ~175 s ESTIMADOS para los que la sonda interrumpio: fase ColBERT de hasta 134,9 s + resto). La revision 00056 fallo 56 de 64 arranques en frio (18-25/10; 51 solo el 23/10). Corte exacto: todos los correctos <= 129,9 s, todos los fallidos que terminaron >= 130,3 s. `--cpu-boost` ya estaba activo | **resuelto** el 25/10 (revision 00061, solo sonda 16 x 15 s). Arranques posteriores: 115,8 s y 126,0 s, aceptados en el 9.o intento (margen ~110 s) |
 | H-16 | Un rebuild resolvia 14 paquetes en versiones distintas a produccion (3 con salto mayor) y anadia `tzdata`: las dependencias transitivas no estaban fijadas | **resuelto** con `constraints.txt` |
 | H-17 | Los modelos se descargan en el build en su ultima revision publicada (sin fijar). Hoy coinciden con produccion (verificado por hash de revision); un cambio en HuggingFace desalinearia los vectores del indice FAISS con el texto codificado | pendiente: fijar la revision de cada modelo en el `Dockerfile` |
 | H-18 | El repo no tiene `.gitattributes`: con `core.autocrlf=true`, en Windows los `.sh` salen con CRLF y no se pueden ejecutar con bash | pendiente (p. ej. `*.sh text eol=lf`) |
+| H-19 | **`venv_fase0/Scripts/` esta bajo control de versiones** (lanzadores `.exe` del entorno virtual de Windows del servicio). Las instalaciones de pip del paso 1 (`numpy`, `idna`, `pip`, `pytest`, `pygments`) dejaron en `git status` 6 ficheros modificados (`f2py.exe`, `idna.exe`, `numpy-config.exe`, `pip.exe`, `pip3.exe`, `pip3.11.exe`) y 3 nuevos (`pytest.exe`, `py.test.exe`, `pygmentize.exe`). La regla `venv/` (linea 2 del `.gitignore` raiz) no cubre `venv_fase0`. `Lib/` no aparece en `git status`; [H] la excluye la regla `lib/` (linea 59, de la plantilla de Python) porque git en Windows ignora mayusculas (`core.ignorecase`); confirmar con `git check-ignore -v`. Riesgo: un `git add .` o "Stage All" meteria binarios del entorno en un commit. Misma raiz que H-14 (el entorno se colaba en la imagen) | pendiente: dejar de seguir la carpeta (`git rm -r --cached`, no borra nada del disco) y anadirla al `.gitignore` |
 
 ### 15.5 Abierto
 
 - **Tendencia del arranque:** la fase de ColBERT paso de 72,6 s (18/10) a 84-135 s
   (21-25/10). Causa desconocida. Seguir el margen frente a la sonda de 240 s.
-- H-12 (aplicar), H-13, H-17 y H-18.
+- H-13, H-17, H-18 y H-19.
 - Pasos 3 y 4 de esta spec.
 
 ### 15.6 Lecciones
