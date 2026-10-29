@@ -8,8 +8,10 @@ tests) VALIDADO el 19/10/2026 (cierre en la seccion 14). Paso 1 (endpoint
 `/v1/embed/search-filtered`) VALIDADO EN PRODUCCION el 26/10/2026 (revision
 `retail-embedding-service-00062-kvd`; cierre en la seccion 15). Paso 3 (filtro
 en el monolito, flag apagado) VALIDADO EN PRODUCCION el 29/10/2026 (revision
-`retail-recommender-00330-vwb`; cierre en la seccion 16). Paso 4 sin
-implementar.
+`retail-recommender-00330-vwb`; cierre en la seccion 16). Paso 4 (flag
+activado) VALIDADO EN PRODUCCION el 29/10/2026 (revision
+`retail-recommender-00332-d87`; cierre en la seccion 17). Queda el seguimiento
+con trafico real (17.5).
 **Gap:** E5 nivel 2 (pendiente A del prompt de continuidad).
 **Relacionado:** `DCT_Cierre_Sesion_01102026.md` (addendum A.16 = estado valido),
 `BACKLOG_Busqueda_por_Atributos_Color_24072026.md` (ver seccion 10).
@@ -315,7 +317,7 @@ Veredicto exigido: 0 fallos nuevos y 0 fallos que desaparezcan sin explicacion.
 | 2 | Monolito: solo `build_pool_request` (refactor). **VALIDADO EN PRODUCCION 19/10** -- commit `b286d25`, revision `00329-mlt`. Evidencia completa en la seccion 13 | oraculo 8.3 + logs de produccion identicos a los actuales |
 | 2b | Higiene de tests (prerequisito del 3): cortar la fuga de `.env` hacia toda la sesion de pytest y aislar `TestTamanoDelPoolVisual` del entorno (13.4, H-1). **VALIDADO 19/10** (seccion 14) | comparacion diferencial: los 6 fallos de `TestTamanoDelPoolVisual` desaparecen y no aparece ningun fallo nuevo |
 | 3 | Monolito: filtro + cliente + entrada al bloque, flag `0`. Desplegar. **VALIDADO EN PRODUCCION 29/10** -- revision `00330-vwb` (seccion 16) | sin cambios observables con flag apagado |
-| 4 | Flag `1` en produccion | logs `E5 filtro`, warning defensivo = 0, sesiones reales de las anclas del 05/10 y 07/10 |
+| 4 | Flag `1` en produccion. **VALIDADO EN PRODUCCION 29/10** -- revision `00332-d87`, misma imagen que la `00330` (seccion 17) | logs `E5 filtro`, warning defensivo = 0, sesiones reales de las anclas del 05/10 y 07/10 (pendiente: 17.5) |
 
 **Metricas antes/despues** (de Cloud Logging, misma ventana): proporcion de
 turnos con principal completo, frecuencia de `exhausted`, frecuencia de caida a
@@ -698,7 +700,7 @@ ficheros siguientes). Configuracion: `RECS_VISUAL_FILTER_IN_SEARCH: "0"` en
 
 | Id | Hallazgo | Estado |
 |---|---|---|
-| H-20 | **`venv_fase0` tambien esta en la imagen de produccion del MONOLITO**: 2,2 GB de 3,0 GB en `/app` (comprobado con `du`). El `.dockerignore` de la raiz excluye `venv/` y `.venv/`, patrones que solo afectan a la raiz del contexto, no a `src/api/services/embedding-service/venv_fase0`; ningun patron usa `**/` (tampoco `__pycache__/`). Efectos medidos en el build del 29/10: contexto de 2,47 GB, `COPY src/` 264 s, `chown -R` 404 s. Misma raiz que H-14 y H-19 | pendiente: `**/venv_fase0/` (o lista blanca) en el `.dockerignore` raiz; resolver junto con H-19 |
+| H-20 | **`venv_fase0` tambien esta en la imagen de produccion del MONOLITO**: 2,2 GB de 3,0 GB en `/app` (comprobado con `du`). El `.dockerignore` de la raiz excluye `venv/` y `.venv/`, patrones que solo afectan a la raiz del contexto, no a `src/api/services/embedding-service/venv_fase0`; ningun patron usa `**/` (tampoco `__pycache__/`). Efectos medidos en el build del 29/10: contexto de 2,47 GB, `COPY src/` 264 s, `chown -R` 404 s. Misma raiz que H-14 y H-19 | pendiente: `**/venv_fase0/` (o lista blanca) en el `.dockerignore` raiz; resolver junto con H-19. **Actualizacion: corregido en el repo el 30/10 (ver 17.4)** |
 | H-21 | **El guion de 9 turnos no es del todo reproducible**: el turno 3 (`Muestrame aros`) elige los productos con `random.sample` (`smart_sample_across_categories`, `improved_fallback_exclude_seen.py` ~1221), asi que el ancla pulsada en el turno 4 cambia entre ejecuciones (29/10: `aros-fiesta-mia-...` frente a `aros-isadora-flor-metal-plateado`) | para el paso 4: fijar el ancla del turno 4 abriendo directamente la pagina de un aro concreto |
 | H-22 | La prueba diferencial imprime en consola el DEBUG/INFO de `improved_fallback_exclude_seen` en el entorno Windows (algun modulo configura un manejador en el logger raiz). No afecta a la comparacion (lee de su propio manejador) | menor: silenciar la propagacion durante la ejecucion |
 | H-6 (actualizado) | OpenRouter responde que `liquid/lfm-...` **ya no esta disponible** (`no longer available`): no es un 404 transitorio sino la retirada del modelo. En el guion del 29/10, 10 de 10 turnos cayeron a GPT-4o-mini | pendiente: decidir el modelo principal |
@@ -725,3 +727,91 @@ ficheros siguientes). Configuracion: `RECS_VISUAL_FILTER_IN_SEARCH: "0"` en
 6. **"La herramienta dijo que funciono" no es "funciono".** Una escritura sin
    respuesta en 4 minutos no creo el fichero; se detecto porque cada
    escritura se verifica por hash.
+
+---
+
+## 17. Cierre del paso 4 -- filtro activado en produccion (29/10/2026)
+
+### 17.1 Activacion
+
+| Revision | Imagen | Flag | Resultado |
+|---|---|---|---|
+| 00330-vwb | `sha256:f6ea43c8...` | `0` | linea base (seccion 16) |
+| 00331-m89 | la misma | `1` | **fallo de la sonda de arranque** (H-23); no llego a servir |
+| **00332-d87** | **la misma** | **`1`** | sirve el 100 % desde el 29/10 ~16:10 UTC |
+
+La 00332 se desplego desde la consola de Cloud Run: el unico cambio respecto a
+la 00330 es la variable. `env-vars.yaml` se actualizo a `"1"` en el repo
+(30/10) para que un despliegue por linea de comandos no apague el filtro en
+silencio.
+
+### 17.2 Evidencia (guion de 9 turnos, 00330 frente a 00332, mismo dia)
+
+Ancla del turno 4 FIJADA (`aros-isadora-flor-metal-plateado`, H-21): los 9
+turnos son comparables.
+
+| Comprobacion | Resultado |
+|---|---|
+| Filtro aplicado | 1 linea `E5 filtro en busqueda` por turno F-08 (9/9); `devueltos = min(top_k, eligible)` en todos; `exclude=1` en el primer turno (solo el ancla) |
+| **P3 en produccion** | los productos de la categoria pedida (`en_pool`) NO bajan en ningun turno; suben en 5 (62->63, 50->56, 124->125, 17->30, ...) |
+| Pool util | palazzo: de 7-14 candidatos a 57-68; vestido corto: 31 -> 100; bolsos: 78/71 -> 100/109 |
+| **Mejora visible** | T5 y T7 (palazzo-silvia-negro): de 7 a **8** productos (`alternatives` 2 -> 3); aparece LEGGINGS como alternativa en T5 |
+| Contratos sin cambio | T1, T2, T4, T8, T9, T10 (el pool ya bastaba); **B.2 (T6)** identico: `principal=0[] alternatives=8['FALDAS'] exhausted=True` |
+| Limite real | PANTALONES sigue en 5 en T5/T7: el catalogo no tiene mas; el filtro no inventa productos |
+| Defensa | **0** avisos `E5 divergencia` |
+| Avisos / errores | ningun tipo nuevo; los del camino de cada peticion, identicos (10 + 4 + 4); 0 ERROR en la 00332 |
+| Latencia | `/search-filtered` en el servicio: 0,7-3,4 ms (mediana 1,9 ms), 9 llamadas |
+
+Nota sobre T7: faltaba la linea `F-08C pool insuficiente`. NO se perdio en el
+hueco entre ficheros descargados (todo el turno ocurrio a las
+16:23:11,499-11,557, antes del hueco de 16:23:14): el codigo solo la escribe
+con menos de 8 candidatos (`len(_c08_candidates) < n_recommendations`), y con
+el filtro habia 57. Su ausencia ES la mejora.
+
+### 17.3 Hallazgo
+
+| Id | Hallazgo | Estado |
+|---|---|---|
+| H-23 | **Margen insuficiente en la sonda de arranque del MONOLITO** (misma clase que H-15): `initialDelaySeconds=10`, `periodSeconds=10`, `failureThreshold=20` (~210 s). Arranques medidos de la MISMA imagen: 97,8 s (00329), 104,9 s (00330), 146,7 s (00332) y >201 s (00331, rechazada a los 201 s). El flag no influye: se lee al procesar cada peticion, nunca al arrancar | pendiente: ampliar a `failureThreshold=24` x `periodSeconds=10` = 240 s (maximo de Cloud Run) en el comando de despliegue; [H] H-20 podria acortar el arranque (sin medir) |
+
+### 17.4 Correccion de H-20 (30/10/2026)
+
+Bloque nuevo al final del `.dockerignore` raiz (las 16 lineas existentes
+intactas): `**/venv_fase0/`, `**/node_modules/`, `venv.test/`,
+`**/__pycache__/`, `**/*.py[cod]`, `**/.pytest_cache/`.
+
+Alcance justificado: en el repo hay cuatro entornos virtuales (`pyvenv.cfg`):
+`venv/` y `.venv/` ya estaban excluidos; `venv.test/` engordaba el contexto;
+`venv_fase0` llegaba a la imagen. Hay dos `node_modules` dentro de `src/`
+(`src/frontend/`, `src/api/mcp/nodejs_bridge/`) que `COPY src/` tambien
+copiaba; la imagen no tiene Node.js y el widget se sirve desde `static/`.
+
+Validacion en el laboratorio (logica de exclusion de la libreria oficial de
+Docker sobre una replica de las rutas reales): 10/10 ficheros necesarios
+entran (codigo, `data/`, `static/widget/`, `models/`, `requirements`); 12/12
+artefactos quedan fuera; con el `.dockerignore` original la simulacion
+reproduce H-20. **Pendiente**: validar en un build real (inventario de `/app`
+antes/despues: solo deben desaparecer ficheros de esos artefactos).
+
+### 17.5 Seguimiento con trafico real (pendiente)
+
+El guion demuestra el mecanismo; el efecto sobre la experiencia se mide con
+trafico real, misma ventana antes/despues del 29/10 ~16:10 UTC, en Cloud
+Logging: proporcion de turnos con `principal` completo; frecuencia de
+`exhausted=True`; numero medio de productos devueltos (7 frente a 8 en el
+guion); frecuencia de `pool insuficiente`; avisos `E5 divergencia` (deben
+seguir en 0); sesiones reales con las anclas del 05/10 y 07/10.
+
+### 17.6 Lecciones
+
+1. **Una ausencia en un log se interpreta conociendo cuando se escribe la
+   linea.** "Falta `pool insuficiente`" admitia dos lecturas opuestas (dato
+   perdido / problema resuelto); la decidieron las marcas de tiempo y la
+   condicion del codigo.
+2. **Fijar las entradas no deterministas del guion** (H-21): con el ancla del
+   turno 4 fija, los 9 turnos pasaron a ser comparables.
+3. **Desplegar desde la consola desincroniza la configuracion del repo.** El
+   flag activado en Cloud Run no estaba en `env-vars.yaml`; el siguiente
+   despliegue por linea de comandos lo habria apagado sin aviso.
+4. **El mismo arranque varia el doble entre ejecuciones** (98 s a >201 s): un
+   margen que cubre el caso medio no cubre la cola (H-15, H-23).

@@ -14,3 +14,23 @@ venv/
 .vscode/
 *.log
 *.sqlite3
+
+# ── H-20 (30/10/2026): artefactos de desarrollo ANIDADOS ──────────────────────
+# En .dockerignore un patron como "venv/" o "__pycache__/" solo excluye la
+# carpeta de la RAIZ del contexto; para cualquier profundidad hace falta "**/".
+# Sin estas lineas, "COPY src/ /app/src/" metia en la imagen de produccion:
+#   - src/api/services/embedding-service/venv_fase0  (entorno virtual de
+#     Windows del embedding service: 2,2 GB de los 3,0 GB de /app, medido el
+#     29/10/2026 en la imagen sha256:f6ea43c8...);
+#   - src/frontend/node_modules y src/api/mcp/nodejs_bridge/node_modules (la
+#     imagen no tiene Node.js: no se pueden ejecutar). El widget se sirve desde
+#     static/ (main_unified_redis.py: StaticFiles(directory="static")), no desde
+#     src/frontend.
+# venv.test/ no llega a la imagen (el Dockerfile no lo copia), pero engordaba el
+# contexto de build. Ver SPEC_E5_Nivel2_Busqueda_Filtrada_17102026.md, H-20.
+**/venv_fase0/
+**/node_modules/
+venv.test/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
