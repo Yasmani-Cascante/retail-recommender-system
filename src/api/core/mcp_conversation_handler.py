@@ -1867,7 +1867,119 @@ async def get_mcp_conversation_recommendations(
                                             f"(base={_c08_pool_base}, "
                                             f"shown={len(shown_products)})"
                                         )
-                                    if _c08_boost_text:
+                                    # ── E5 nivel 2, paso 3 (26/10/2026): filtro DENTRO de la busqueda ──────
+                                    # Con RECS_VISUAL_FILTER_IN_SEARCH activado, el pool visual se pide al
+                                    # embedding-service YA FILTRADO (POST /v1/embed/search-filtered): los top_k
+                                    # vecinos son los mejores de entre los ADMITIDOS (familia + alternativas,
+                                    # sin vistos ni el ancla), no los top_k globales filtrados despues. Ver
+                                    # SPEC_E5_Nivel2_Busqueda_Filtrada_17102026.md.
+                                    #
+                                    # Para filtrar ANTES de buscar hay que saber ANTES que admite el pool. Ese
+                                    # calculo vivia dentro del bloque de abajo y se encapsula en
+                                    # _c08_prepare_pool_request() con el MISMO codigo. Con el flag activado se
+                                    # llama aqui; con el desactivado, dentro del bloque, en el mismo punto que
+                                    # antes: mismo codigo y mismo orden de logs (extract_categories_from_query
+                                    # escribe en INFO). Comprobado por la prueba diferencial
+                                    # tests/characterization/equiv_harness_handler_e5.py.
+                                    from src.recommenders.f08_similarity_resolution import (
+                                        build_pool_request as _c08_build_pool_request,
+                                        build_visual_filter as _c08_build_visual_filter,
+                                        resolve_similarity_categories as _c08_resolve_categories,
+                                        visual_filter_in_search_enabled as _c08_filter_in_search,
+                                    )
+                                    from src.recommenders.product_taxonomy import (
+                                        get_alternative_types as _c08_alternative_types,
+                                        get_similarity_family as _c08_similarity_family,
+                                    )
+
+                                    def _c08_type_of(pid):
+                                        # Contrato type_of del modulo: product_type del indice
+                                        # TF-IDF, o "" si el producto no esta / no tiene tipo.
+                                        return _c08_tfidf.id_index.get(str(pid), {}).get("product_type", "")
+
+                                    def _c08_prepare_pool_request():
+                                        """Etapas 1a + 1b + peticion de pool (antes inline en el bloque, sin
+                                        cambios). Devuelve (ctx_type, resolution, pool_req)."""
+                                        # ETAPA 1a -- categorias desde el TEXTO de la query, contra el
+                                        # catalogo completo de tipos (no un sample). Se queda en el
+                                        # llamador porque depende de all_products de este scope.
+                                        _all_types = set(
+                                            p.get("product_type", "")
+                                            for p in all_products if p.get("product_type")
+                                        )
+                                        _text_cats = extract_categories_from_query(
+                                            conversation_query,
+                                            available_categories=_all_types,
+                                        ) or []
+                                        # ETAPA 1b -- el texto manda; si no nombra categoria, expansion
+                                        # por contexto a las hermanas del grupo padre del ancla
+                                        # (F08C_ROUTE.use_query_categories=True).
+                                        _ctx_type = mcp_context.current_product_context.get(
+                                            "product_type", ""
+                                        ) if mcp_context and getattr(
+                                            mcp_context, "current_product_context", None
+                                        ) else ""
+                                        # _c08_pool_route ES F08C_ROUTE: el mismo objeto que _c08_route,
+                                        # que se importa mas abajo, dentro del bloque.
+                                        _resolution = _c08_resolve_categories(
+                                            _c08_pool_route, _ctx_type, _text_cats, get_parent_categories,
+                                        )
+                                        _pool_req = _c08_build_pool_request(
+                                            _resolution,
+                                            _ctx_type,
+                                            similarity_family_fn=_c08_similarity_family,
+                                            alternative_types_fn=_c08_alternative_types,
+                                        )
+                                        return _ctx_type, _resolution, _pool_req
+
+                                    _c08_filter_on = (
+                                        _c08_filter_in_search()
+                                        and _c08_tfidf is not None
+                                        and hasattr(_c08_tfidf, "id_index")
+                                    )
+                                    _c08_prepared = _c08_prepare_pool_request() if _c08_filter_on else None
+                                    # anchor_found separa "ancla no indexada" de "nada elegible" (hallazgo
+                                    # F7): con el filtro, una lista vacia puede ser cualquiera de las dos.
+                                    _c08_anchor_found = False
+                                    if _c08_filter_on:
+                                        # MISMO criterio que el filtro posterior de la etapa 2, mas abajo.
+                                        _c08_vfilter = _c08_build_visual_filter(
+                                            _c08_tfidf.id_index.keys(),
+                                            _c08_prepared[2].pool_cats or _c08_prepared[1].categories,
+                                            _c08_pid,
+                                            _c08_type_of,
+                                            shown_products,
+                                        )
+                                        _c08_fres = await asyncio.wait_for(
+                                            _c08_colbert.search_filtered(
+                                                _c08_pid,
+                                                include_ids=(sorted(_c08_vfilter.include)
+                                                             if _c08_vfilter.include is not None else None),
+                                                exclude_ids=sorted(_c08_vfilter.exclude),
+                                                top_k=_c08_top_k,
+                                                boost_text=_c08_boost_text or None,
+                                                alpha=_c08_boost_alpha,
+                                            ),
+                                            timeout=3.0,
+                                        )
+                                        # None = fallo o circuit breaker abierto: mismo efecto que hoy
+                                        # (lista vacia, no se entra al bloque, smart_fallback).
+                                        _c08_visual_raw = _c08_fres.pairs if _c08_fres is not None else None
+                                        _c08_anchor_found = _c08_fres is not None and _c08_fres.anchor_found
+                                        logger.info(
+                                            f"F-08C E5 filtro en busqueda: "
+                                            f"include={'all' if _c08_vfilter.include is None else len(_c08_vfilter.include)} "
+                                            f"exclude={len(_c08_vfilter.exclude)} "
+                                            f"eligible={_c08_fres.eligible_count if _c08_fres is not None else '-'} "
+                                            f"devueltos={len(_c08_visual_raw or [])} "
+                                            f"anchor_found={_c08_anchor_found}"
+                                        )
+                                        if _c08_boost_text:
+                                            logger.info(
+                                                f"F-08C: composite embedding boost activo "
+                                                f"(type={_c08_ctx_type_upper_early}, alpha={_c08_boost_alpha})"
+                                            )
+                                    elif _c08_boost_text:
                                         _c08_visual_raw = await asyncio.wait_for(
                                             _c08_colbert.search_by_product_id_with_text_boost(
                                                 _c08_pid,
@@ -1913,7 +2025,12 @@ async def get_mcp_conversation_recommendations(
                                         for rank, (pid, score) in enumerate(_c08_visual_pairs)
                                     }
 
-                                    if _c08_visual_ids and _c08_tfidf and hasattr(_c08_tfidf, "id_index"):
+                                    # E5 (26/10/2026): con el filtro en la busqueda, una lista vacia con
+                                    # anchor_found=True significa "nada elegible" y debe recorrer el camino
+                                    # vacio de abajo (contrato con exhausted), como hoy cuando el filtro
+                                    # posterior lo descarta todo. Con el flag desactivado anchor_found es
+                                    # False y la condicion es la de siempre.
+                                    if (_c08_visual_ids or _c08_anchor_found) and _c08_tfidf and hasattr(_c08_tfidf, "id_index"):
                                         # REFACTOR (02/10/2026 -- paso 1, SIN cambio de comportamiento):
                                         # la logica de decision de este bloque (resolucion de categorias,
                                         # filtrado del pool, particion T8, camino feliz / relleno parcial
@@ -1948,37 +2065,15 @@ async def get_mcp_conversation_recommendations(
                                             fill_score_start as _c08_get_fill_score_start,
                                             filter_visual_candidates as _c08_filter_candidates,
                                             order_candidates as _c08_order_candidates,
-                                            resolve_similarity_categories as _c08_resolve_categories,
                                         )
 
-                                        def _c08_type_of(pid):
-                                            # Contrato type_of del modulo: product_type del indice
-                                            # TF-IDF, o "" si el producto no esta / no tiene tipo.
-                                            return _c08_tfidf.id_index.get(str(pid), {}).get("product_type", "")
-
-                                        # ETAPA 1a -- categorias desde el TEXTO de la query, contra el
-                                        # catalogo completo de tipos (no un sample). Se queda en el
-                                        # llamador porque depende de all_products de este scope.
-                                        _c08_all_types = set(
-                                            p.get("product_type", "")
-                                            for p in all_products if p.get("product_type")
-                                        )
-                                        _c08_text_cats = extract_categories_from_query(
-                                            conversation_query,
-                                            available_categories=_c08_all_types,
-                                        ) or []
-
-                                        # ETAPA 1b -- el texto manda; si no nombra categoria, expansion
-                                        # por contexto a las hermanas del grupo padre del ancla
-                                        # (F08C_ROUTE.use_query_categories=True).
-                                        _c08_ctx_type = mcp_context.current_product_context.get(
-                                            "product_type", ""
-                                        ) if mcp_context and getattr(
-                                            mcp_context, "current_product_context", None
-                                        ) else ""
-                                        _c08_resolution = _c08_resolve_categories(
-                                            _c08_route, _c08_ctx_type, _c08_text_cats, get_parent_categories,
-                                        )
+                                        # ETAPA 1a + 1b + peticion de pool: ahora en _c08_prepare_pool_request()
+                                        # (definida antes de la busqueda, MISMO codigo). Con el filtro activado
+                                        # ya se calculo alli; con el desactivado se calcula AQUI, en el mismo
+                                        # punto que antes. _c08_type_of tambien se definio alli.
+                                        if _c08_prepared is None:
+                                            _c08_prepared = _c08_prepare_pool_request()
+                                        _c08_ctx_type, _c08_resolution, _c08_pool_req = _c08_prepared
                                         _c08_query_cats = _c08_resolution.categories
                                         _c08_anchor_type_for_ranking = _c08_resolution.anchor_type_for_ranking
                                         if _c08_resolution.expansion_error is not None:
@@ -2023,12 +2118,7 @@ async def get_mcp_conversation_recommendations(
                                             RequestSpec as _C08_RequestSpec,
                                             tag_origin as _c08_tag_origin,
                                         )
-                                        from src.recommenders.product_taxonomy import (
-                                            get_alternative_types as _c08_alternative_types,
-                                            get_similarity_family as _c08_similarity_family,
-                                        )
                                         from src.recommenders.f08_similarity_resolution import (
-                                            build_pool_request as _c08_build_pool_request,
                                             filter_fill_to_request as _c08_filter_fill,
                                             principal_first_enabled as _c08_principal_first,
                                             split_candidates_by_request as _c08_split_by_request,
@@ -2061,12 +2151,8 @@ async def get_mcp_conversation_recommendations(
                                         # copias literales del codigo que habia aqui, + mutantes).
                                         # Las variables conservan sus nombres: el resto del bloque no
                                         # cambia.
-                                        _c08_pool_req = _c08_build_pool_request(
-                                            _c08_resolution,
-                                            _c08_ctx_type,
-                                            similarity_family_fn=_c08_similarity_family,
-                                            alternative_types_fn=_c08_alternative_types,
-                                        )
+                                        # (paso 3, 26/10/2026) _c08_pool_req ya viene de
+                                        # _c08_prepare_pool_request(), arriba.
                                         _c08_intent = _c08_pool_req.intent
                                         _c08_requested_ordered = _c08_pool_req.requested_ordered
                                         _c08_requested = _c08_pool_req.requested
@@ -2160,6 +2246,15 @@ async def get_mcp_conversation_recommendations(
                                             _c08_pool_cats or _c08_query_cats,
                                             _c08_type_of, shown_products,
                                         )
+                                        # E5 (26/10/2026): con el filtro en la busqueda, este filtro se conserva
+                                        # como DEFENSA y no deberia quitar nada. Si quita algo, el catalogo con
+                                        # que se construyo el filtro y el que usa este paso divergen: se avisa.
+                                        if _c08_filter_on and len(_c08_candidates) != len(_c08_visual_ids):
+                                            logger.warning(
+                                                f"F-08C E5 divergencia: el filtro posterior quito "
+                                                f"{len(_c08_visual_ids) - len(_c08_candidates)} de "
+                                                f"{len(_c08_visual_ids)} candidatos ya filtrados en la busqueda"
+                                            )
 
                                         # DIAGNOSTIC LOG (13/07/2026): desglose por tipo ANTES de la
                                         # particion T8 y del corte a n_recommendations.
@@ -2824,7 +2919,112 @@ async def get_mcp_conversation_recommendations(
                                     f"(base={_f08_pool_base}, "
                                     f"shown={len(shown_products)})"
                                 )
-                            if _f08_boost_text:
+                            # ── E5 nivel 2, paso 3 (26/10/2026): filtro DENTRO de la busqueda ──────
+                            # Mismo esquema que en F-08C (ver el comentario de alli): el calculo de
+                            # que admite el pool se encapsula en _f08_prepare_pool_request() con el
+                            # MISMO codigo; con el flag activado se llama aqui, con el desactivado
+                            # dentro del bloque, en el mismo punto que antes.
+                            from src.recommenders.f08_similarity_resolution import (
+                                build_pool_request as _f08_build_pool_request,
+                                build_visual_filter as _f08_build_visual_filter,
+                                resolve_similarity_categories as _f08_resolve_categories,
+                                visual_filter_in_search_enabled as _f08_filter_in_search,
+                            )
+                            from src.recommenders.product_taxonomy import (
+                                get_alternative_types as _f08_alternative_types,
+                                get_similarity_family as _f08_similarity_family,
+                            )
+
+                            def _f08_type_of(pid):
+                                # Contrato type_of del modulo: product_type del indice
+                                # TF-IDF, o "" si el producto no esta / no tiene tipo.
+                                return _f08_tfidf.id_index.get(str(pid), {}).get("product_type", "")
+
+                            def _f08_parent_categories_fn():
+                                # El import va DENTRO de la funcion a proposito: el modulo la
+                                # invoca dentro de su propio try/except, asi que un ImportError
+                                # degrada al tipo exacto igual que antes, en vez de propagarse
+                                # al except exterior y perder la busqueda visual entera.
+                                # (En el bloque original el import estaba dentro del mismo try
+                                # que la llamada -- se conserva esa semantica exacta.)
+                                # Import lazy obligatorio ademas por BUG-REFACTOR-1 (18/06):
+                                # get_parent_categories solo se importa arriba dentro de
+                                # "if use_diversification:" (Turn 2+), rama que en Turn 1 nunca
+                                # ejecuta -- Python trata el nombre como local a TODA la funcion
+                                # y usarlo aqui sin este import daria UnboundLocalError.
+                                from src.recommenders.improved_fallback_exclude_seen import (
+                                    get_parent_categories as _f08_get_parent_categories,
+                                )
+                                return _f08_get_parent_categories()
+
+                            def _f08_prepare_pool_request():
+                                """Etapa 1 + peticion de pool (antes inline en el bloque, sin
+                                cambios). Devuelve (resolution, pool_req)."""
+                                # ETAPA 1 -- categorias deseadas. En Fase A las decide SOLO el
+                                # ancla: F08A_ROUTE.use_query_categories=False, por eso se pasa
+                                # None como categorias de texto (divergencia con F-08C, pendiente
+                                # de decision de producto -- Addendum A.2).
+                                # _f08_pool_route ES F08A_ROUTE: el mismo objeto que _f08_route,
+                                # que se importa mas abajo, dentro del bloque.
+                                _resolution = _f08_resolve_categories(
+                                    _f08_pool_route, _f08_ptype, None, _f08_parent_categories_fn,
+                                )
+                                _pool_req = _f08_build_pool_request(
+                                    _resolution,
+                                    _f08_ptype,
+                                    similarity_family_fn=_f08_similarity_family,
+                                    alternative_types_fn=_f08_alternative_types,
+                                )
+                                return _resolution, _pool_req
+
+                            _f08_filter_on = (
+                                _f08_filter_in_search()
+                                and _f08_tfidf is not None
+                                and hasattr(_f08_tfidf, "id_index")
+                            )
+                            _f08_prepared = _f08_prepare_pool_request() if _f08_filter_on else None
+                            # anchor_found separa "ancla no indexada" de "nada elegible" (hallazgo
+                            # F7). En Fase A decide DOS cosas: el fallback por imagen y la entrada
+                            # al bloque (ver ambos mas abajo).
+                            _f08_anchor_found = False
+                            if _f08_filter_on:
+                                # MISMO criterio que el filtro posterior de la etapa 2, mas abajo.
+                                _f08_vfilter = _f08_build_visual_filter(
+                                    _f08_tfidf.id_index.keys(),
+                                    _f08_prepared[1].pool_cats or _f08_prepared[0].categories,
+                                    _f08_pid,
+                                    _f08_type_of,
+                                    shown_products,
+                                )
+                                _f08_fres = await asyncio.wait_for(
+                                    _f08_colbert.search_filtered(
+                                        _f08_pid,
+                                        include_ids=(sorted(_f08_vfilter.include)
+                                                     if _f08_vfilter.include is not None else None),
+                                        exclude_ids=sorted(_f08_vfilter.exclude),
+                                        top_k=_f08_top_k,
+                                        boost_text=_f08_boost_text or None,
+                                        alpha=_f08_boost_alpha,
+                                    ),
+                                    timeout=3.0,
+                                )
+                                # None = fallo o circuit breaker abierto: mismo efecto que hoy.
+                                _f08_visual_raw = _f08_fres.pairs if _f08_fres is not None else None
+                                _f08_anchor_found = _f08_fres is not None and _f08_fres.anchor_found
+                                logger.info(
+                                    f"F-08 Fase A E5 filtro en busqueda: "
+                                    f"include={'all' if _f08_vfilter.include is None else len(_f08_vfilter.include)} "
+                                    f"exclude={len(_f08_vfilter.exclude)} "
+                                    f"eligible={_f08_fres.eligible_count if _f08_fres is not None else '-'} "
+                                    f"devueltos={len(_f08_visual_raw or [])} "
+                                    f"anchor_found={_f08_anchor_found}"
+                                )
+                                if _f08_boost_text:
+                                    logger.info(
+                                        f"F-08 Fase A: composite embedding boost activo "
+                                        f"(type={_f08_ptype_upper_early}, alpha={_f08_boost_alpha})"
+                                    )
+                            elif _f08_boost_text:
                                 _f08_visual_raw = await asyncio.wait_for(
                                     _f08_colbert.search_by_product_id_with_text_boost(
                                         _f08_pid,
@@ -2848,7 +3048,11 @@ async def get_mcp_conversation_recommendations(
                                 )
 
                             # Fallback CDN: solo si producto no está en índice FAISS
-                            if not _f08_visual_raw:
+                            # E5 (26/10/2026): con el filtro en la busqueda, una lista vacia con
+                            # anchor_found=True significa "nada elegible", NO "ancla no indexada":
+                            # no se descarga la imagen ni se repite la busqueda. Con el flag
+                            # desactivado anchor_found es False y la condicion es la de siempre.
+                            if not _f08_visual_raw and not _f08_anchor_found:
                                 _f08_image_url = None
                                 if _f08_tfidf and hasattr(_f08_tfidf, "id_index"):
                                     _f08_prod = _f08_tfidf.id_index.get(_f08_pid)
@@ -2890,7 +3094,10 @@ async def get_mcp_conversation_recommendations(
                                 for rank, (pid, score) in enumerate(_f08_visual_pairs)
                             }
 
-                            if _f08_visual_ids:
+                            # E5 (26/10/2026): tambien con anchor_found -- la rama "nada elegible"
+                            # recorre el camino vacio de abajo (contrato con exhausted), como hoy
+                            # cuando el filtro posterior lo descarta todo.
+                            if _f08_visual_ids or _f08_anchor_found:
                                 # REFACTOR (02/10/2026 -- paso 1b, SIN cambio de comportamiento):
                                 # la logica de decision de este bloque (resolucion de categorias,
                                 # filtrado del pool, particion T8 + intercalado NIVEL 1, camino
@@ -2926,40 +3133,23 @@ async def get_mcp_conversation_recommendations(
                                     fill_score_start as _f08_get_fill_score_start,
                                     filter_visual_candidates as _f08_filter_candidates,
                                     order_candidates as _f08_order_candidates,
-                                    resolve_similarity_categories as _f08_resolve_categories,
                                 )
 
                                 _f08_type_upper = _f08_ptype.upper()
 
-                                def _f08_type_of(pid):
-                                    # Contrato type_of del modulo: product_type del indice
-                                    # TF-IDF, o "" si el producto no esta / no tiene tipo.
-                                    return _f08_tfidf.id_index.get(str(pid), {}).get("product_type", "")
-
-                                def _f08_parent_categories_fn():
-                                    # El import va DENTRO de la funcion a proposito: el modulo la
-                                    # invoca dentro de su propio try/except, asi que un ImportError
-                                    # degrada al tipo exacto igual que antes, en vez de propagarse
-                                    # al except exterior y perder la busqueda visual entera.
-                                    # (En el bloque original el import estaba dentro del mismo try
-                                    # que la llamada -- se conserva esa semantica exacta.)
-                                    # Import lazy obligatorio ademas por BUG-REFACTOR-1 (18/06):
-                                    # get_parent_categories solo se importa arriba dentro de
-                                    # "if use_diversification:" (Turn 2+), rama que en Turn 1 nunca
-                                    # ejecuta -- Python trata el nombre como local a TODA la funcion
-                                    # y usarlo aqui sin este import daria UnboundLocalError.
-                                    from src.recommenders.improved_fallback_exclude_seen import (
-                                        get_parent_categories as _f08_get_parent_categories,
-                                    )
-                                    return _f08_get_parent_categories()
+                                # _f08_type_of y _f08_parent_categories_fn: definidas antes de la busqueda
+                                # (E5 nivel 2, paso 3), sin cambios.
 
                                 # ETAPA 1 -- categorias deseadas. En Fase A las decide SOLO el
                                 # ancla: F08A_ROUTE.use_query_categories=False, por eso se pasa
                                 # None como categorias de texto (divergencia con F-08C, pendiente
                                 # de decision de producto -- Addendum A.2).
-                                _f08_resolution = _f08_resolve_categories(
-                                    _f08_route, _f08_ptype, None, _f08_parent_categories_fn,
-                                )
+                                # (paso 3, 26/10/2026) Resolucion + peticion de pool: en
+                                # _f08_prepare_pool_request(), MISMO codigo. Con el filtro activado ya
+                                # se calculo antes de buscar; con el desactivado se calcula AQUI.
+                                if _f08_prepared is None:
+                                    _f08_prepared = _f08_prepare_pool_request()
+                                _f08_resolution, _f08_pool_req = _f08_prepared
                                 _f08_expanded_cats = _f08_resolution.categories
                                 if _f08_resolution.expansion_error is not None:
                                     logger.debug(
@@ -2996,12 +3186,7 @@ async def get_mcp_conversation_recommendations(
                                     RequestSpec as _F08_RequestSpec,
                                     tag_origin as _f08_tag_origin,
                                 )
-                                from src.recommenders.product_taxonomy import (
-                                    get_alternative_types as _f08_alternative_types,
-                                    get_similarity_family as _f08_similarity_family,
-                                )
                                 from src.recommenders.f08_similarity_resolution import (
-                                    build_pool_request as _f08_build_pool_request,
                                     filter_fill_to_request as _f08_filter_fill,
                                     principal_first_enabled as _f08_principal_first,
                                     split_candidates_by_request as _f08_split_by_request,
@@ -3013,12 +3198,8 @@ async def get_mcp_conversation_recommendations(
                                 # Fase A vale "none" si y solo si el tipo en mayusculas esta vacio
                                 # (_resolve_anchor_only). Equivalencia comprobada por el oraculo
                                 # tests/characterization/equiv_harness_pool_request.py.
-                                _f08_pool_req = _f08_build_pool_request(
-                                    _f08_resolution,
-                                    _f08_ptype,
-                                    similarity_family_fn=_f08_similarity_family,
-                                    alternative_types_fn=_f08_alternative_types,
-                                )
+                                # (paso 3, 26/10/2026) _f08_pool_req ya viene de
+                                # _f08_prepare_pool_request(), arriba.
                                 _f08_intent = _f08_pool_req.intent
                                 _f08_requested_ordered = _f08_pool_req.requested_ordered
                                 _f08_requested = _f08_pool_req.requested
@@ -3087,6 +3268,18 @@ async def get_mcp_conversation_recommendations(
                                     _f08_pool_cats or _f08_expanded_cats,
                                     _f08_type_of, shown_products,
                                 )
+                                # E5 (26/10/2026): DEFENSA; con el filtro en la busqueda no deberia
+                                # quitar nada. Si quita algo, los catalogos divergen: se avisa.
+                                # Solo si el pool VIENE de la busqueda filtrada (ancla indexada): el
+                                # fallback por imagen no se filtra (limitacion conocida, spec 4.2) y
+                                # ahi el filtro posterior SI debe quitar -- avisar seria una falsa
+                                # alarma en cada turno por imagen (lo detecto la prueba diferencial).
+                                if _f08_filter_on and _f08_anchor_found and len(_f08_same_cat) != len(_f08_visual_ids):
+                                    logger.warning(
+                                        f"F-08 Fase A E5 divergencia: el filtro posterior quito "
+                                        f"{len(_f08_visual_ids) - len(_f08_same_cat)} de "
+                                        f"{len(_f08_visual_ids)} candidatos ya filtrados en la busqueda"
+                                    )
 
                                 # DIAGNOSTIC LOG (26/07/2026): mismo formato exacto que el de
                                 # F-08C, para poder comparar ambos caminos directamente.

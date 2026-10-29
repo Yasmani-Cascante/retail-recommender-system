@@ -31,6 +31,8 @@ from src.recommenders.f08_similarity_resolution import (
     _read_visual_pool_cap,
     build_fill_exclusion,
     build_pool_request,
+    build_visual_filter,
+    visual_filter_in_search_enabled,
     build_partial_exhaustion_info,
     build_partial_fill_events,
     candidate_breakdown,
@@ -764,3 +766,75 @@ class TestBuildPoolRequest:
         assert req.requested_ordered == ["TURBANTES"]
         assert req.alt_types == []
         assert req.pool_cats == ["TURBANTES"]
+
+
+# ════════════════════════════════════════════════════════════════════
+# build_visual_filter + flag RECS_VISUAL_FILTER_IN_SEARCH
+# (26/10/2026, E5 nivel 2 paso 3)
+# ════════════════════════════════════════════════════════════════════
+#
+# La EQUIVALENCIA con filter_visual_candidates() la demuestra
+# tests/characterization/equiv_harness_e5.py (P1-P3, 20.000 casos +
+# mutantes). Estos tests documentan las reglas con ejemplos legibles y
+# cubren lo que el oraculo deja fuera a proposito.
+
+_CAT = {"1": {"product_type": "AROS"}, "2": {"product_type": "aros"},
+        "3": {"product_type": "COLLARES"}, "4": {}, "5": {"product_type": ""}}
+
+
+def _type_of(pid):
+    return _CAT.get(str(pid), {}).get("product_type", "")
+
+
+class TestBuildVisualFilter:
+
+    def test_categorias_vacias_es_sin_restriccion_no_todo_el_catalogo(self):
+        """include=None: un pid del indice que el catalogo no conoce (aqui
+        "m9") tambien pasa, como hoy con categorias vacias."""
+        f = build_visual_filter(_CAT.keys(), [], "1", _type_of, set())
+        assert f.include is None
+        assert f.admits("m9") and f.admits("3")
+        assert not f.admits("1")  # el ancla nunca
+
+    def test_tipo_comparado_en_mayusculas_por_ambos_lados(self):
+        f = build_visual_filter(_CAT.keys(), ["aros"], "9", _type_of, set())
+        assert f.include == frozenset({"1", "2"})
+
+    def test_sin_tipo_o_desconocido_no_se_admite_con_categorias(self):
+        f = build_visual_filter(_CAT.keys(), ["AROS"], "9", _type_of, set())
+        assert not f.admits("4") and not f.admits("5") and not f.admits("m9")
+
+    def test_product_type_none_no_rompe_el_constructor(self):
+        """filter_visual_candidates fallaria con AttributeError, pero solo si
+        el producto entra en el pool; el constructor recorre el catalogo
+        ENTERO y debe tolerarlo (lo trata como sin tipo)."""
+        cat = dict(_CAT, **{"6": {"product_type": None}})
+        f = build_visual_filter(cat.keys(), ["AROS"], "9",
+                                lambda p: cat.get(str(p), {}).get("product_type", ""), set())
+        assert f.include == frozenset({"1", "2"})
+
+    def test_vistos_y_ancla_excluidos_y_normalizados_a_str(self):
+        f = build_visual_filter(_CAT.keys(), ["AROS"], 1, _type_of, {2})
+        assert f.exclude == frozenset({"1", "2"})
+        assert not f.admits("1") and not f.admits("2")
+
+
+class TestVisualFilterFlag:
+
+    def test_desactivado_por_defecto(self, monkeypatch):
+        monkeypatch.delenv("RECS_VISUAL_FILTER_IN_SEARCH", raising=False)
+        assert visual_filter_in_search_enabled() is False
+
+    @pytest.mark.parametrize("valor", ["1", "true", "TRUE", " yes ", "on"])
+    def test_valores_que_lo_activan(self, monkeypatch, valor):
+        monkeypatch.setenv("RECS_VISUAL_FILTER_IN_SEARCH", valor)
+        assert visual_filter_in_search_enabled() is True
+
+    @pytest.mark.parametrize("valor", ["0", "false", "no", "off", ""])
+    def test_valores_que_lo_desactivan(self, monkeypatch, valor):
+        monkeypatch.setenv("RECS_VISUAL_FILTER_IN_SEARCH", valor)
+        assert visual_filter_in_search_enabled() is False
+
+    def test_valor_no_reconocido_usa_el_default(self, monkeypatch):
+        monkeypatch.setenv("RECS_VISUAL_FILTER_IN_SEARCH", "quizas")
+        assert visual_filter_in_search_enabled() is False

@@ -132,6 +132,7 @@ import os
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
 import httpx
@@ -184,6 +185,34 @@ def _unpack_visual_results(data: Dict, with_scores: bool) -> VisualResults:
         )
         return [(pid, None) for pid in ids]
     return [(pid, float(s)) for pid, s in zip(ids, scores)]
+
+
+@dataclass(frozen=True)
+class FilteredVisualResult:
+    """
+    Respuesta de search_filtered() -- E5 nivel 2, paso 3 (26/10/2026).
+    Ver SPEC_E5_Nivel2_Busqueda_Filtrada_17102026.md, seccion 4.3.
+
+    pairs:
+        (product_id, score) en orden de similitud; score = coseno real (o None
+        si el servicio no lo devolviera alineado: misma degradacion que
+        _unpack_visual_results).
+    anchor_found:
+        El ancla esta en el indice FAISS. Distingue dos situaciones OPUESTAS
+        que una lista vacia no distingue (hallazgo F7 de la spec):
+          False + []  -> ancla no indexada: el llamante cae a su fallback
+                         (Fase A: busqueda por imagen de la CDN);
+          True  + []  -> no queda nada ELEGIBLE: el llamante recorre su camino
+                         vacio y construye el contrato con exhausted.
+    eligible_count:
+        Productos distintos del indice que pasan el filtro (sin el ancla).
+    unknown_ids:
+        Ids de include_ids que el indice no conoce (desfase catalogo/indice).
+    """
+    pairs: List[Tuple[str, Optional[float]]]
+    anchor_found: bool
+    eligible_count: int
+    unknown_ids: int
 
 
 class LFM2ColBERTClient:
@@ -599,6 +628,81 @@ class LFM2ColBERTClient:
                 data['latency_ms'], product_id,
             )
             return data['results']
+        except Exception as e:
+            self._handle_visual_failure(e)
+            return None
+
+    async def search_filtered(
+        self,
+        product_id: str,
+        include_ids: Optional[List[str]] = None,
+        exclude_ids: Optional[List[str]] = None,
+        top_k: int = 100,
+        boost_text: Optional[str] = None,
+        alpha: float = 0.5,
+    ) -> Optional[FilteredVisualResult]:
+        """
+        E5 nivel 2, paso 3 (26/10/2026): vecinos visuales de product_id
+        buscando SOLO entre los admitidos, con el filtro aplicado DENTRO de
+        FAISS por el embedding-service (POST /v1/embed/search-filtered).
+
+        include_ids=None -> sin restriccion de tipo; una lista -> solo esos.
+        exclude_ids nunca se devuelven; el servicio excluye siempre el ancla.
+        boost_text no vacio -> consulta compuesta imagen+texto (la misma que
+        search_by_product_id_with_text_boost); vacio o None -> solo imagen.
+
+        Devuelve None si el circuit breaker VISUAL esta abierto o si la
+        llamada falla (mismo contrato de fallo que el resto de busquedas
+        visuales: el llamante cae a su fallback). Un fallo cuenta para el
+        circuit breaker compartido: ver en f08_similarity_resolution.py el
+        ORDEN DE MARCHA ATRAS de RECS_VISUAL_FILTER_IN_SEARCH.
+
+        A diferencia de _unpack_visual_results con 'scores', los campos del
+        contrato (anchor_found, eligible_count, unknown_ids) se EXIGEN: si
+        faltaran, la respuesta no es de este endpoint y suponer un valor por
+        defecto llevaria al llamante a una decision equivocada en silencio
+        (p. ej. tomar "nada elegible" por "ancla no indexada"). Se trata como
+        fallo.
+        """
+        if self._visual_circuit_open:
+            log.debug('ColBERT VISUAL circuit open — search_filtered skipped')
+            return None
+        payload = {
+            'product_id': str(product_id),
+            'exclude_ids': [str(x) for x in (exclude_ids or [])],
+            'top_k': int(top_k),
+            'alpha': float(alpha),
+        }
+        if include_ids is not None:
+            payload['include_ids'] = [str(x) for x in include_ids]
+        if boost_text:
+            payload['boost_text'] = boost_text
+        try:
+            auth = await self._auth_headers()
+            resp = await self._http.post(
+                '/v1/embed/search-filtered',
+                headers=auth,
+                json=payload,
+                timeout=8.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            result = FilteredVisualResult(
+                pairs=_unpack_visual_results(data, with_scores=True),
+                anchor_found=bool(data['anchor_found']),
+                eligible_count=int(data['eligible_count']),
+                unknown_ids=int(data['unknown_ids']),
+            )
+            self._visual_failures = 0
+            log.info(
+                'search_filtered: %d results in %.1fms for product_id=%s '
+                '(include=%s exclude=%d eligible=%d unknown=%d anchor_found=%s)',
+                len(result.pairs), data.get('latency_ms', 0.0), product_id,
+                'all' if include_ids is None else len(include_ids),
+                len(payload['exclude_ids']), result.eligible_count,
+                result.unknown_ids, result.anchor_found,
+            )
+            return result
         except Exception as e:
             self._handle_visual_failure(e)
             return None

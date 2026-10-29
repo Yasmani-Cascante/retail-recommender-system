@@ -76,7 +76,7 @@ Contrato de type_of (usado por varias funciones):
 
 VARIABLES DE ENTORNO -- referencia unica (08/10/2026)
 ======================================================
-Las cuatro son OPCIONALES. Sin ninguna, el sistema funciona con los valores
+Las cinco son OPCIONALES. Sin ninguna, el sistema funciona con los valores
 de la columna "default". Existen como palancas de marcha atras: se cambian en
 Cloud Run y aplican SIN redesplegar la imagen, porque se leen en CADA llamada
 y no en el default de una firma (que se evaluaria una sola vez, al importar).
@@ -95,6 +95,16 @@ y no en el default de una firma (que se evaluaria una sola vez, al importar).
   RECS_VISUAL_POOL_CAP   default: 200           (este modulo)
       Techo del pool despues de sumarle los productos ya mostrados.
 
+  RECS_VISUAL_FILTER_IN_SEARCH  default: desactivado  (este modulo)
+      E5 nivel 2 (paso 3, 26/10/2026): filtrar el pool visual DENTRO de la
+      busqueda FAISS (endpoint /v1/embed/search-filtered) en vez de pedir
+      top_k vecinos globales y filtrar despues. Desactivado = comportamiento
+      anterior intacto. ORDEN DE MARCHA ATRAS: apagar esta variable ANTES de
+      volver a una revision del embedding service sin ese endpoint; si no,
+      cada llamada daria 404 y tres fallos seguidos abririan el circuit breaker
+      VISUAL del cliente, apagando tambien las busquedas que hoy funcionan.
+      Ver SPEC_E5_Nivel2_Busqueda_Filtrada_17102026.md.
+
   RECS_MAX_ALTERNATIVES  default: 8 (objetivo 6)  (recommendation_set.py)
       Tope de productos "de otra cosa" en la respuesta. 0 los desactiva por
       completo -- palanca de emergencia.
@@ -112,7 +122,7 @@ rango, dejando un logger.warning: un parametro mal configurado nunca debe
 tumbar las recomendaciones.
 """
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple
 import logging as _logging
 import os as _os
 
@@ -384,6 +394,30 @@ def principal_first_enabled() -> bool:
     _log.warning("RECS_PRINCIPAL_FIRST invalido (%r): usando %s",
                  raw, _PRINCIPAL_FIRST_DEFAULT)
     return _PRINCIPAL_FIRST_DEFAULT
+
+
+# E5 nivel 2, paso 3 (26/10/2026). Interruptor del filtro DENTRO de la busqueda.
+# Desactivado por defecto: activarlo es el paso 4 de la spec, tras validar en
+# produccion que con el desactivado nada cambia. Se lee en CADA llamada (como
+# el resto de variables de este modulo) para poder apagarlo en Cloud Run sin
+# redesplegar. Ver la cabecera del modulo para el ORDEN DE MARCHA ATRAS.
+_VISUAL_FILTER_IN_SEARCH_DEFAULT = False
+
+
+def visual_filter_in_search_enabled() -> bool:
+    """Lee RECS_VISUAL_FILTER_IN_SEARCH. Valor no reconocido -> default, con aviso.
+    Mismo patron que principal_first_enabled()."""
+    raw = _os.environ.get("RECS_VISUAL_FILTER_IN_SEARCH")
+    if raw is None or str(raw).strip() == "":
+        return _VISUAL_FILTER_IN_SEARCH_DEFAULT
+    norm = str(raw).strip().lower()
+    if norm in ("1", "true", "yes", "on"):
+        return True
+    if norm in ("0", "false", "no", "off"):
+        return False
+    _log.warning("RECS_VISUAL_FILTER_IN_SEARCH invalido (%r): usando %s",
+                 raw, _VISUAL_FILTER_IN_SEARCH_DEFAULT)
+    return _VISUAL_FILTER_IN_SEARCH_DEFAULT
 
 
 def filter_fill_to_request(
@@ -812,6 +846,91 @@ def filter_visual_candidates(
         and str(pid) != anchor_str  # normalizacion deliberada, ver docstring del modulo
         and (not cats_upper or type_of(pid).upper() in cats_upper)
     ]
+
+
+# =============================================================================
+# E5 nivel 2, paso 3 (26/10/2026) -- el mismo filtro, pero ANTES de buscar
+# =============================================================================
+# filter_visual_candidates() es un predicado POR ELEMENTO: decide si un pid
+# pasa sin mirar la similitud. Por eso se puede aplicar ANTES de la busqueda,
+# como filtro de FAISS (endpoint /v1/embed/search-filtered del embedding
+# service), y el resultado es el que hoy daria un pool INFINITO filtrado
+# despues (propiedades P1-P3 de SPEC_E5_Nivel2_Busqueda_Filtrada_17102026.md,
+# seccion 3; oraculo: tests/characterization/equiv_harness_e5.py).
+
+@dataclass(frozen=True)
+class VisualFilter:
+    """
+    Filtro para la busqueda visual DENTRO de FAISS. Misma decision que
+    filter_visual_candidates(), expresada como conjuntos de ids.
+
+    include:
+        None = SIN restriccion de tipo (categorias vacias). NO equivale a
+        "todos los ids del catalogo": hoy, con categorias vacias, sobrevive
+        tambien un pid que esta en el indice FAISS aunque el catalogo del
+        monolito no lo conozca; enumerar el catalogo lo excluiria.
+    exclude:
+        Vistos + el ancla, normalizados a str. Diferencia deliberada con
+        filter_visual_candidates(), que compara `pid not in exclude_ids` sin
+        normalizar: si exclude_ids trajera enteros (no ocurre en la ruta
+        principal, donde los ids de turnos se guardan como str), hoy NO se
+        excluirian y aqui si. Es una correccion, no una regresion (spec, 3).
+    """
+
+    include: Optional[FrozenSet[str]]
+    exclude: FrozenSet[str]
+
+    def admits(self, pid) -> bool:
+        p = str(pid)
+        if p in self.exclude:
+            return False
+        return self.include is None or p in self.include
+
+
+def build_visual_filter(
+    catalog_ids: Iterable[str],
+    categories: Sequence[str],
+    anchor_pid: str,
+    type_of: TypeOf,
+    exclude_ids: Iterable,
+) -> VisualFilter:
+    """
+    Construye el filtro equivalente a
+        filter_visual_candidates(<pool>, anchor_pid, categories, type_of, exclude_ids)
+    para aplicarlo DENTRO de la busqueda.
+
+    Args:
+        catalog_ids: ids del catalogo del monolito (en produccion, las claves
+            de content_recommender.id_index).
+        categories: el MISMO criterio que el llamador pasa hoy a
+            filter_visual_candidates() (F-08C: pool_cats or query_cats;
+            Fase A: pool_cats or expanded_cats).
+        anchor_pid: id del producto ancla.
+        type_of: la MISMA funcion que el llamador pasa a
+            filter_visual_candidates(). Se recibe en vez de reimplementarla
+            para que la decision de tipo sea identica POR CONSTRUCCION.
+        exclude_ids: productos ya mostrados.
+
+    Reglas (cada una comprobada por P1 contra filter_visual_candidates):
+      - categorias vacias -> include=None (ver VisualFilter.include);
+      - tipo comparado en MAYUSCULAS por ambos lados, como hoy;
+      - un id del catalogo cuyo tipo no esta en categories no se admite;
+        un pid del indice que el catalogo no conoce tampoco (type_of -> "").
+
+    Unica diferencia deliberada en el tipo: un product_type None se trata
+    como "sin tipo" (no se admite). filter_visual_candidates() fallaria con
+    AttributeError, pero solo si ESE producto aparece en el pool; aqui se
+    recorre el catalogo ENTERO, y un solo None haria fallar todas las
+    peticiones filtradas. El constructor no debe ser mas fragil que el filtro.
+    """
+    cats_upper = {c.upper() for c in categories}
+    exclude = frozenset(str(x) for x in exclude_ids) | {str(anchor_pid)}
+    if not cats_upper:
+        return VisualFilter(include=None, exclude=exclude)
+    include = frozenset(
+        str(pid) for pid in catalog_ids if (type_of(pid) or "").upper() in cats_upper
+    )
+    return VisualFilter(include=include, exclude=exclude)
 
 
 def candidate_breakdown(candidates: Iterable[str], type_of: TypeOf) -> Dict[str, int]:
