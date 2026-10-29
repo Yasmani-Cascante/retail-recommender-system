@@ -6,8 +6,10 @@ VALIDADO EN PRODUCCION el 19/10/2026 (commit `b286d25`, revision
 `retail-recommender-00329-mlt`; cierre en la seccion 13). Paso 2b (higiene de
 tests) VALIDADO el 19/10/2026 (cierre en la seccion 14). Paso 1 (endpoint
 `/v1/embed/search-filtered`) VALIDADO EN PRODUCCION el 26/10/2026 (revision
-`retail-embedding-service-00062-kvd`; cierre en la seccion 15). Pasos 3 y 4
-sin implementar.
+`retail-embedding-service-00062-kvd`; cierre en la seccion 15). Paso 3 (filtro
+en el monolito, flag apagado) VALIDADO EN PRODUCCION el 29/10/2026 (revision
+`retail-recommender-00330-vwb`; cierre en la seccion 16). Paso 4 sin
+implementar.
 **Gap:** E5 nivel 2 (pendiente A del prompt de continuidad).
 **Relacionado:** `DCT_Cierre_Sesion_01102026.md` (addendum A.16 = estado valido),
 `BACKLOG_Busqueda_por_Atributos_Color_24072026.md` (ver seccion 10).
@@ -312,7 +314,7 @@ Veredicto exigido: 0 fallos nuevos y 0 fallos que desaparezcan sin explicacion.
 | 1 | Servicio: 5.1-5.3. Desplegar. **VALIDADO EN PRODUCCION 26/10** -- revision `00062-kvd`, imagen `sha256:63df725e...`. Evidencia en la seccion 15 | `validate_search_filtered.py check`: 19/19 (incluye `/search-by-id` identico al baseline previo al despliegue) |
 | 2 | Monolito: solo `build_pool_request` (refactor). **VALIDADO EN PRODUCCION 19/10** -- commit `b286d25`, revision `00329-mlt`. Evidencia completa en la seccion 13 | oraculo 8.3 + logs de produccion identicos a los actuales |
 | 2b | Higiene de tests (prerequisito del 3): cortar la fuga de `.env` hacia toda la sesion de pytest y aislar `TestTamanoDelPoolVisual` del entorno (13.4, H-1). **VALIDADO 19/10** (seccion 14) | comparacion diferencial: los 6 fallos de `TestTamanoDelPoolVisual` desaparecen y no aparece ningun fallo nuevo |
-| 3 | Monolito: filtro + cliente + entrada al bloque, flag `0`. Desplegar | sin cambios observables con flag apagado |
+| 3 | Monolito: filtro + cliente + entrada al bloque, flag `0`. Desplegar. **VALIDADO EN PRODUCCION 29/10** -- revision `00330-vwb` (seccion 16) | sin cambios observables con flag apagado |
 | 4 | Flag `1` en produccion | logs `E5 filtro`, warning defensivo = 0, sesiones reales de las anclas del 05/10 y 07/10 |
 
 **Metricas antes/despues** (de Cloud Logging, misma ventana): proporcion de
@@ -640,3 +642,86 @@ Comando de despliegue validado (PowerShell, desde la raiz del repo):
    Run. Dar comandos completos cuando el valor ya se conoce.
 6. **Consultas que filtran sin que se vea.** El enlace del error de despliegue
    filtraba por revision; ampliar el rango de tiempo no cambiaba nada.
+
+---
+
+## 16. Cierre del paso 3 -- filtro en el monolito, flag apagado (29/10/2026)
+
+### 16.1 Que se entrego
+
+Un commit en `feature/visual_search`, subido como `937d43e` (`39b39af..937d43e`;
+su contenido se confirma con `git show --stat 937d43e`: deben ser los 8
+ficheros siguientes). Configuracion: `RECS_VISUAL_FILTER_IN_SEARCH: "0"` en
+`env-vars.yaml` (comprobado en el servicio: `value: '0'`).
+
+| Fichero | Cambio |
+|---|---|
+| `src/recommenders/f08_similarity_resolution.py` | `VisualFilter`, `build_visual_filter()`, flag `visual_filter_in_search_enabled()` (cabecera: orden de marcha atras) |
+| `src/api/services/colbert_client.py` | `FilteredVisualResult`, `search_filtered()` |
+| `src/api/core/mcp_conversation_handler.py` | F-08C y Fase A conectadas al filtro (+274 -81) |
+| `tests/unit/test_f08_similarity_resolution.py` | 17 tests (filtro y flag) |
+| `tests/unit/test_colbert_client_search_filtered.py` (nuevo) | 9 tests del cliente |
+| `tests/characterization/equiv_harness_e5.py` (nuevo) | oraculo P1-P3 |
+| `tests/characterization/equiv_harness_handler_e5.py` + `_blocks.py` (nuevos) | prueba diferencial del handler |
+
+### 16.2 Diseno final (lo que cambio respecto a la seccion 6)
+
+1. **Orden de logs intacto con el flag apagado.** `extract_categories_from_query`
+   escribe en INFO; subir la resolucion sobre la busqueda SIEMPRE habria
+   cambiado el orden y el numero de lineas. El calculo se encapsula en
+   `_c08_prepare_pool_request()` / `_f08_prepare_pool_request()` (mismo
+   codigo): con el flag activado se llama antes de buscar; con el
+   desactivado, dentro del bloque, en el mismo punto que antes.
+2. **`anchor_found` en tres decisiones**: la entrada al bloque de F-08C, y en
+   Fase A el fallback por imagen y la entrada al bloque (F7 era doble en
+   Fase A).
+3. **Aviso de divergencia** tras el filtro posterior (que se conserva como
+   defensa), en Fase A solo si el pool viene de la busqueda filtrada: el
+   fallback por imagen no se filtra (4.2) y avisaria en falso.
+4. **`build_visual_filter` tolerante a `product_type` None** (recorre el
+   catalogo entero; un solo None no debe tumbar todas las peticiones).
+5. **El cliente EXIGE los campos del contrato**: sin `anchor_found` la
+   respuesta cuenta como fallo, no se supone un valor.
+
+### 16.3 Evidencia
+
+| Capa | Resultado |
+|---|---|
+| Oraculo P1-P3 | 20.000 casos, 0 fallos, 5/5 mutantes (laboratorio y Windows) |
+| Prueba diferencial del handler | D1 (flag apagado: resultado, llamadas, relleno y logs identicos), D2 (flag activado == pool infinito), D3 (rama vacia, sin fallback por imagen), D4 (fallo del servicio): 400 escenarios, 0 fallos, 5/5 mutantes, en el laboratorio y en Windows. Cubre los 4 caminos y 12 escenarios por imagen |
+| Oraculos previos | `pool_request` 40.000 casos + 8/8; 02/10 40.000 casos: 0 divergencias |
+| Suite (`git worktree` como linea base, mismo `.env`) | 723 -> 749: +26 tests nuevos, todos en `passed`; 0 fallos nuevos, 0 cambios de estado |
+| Produccion (00329 frente a 00330, guion de 9 turnos, linea base tomada el mismo dia) | 8 turnos comparables IDENTICOS caracter a caracter (48 lineas F-08 sin normalizar). Turno 4 con otra ancla (ver H-21): misma ruta y decision (`category_query`, `happy`, 8 AROS); 123 -> 124 candidatos. 0 lineas `E5`. 0 ERROR. Ningun tipo de aviso nuevo: los del camino de cada peticion, identicos (10 + 4 + 4); la caida 222 -> 130 avisos es entera de la sincronizacion de fondo con Shopify (`batch throttled`) |
+| Imagen desplegada | digest `sha256:f6ea43c8...cd1d` == el del `docker push` |
+
+### 16.4 Hallazgos
+
+| Id | Hallazgo | Estado |
+|---|---|---|
+| H-20 | **`venv_fase0` tambien esta en la imagen de produccion del MONOLITO**: 2,2 GB de 3,0 GB en `/app` (comprobado con `du`). El `.dockerignore` de la raiz excluye `venv/` y `.venv/`, patrones que solo afectan a la raiz del contexto, no a `src/api/services/embedding-service/venv_fase0`; ningun patron usa `**/` (tampoco `__pycache__/`). Efectos medidos en el build del 29/10: contexto de 2,47 GB, `COPY src/` 264 s, `chown -R` 404 s. Misma raiz que H-14 y H-19 | pendiente: `**/venv_fase0/` (o lista blanca) en el `.dockerignore` raiz; resolver junto con H-19 |
+| H-21 | **El guion de 9 turnos no es del todo reproducible**: el turno 3 (`Muestrame aros`) elige los productos con `random.sample` (`smart_sample_across_categories`, `improved_fallback_exclude_seen.py` ~1221), asi que el ancla pulsada en el turno 4 cambia entre ejecuciones (29/10: `aros-fiesta-mia-...` frente a `aros-isadora-flor-metal-plateado`) | para el paso 4: fijar el ancla del turno 4 abriendo directamente la pagina de un aro concreto |
+| H-22 | La prueba diferencial imprime en consola el DEBUG/INFO de `improved_fallback_exclude_seen` en el entorno Windows (algun modulo configura un manejador en el logger raiz). No afecta a la comparacion (lee de su propio manejador) | menor: silenciar la propagacion durante la ejecucion |
+| H-6 (actualizado) | OpenRouter responde que `liquid/lfm-...` **ya no esta disponible** (`no longer available`): no es un 404 transitorio sino la retirada del modelo. En el guion del 29/10, 10 de 10 turnos cayeron a GPT-4o-mini | pendiente: decidir el modelo principal |
+
+### 16.5 Lecciones
+
+1. **`>` en Windows PowerShell corrompe la salida de programas externos**
+   (UTF-16, caracteres no ASCII rotos, salto final anadido). Para guardar
+   bytes exactos: `cmd /c "programa > fichero"`. El extractor de la prueba
+   diferencial detecta el caso y lo explica.
+2. **Copias de laboratorio desfasadas.** La copia del test de f08 del
+   laboratorio era ANTERIOR al paso 2b: escribirla habria borrado el fixture
+   que cierra la fuga del `.env`. La comprobacion previa de la base lo evito;
+   los cambios se reconstruyeron sobre la version real.
+3. **Una defensa necesita su propia senal.** El filtro posterior oculta en el
+   resultado un filtro mal construido; solo el aviso de divergencia lo revela,
+   y la prueba diferencial lo vigila.
+4. **Linea base en el mismo momento.** En produccion se compararon dos
+   revisiones con el guion ejecutado el mismo dia, para no confundir el
+   cambio con derivas ajenas (catalogo, embedding service, Shopify).
+5. **`git worktree` para la linea base de la suite**, en vez de `git stash`
+   (incidente del paso 2): una segunda copia de trabajo de `HEAD`, sin tocar
+   la propia.
+6. **"La herramienta dijo que funciono" no es "funciono".** Una escritura sin
+   respuesta en 4 minutos no creo el fichero; se detecto porque cada
+   escritura se verifica por hash.
