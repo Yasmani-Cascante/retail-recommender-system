@@ -700,7 +700,7 @@ ficheros siguientes). Configuracion: `RECS_VISUAL_FILTER_IN_SEARCH: "0"` en
 
 | Id | Hallazgo | Estado |
 |---|---|---|
-| H-20 | **`venv_fase0` tambien esta en la imagen de produccion del MONOLITO**: 2,2 GB de 3,0 GB en `/app` (comprobado con `du`). El `.dockerignore` de la raiz excluye `venv/` y `.venv/`, patrones que solo afectan a la raiz del contexto, no a `src/api/services/embedding-service/venv_fase0`; ningun patron usa `**/` (tampoco `__pycache__/`). Efectos medidos en el build del 29/10: contexto de 2,47 GB, `COPY src/` 264 s, `chown -R` 404 s. Misma raiz que H-14 y H-19 | pendiente: `**/venv_fase0/` (o lista blanca) en el `.dockerignore` raiz; resolver junto con H-19. **Actualizacion: corregido en el repo el 30/10 (ver 17.4)** |
+| H-20 | **`venv_fase0` tambien esta en la imagen de produccion del MONOLITO**: 2,2 GB de 3,0 GB en `/app` (comprobado con `du`). El `.dockerignore` de la raiz excluye `venv/` y `.venv/`, patrones que solo afectan a la raiz del contexto, no a `src/api/services/embedding-service/venv_fase0`; ningun patron usa `**/` (tampoco `__pycache__/`). Efectos medidos en el build del 29/10: contexto de 2,47 GB, `COPY src/` 264 s, `chown -R` 404 s. Misma raiz que H-14 y H-19 | pendiente: `**/venv_fase0/` (o lista blanca) en el `.dockerignore` raiz; resolver junto con H-19. **Actualizacion: corregido en el repo el 30/10 y VALIDADO EN PRODUCCION (revision 00333-h5z; ver 17.4)** |
 | H-21 | **El guion de 9 turnos no es del todo reproducible**: el turno 3 (`Muestrame aros`) elige los productos con `random.sample` (`smart_sample_across_categories`, `improved_fallback_exclude_seen.py` ~1221), asi que el ancla pulsada en el turno 4 cambia entre ejecuciones (29/10: `aros-fiesta-mia-...` frente a `aros-isadora-flor-metal-plateado`) | para el paso 4: fijar el ancla del turno 4 abriendo directamente la pagina de un aro concreto |
 | H-22 | La prueba diferencial imprime en consola el DEBUG/INFO de `improved_fallback_exclude_seen` en el entorno Windows (algun modulo configura un manejador en el logger raiz). No afecta a la comparacion (lee de su propio manejador) | menor: silenciar la propagacion durante la ejecucion |
 | H-6 (actualizado) | OpenRouter responde que `liquid/lfm-...` **ya no esta disponible** (`no longer available`): no es un 404 transitorio sino la retirada del modelo. En el guion del 29/10, 10 de 10 turnos cayeron a GPT-4o-mini | pendiente: decidir el modelo principal |
@@ -772,7 +772,7 @@ el filtro habia 57. Su ausencia ES la mejora.
 
 | Id | Hallazgo | Estado |
 |---|---|---|
-| H-23 | **Margen insuficiente en la sonda de arranque del MONOLITO** (misma clase que H-15): `initialDelaySeconds=10`, `periodSeconds=10`, `failureThreshold=20` (~210 s). Arranques medidos de la MISMA imagen: 97,8 s (00329), 104,9 s (00330), 146,7 s (00332) y >201 s (00331, rechazada a los 201 s). El flag no influye: se lee al procesar cada peticion, nunca al arrancar | pendiente: ampliar a `failureThreshold=24` x `periodSeconds=10` = 240 s (maximo de Cloud Run) en el comando de despliegue; [H] H-20 podria acortar el arranque (sin medir) |
+| H-23 | **Margen insuficiente en la sonda de arranque del MONOLITO** (misma clase que H-15): `initialDelaySeconds=10`, `periodSeconds=10`, `failureThreshold=20` (~210 s). Arranques medidos de la MISMA imagen: 97,8 s (00329), 104,9 s (00330), 146,7 s (00332) y >201 s (00331, rechazada a los 201 s). El flag no influye: se lee al procesar cada peticion, nunca al arrancar | pendiente: ampliar a `failureThreshold=24` x `periodSeconds=10` = 240 s (maximo de Cloud Run) en el comando de despliegue; [H] H-20 podria acortar el arranque (sin medir). **Actualizacion 30/10: sonda ampliada a 240 s en la revision 00333-h5z; arranque medido 108,0 s (menos de la mitad del margen). La hipotesis de que H-20 acorte el arranque queda SIN CONFIRMAR: una sola muestra, dentro del rango ya observado (98-147 s)** |
 
 ### 17.4 Correccion de H-20 (30/10/2026)
 
@@ -790,8 +790,25 @@ Validacion en el laboratorio (logica de exclusion de la libreria oficial de
 Docker sobre una replica de las rutas reales): 10/10 ficheros necesarios
 entran (codigo, `data/`, `static/widget/`, `models/`, `requirements`); 12/12
 artefactos quedan fuera; con el `.dockerignore` original la simulacion
-reproduce H-20. **Pendiente**: validar en un build real (inventario de `/app`
-antes/despues: solo deben desaparecer ficheros de esos artefactos).
+reproduce H-20.
+
+**Validacion en el build real (30/10)** -- inventario de `/app` de la imagen
+anterior (`sha256:f6ea43c8...`) frente a la nueva: 0 ficheros nuevos; 60.097
+quitados, TODOS dentro de los artefactos; codigo `.py`: 0 nuevos o
+modificados y 0 quitados fuera de los artefactos (los 14.455 `.py` quitados
+son de `venv_fase0`/`node_modules`). `/app`: **3,0 GB -> 559 MB** (-81 %).
+Build: 1.830 s -> 122 s (`chown -R`: 404 s -> 11 s).
+
+**Validacion en produccion (30/10)** -- revision `retail-recommender-00333-h5z`,
+imagen `sha256:c02f4a43...` desplegada por digest, flag `1`, sonda de 240 s
+(H-23). Guion de 9 turnos frente a la 00332 (mismo codigo y mismo flag, ocho
+horas despues): **9/9 turnos IDENTICOS caracter a caracter** (62 lineas F-08,
+incluidas las 9 `E5`). Ningun error de importacion, fichero no encontrado ni
+traceback; 0 avisos `E5 divergencia`; avisos del camino de cada peticion
+identicos (10 + 4 + 4). Los tres tipos de aviso que no estaban en la 00332
+(`Throttled` en precios y 3 productos con `CLP_RATES` de respaldo) son los
+mismos que la 00329 (imagen antigua) tuvo el 29/10 por la manana: limitacion
+de Shopify, ajena a la imagen.
 
 ### 17.5 Seguimiento con trafico real (pendiente)
 
