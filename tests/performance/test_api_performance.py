@@ -95,7 +95,6 @@ class TestAPIPerformance:
             "/health",
             "/v1/products/",
             "/v1/recommendations/test_prod_1",
-            "/v1/recommendations/user/test_user_1",
             "/v1/products/search/?q=camiseta"
         ]
         
@@ -176,62 +175,6 @@ class TestAPIPerformance:
         assert len(successful) == n_concurrent, f"Solo {len(successful)}/{n_concurrent} solicitudes exitosas"
         # El tiempo promedio bajo carga no debería ser extremadamente alto
         assert mean(times) < 2000, f"Tiempo promedio demasiado alto bajo carga: {mean(times):.2f}ms"
-    
-    def test_event_registration_performance(self, performance_client):
-        """
-        Evalúa el rendimiento del registro de eventos de usuario.
-        
-        Esta prueba mide los tiempos de respuesta para registrar diferentes tipos
-        de eventos de usuario, simulando un escenario de uso real.
-        """
-        # Eventos a registrar
-        events = [
-            {"user_id": "test_user_1", "event_type": "detail-page-view", "product_id": "test_prod_1"},
-            {"user_id": "test_user_1", "event_type": "add-to-cart", "product_id": "test_prod_2"},
-            {"user_id": "test_user_1", "event_type": "purchase-complete", "product_id": "test_prod_2", "purchase_amount": 59.99},
-            {"user_id": "test_user_2", "event_type": "search", "product_id": None},
-            {"user_id": "test_user_2", "event_type": "category-page-view", "product_id": None},
-        ]
-        
-        results = []
-        
-        # Registrar cada evento y medir tiempo
-        for event in events:
-            # Construir URL
-            url = f"/v1/events/user/{event['user_id']}?event_type={event['event_type']}"
-            if event.get("product_id"):
-                url += f"&product_id={event['product_id']}"
-            if event.get("purchase_amount"):
-                url += f"&purchase_amount={event['purchase_amount']}"
-            
-            # Medir tiempo
-            start_time = time.time()
-            response = performance_client.post(url)
-            end_time = time.time()
-            
-            # Registrar resultados
-            assert response.status_code == 200, f"Fallo al registrar evento: {response.text}"
-            results.append({
-                "event_type": event["event_type"],
-                "time_ms": (end_time - start_time) * 1000
-            })
-        
-        # Calcular estadísticas
-        event_type_times = {}
-        for result in results:
-            event_type = result["event_type"]
-            if event_type not in event_type_times:
-                event_type_times[event_type] = []
-            event_type_times[event_type].append(result["time_ms"])
-        
-        # Logging
-        for event_type, times in event_type_times.items():
-            avg_time = mean(times)
-            logger.info(f"Rendimiento para eventos de tipo '{event_type}':")
-            logger.info(f"  Tiempo promedio: {avg_time:.2f}ms")
-            
-            # Verificación
-            assert avg_time < 500, f"Tiempo promedio demasiado alto para eventos '{event_type}': {avg_time:.2f}ms"
     
     def test_memory_usage(self):
         """

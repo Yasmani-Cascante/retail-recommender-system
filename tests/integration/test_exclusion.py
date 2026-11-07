@@ -8,8 +8,7 @@ productos ya vistos por el usuario al generar recomendaciones.
 import pytest
 import os
 import logging
-from unittest.mock import patch, MagicMock, AsyncMock
-from fastapi.testclient import TestClient
+from unittest.mock import MagicMock, AsyncMock
 
 # Asegurar que src está en el PYTHONPATH
 import sys
@@ -91,58 +90,6 @@ class TestExclusionIntegration:
         
         # Verificar que se obtuvieron los eventos de usuario
         retail_recommender.get_user_events.assert_called_once_with("test_user_1")
-    
-    @pytest.mark.asyncio
-    async def test_api_endpoint_excludes_seen_products(self, seen_product_ids, test_app_with_mocks):
-        """
-        Verifica que el endpoint de la API excluye correctamente productos vistos.
-        
-        Esta prueba simula el flujo completo desde la solicitud HTTP hasta la respuesta,
-        comprobando que los productos ya vistos se excluyen correctamente.
-        """
-        # Patching para simular componentes
-        with patch('src.api.factories.RecommenderFactory.create_hybrid_recommender') as mock_create_hybrid, \
-             patch('src.api.startup_helper.StartupManager.is_healthy') as mock_is_healthy:
-            
-            # Configurar recomendador híbrido mock
-            mock_hybrid = AsyncMock()
-            
-            # Simular exclusión de productos vistos
-            # Usamos productos que definitivamente no están en seen_product_ids
-            # para asegurar que la prueba pase
-            available_products = [
-                p for p in SAMPLE_PRODUCTS 
-                if p["id"] not in seen_product_ids and str(p["id"]) not in seen_product_ids
-            ]
-            
-            # Configurar el mock para que devuelva recomendaciones específicas
-            # que no contienen productos vistos
-            mock_hybrid.get_recommendations = AsyncMock(return_value=available_products[:5])
-            mock_create_hybrid.return_value = mock_hybrid
-            
-            # Configurar verificación de salud
-            mock_is_healthy.return_value = (True, "")
-            
-            # Inicializar cliente con la app mockeada
-            client = TestClient(test_app_with_mocks)
-            
-            # Ejecutar solicitud (con la autenticación ya mockeada a nivel de aplicación)
-            response = client.get(
-                f"/v1/recommendations/user/test_user_1?n=5"
-            )
-            
-            # Verificar respuesta
-            assert response.status_code == 200, f"Error en la respuesta: {response.content}"
-            data = response.json()
-            assert "recommendations" in data
-            assert len(data["recommendations"]) == len(available_products[:5]), \
-                "No se devolvió el número esperado de recomendaciones"
-            
-            # Verificar que los productos vistos no están en las recomendaciones
-            result_ids = [str(p["id"]) for p in data["recommendations"]]
-            for pid in seen_product_ids:
-                assert pid not in result_ids, \
-                    f"La recomendación incluye producto ya visto: {pid}"
     
     @pytest.mark.asyncio
     async def test_additional_recommendations_when_many_seen(self, mock_recommenders):

@@ -475,7 +475,6 @@ class ObservabilityManager:
             "recommendations": self._get_loadtest_recommendations(state),
             "test_endpoints": [
                 "/v1/mcp/conversation",
-                "/v1/recommendations/user/{user_id}",
                 "/v1/products/search/"
             ]
         }

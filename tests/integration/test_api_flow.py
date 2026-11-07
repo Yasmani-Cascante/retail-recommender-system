@@ -68,52 +68,6 @@ class TestAPIIntegrationFlows:
         
         logger.info("✅ test_get_recommendations_flow completado exitosamente")
     
-    def test_user_recommendations_flow(self, test_client):
-        """Verifica el flujo completo del endpoint de recomendaciones para usuario."""
-        logger.info("Ejecutando test_user_recommendations_flow")
-        
-        # Ejecutar solicitud
-        response = test_client.get("/v1/recommendations/user/test_user_1?n=5")
-        
-        # Verificar respuesta
-        assert response.status_code == 200, f"Error en la respuesta: {response.content.decode()}"
-        data = response.json()
-        
-        # Verificar estructura de respuesta
-        assert "recommendations" in data, "Falta campo 'recommendations'"
-        assert "metadata" in data, "Falta campo 'metadata'"
-        
-        # Verificar contenido
-        assert len(data["recommendations"]) == 5, f"Se esperaban 5 recomendaciones, se obtuvieron {len(data['recommendations'])}"
-        assert data["metadata"]["user_id"] == "test_user_1", "user_id no coincide"
-        
-        logger.info("✅ test_user_recommendations_flow completado exitosamente")
-    
-    def test_record_user_event_flow(self, test_client):
-        """Verifica el flujo completo del endpoint de registro de eventos de usuario."""
-        logger.info("Ejecutando test_record_user_event_flow")
-        
-        # Ejecutar solicitud
-        response = test_client.post(
-            "/v1/events/user/test_user_1?event_type=detail-page-view&product_id=test_prod_1"
-        )
-        
-        # Verificar respuesta
-        assert response.status_code == 200, f"Error en la respuesta: {response.content.decode()}"
-        data = response.json()
-        
-        # Verificar estructura de respuesta
-        assert "status" in data, "Falta campo 'status'"
-        assert data["status"] == "success", f"Status esperado 'success', obtenido '{data['status']}'"
-        
-        # Verificar detalles del evento
-        assert "detail" in data, "Falta campo 'detail'"
-        assert data["detail"]["user_id"] == "test_user_1", "user_id no coincide"
-        assert data["detail"]["event_type"] == "detail-page-view", "event_type no coincide"
-        assert data["detail"]["product_id"] == "test_prod_1", "product_id no coincide"
-        
-        logger.info("✅ test_record_user_event_flow completado exitosamente")
-    
     def test_get_products_flow(self, test_client):
         """Verifica el flujo completo del endpoint de listado de productos."""
         logger.info("Ejecutando test_get_products_flow")
@@ -171,34 +125,6 @@ class TestAPIIntegrationFlows:
             assert "camiseta" in product["title"].lower(), f"Producto '{product['title']}' no contiene 'camiseta'"
         
         logger.info("✅ test_search_products_flow completado exitosamente")
-    
-    def test_get_customers_flow(self, test_client):
-        """Verifica el flujo completo del endpoint de listado de clientes."""
-        logger.info("Ejecutando test_get_customers_flow")
-        
-        # Ejecutar solicitud
-        response = test_client.get("/v1/customers/")
-        
-        # Verificar respuesta
-        assert response.status_code == 200, f"Error en la respuesta: {response.content.decode()}"
-        data = response.json()
-        
-        # Verificar estructura de respuesta
-        assert "customers" in data, "Falta campo 'customers'"
-        assert "total" in data, "Falta campo 'total'"
-        
-        # Verificar contenido - debe devolver exactamente 2 clientes de prueba
-        assert data["total"] == 2, f"Se esperaban 2 clientes, se obtuvieron {data['total']}"
-        assert len(data["customers"]) == 2, "Número de clientes en la lista no coincide"
-        
-        # Verificar estructura de los clientes
-        for customer in data["customers"]:
-            assert "id" in customer, "Cliente sin ID"
-            assert "email" in customer, "Cliente sin email"
-            assert "first_name" in customer, "Cliente sin first_name"
-            assert "last_name" in customer, "Cliente sin last_name"
-        
-        logger.info("✅ test_get_customers_flow completado exitosamente")
     
     def test_get_products_by_category_flow(self, test_client):
         """Verifica el flujo completo del endpoint de productos por categoría."""
@@ -304,39 +230,3 @@ class TestAPIIntegrationFlows:
 
 class TestExclusionFeature:
     """Pruebas específicas para la funcionalidad de exclusión de productos vistos."""
-    
-    def test_exclusion_api_endpoint_excludes_seen_products(self, test_client):
-        """Verifica que el endpoint excluye productos ya vistos por el usuario."""
-        logger.info("Ejecutando test_exclusion_api_endpoint_excludes_seen_products")
-        
-        # Primero, registrar algunos eventos para el usuario de prueba
-        test_user_id = "test_user_exclusion"
-        
-        # Registrar eventos de vista para algunos productos
-        seen_products = ["test_prod_1", "test_prod_2"]
-        for product_id in seen_products:
-            event_response = test_client.post(
-                f"/v1/events/user/{test_user_id}?event_type=detail-page-view&product_id={product_id}"
-            )
-            assert event_response.status_code == 200, f"Error registrando evento para {product_id}"
-        
-        # Ahora solicitar recomendaciones para este usuario
-        response = test_client.get(f"/v1/recommendations/user/{test_user_id}?n=5")
-        
-        # Verificar respuesta
-        assert response.status_code == 200, f"Error en la respuesta: {response.content.decode()}"
-        data = response.json()
-        
-        # Verificar que se devuelven recomendaciones
-        assert "recommendations" in data, "Falta campo 'recommendations'"
-        assert len(data["recommendations"]) > 0, "No se devolvieron recomendaciones"
-        
-        # Verificar que los productos vistos no están en las recomendaciones
-        # Nota: Como estamos usando mocks, esta verificación depende de la implementación del mock
-        # En un escenario real, verificaríamos que los productos vistos están excluidos
-        recommended_ids = [rec.get("id") for rec in data["recommendations"]]
-        
-        # Al menos debe devolver algunas recomendaciones
-        assert len(recommended_ids) >= 3, f"Se esperaban al menos 3 recomendaciones, se obtuvieron {len(recommended_ids)}"
-        
-        logger.info("✅ test_exclusion_api_endpoint_excludes_seen_products completado exitosamente")

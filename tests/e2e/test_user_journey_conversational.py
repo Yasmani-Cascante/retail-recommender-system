@@ -629,53 +629,6 @@ async def test_user_journey_conversational_mcp(
     print(f"   Selected shoe: {shoe_product_title} (ID: {shoe_product_id})")
     
     # ========================================================================
-    # STEP 5: Agregar Producto a Carrito (Integración)
-    # ========================================================================
-    
-    print("\n🎯 STEP 5: Agregar producto recomendado a carrito")
-
-    # ✅ ARQUITECTURA: El sistema usa event tracking en lugar de endpoints CRUD
-    # Registrar evento add-to-cart para trackear comportamiento del usuario
-    # Este evento alimenta el sistema de recomendaciones de Google Retail API
-
-    try:
-        cart_response = await test_client_with_warmup.post(
-            f"/v1/events/user/{test_user_id}",
-            params={
-                "event_type": "add-to-cart",
-                "product_id": shoe_product_id
-            }
-        )
-        
-        # Validar respuesta
-        assert cart_response.status_code == 200, \
-            f"Add-to-cart event registration failed with status {cart_response.status_code}: {cart_response.text}"
-        
-        cart_data = cart_response.json()
-        
-        print(f"✅ Add-to-cart event registered successfully")
-        print(f"   Product: {shoe_product_title}")
-        print(f"   Product ID: {shoe_product_id}")
-        print(f"   User ID: {test_user_id}")
-        print(f"   Event Type: add-to-cart")
-        
-        # Validar estructura de respuesta del evento
-        # (La estructura puede variar, pero debe confirmar el registro)
-        assert cart_data is not None, "Event response no debe ser None"
-        
-        # Log adicional si hay información útil
-        if "status" in cart_data:
-            print(f"   Status: {cart_data['status']}")
-        if "message" in cart_data:
-            print(f"   Message: {cart_data['message']}")
-        if "event_id" in cart_data:
-            print(f"   Event ID: {cart_data['event_id']}")
-        
-    except Exception as e:
-        print(f"❌ Error registering add-to-cart event: {e}")
-        raise
-    
-    # ========================================================================
     # STEP 6: Validar Métricas Finales
     # ========================================================================
     
@@ -695,7 +648,6 @@ async def test_user_journey_conversational_mcp(
     print(f"   Turn 4 (warm): {elapsed_ms_4:.0f}ms")
     print(f"   Session ID: {session_id}")
     print(f"   Products recommended: {len(recommendations_1) + len(recommendations_2) + len(recommendations_4)}")
-    print(f"   Added to cart: 1 product")
     
     # Validar target de performance total
     assert total_time_ms < 15000, \

@@ -75,26 +75,8 @@ async def test_user_journey_discovery(
     assert len(similar_products) > 0, "Should return at least one recommendation"
     print(f"✅ Got {len(similar_products)} similar products")
     
-    # STEP 4: Record User Events
-    print("\n📝 STEP 4: Record user interactions...")
-    events_recorded = 0
-    for product in similar_products[:2]:  # Record views for first 2 products
-        response = await test_client_with_warmup.post(
-            f"/v1/events/user/user_carlos_456",
-            params={
-                "event_type": "detail-page-view",
-                "product_id": product["id"]
-            }
-        )
-        assert response.status_code == 200, f"Event recording failed: {response.text}"
-        assert response.json()["status"] == "success", "Event should be recorded successfully"
-        events_recorded += 1
-    
-    print(f"✅ Recorded {events_recorded} user events")
-    
     # FINAL VALIDATION
     print("\n✅ USER JOURNEY DISCOVERY COMPLETED SUCCESSFULLY")
     print(f"   - Browsed category: LENCERIA")
     print(f"   - Viewed product: {product_id}")
-    print(f"   - Got {len(similar_products)} recommendations")
-    print(f"   - Recorded {events_recorded} events")
+    print(f"   - Got {len(similar_products)} recommendations")

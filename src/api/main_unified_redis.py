@@ -32,7 +32,6 @@ import time
 import asyncio
 from contextlib import asynccontextmanager  # ✅ AÑADIDO PARA LIFESPAN PATTERN
 from dotenv import load_dotenv
-from datetime import datetime
 
 # ✅ CARGAR VARIABLES DE ENTORNO INMEDIATAMENTE
 load_dotenv()
@@ -196,7 +195,7 @@ knowledge_base_v2 = None
 
 from src.api.core.config import get_settings
 from src.api.startup_helper import StartupManager
-from src.api.core.store import get_shopify_client, init_shopify
+from src.api.core.store import init_shopify
 from src.api.security_auth import get_api_key, get_current_user
 
 # ✅ ENTERPRISE ROUTERS
@@ -3072,21 +3071,6 @@ async def enterprise_architecture_info():
         }
 
 # ============================================================================
-# 🔄 LEGACY COMPATIBILITY ENDPOINTS (DEPRECATED) - CÓDIGO ORIGINAL PRESERVADO
-# ============================================================================
-
-@app.get("/legacy/health", deprecated=True, tags=["Legacy Compatibility"])
-async def legacy_health_check():
-    """
-    ⚠️ DEPRECATED: Legacy health check endpoint.
-    Use /health for enterprise health monitoring.
-    """
-    logger.warning("⚠️ DEPRECATED: Legacy health endpoint used - migrate to /health")
-    
-    # Redirect to enterprise health check internally
-    return await enterprise_health_check()
-
-# ============================================================================
 # 🚀 Core Business Endpoints - CÓDIGO ORIGINAL COMPLETO PRESERVADO
 # ============================================================================
 
@@ -3246,204 +3230,6 @@ async def get_recommendations(
         logger.error(f"Error obteniendo recomendaciones (OPTIMIZADO): {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/v1/legacy/recommendations/user/{user_id}", deprecated=True, response_model=Dict)
-async def get_user_recommendations(
-    user_id: str,
-    n: Optional[int] = Query(5, gt=0, le=1000),
-    current_user: str = Depends(get_current_user)
-):
-    """
-    Obtiene recomendaciones personalizadas para un usuario.
-    Requiere autenticación mediante API key.
-    """
-    start_processing = time.time()
-    
-    # Verificar estado de carga
-    is_healthy, reason = startup_manager.is_healthy()
-    if not is_healthy:
-        raise HTTPException(status_code=503, detail=f"Servicio no disponible: {reason}")
-    
-    try:
-        client = get_shopify_client()
-        
-        logger.info(f"Obteniendo recomendaciones para usuario {user_id}")
-        
-        # Obtener órdenes del usuario si está disponible Shopify (compatible con sync/async mocks)
-        user_orders = []
-        if client:
-            _orders_res = client.get_orders_by_customer(user_id)
-            if inspect.isawaitable(_orders_res):
-                user_orders = await _orders_res
-            else:
-                user_orders = _orders_res
-
-            if user_orders:
-                logger.info(f"Se encontraron {len(user_orders)} órdenes para el usuario {user_id}")
-                
-                # Registrar eventos de usuario basados en órdenes
-                try:
-                    _proc = retail_recommender.process_shopify_orders(user_orders, user_id)
-                    if inspect.isawaitable(_proc):
-                        await _proc
-                    logger.info(f"Eventos de órdenes procesados para usuario {user_id}")
-                except Exception as e:
-                    logger.error(f"Error procesando órdenes: {e}")
-            else:
-                logger.info(f"No se encontraron órdenes para el usuario {user_id}")
-        
-        # Capear n internamente a un máximo razonable (tests esperan cap ~100)
-        n_effective = min(n or 5, 100)
-
-        # Obtener recomendaciones (compatible con sync/async mocks)
-        _rec_res = hybrid_recommender.get_recommendations(
-            user_id=user_id,
-            n_recommendations=n_effective
-        )
-        if inspect.isawaitable(_rec_res):
-            recommendations = await _rec_res
-        else:
-            recommendations = _rec_res
-        
-        # Calcular tiempo de procesamiento
-        processing_time_ms = (time.time() - start_processing) * 1000
-        
-        # Registrar métricas si están habilitadas
-        if settings.metrics_enabled and 'recommendation_metrics' in globals():
-            from src.api.core.metrics import recommendation_metrics
-            recommendation_metrics.record_recommendation_request(
-                request_data={
-                    "user_id": user_id,
-                    "n": n
-                },
-                recommendations=recommendations,
-                response_time_ms=processing_time_ms,
-                user_id=user_id,
-                product_id=None
-            )
-        
-        return {
-            "recommendations": recommendations,
-            "metadata": {
-                "user_id": user_id,
-                "total_recommendations": len(recommendations),
-                "total_orders": len(user_orders) if user_orders else 0,
-                "source": "hybrid_tfidf_user_redis",
-                "took_ms": processing_time_ms
-            }
-        }
-    except Exception as e:
-        logger.error(f"Error obteniendo recomendaciones para usuario {user_id}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error obteniendo recomendaciones: {str(e)}"
-        )
-
-@app.post("/v1/legacy/events/user/{user_id}" , deprecated=True)
-async def record_user_event(
-    user_id: str,
-    event_type: str = Query(..., description="Tipo de evento (detail-page-view, add-to-cart, purchase-complete, etc.)"),
-    product_id: Optional[str] = Query(None, description="ID del producto relacionado con el evento"),
-    purchase_amount: Optional[float] = Query(None, description="Monto de la compra para eventos de tipo purchase-complete"),
-    current_user: str = Depends(get_current_user)
-):
-    """
-    Registra eventos de usuario para mejorar las recomendaciones futuras.
-    Requiere autenticación mediante API key.
-    
-    Tipos de eventos válidos según Google Cloud Retail API:
-    - add-to-cart: Cuando un usuario añade un producto al carrito
-    - category-page-view: Cuando un usuario ve páginas especiales, como ofertas o promociones
-    - detail-page-view: Cuando un usuario ve la página de detalle de un producto
-    - home-page-view: Cuando un usuario visita la página de inicio
-    - purchase-complete: Cuando un usuario completa una compra
-    - search: Cuando un usuario realiza una búsqueda
-    
-    El sistema también acepta nombres alternativos simplificados:
-    - 'view' o 'detail-page' → detail-page-view
-    - 'add' o 'cart' → add-to-cart
-    - 'buy', 'purchase' o 'checkout' → purchase-complete
-    - 'home' → home-page-view
-    - 'category' o 'promo' → category-page-view
-    """
-    try:
-        # Validar product_id si está presente
-        if product_id:
-            # Verificar si es un ID existente en el catálogo
-            if tfidf_recommender.loaded and tfidf_recommender.product_data:
-                product_exists = any(str(p.get('id', '')) == product_id for p in tfidf_recommender.product_data)
-                if not product_exists:
-                    # Si el ID no existe, pero es un ID de desarrollo (empieza con 'prod_test_'), permitirlo
-                    if not product_id.startswith(('test_', 'prod_test_', '123')):
-                        logger.warning(f"ID de producto no encontrado en el catálogo: {product_id}")
-                        # Aún permitimos el evento, pero advertimos
-            
-        logger.info(f"Registrando evento de usuario: {user_id}, tipo: {event_type}, producto: {product_id or 'N/A'}")
-        
-        # Registrar el evento
-        result = await hybrid_recommender.record_user_event(
-            user_id=user_id,
-            event_type=event_type,
-            product_id=product_id,
-            purchase_amount=purchase_amount
-        )
-        
-        # Añadir información adicional a la respuesta
-        if result.get("status") == "success":
-            result["detail"] = {
-                "user_id": user_id,
-                "event_type": result.get("event_type", event_type),
-                "product_id": product_id,
-                "timestamp": datetime.utcnow().isoformat(),
-                "note": "El evento fue registrado correctamente y ayudará a mejorar las recomendaciones futuras."
-            }
-            
-            # Registrar interacción en métricas si están habilitadas
-            if settings.metrics_enabled and 'recommendation_metrics' in globals():
-                from src.api.core.metrics import recommendation_metrics
-                recommendation_metrics.record_user_interaction(
-                    user_id=user_id,
-                    product_id=product_id,
-                    event_type=event_type,
-                    recommendation_id=None  # No podemos saber si vino de una recomendación sin contexto adicional
-                )
-        
-        return result
-    except Exception as e:
-        logger.error(f"Error registrando evento de usuario: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Error al registrar el evento: {str(e)}. Asegúrate de usar un tipo de evento válido (detail-page-view, add-to-cart, purchase-complete, category-page-view, home-page-view, search)."
-        )
-
-@app.get("/v1/legacy/ustomers/" , deprecated=True)
-async def get_customers(
-    current_user: str = Depends(get_current_user)
-):
-    """
-    Obtiene la lista de clientes de Shopify.
-    Requiere autenticación mediante API key.
-    """
-    try:
-        client = get_shopify_client()
-        if not client:
-            raise HTTPException(status_code=500, detail="Shopify client not initialized")
-            
-        customers = client.get_customers()
-        
-        if not customers:
-            logger.warning("No customers found")
-            return {
-                "total": 0,
-                "customers": []
-            }
-            
-        return {
-            "total": len(customers),
-            "customers": customers
-        }
-    except Exception as e:
-        logger.error(f"Error fetching customers: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
     
 
 # @app.get("/v1/products/category/{category}")
@@ -3849,39 +3635,6 @@ async def _run_tfidf_rebuild() -> None:
 
     except Exception as e:
         logger.error(f"tfidf_rebuild_failed error={e}", exc_info=True)
-
-# ============================================================================
-# 📊 HEALTH CHECK COMPATIBILITY - CÓDIGO ORIGINAL PRESERVADO
-# ============================================================================
-
-@app.get("/health/legacy")
-async def legacy_compatibility_health():
-    """Health check que incluye estado de variables legacy"""
-    
-    global settings, startup_manager, tfidf_recommender, retail_recommender
-    global hybrid_recommender, redis_client, product_cache
-    
-    return {
-        "timestamp": time.time(),
-        "service": "enterprise_with_legacy_compatibility",
-        "version": "2.1.0-FIXED",  # ✅ VERSION UPDATED
-        "legacy_components": {
-            "settings": settings is not None,
-            "startup_manager": startup_manager is not None,
-            "tfidf_recommender": tfidf_recommender is not None,
-            "retail_recommender": retail_recommender is not None,
-            "hybrid_recommender": hybrid_recommender is not None,
-            "redis_client": redis_client is not None,
-            "product_cache": product_cache is not None
-        },
-        "uptime_seconds": time.time() - start_time,
-        "ready_for_legacy_endpoints": all([
-            settings is not None,
-            startup_manager is not None,
-            hybrid_recommender is not None
-        ]),
-        "lifespan_pattern": "modern_contextmanager"  # ✅ INDICATOR ADDED
-    }
 
 @app.get("/debug/dependency-injection-status")
 async def debug_dependency_injection():
