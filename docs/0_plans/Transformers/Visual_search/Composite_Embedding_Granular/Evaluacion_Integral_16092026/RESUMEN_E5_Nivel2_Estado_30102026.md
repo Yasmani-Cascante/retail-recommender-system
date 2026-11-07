@@ -52,6 +52,7 @@ a ser el segundo uso de la misma primitiva.
 | 29/10 | 3 | Filtro en el monolito, APAGADO (comportamiento identico) | Monolito, `00330-vwb` |
 | 29/10 | 4 | **Filtro activado** | Monolito, `00332-d87` |
 | 30/10 | H-20 | Imagen del monolito sin artefactos (3,0 GB -> 559 MB) | Monolito, `00333-h5z` |
+| 30/10 | Rec. 1 | Herramientas de validacion versionadas en `tools/validation/` | Repo, commit `6599c18` |
 
 ---
 
@@ -204,7 +205,7 @@ diferencial), H-10 (Retail API sin uso), H-11 (credenciales locales).
 
 | # | Recomendacion | Por que |
 |---|---|---|
-| 1 | **Versionar las herramientas de validacion** en el repo (p. ej. `tools/validation/`) | [V] `validate_search_filtered.py`, `compare_junit.py` y `check_retail_test_events.py` solo existen en `backup_E5_18102026`, fuera del repo: si esa carpeta se pierde, se pierde la forma de validar cada paso (ya paso con los oraculos de `/tmp`) |
+| 1 | ~~**Versionar las herramientas de validacion**~~ **HECHA 30/10** (commit `6599c18`, `tools/validation/README.md`). [V] Logica identica a la copia (AST sin docstrings, pyflakes diferencial); `c1` 3/3 el 30/10: la linea base del 23/10 sigue valida | Motivo original: [V] `validate_search_filtered.py`, `compare_junit.py` y `check_retail_test_events.py` solo existen en `backup_E5_18102026`, fuera del repo: si esa carpeta se pierde, se pierde la forma de validar cada paso (ya paso con los oraculos de `/tmp`) |
 | 2 | **Script de despliegue del monolito**, como el `deploy.sh` del servicio | El comando se escribe a mano: la sonda de 240 s, el digest y `env-vars.yaml` dependen de la memoria. Ya hubo una desincronizacion (flag activado desde la consola) |
 | 3 | **Seguimiento 17.5** con consultas preparadas, y repetir el caso de CARTERAS | Mide el efecto real, no solo el mecanismo |
 | 4 | **H-19 + H-18** (higiene de git) | Coste bajo; evita meter binarios en un commit |
@@ -228,7 +229,7 @@ metricas lo justifican; *contract tests* entre el monolito y el servicio.
 ```
 
 Los desvios (H-15, H-20, H-23, la higiene de tests) aparecieron al validar cada
-paso, y uno era un incidente real de produccion que nadie habia detectado. Lo
+paso, y uno era un incidente real de produccion que nadie habia dewedrewetectado. Lo
 unico que se ha quedado atras es el seguimiento con trafico real.
 
 ---
@@ -237,8 +238,8 @@ unico que se ha quedado atras es el seguimiento con trafico real.
 
 Orden propuesto para la proxima sesion:
 
-1. **Recomendaciones 1 y 2** (herramientas de validacion en el repo y script de
-   despliegue del monolito): cierran riesgos de proceso antes de seguir.
+1. ~~Recomendacion 1~~ (hecha el 30/10, `tools/validation/`) y **recomendacion 2**
+   (script de despliegue del monolito): cierran riesgos de proceso antes de seguir.
 2. **Seguimiento 17.5**: preparar las consultas de Cloud Logging, misma ventana
    antes y despues del 29/10 ~16:10 UTC, y repetir el caso de CARTERAS con
    muchos productos vistos.
