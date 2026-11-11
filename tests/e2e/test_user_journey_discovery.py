@@ -79,4 +79,4 @@ async def test_user_journey_discovery(
     print("\n✅ USER JOURNEY DISCOVERY COMPLETED SUCCESSFULLY")
     print(f"   - Browsed category: LENCERIA")
     print(f"   - Viewed product: {product_id}")
-    print(f"   - Got {len(similar_products)} recommendations")
+    print(f"   - Got {len(similar_products)} recommendations")
