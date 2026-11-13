@@ -28,19 +28,21 @@ import sys
 import time
 import requests
 from typing import Optional
+from dotenv import load_dotenv
+load_dotenv()  # API_KEY sale del .env local o del entorno de la sesion, nunca del codigo
 
 # ── Asegurar que el proyecto raiz esta en el path ─────────────────────────────
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-# ── Credenciales desde .env (cargadas manualmente para no depender de dotenv) ─
+# ── Credenciales desde .env (load_dotenv: .env local o entorno de la sesion; nunca en el codigo) ─
 SHOPIFY_SHOP_URL   = "ai-shoppings.myshopify.com"
-SHOPIFY_ACCESS_TOKEN = "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"
+SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
 REDIS_HOST         = "redis-14272.c259.us-central1-2.gce.redns.redis-cloud.com"
 REDIS_PORT         = 14272
-REDIS_PASSWORD     = "34rleeRxTmFYqBZpSA5UoDP71bHEq6zO"
+REDIS_PASSWORD     = os.environ.get("REDIS_PASSWORD", "")
 BACKEND_URL        = "http://localhost:8000"   # servidor local
-API_KEY            = "2fed9999056fab6dac5654238f0cae1c"
+API_KEY            = os.environ.get("API_KEY", "")
 
 SHOPIFY_API_BASE   = f"https://{SHOPIFY_SHOP_URL}/admin/api/2025-01"
 SHOPIFY_HEADERS    = {

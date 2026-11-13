@@ -1,12 +1,15 @@
 # test_mcp_bridge.py
 import requests
+import os
+from dotenv import load_dotenv
+load_dotenv()  # API_KEY sale del .env local o del entorno de la sesion, nunca del codigo
 import json
 import time
 
 # Configuración
 BRIDGE_URL = "http://localhost:3001"
 API_URL = "http://localhost:8000"  # Ajusta si es necesario
-API_KEY = "2fed9999056fab6dac5654238f0cae1c"  # Reemplaza con tu API key real
+API_KEY = os.environ.get("API_KEY", "")  # del .env o del entorno de la sesion
 
 # Función para formatear la salida JSON
 def pretty_json(data):

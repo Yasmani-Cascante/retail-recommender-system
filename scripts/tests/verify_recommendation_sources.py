@@ -3,6 +3,8 @@
 # Este script prueba los diferentes tipos de origen de recomendaciones
 
 import sys
+from dotenv import load_dotenv
+load_dotenv()  # API_KEY sale del .env local o del entorno de la sesion, nunca del codigo
 import os
 import json
 import requests
@@ -15,7 +17,7 @@ logger = logging.getLogger("source_verification")
 
 # Configuración
 API_URL = "http://localhost:8000"
-API_KEY = "2fed9999056fab6dac5654238f0cae1c"  # Reemplaza con tu API key real
+API_KEY = os.environ.get("API_KEY", "")  # del .env o del entorno de la sesion
 
 def pretty_json(data):
     """Formatea JSON para mejor legibilidad"""

@@ -15,6 +15,9 @@ Uso:
 """
 
 import asyncio
+import os
+from dotenv import load_dotenv
+load_dotenv()  # API_KEY sale del .env local o del entorno de la sesion, nunca del codigo
 import aiohttp
 import json
 import time
@@ -24,7 +27,7 @@ from datetime import datetime
 
 # Configuración
 BASE_URL = "http://localhost:8000"
-API_KEY = "2fed9999056fab6dac5654238f0cae1c"
+API_KEY = os.environ.get("API_KEY", "")
 TEST_USER = f"quick_test_{uuid.uuid4().hex[:8]}"
 
 async def make_request(session, method, endpoint, **kwargs):

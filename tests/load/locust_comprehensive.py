@@ -19,6 +19,9 @@ Este script simula diferentes tipos de usuarios en una tienda online:
 """
 
 import random
+import os
+from dotenv import load_dotenv
+load_dotenv()  # API_KEY sale del .env local o del entorno de la sesion, nunca del codigo
 import json
 import time
 from locust import HttpUser, task, between, events
@@ -55,15 +58,6 @@ class EcommerceConfig:
     
     # Mercados soportados
     MARKETS = ["US", "ES", "MX"]
-    
-    # Event types para Google Cloud Retail API
-    EVENT_TYPES = [
-        "detail-page-view",
-        "add-to-cart", 
-        "purchase-complete",
-        "search",
-        "page-view"
-    ]
 
 class RetailRecommenderUser(HttpUser):
     """
@@ -75,7 +69,7 @@ class RetailRecommenderUser(HttpUser):
     
     def on_start(self):
         """Inicialización del usuario simulado"""
-        self.api_key = "2fed9999056fab6dac5654238f0cae1c"
+        self.api_key = os.environ.get("API_KEY", "")
         self.headers = {"X-API-Key": self.api_key, "Content-Type": "application/json"}
         
         # Crear perfil de usuario único
@@ -216,37 +210,6 @@ class RetailRecommenderUser(HttpUser):
             else:
                 response.failure(f"HTTP {response.status_code}")
 
-    @task(8)  # Recomendaciones personalizadas
-    def get_user_recommendations(self):
-        """
-        👤 Recomendaciones personalizadas para usuario
-        Simula recomendaciones basadas en historial del usuario
-        """
-        params = {
-            "n": random.randint(5, 12),
-            "exclude_seen": "true" if len(self.viewed_products) > 0 else "false"
-        }
-        
-        with self.client.get(
-            f"/v1/recommendations/user/{self.user_id}",
-            params=params,
-            headers=self.headers,
-            catch_response=True,
-            name="👤 User Recommendations"
-        ) as response:
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    recommendations = data if isinstance(data, list) else data.get('recommendations', [])
-                    if len(recommendations) > 0:
-                        response.success()
-                    else:
-                        response.failure("No user recommendations")
-                except json.JSONDecodeError:
-                    response.failure("Invalid JSON response")
-            else:
-                response.failure(f"HTTP {response.status_code}")
-
     # ========================================================================
     # 🔍 ENDPOINTS DE BÚSQUEDA Y DESCUBRIMIENTO (PESO MEDIO)
     # ========================================================================
@@ -285,44 +248,6 @@ class RetailRecommenderUser(HttpUser):
                         response.failure("No search results")
                 except json.JSONDecodeError:
                     response.failure("Invalid JSON response")
-            else:
-                response.failure(f"HTTP {response.status_code}")
-
-    @task(4)  # Registro de eventos de usuario
-    def register_user_event(self):
-        """
-        📊 Registro de eventos de usuario
-        Simula tracking de comportamiento para mejorar recomendaciones
-        """
-        if not self.viewed_products:
-            return  # No hay productos vistos para registrar eventos
-            
-        product_id = random.choice(self.viewed_products)
-        event_type = random.choice(EcommerceConfig.EVENT_TYPES)
-        
-        # Construir payload según tipo de evento
-        payload = {
-            "product_id": product_id,
-            "event_type": event_type,
-            "session_id": self.session_id
-        }
-        
-        # Agregar campos específicos según evento
-        if event_type == "purchase-complete":
-            payload["purchase_amount"] = round(random.uniform(10.0, 500.0), 2)
-            payload["currency"] = "USD" if self.market_id == "US" else "EUR"
-        elif event_type == "search":
-            payload["search_query"] = random.choice(EcommerceConfig.SAMPLE_QUERIES)
-        
-        with self.client.post(
-            f"/v1/events/user/{self.user_id}",
-            json=payload,
-            headers=self.headers,
-            catch_response=True,  
-            name="📊 User Events"
-        ) as response:
-            if response.status_code in [200, 201]:
-                response.success()
             else:
                 response.failure(f"HTTP {response.status_code}")
 
@@ -386,11 +311,11 @@ class RetailRecommenderUser(HttpUser):
     # 🎯 FLUJOS DE USUARIO REALISTAS (TAREAS COMBINADAS)
     # ========================================================================
 
-    @task(1)  # Flujo completo de compra
+    @task(1)  # Flujo combinado: busqueda y recomendaciones
     def complete_shopping_flow(self):
         """
-        🛒 Flujo completo de usuario: Búsqueda → Vista → Recomendaciones → Evento
-        Simula el journey completo de un usuario comprando
+        Flujo combinado de usuario: busqueda -> recomendaciones de producto.
+        (El paso de evento se retiro con la ruta /v1/events/user/, eliminada en S-3.)
         """
         # 1. Buscar producto
         search_query = random.choice(EcommerceConfig.SAMPLE_QUERIES)
@@ -408,18 +333,6 @@ class RetailRecommenderUser(HttpUser):
             params={"n": 5},
             headers=self.headers,
             name="🛍️ Shopping Flow - Recommendations"
-        )
-        
-        # 3. Registrar evento de vista
-        self.client.post(
-            f"/v1/events/user/{self.user_id}",
-            json={
-                "product_id": product_id,
-                "event_type": "detail-page-view",
-                "session_id": self.session_id
-            },
-            headers=self.headers,
-            name="📊 Shopping Flow - Event"
         )
 
 # ========================================================================

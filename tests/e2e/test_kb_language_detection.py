@@ -26,6 +26,7 @@ def test_conversation_respects_language_header():
     2. Request con Accept-Language: es → Respuesta en español
     """
     from src.api.main_unified_redis import app
+    from src.api.security_auth import API_KEY  # la clave con la que valida la app de este proceso
     
     with TestClient(app) as client:
         # ═══════════════════════════════════════════════════════════════
@@ -37,7 +38,7 @@ def test_conversation_respects_language_header():
             headers={
                 "Accept-Language": "en-US,en;q=0.9",
                 "Content-Type": "application/json",
-                "X-API-Key": "2fed9999056fab6dac5654238f0cae1c"
+                "X-API-Key": API_KEY
             },
             json={
                 "query": "What is your return policy?",
@@ -88,7 +89,7 @@ def test_conversation_respects_language_header():
             headers={
                 "Accept-Language": "es-ES,es;q=0.9",
                 "Content-Type": "application/json",
-                "X-API-Key": "2fed9999056fab6dac5654238f0cae1c"
+                "X-API-Key": API_KEY
             },
             json={
                 "query": "¿Cuál es tu política de devoluciones?",
@@ -128,13 +129,14 @@ def test_conversation_default_language():
     Verifica comportamiento sin Accept-Language header.
     """
     from src.api.main_unified_redis import app
+    from src.api.security_auth import API_KEY  # la clave con la que valida la app de este proceso
     
     with TestClient(app) as client:
         response = client.post(
             "/v1/mcp/conversation",
             headers={
                 "Content-Type": "application/json",
-                "X-API-Key": "2fed9999056fab6dac5654238f0cae1c"
+                "X-API-Key": API_KEY
             },
             json={
                 "query": "What is your return policy?",

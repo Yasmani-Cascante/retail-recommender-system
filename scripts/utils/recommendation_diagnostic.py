@@ -5,6 +5,9 @@ Prueba diferentes escenarios para identificar problemas de personalización
 """
 
 import requests
+import os
+from dotenv import load_dotenv
+load_dotenv()  # API_KEY sale del .env local o del entorno de la sesion, nunca del codigo
 import json
 import time
 from typing import Dict, List, Optional
@@ -12,7 +15,8 @@ from typing import Dict, List, Optional
 class RecommendationDiagnostic:
     """Herramienta de diagnóstico para el sistema de recomendaciones"""
     
-    def __init__(self, base_url: str = "http://localhost:8000", api_key: str = "2fed9999056fab6dac5654238f0cae1c"):
+    def __init__(self, base_url: str = "http://localhost:8000", api_key: str | None = None):
+        api_key = api_key or os.environ.get("API_KEY", "")
         self.base_url = base_url
         self.headers = {
             "X-API-Key": api_key,

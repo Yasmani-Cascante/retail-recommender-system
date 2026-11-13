@@ -22,7 +22,7 @@ import time
 from typing import Dict, List, Optional, Any
 import json
 import requests  # ✅ FIX (07 Nov 2025): Import at module level for proper test mocking
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, status
 from pydantic import BaseModel, Field
 
 # Imports del sistema original (mantenidos)
@@ -1864,46 +1864,6 @@ async def _get_shopify_product(shopify_client, product_id: str) -> Optional[Dict
    
    # Redirect to optimized version
    return await _get_shopify_product_optimized(shopify_client, product_id)
-async def debug_shopify_connection(shopify_client) -> Dict:
-   """
-   Función de debugging para verificar la conexión con Shopify (ORIGINAL)
-   """
-   try:
-       if not shopify_client:
-           return {
-               "status": "error",
-               "message": "Shopify client no disponible",
-               "details": "El cliente de Shopify no fue inicializado correctamente"
-           }
-       
-       # Intentar obtener el conteo de productos
-       product_count = shopify_client.get_product_count()
-       
-       # Intentar obtener una muestra pequeña de productos
-       sample_products = shopify_client.get_products()
-       
-       return {
-           "status": "success",
-           "message": "Conexión con Shopify exitosa",
-           "details": {
-               "shop_url": shopify_client.shop_url,
-               "api_url": shopify_client.api_url,
-               "product_count": product_count,
-               "sample_products_fetched": len(sample_products) if sample_products else 0,
-               "first_product_title": sample_products[0].get('title') if sample_products else None,
-               "access_token_prefix": shopify_client.access_token[:4] + "..." if shopify_client.access_token else "No token"
-           }
-       }
-       
-   except Exception as e:
-       return {
-           "status": "error",
-           "message": f"Error conectando con Shopify: {str(e)}",
-           "details": {
-               "shop_url": shopify_client.shop_url if shopify_client else "No client",
-               "error_type": type(e).__name__
-           }
-       }
 
 
 # ============================================================================
@@ -2023,39 +1983,6 @@ async def get_enterprise_performance_metrics(api_key: str = Depends(get_api_key)
 # 🚀 PRODUCTCACHE MANAGEMENT ENDPOINTS (ORIGINAL)
 # ============================================================================
 
-@router.get("/debug/product-cache", tags=["ProductCache"])
-async def debug_product_cache():
-   """Debug endpoint para ProductCache statistics (ORIGINAL)"""
-   try:
-       cache = await ServiceFactory.get_product_cache_singleton()
-       if not cache:
-           return {
-               "timestamp": time.time(),
-               "cache_available": False,
-               "error": "ProductCache not initialized",
-               "fallback_mode": True
-           }
-       
-       stats = cache.get_stats()
-       
-       return {
-           "timestamp": time.time(),
-           "cache_available": True,
-           "cache_stats": stats,
-           "cache_health": "healthy" if stats["hit_ratio"] > 0.3 else "warming_up",
-           "recommendations": {
-               "warm_up_needed": stats["total_requests"] < 20,
-               "hit_ratio_status": "excellent" if stats["hit_ratio"] > 0.7 else "good" if stats["hit_ratio"] > 0.4 else "needs_improvement"
-           }
-       }
-   except Exception as e:
-       return {
-           "timestamp": time.time(),
-           "cache_available": False,
-           "error": str(e),
-           "fallback_mode": True
-       }
-
 @router.post("/cache/warm-up", tags=["ProductCache"])
 async def warm_up_product_cache(
    market_priorities: List[str] = Query(default=["US", "ES", "MX"], description="Markets to warm up"),
@@ -2089,113 +2016,6 @@ async def warm_up_product_cache(
            "error": str(e),
            "timestamp": time.time()
        }
-
-# ============================================================================
-# 🔍 DEBUG ENDPOINTS - TEMPORALES PARA DEBUGGING (ORIGINAL)
-# ============================================================================
-
-@router.get("/debug/shopify", tags=["Debug"])
-async def debug_shopify_connection_endpoint():
-   """Endpoint para debugging de conexión Shopify (ORIGINAL)"""
-   shopify_client = get_shopify_client()
-   return await debug_shopify_connection(shopify_client)
-
-@router.get(
-   "/debug/headers",
-   summary="🔍 Debug Headers",
-   description="Endpoint temporal para debugging de headers de autenticación",
-   tags=["Debug"]
-)
-async def debug_headers(request: Request):
-   """
-   🔍 Endpoint debug para investigar problemas de autenticación (ORIGINAL).
-   
-   Este endpoint NO requiere autenticación y muestra todos los headers
-   recibidos para diagnosticar problemas con X-API-Key.
-   """
-   import time
-   
-   return {
-       "timestamp": time.time(),
-       "method": request.method,
-       "url": str(request.url),
-       "client_host": request.client.host if request.client else "unknown",
-       "headers": {
-           # Convertir headers a dict para JSON serialization
-           key: value for key, value in request.headers.items()
-       },
-       "specific_headers": {
-           "x_api_key": request.headers.get("X-API-Key"),
-           "x_api_key_present": "X-API-Key" in request.headers,
-           "authorization": request.headers.get("Authorization"),
-           "content_type": request.headers.get("Content-Type"),
-           "user_agent": request.headers.get("User-Agent"),
-           "origin": request.headers.get("Origin"),
-           "referer": request.headers.get("Referer")
-       },
-       "header_analysis": {
-           "total_headers_count": len(request.headers),
-           "x_api_key_length": len(request.headers.get("X-API-Key", "")),
-           "expected_api_key": "2fed9999056fab6dac5654238f0cae1c",
-           "api_key_matches": request.headers.get("X-API-Key") == "2fed9999056fab6dac5654238f0cae1c"
-       }
-   }
-
-@router.get(
-   "/debug/auth-test",
-   summary="🔐 Debug Auth Test",
-   description="Endpoint que requiere autenticación para testing",
-   tags=["Debug"]
-)
-async def debug_auth_test(
-   request: Request,
-   api_key: str = Depends(get_api_key)
-):
-   """
-   🔐 Endpoint debug que SÍ requiere autenticación (ORIGINAL).
-   
-   Si este endpoint funciona, significa que la autenticación está OK.
-   Si falla, podemos comparar con /debug/headers para ver qué cambió.
-   """
-   import time
-   
-   return {
-       "timestamp": time.time(),
-       "status": "authenticated_successfully",
-       "message": "✅ Authentication working correctly!",
-       "api_key_validated": api_key[:10] + "...",  # Solo primeros 10 chars por seguridad
-       "headers_received": {
-           key: value for key, value in request.headers.items()
-       },
-       "auth_flow": "Headers → FastAPI → APIKeyHeader → get_api_key() → SUCCESS"
-   }
-
-@router.get(
-   "/debug/load-test",
-   summary="🚀 Debug Load Test",
-   description="Endpoint optimizado para load testing debugging",
-   tags=["Debug"]
-)
-async def debug_load_test(
-   request: Request,
-   api_key: str = Depends(get_api_key),
-   test_id: Optional[str] = Query(None, description="ID del test para tracking")
-):
-   """
-   🚀 Endpoint específico para debugging de load testing (ORIGINAL).
-   
-   Retorna información mínima para reducir overhead durante tests de carga.
-   """
-   import time
-   
-   return {
-       "test_id": test_id or "no_id",
-       "timestamp": time.time(),
-       "status": "ok",
-       "auth": "valid",
-       "api_key_prefix": api_key[:8],
-       "response_time_start": time.time()
-   }
 
 # ============================================================================
 # 🔄 LEGACY COMPATIBILITY ENDPOINTS (DEPRECATED)

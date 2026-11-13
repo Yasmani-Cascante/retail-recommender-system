@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 # Import application
 from src.api.main_unified_redis import app
+from src.api.security_auth import API_KEY as APP_API_KEY  # misma clave con la que valida la app de este proceso
 # from src.api.factories import ServiceFactory
 from src.api.factories.service_factory import ServiceFactory
 # from src.api.core.market_context_manager import MarketContextManager
@@ -145,7 +146,7 @@ def mock_auth(app_with_overrides: FastAPI):
     
     async def mock_get_api_key():  # ✅ NUEVO
         """Mock API key - always returns valid test key"""
-        return "test_api_key_2fed9999056fab6dac5654238f0cae1c"
+        return "test_api_key_mock"
     
     # Override dependency
     app_with_overrides.dependency_overrides[get_current_user] = mock_get_current_user
@@ -383,7 +384,7 @@ async def test_client_with_warmup(
                 try:
                     response = await client.get(
                         "/v1/health/detailed",
-                        headers={"X-API-Key": "2fed9999056fab6dac5654238f0cae1c"}
+                        headers={"X-API-Key": APP_API_KEY}
                     )
                     
                     if response.status_code == 200:
