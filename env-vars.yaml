@@ -40,8 +40,11 @@ INTENT_DETECTION_LOGGING: "true"
 ML_INTENT_ENABLED: "true"
 ML_CONFIDENCE_THRESHOLD: "0.8"
 ML_MODEL_PATH: "models/intent_classifier"
-LFM_MCP_ENABLED: "true"
-LFM_KB_ENABLED: "true"
+# R-8 (16/11/2026): los modelos LFM de claude_config.py estan retirados en OpenRouter (404
+# "no longer available"). Con "false" el redactor y la reformulacion KB van directos a
+# GPT-4o-mini (el modelo que ya respondia). Reversible. Ver DCT, R-8.
+LFM_MCP_ENABLED: "false"
+LFM_KB_ENABLED: "false"
 LFM_COLBERT_ENABLED: "true"
 COLBERT_SERVICE_URL: "https://retail-embedding-service-178362262166.us-central1.run.app"
 VISUAL_SEARCH_ENABLED: "true"
@@ -59,3 +62,4 @@ RECS_VISUAL_FILTER_IN_SEARCH: "1"
 # contenido ficticio de plantilla). Sin respuesta real -> 404 / "sin respuesta", nunca datos
 # inventados. Reversible: "true". Ver DCT_Alineacion_Venv_Diagnostico_Suite_16112026.md, R-2.
 KB_ENABLE_FALLBACK: "false"
+
