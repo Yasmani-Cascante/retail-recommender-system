@@ -24,6 +24,9 @@ adjunta. Ningun valor secreto aparece en este documento. Las evidencias en bruto
   pero con solo 2 consultas a la base de conocimiento en ese periodo [V].
 - `.env.test` estuvo en el historial publico (4 commits de 2025): sin credenciales con valor, y ningun
   valor actual de `.env` ni de `.env.test` aparece publicado salvo una clave de prueba muerta [V].
+- **Mitigaciones en produccion (16/11/2026)** [V], solo configuracion y misma imagen: R-2
+  (`KB_ENABLE_FALLBACK=false`, revision `00341-mr8`) y R-8 (`LFM_MCP_ENABLED` y `LFM_KB_ENABLED=false`,
+  revision `00342-c6x`). Detalle en la seccion 10.
 
 ## 2. Alineacion del venv
 
@@ -122,28 +125,48 @@ vigilen; es el motivo de `tools/validation/check_env_drift.py` (pendiente), que 
 | Id | Hallazgo | Gravedad | Estado / propuesta |
 |---|---|---|---|
 | R-1 | **Logging de los tests distinto del de la app**: `tests/conftest.py` fija `wrapper_class=structlog.BoundLogger` y la app no fija ninguna, asi que hereda la de los tests. 12 llamadas con argumentos posicionales en `main_unified_redis.py` (L423, 460, 463, 467, 472, 1323, 1359, 1367, 1374, 1539, 1612, 1647) lanzan `TypeError` solo en pytest. 0 casos en produccion en 30 dias [V] | Media (solo suite; falsea los e2e de degradacion) | Opciones: (a) `configure_structlog()` fija `wrapper_class=structlog.make_filtering_bound_logger(logging.NOTSET)`, la clase efectiva hoy en produccion [V], y deja de depender del estado global; (b) quitar `wrapper_class` del conftest; (c) pasar las 12 llamadas a pares clave-valor. Evaluar (a) en laboratorio con la suite completa (los tests H1 reconfiguran `structlog`) |
-| R-2 | **Respaldo de la base de conocimiento con contenido ficticio**: `SimpleKnowledgeBase` (telefonos `+52`, envios en MXN, **cuenta bancaria y CLABE inventadas**). Alcanzable en produccion como capa 4 de `ShopifyKnowledgeBase.get_answer()` (firma correcta; `fallback_enabled=True` en cada instancia [V]) cuando un tema no esta en `kb_contents` ni en `es`/`en`. El respaldo propio del handler (L541) ademas esta roto por firma | Alta antes de abrir la tienda | 0 respuestas servidas en 30 dias, con solo 2 consultas a la base de conocimiento [V]. Propuesta B: retirar ese respaldo y responder con un mensaje honesto en el idioma del cliente. Decision de Yasmani pendiente |
+| R-2 | **Respaldo de la base de conocimiento con contenido ficticio**: `SimpleKnowledgeBase` (telefonos `+52`, envios en MXN, **cuenta bancaria y CLABE inventadas**), solo en el codigo (nunca en `kb_contents` ni en Redis). Capa 4 de `ShopifyKnowledgeBase.get_answer()` (firma correcta; `fallback_enabled=True` por el valor por defecto de `config.py`, no declarado en `env-vars.yaml` [V]). Con cobertura completa (13 temas x `es`/`en`/`fr` [V]) se alcanzaba por `GET /api/v1/kb/answer?...&category=X` **sin clave** (`category=ZAPATOS` -> 200 con la CLABE [V]) o con Supabase caido y la cache fria. El respaldo propio del handler (L541) ademas esta roto por firma | Alta (accesible sin clave) | **Mitigado** 16/11/2026 (seccion 10): `KB_ENABLE_FALLBACK=false`; el modulo y sus tests se conservan. Pendiente parte 2: mensaje honesto del handler (con R-4). 0 respuestas ficticias servidas en 30 dias, con solo 2 consultas a la base de conocimiento [V] |
 | R-3 | **Apagado con variable sin asignar** (`lfm_keepalive_task`) cuando el arranque se aborta | Baja | Pendiente |
 | R-4 | **Texto provisional fijo en espanol** (`mcp_conversation_handler.py` L3915): llega al usuario si no hay productos ni contrato | Media | Pendiente: texto segun el idioma de la peticion |
 | R-5 | **Test de velocidad de Redis mal calibrado**: calibrado para ~150 ms por operacion; hoy 100 SET tardan 10-28 ms y el pipeline ~1 ms, asi que la relacion es ruido [V] | Baja (suite) | `perf_counter`, mas operaciones, mediana, o comprobar solo el orden |
 | R-6 | **Tres modulos no se recolectan** [V]: `tests/performance/conftest.py` define `pytest_plugins` fuera de la raiz; `test_mcp_bridge_integration.py` existe con el mismo nombre en `tests/mcp/integration/` y en `tests/phase0_consolidation/`; `test_shopify_kb_client_logging` importa `assert_event_logged` de `conftest`, que resuelve a `tests/mcp/conftest.py` | Baja (suite) | Mover `pytest_plugins`, renombrar un duplicado, mover el helper a un modulo propio |
 | R-7 | **`addopts` del `pytest.ini` en cada ejecucion**: `--cov-fail-under=40` hace fallar toda ejecucion parcial (codigo 1 con el test en verde) y la medicion de cobertura altera los tiempos | Baja (suite) | Cobertura solo en la ejecucion completa; tests de rendimiento aparte y sin cobertura |
+| R-8 | **Modelos LFM retirados en OpenRouter**: `liquid/lfm-2-24b-a2b` (redactor de respuestas, calentamiento y keep-alive) y `liquid/lfm-2.5-1.2b-instruct:free` (reformulacion de la base de conocimiento), fijos en `claude_config.py` (L95, L116), devuelven 404 "no longer available" [V]. Errores todos los dias de la ventana de 30 dias de logs [V]; mas de 3 meses segun Yasmani [Y]. El respaldo GPT-4o-mini respondia en silencio, tras una llamada fallida (~190 ms medidos en la reformulacion) | Media (integracion muerta sin aviso; latencia y ruido) | **Mitigado** 16/11/2026 (seccion 10). Pendiente: decidir sustituto (candidatos en OpenRouter: `liquid/lfm-2.5-24b-a2b`, `liquid/lfm-3-1.7b:free` [H]) o retirar el codigo LFM; identificadores de modelo a configuracion; metrica de que camino responde |
+| R-9 | **Piezas de la base de conocimiento rotas o duplicadas** [V]: `ServiceFactory.get_knowledge_base()` llama al constructor con `db=`, `redis=`, `shopify=` (los parametros son `db_pool`, `redis_service`, `shopify_client`), asi que siempre lanza `TypeError`, y fija `enable_fallback=True` ignorando el ajuste; `kb_config.py` define otra vez `KB_ENABLE_FALLBACK`; el log "System will use fallback KB (hardcoded) only" (`main_unified_redis.py` L2423) describe un respaldo que no funciona | Baja | Higiene: arreglar o retirar; una sola fuente de configuracion |
 
 Observaciones:
 - Redis local: la app no alcanza su Redis ni con `.env` (timeout); se degrada bien [V].
 - Pausa constante de 2,05 s antes de conectar al Redis de Docker [H: `localhost` prueba primero IPv6] y aviso
   `MAINT_NOTIFICATIONS` (el cliente `redis` 8 usa un comando que el servidor local no conoce) [V]; sin efecto.
 - `tests/conftest.py` contiene `TEST_API_KEY = "test-api-key-123"` (valor de prueba, sin uso en produccion).
+- Produccion tras R-2 (logs del 16/11, 20:46-21:00 UTC) [V]: 5 consultas de la base de conocimiento (es/en)
+  respondidas desde PostgreSQL o Redis; 0 eventos de capa 4; 0 `ERROR`. "Si, puedes pagar con tu cuenta PayPal"
+  (reformulada por GPT-4o-mini) esta respaldada por el documento real [V]. Solo las respuestas reformuladas
+  muestran "Ver politica completa"; las que son el documento entero no [H: intencionado].
+- Clasificacion fragil: "aceptan devoluciones?" -> reglas `TRANSACTIONAL` 0.5 (sin palabra interrogativa); la
+  rescatan el modelo ML y MiniLM con un margen de 0.07 [V].
+- La primera clasificacion ML tras arrancar tarda 584 ms; las siguientes, 2 ms (carga perezosa) [V].
+- Ruido de logs: ~110 WARNING `batch throttled` por arranque (limitador compartido funcionando); Google Retail
+  API devuelve respuestas vacias para `anonymous` (sin eventos de usuario reales) [V].
+- El log `LFM MCP personalisation disabled -- using Claude` es enganoso: con `GPT4O_MINI_FALLBACK_ENABLED=true`
+  responde GPT-4o-mini [V].
+- El commit `3b91ca1` (13/11, "cierre de S-13 y S-14") guardo una version anterior del DCT del incidente; la
+  corrige `c1cfc51`. Lo delato un `numstat` de 98/20 frente a 9/3 previsto [V].
 
 ## 8. Pendientes, en orden
 
-1. R-2 (decision de Yasmani; bloqueante antes de abrir la tienda).
-2. R-4.
-3. R-1 (laboratorio y suite completa; si se elige (a), es un cambio de produccion con despliegue propio).
-4. `tools/validation/check_env_drift.py` con las tres capas (seccion 5) y mejora de `compare_junit.py`
+1. ~~R-2: decision y mitigacion~~: **hecho** 16/11/2026 (opcion B por configuracion, seccion 10).
+2. ~~R-8: mitigacion~~: **hecho** 16/11/2026 (seccion 10).
+3. R-2 parte 2 + R-4 (codigo, laboratorio primero): mensaje honesto en el idioma del cliente cuando no hay
+   respuesta informativa; retirar o someter al ajuste el respaldo del handler; texto provisional segun el
+   idioma; corregir los logs enganosos de R-8 y R-9.
+4. R-8, decision de producto: sustituto LFM o retirada del codigo; identificadores de modelo a configuracion;
+   metrica de que camino responde (LFM / GPT-4o-mini / Claude / texto fijo) con aviso.
+5. R-1 (laboratorio y suite completa; si se elige (a), es un cambio de produccion con despliegue propio).
+6. `tools/validation/check_env_drift.py` con las tres capas (seccion 5) y mejora de `compare_junit.py`
    (fallos que cambian de mensaje).
-5. Higiene de la suite: R-5, R-6, R-7, R-3; metadatos del paquete (`pip check`); `tools/validation/README.md`.
-6. Continuar con los pendientes 5 a 10 del DCT del incidente.
+7. Higiene: R-3, R-5, R-6, R-7, R-9; metadatos del paquete (`pip check`); `tools/validation/README.md`.
+8. Continuar con los pendientes 5 a 10 del DCT del incidente.
 
 ## 9. Lecciones
 
@@ -165,3 +188,31 @@ Observaciones:
   concluir; y "0 servidos" con 2 consultas en 30 dias no demuestra seguridad, solo falta de exposicion.
 - **Comillas en Windows**: PowerShell, `cmd` (`gcloud` es un `.cmd`) y el lenguaje de filtros interpretan las
   comillas por separado; disenar filtros sin comillas internas y con control positivo.
+- **Apagar no es borrar**: separar si algo debe ejecutarse (interruptor reversible), si debe existir el codigo
+  y que parte del contenido vale; el interruptor ya existia (`KB_ENABLE_FALLBACK`).
+- **Medir la cobertura cambia la naturaleza del riesgo**: con 13 temas x 3 idiomas, la capa 4 solo se alcanzaba
+  por un parametro de la API o por una caida; un respaldo se dispara por todas las rutas que llevan a "no
+  encontrado".
+- **Un valor por defecto es la configuracion de produccion** de todo ajuste que nadie declara; los valores por
+  defecto deben ser los seguros y `env-vars.yaml` deberia declarar todos los ajustes con efecto.
+- **Mitigar primero, corregir despues**: una linea de configuracion con la misma imagen corta la exposicion en
+  menos de una hora; la correccion completa sigue el ciclo normal, con su "parte 2" escrita en los pendientes.
+- **Un respaldo silencioso puede ocultar una integracion muerta durante meses**: medir que camino responde y
+  tratar un 404 de proveedor como fallo permanente (desactivar y avisar), no como transitorio.
+- **Verificar lo que entra en el commit**, no solo lo que hay en disco: un `numstat` inesperado delato un
+  commit anterior incompleto.
+
+## 10. Mitigaciones en produccion (16/11/2026)
+
+Ambas solo con configuracion (`env-vars.yaml`), la misma imagen (`sha256:e7b9c6fa...`) y commit antes del
+despliegue. Vuelta atras: `gcloud run services update-traffic retail-recommender --to-revisions=<revision
+anterior>=100`.
+
+| Hallazgo | Cambio | Commit | Revision | Validacion [V] |
+|---|---|---|---|---|
+| R-2 | `KB_ENABLE_FALLBACK: "false"` (+3 lineas de comentario) | `1b7bb8f` | `00341-mr8` | Antes, sin clave: `category=ZAPATOS` -> 200 con la CLABE inventada; despues -> 404. `general` -> 200 con el contenido real, antes y despues. `fallback_enabled=False` al arrancar; 0 parejas `fallback_kb_enabled`; chat en ingles -> politica real; 0 `ERROR` |
+| R-8 | `LFM_MCP_ENABLED` y `LFM_KB_ENABLED: "false"` (+3 lineas de comentario; `numstat` 6/2 por una linea en blanco al final) | `027c935` | `00342-c6x` | `lfm_warmup_skipped`; keep-alive no arranca; `gpt4o_mini_fallback_ok ... lfm_was_active=False` en las respuestas de producto; reformulacion KB por GPT-4o-mini sin llamada LFM; recomendaciones 8/8/0 antes y despues; 0 `ERROR` |
+
+Latencia de R-8 con 3 muestras desde el cliente: 3337 / 2836 / 1376 ms antes y 3010 / 4202 / 1354 ms despues.
+No es concluyente: con 3 muestras, la variacion entre peticiones (hasta ~1,4 s) es mayor que el efecto esperado
+(~190 ms). La evidencia es la desaparicion de la llamada fallida previa en los logs, no el cronometro.
