@@ -1,9 +1,9 @@
-# DCT -- Incidente: credenciales expuestas en el repositorio publico (31/10/2026 - 11/11/2026)
+# DCT -- Incidente: credenciales expuestas en el repositorio publico (31/10/2026 - 13/11/2026)
 
 Documento de continuidad tecnica del incidente de seguridad detectado el 30/10/2026
 al revisar `env-vars.yaml` durante la recomendacion 1 de E5 nivel 2. Interrumpe el plan
 de E5 (ver `RESUMEN_E5_Nivel2_Estado_30102026.md`, seccion 10), que se retoma al cerrar
-los pendientes de la seccion 7.
+los pendientes de la seccion 8.
 
 Convencion: [V] verificado con evidencia; [H] hipotesis; [Y] confirmado por Yasmani sin
 salida adjunta. Ningun valor secreto aparece en este documento.
@@ -16,8 +16,10 @@ El repositorio `github.com/Yasmani-Cascante/retail-recommender-system` es **publ
 y su historial contenia credenciales en uso. Se han **rotado** la contrasena de Supabase y
 el token de Admin API de Shopify, con prueba de que las credenciales publicadas ya no
 sirven, y se han eliminado las 8 rutas que exponian datos con la `API_KEY` (S-3, 07/11/2026).
-Tambien se ha rotado la `API_KEY` (S-2, 11/11/2026). Quedan pendientes retirar `/v1/debug/headers`
-(S-13), la contrasena de Neon y la limpieza del arbol.
+Tambien se ha rotado la `API_KEY` (S-2, 11/11/2026). Se han retirado los endpoints de diagnostico sin autenticacion
+(S-13, 13/11/2026) y una contrasena de Redis escrita en un test (S-14, credencial muerta). La busqueda por
+VALOR de las 9 credenciales de Secret Manager (12/11) confirma que ninguna credencial en uso aparece en el
+historial publico ni en el arbol. Quedan pendientes la contrasena de Neon y la limpieza del arbol.
 
 | Credencial | Publicada desde | En uso al detectarlo | Estado |
 |---|---|---|---|
@@ -25,6 +27,7 @@ Tambien se ha rotado la `API_KEY` (S-2, 11/11/2026). Quedan pendientes retirar `
 | Contrasena de Supabase (`DATABASE_URL`) | 20/09/2026 (`8c9fb20`) | Si [V] | **Rotada** [V] |
 | `API_KEY` propia (32 car.) | 04/2025 (32 commits) y `GET /v1/debug/headers` (S-13) | Si [V] | **Rotada** 11/11/2026 [V] -- clave vieja -> HTTP 403 |
 | Contrasena de Neon (`neondb_owner`, 16 car.) | 10/06/2026 (`7c6cd6f`) | Sin consumidores | Pendiente: eliminar proyecto (S-6) |
+| Contrasena de Redis de una base de datos ya eliminada (32 car., `tests/test_f04_customer_profile.py`) | 04/2026 (`d11daf7`) | No: su host ya no existe [V] | Retirada del codigo (S-14) |
 | Secreto del webhook de Shopify | -- | -- | **No expuesto** [V] (0 commits) |
 | Clave de cuenta de servicio `embedding-service-key.json` | -- | -- | **Nunca publicada** [V] |
 | Claves de Anthropic / OpenRouter / Perplexity | -- | -- | Solo marcadores de ejemplo [V] |
@@ -48,6 +51,9 @@ Tambien se ha rotado la `API_KEY` (S-2, 11/11/2026). Quedan pendientes retirar `
 | 07/11/2026 | Commit `1033fdf`: corrige un CR suelto al final de `test_user_journey_discovery.py`, introducido por el corte (sin despliegue) |
 | 11/11/2026 | Rotacion de `API_KEY`: valor aleatorio propio (v3 del secreto; v1 y v2 desactivadas), `theme.liquid`, `.env` y cabeceras de los 2 jobs; revision `00339-bws` (misma imagen) |
 | 11/11/2026 19:42 | S-13 verificado en produccion: `GET /v1/debug/headers` sin clave -> 200; 0 peticiones en los 30 dias previos |
+| 12/11/2026 | Busqueda por VALOR de las 9 credenciales de Secret Manager en el historial publicado y en el arbol: 0 en todas (control: la clave vieja, 32 commits y 95 ficheros) |
+| 12/11/2026 | S-14: el host de Redis del test no resuelve en DNS (base de datos eliminada); el control con el host de produccion autentica |
+| 13/11/2026 | S-13: commit `9c8df16` (5 endpoints de diagnostico retirados; tests y scripts leen `API_KEY` del entorno); suite 1220 -> 1220 sin cambios de estado; revision `00340-ssm` (imagen `sha256:e7b9c6fa...`) |
 
 ## 3. Alcance de la exposicion
 
@@ -68,6 +74,10 @@ Tambien se ha rotado la `API_KEY` (S-2, 11/11/2026). Quedan pendientes retirar `
 - **Trafico de 30 dias a las 8 rutas con datos** [V]: 3 peticiones, todas de Yasmani
   (IP confirmada) el 01/11 00:58-01:03 UTC: 2 `curl` (200) y 1 navegador sin clave (403).
   Limite: los logs cubren 30 dias; la `API_KEY` lleva publicada desde 04/2025.
+- **`.env.test`** [V] (16/11/2026): estuvo en 4 commits publicados de 2025, sin credenciales con valor
+  (control positivo con el fichero actual); ningun valor actual de `.env` ni de `.env.test` aparece publicado,
+  salvo una clave de prueba muerta para produccion. Detalle en
+  `DCT_Alineacion_Venv_Diagnostico_Suite_16112026.md`, seccion 6.
 
 ## 4. Contencion y rotacion
 
@@ -131,7 +141,7 @@ de aceptarlo como clave.
 
 Pendiente: `visual-search-weekly-rebuild` se confirmara en su proxima ejecucion programada. Diez ficheros
 de tests y scripts (y `config/cloud/app.yaml`) tienen el valor viejo escrito: los tests que llamen a la
-aplicacion con el fallaran hasta que lean la clave del entorno (seccion 7).
+aplicacion con el fallaran hasta que lean la clave del entorno (seccion 8).
 
 ## 5. Hallazgos
 
@@ -149,7 +159,8 @@ aplicacion con el fallaran hasta que lean la clave del entorno (seccion 7).
 | S-10 | `ServiceFactory.get_db_pool()` ignora `DATABASE_URL` y apunta a `localhost`; usado por `get_knowledge_base()` y `get_kb_sync_service()`. Solo lo ejercita `/api/health/kb*` en 30 dias [V] | Baja (latente) | Pendiente |
 | S-11 | Jobs de Scheduler `tfidf-daily-rebuild` (`/v1/admin/tfidf/rebuild`) y `visual-search-weekly-rebuild` (`/v1/mcp/visual-search/index`) se autentican con la `API_KEY`, sin OIDC [V]: con la clave publicada, cualquiera puede lanzar operaciones costosas | Media | Pendiente: OIDC de la cuenta de servicio y endpoints de administracion sin la clave del widget |
 | S-12 | `/docs` y `/openapi.json` publicos en produccion: publican el mapa de la API, incluidas las rutas de administracion [V] (logs del 07/11) | Baja | Pendiente: desactivar o proteger antes de abrir la tienda |
-| S-13 | `GET /v1/debug/headers` (`products_router.py`, L2109) sin autenticacion: su respuesta incluia `expected_api_key` con la `API_KEY` en uso escrita en el codigo, asi que cualquiera podia leer la clave sin pasar por GitHub. En produccion: sin clave -> 200 [V]; 0 peticiones en los 30 dias previos, con control positivo (la consulta encuentra la peticion de prueba) [V]. Encontrado buscando el VALOR literal de la clave (busqueda de Yasmani) | Alta (neutralizado por la rotacion: devuelve un valor muerto) | Pendiente: eliminar el endpoint |
+| S-13 | `GET /v1/debug/headers` (`products_router.py`, L2109) sin autenticacion: su respuesta incluia `expected_api_key` con la `API_KEY` en uso escrita en el codigo, asi que cualquiera podia leer la clave sin pasar por GitHub. En produccion: sin clave -> 200 [V]; 0 peticiones en los 30 dias previos, con control positivo (la consulta encuentra la peticion de prueba) [V]. Encontrado buscando el VALOR literal de la clave (busqueda de Yasmani) | Alta (neutralizado por la rotacion: devuelve un valor muerto) | **Cerrado** 13/11/2026 [V] (seccion 7) |
+| S-14 | Contrasena de Redis escrita en `tests/test_f04_customer_profile.py`, con host y puerto, bajo un comentario que decia "Credenciales desde .env". Se escapo a la busqueda por prefijos (una contrasena aleatoria no tiene prefijo). No es la actual (0 commits con la actual) y su host no resuelve en DNS: base de datos eliminada [V] | Baja (credencial muerta) | **Cerrado** 13/11/2026: retirada del codigo en `9c8df16` |
 
 Observaciones (no de seguridad):
 - Ping lento de Redis (~8 s) durante el arranque, visto en 2 de 2 arranques analizados.
@@ -166,6 +177,18 @@ Observaciones (no de seguridad):
   versionados (`models/`); hay que corregirlo.
 - Finales de linea: un CR suelto hace que git no aplique `core.autocrlf` a ese fichero (lo trata como
   binario a efectos de conversion); relacionado con H-18 (falta `.gitattributes`).
+- Deriva del entorno local (13/11) [V]: el venv local tiene `anthropic` 0.69.0 y no tiene `httpx2`; produccion
+  fija `anthropic==1.7.0` y `httpx2==2.13.0` (`requirements.cloudrun.txt`). Todo test que llega a la
+  conversacion falla en local con `ModuleNotFoundError: httpx2` (`service_factory.py:1331`); hasta S-13 lo
+  ocultaba el 403 de la clave escrita (fallo enmascarado). El comentario de `service_factory.py` (L1305) cita
+  versiones antiguas (1.3.0 / 2.12.0). **Resuelto** 13-16/11/2026: venv instalado desde
+  `requirements.cloudrun.txt` (ver `DCT_Alineacion_Venv_Diagnostico_Suite_16112026.md`).
+- `tools/validation/compare_junit.py` compara estados, no causas: no ve un fallo que cambia de mensaje
+  (`test_kb_language_detection`: 403 -> `httpx2`). Mejora: una seccion "fallos que cambian de mensaje".
+- Secret Manager: `perplexity-api-key` vacio o con un valor corto [H]; `db-password` no lo usa el
+  despliegue (resto de la base de datos anterior [H]).
+- `tests/test_f04_customer_profile.py`: 3 de sus tests dan error al prepararse, antes y despues de S-13;
+  parecen funciones de script cuyos parametros pytest interpreta como fixtures [H].
 
 ## 6. Eliminacion de los endpoints legacy -- analisis
 
@@ -217,25 +240,70 @@ integracion, e2e y rendimiento, que se adaptan en el mismo cambio.
   linea de un fichero sin salto final. Ninguna verificacion del laboratorio contaba los CR sueltos;
   lo detecto `git diff --ignore-cr-at-eol` (1/19 frente a 0/18 previsto).
 
-## 7. Pendientes, en orden
+## 7. Endpoints de diagnostico sin autenticacion (S-13) y contrasena de Redis en un test (S-14)
+
+Inventario de `products_router.py`: 7 endpoints `/v1/debug/*` [V]. Antes de retirar nada se comprobo, para cada
+uno, su proposito (codigo y documentacion), su uso y si existe un equivalente:
+
+| Endpoint | Proposito (segun su codigo) | Autenticacion | Uso / equivalente | Decision |
+|---|---|---|---|---|
+| `headers` | "Temporal": depurar `X-API-Key` (devolvia la clave en uso) | Ninguna | Solo pruebas de Yasmani | Retirado |
+| `auth-test` | Pareja de `headers` | `API_KEY` | Equivalente: cualquier GET con clave (`/v1/metrics`) | Retirado |
+| `load-test` | Diagnostico de pruebas de carga | `API_KEY` | La prueba de carga no lo usa | Retirado |
+| `product-cache` | Estadisticas de ProductCache (runbook de agosto de 2025) | Ninguna | Equivalente: `/v1/enterprise/cache/stats` (misma cache, con clave) | Retirado |
+| `shopify` | Conexion con Shopify (una llamada real por peticion) | Ninguna | Prueba de humo de permisos y logs de arranque | Retirado, con `debug_shopify_connection()` |
+| `product/{id}` | Rendimiento por producto (runbook) | `API_KEY` | Sin equivalente | Se queda (clave de administracion antes de abrir la tienda) |
+| `product-comparison/{id}` | Comparar metodos de obtencion (runbook) | `API_KEY` | Sin equivalente | Se queda (idem) |
+
+Consumidores [V]: en el repo, solo la definicion, un `print` en `fix_cache_priority.py` y las pruebas de humo de
+Neon (aceptan 404); en 30 dias de logs, solo llamadas de Yasmani (control positivo: aparecen todas); ni el
+widget ni Scheduler los usan.
+
+**Cambio aplicado (13/11/2026, commit `9c8df16`)** [V]:
+- Codigo: los 5 endpoints, `debug_shopify_connection()` y el import `Request` (sin uso). Tabla de rutas 20 -> 15;
+  oraculo AST (resto del modulo identico); solo eliminaciones; pyflakes sin avisos nuevos.
+- Tests y scripts (8): los que corren la app en el propio proceso usan `security_auth.API_KEY` (la clave con la
+  que valida); los que llaman a un servidor externo leen el entorno tras `load_dotenv()`; `test_f04` deja de
+  contener el token revocado y la contrasena de Redis (S-14); la prueba de carga retira 2 tareas de rutas
+  eliminadas en S-3, que entonces se escapo (solo se trataron los tests de pytest), y adapta
+  `complete_shopping_flow` (peso total de tareas 61 -> 49).
+- Aplicacion: `apply_S13.py` (fuera del repo; tres estados por fichero; todo o nada). Diffs de revision con los
+  valores sensibles enmascarados.
+- Suite: 1220 -> 1220 tests, 0 cambios de estado. Prediccion fallida y util: los 2 tests de
+  `test_kb_language_detection` siguen fallando, pero por otra causa (antes 403 por la clave; despues `httpx2`,
+  la deriva del entorno local de la seccion 5).
+- Produccion, revision `00340-ssm`: sin clave, las 5 rutas retiradas -> 404 y las 2 que se quedan -> 403;
+  `/health` -> 200; las 8 peticiones aparecen en los logs del servicio. Arranque sin `ERROR`, 4 webhooks,
+  3 conversaciones del widget -> 200. git: 38 inserciones / 288 eliminaciones, igual que el laboratorio
+  fichero a fichero.
+
+S-14: la contrasena del test no es la actual (0 commits con la actual) y su host no resuelve en DNS; el control
+(host de produccion, contrasena actual, mismo equipo) autentica: base de datos eliminada, credencial muerta.
+
+## 8. Pendientes, en orden
 
 1. ~~Eliminar los endpoints con datos~~ (S-3): **hecho** el 07/11/2026.
 2. ~~Rotar `API_KEY`~~ (S-2): **hecho** el 11/11/2026.
-3. Eliminar `GET /v1/debug/headers` (S-13) y que los tests y scripts lean `API_KEY` del entorno en lugar de
-   tenerla escrita (un cambio de codigo, laboratorio primero); debe ir ANTES de la proxima linea base de la
-   suite, o los fallos por la rotacion se confundiran con regresiones. `config/cloud/app.yaml` va a S-7.
-4. Limpieza del arbol + `.gitignore` (S-7) y politica de finales de linea en `.gitattributes` (H-18).
-5. Eliminar el proyecto Neon (S-6).
-6. Higiene de la suite (observaciones de la seccion 5) y corregir `tools/validation/README.md`.
-7. Antes de abrir la tienda: claves separadas (widget publica limitada a `/v1/mcp/*`; administracion solo
-   en servidor), OIDC para Scheduler (S-11), rediseno de F-04 (S-4), `default_key` (S-5), `/docs` (S-12) y
-   una via segura para eventos reales (compras por webhook `orders/paid` firmado con HMAC; navegacion por
-   pixel hacia un endpoint solo de escritura).
-8. Mejoras: cargador de secretos por sesion (S-8), versiones de API (S-9), pool de `ServiceFactory` (S-10);
+3. ~~Retirar los endpoints de diagnostico sin autenticacion (S-13) y la clave escrita en tests y scripts~~:
+   **hecho** el 13/11/2026 (seccion 7).
+4. ~~Alinear el venv local con produccion~~: **hecho** 13-16/11/2026
+   (`DCT_Alineacion_Venv_Diagnostico_Suite_16112026.md`). Sigue pendiente `tools/validation/check_env_drift.py`,
+   ahora con tres capas (`env-vars.yaml`, `.env`, `.env.test`).
+5. Limpieza del arbol + `.gitignore` (S-7; unos 95 ficheros contienen aun la clave vieja, ya muerta) y
+   politica de finales de linea en `.gitattributes` (H-18). `config/cloud/app.yaml` incluido.
+6. Eliminar el proyecto Neon (S-6) y revisar los secretos `db-password` y `perplexity-api-key`.
+7. Higiene de la suite (observaciones de la seccion 5), mejora de `compare_junit.py` (fallos que cambian de
+   mensaje) y corregir `tools/validation/README.md`. Anotar en el runbook de ProductCache (agosto de 2025)
+   que `/v1/debug/product-cache` se sustituye por `/v1/enterprise/cache/stats`.
+8. Antes de abrir la tienda: claves separadas (widget publica limitada a `/v1/mcp/*`; administracion solo
+   en servidor, incluidos `/v1/debug/product/{id}` y `/v1/debug/product-comparison/{id}`), OIDC para Scheduler
+   (S-11), rediseno de F-04 (S-4), `default_key` (S-5), `/docs` (S-12) y una via segura para eventos reales
+   (compras por webhook `orders/paid` firmado con HMAC; navegacion por pixel hacia un endpoint solo de escritura).
+9. Mejoras: cargador de secretos por sesion (S-8), versiones de API (S-9), pool de `ServiceFactory` (S-10);
    versionar la prueba de humo de permisos en `tools/validation/`.
-9. Retomar E5: recomendacion 2 (script de despliegue del monolito) y seguimiento 17.5.
+10. Retomar E5: recomendacion 2 (script de despliegue del monolito) y seguimiento 17.5.
 
-## 8. Lecciones del incidente
+## 9. Lecciones del incidente
 
 - **Rotar invalida; esconder no.** Borrar el repo o hacerlo privado solo protege el futuro.
 - **Expandir -> migrar -> contraer**: nunca invalidar una credencial con consumidores vivos.
@@ -263,3 +331,13 @@ integracion, e2e y rendimiento, que se adaptan en el mismo cambio.
   interpretar una ausencia, comprobar que las ventanas de los ficheros son contiguas.
 - **Orden de una rotacion con consumidores**: desplegar primero y actualizar despues a los consumidores; y
   un endpoint de diagnostico nace con autenticacion de administrador y fecha de caducidad, o no nace.
+- **Buscar por el valor, no solo por la forma**: una contrasena sin prefijo (S-14) se escapo a la busqueda por
+  prefijos; buscar el VALOR de cada secreto de Secret Manager responde directamente si hay credenciales vivas
+  publicadas.
+- **Un diff contiene lo que se quita**: al retirar credenciales del codigo, rotarlas antes; los diffs de
+  revision se enmascaran.
+- **Fallos enmascarados**: arreglar un fallo puede destapar el siguiente sin cambiar el estado del test;
+  conviene comparar tambien los mensajes.
+- **Validar el entorno antes de medir**: venv activado, informe generado y recuento minimo, con `throw` si no
+  se cumple; y el venv local debe instalarse desde el mismo fichero que produccion.
+- **Retirar algo citado en un runbook exige actualizar el runbook** con su equivalente.
