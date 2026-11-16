@@ -55,3 +55,7 @@ GCS_BUCKET_NAME: "retail-recommendations-449216-tfidf-model"
 RECS_VISUAL_POOL_BASE: "100"
 RECS_MAX_ALTERNATIVES: "8"
 RECS_VISUAL_FILTER_IN_SEARCH: "1"
+# R-2 (16/11/2026): desactiva la capa 4 de la base de conocimiento (SimpleKnowledgeBase,
+# contenido ficticio de plantilla). Sin respuesta real -> 404 / "sin respuesta", nunca datos
+# inventados. Reversible: "true". Ver DCT_Alineacion_Venv_Diagnostico_Suite_16112026.md, R-2.
+KB_ENABLE_FALLBACK: "false"
