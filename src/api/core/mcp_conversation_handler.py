@@ -33,6 +33,15 @@ from src.api.core.parallel_processor import (
     execute_mcp_operations_parallel
 )
 
+# R-2 parte 2 + R-4 (17/11/2026): textos de los modos degradados, en el idioma
+# del cliente (es/en/fr/de/it). El modulo solo usa la libreria estandar (sin IO
+# ni red), asi que importarlo a nivel de modulo no puede romper el arranque.
+from src.api.core.localized_messages import (
+    kb_unavailable_message,
+    no_products_placeholder,
+    emergency_message,
+)
+
 # FIX (24/03/2026): Import hybrid_detector dentro de función para evitar
 # que un ImportError de nivel-módulo silenciosamente rompa el handler completo.
 # El import original en nivel-módulo hacía que cualquier fallo de sklearn/joblib
@@ -514,6 +523,12 @@ async def get_mcp_conversation_recommendations(
 
                         kb_answer = None
                         kb_obj = None
+                        # R-2 parte 2 (17/11/2026): por que no hay respuesta, si no la hay.
+                        #   "no_instance" -> no existe la base de conocimiento (fallo su arranque)
+                        #   "no_answer"   -> la consulta se hizo pero no devolvio nada
+                        #   "error"       -> la consulta lanzo una excepcion
+                        # Se usa en el log `kb_unavailable_reply` y en la metadata.
+                        _kb_unavailable_reason = "no_instance"
 
                         try:
                             # Prefer app.state (lifespan-initialized) values
@@ -527,14 +542,17 @@ async def get_mcp_conversation_recommendations(
                         except Exception as resolve_e:
                             logger.warning(f"⚠️ Error resolving KB from main_unified_redis: {resolve_e}")
 
-                        # Final fallback: try hardcoded KB singleton
-                        if not kb_obj:
-                            try:
-                                from src.api.core.knowledge_base import get_knowledge_base
-                                kb_obj = get_knowledge_base()
-                                logger.info("ℹ️ Using hardcoded fallback KB via get_knowledge_base()")
-                            except Exception as fallback_e:
-                                logger.warning(f"Fallback hardcoded KB not available: {fallback_e}")
+                        # R-2 parte 2 (17/11/2026): ELIMINADO el "final fallback" que usaba
+                        # SimpleKnowledgeBase (knowledge_base.py) cuando no habia base de
+                        # conocimiento v2. Motivos:
+                        #   1. Estaba roto: se llamaba con language=/category=, que
+                        #      SimpleKnowledgeBase.get_answer() no acepta -> TypeError.
+                        #   2. Su contenido es ficticio de plantilla (telefonos +52, MXN,
+                        #      cuenta bancaria y CLABE inventadas): nunca debe llegar a un
+                        #      cliente (decision KB_ENABLE_FALLBACK=false, 16/11/2026).
+                        # Sin instancia, el flujo llega al mensaje honesto de mas abajo
+                        # (motivo "no_instance"). El modulo knowledge_base.py y sus tests se
+                        # conservan; solo desaparece esta llamada.
 
                         if kb_obj:
                             try:
@@ -550,8 +568,10 @@ async def get_mcp_conversation_recommendations(
                                     kb_answer = maybe_result
 
                                 logger.info(f"✅ KB query completed for language={language}")
+                                _kb_unavailable_reason = "no_answer"  # solo se usa si kb_answer es None
                             except Exception as kb_e:
                                 logger.error(f"❌ KB error: {kb_e}", exc_info=True)
+                                _kb_unavailable_reason = "error"
                         else:
                             logger.warning("⚠️ No Knowledge Base instance available to query")
                         
@@ -752,8 +772,49 @@ async def get_mcp_conversation_recommendations(
                                 }
                             }
                         else:
-                            logger.warning("⚠️ No knowledge base answer found - falling back to products")
-                            # Continue to product recommendations (fallback)
+                            # R-2 parte 2 (17/11/2026): antes, aqui el flujo seguia hacia la
+                            # busqueda de PRODUCTOS para una pregunta de politica, y acababa en
+                            # el texto provisional fijo en espanol. Ahora se responde con un
+                            # mensaje honesto en el idioma del cliente que enlaza a la pagina de
+                            # Shopify del tema (la fuente de la base de conocimiento, servida por
+                            # Shopify aunque fallen Supabase, Redis o este servicio).
+                            #
+                            # Misma estructura que la respuesta informativa normal (type,
+                            # answer, ai_response, recommendations, metadata), asi que el router
+                            # la trata igual (early return, sin personalizacion).
+                            #
+                            # El log `kb_unavailable_reply` tiene un token fijo para poder
+                            # CONTAR cuantas veces ocurre (leccion de R-8: un respaldo que nadie
+                            # mide puede ocultar un fallo durante meses).
+                            _honest_answer = kb_unavailable_message(language, intent_result.sub_intent)
+                            logger.warning(
+                                f"kb_unavailable_reply reason={_kb_unavailable_reason} "
+                                f"sub_intent={intent_result.sub_intent} language={language}"
+                            )
+                            return {
+                                "type": "informational",
+                                "answer": _honest_answer,
+                                "ai_response": _honest_answer,
+                                "recommendations": [],  # nunca productos para una pregunta informativa
+                                "metadata": {
+                                    "intent_detection": {
+                                        "primary_intent": intent_result.primary_intent,
+                                        "sub_intent": intent_result.sub_intent,
+                                        "confidence": intent_result.confidence,
+                                        "reasoning": intent_result.reasoning,
+                                        "matched_patterns": intent_result.matched_patterns,
+                                        # _detected_method existe en las dos ramas (ML y reglas);
+                                        # no se usa hybrid_result, que no existe si el ML fallo.
+                                        "method_used": _detected_method or "rule_based",
+                                    },
+                                    "knowledge_base_used": False,
+                                    "kb_unavailable": True,
+                                    "kb_unavailable_reason": _kb_unavailable_reason,
+                                    "processing_time_ms": (time.time() - start_time) * 1000,
+                                    "market_id": market_id,
+                                    "session_id": actual_session_id,
+                                },
+                            }
                     
                     # GREETING → Return warm conversational response, NO products
                     # FIX (25/03/2026 — BUG #3): "Hi!" / "Hola" were falling through
@@ -3907,16 +3968,15 @@ async def get_mcp_conversation_recommendations(
         # sobrescribe. Si esa personalizacion no corre, este texto llega TAL
         # CUAL al usuario -- y eso paso el 15/10/2026, cuando con la categoria
         # agotada el chat respondio en ingles "I found 0 recommendations for
-        # your query: '...'". Por eso ahora es un texto en espanol que se puede
-        # leer sin verguenza si vuelve a aflorar.
+        # your query: '...'". Por eso es un texto que se puede leer sin
+        # verguenza si vuelve a aflorar.
+        #
+        # R-4 (17/11/2026): antes estaba fijo en espanol y afloraba en espanol
+        # tambien a clientes en ingles (test de idioma). Ahora sale en el idioma
+        # de la peticion (localized_messages.no_products_placeholder).
         final_response = {
             "recommendations": base_recommendations,
-            "ai_response": (
-                "No he encontrado productos para esta búsqueda. "
-                "¿Quieres que te muestre otra cosa?"
-                if not base_recommendations
-                else "Aquí tienes algunas opciones que pueden encajar."
-            ),
+            "ai_response": no_products_placeholder(language, bool(base_recommendations)),
             "metadata": {
                 "personalization_applied": False,
                 "base_recommendations_count": len(base_recommendations),
@@ -4283,7 +4343,9 @@ async def get_mcp_conversation_recommendations(
         # Emergency fallback
         return {
             "recommendations": [],
-            "ai_response": f"I apologize, but I encountered an error processing your request: '{conversation_query}'. Please try again.",
+            # R-4 (17/11/2026): antes, fijo en ingles y repitiendo la consulta del
+            # usuario (texto no confiable reflejado). Ahora en su idioma y sin eco.
+            "ai_response": emergency_message(language),
             "metadata": {
                 "error": str(e)[:200],
                 "fallback_used": "emergency",
