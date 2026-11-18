@@ -1,6 +1,6 @@
 """
 Tests del modo degradado de la base de conocimiento en el handler
-(R-2 parte 2, 17/11/2026).
+(R-2 parte 2 (respuesta honesta cuando la base de conocimiento no responde), 17/11/2026).
 
 QUE SE PRUEBA
 -------------
@@ -17,8 +17,8 @@ COMO SE AISLA (sin Redis, sin base de datos, sin arrancar la app)
 * El gestor de estado de conversacion falla a proposito: el handler crea
   un contexto temporal (su camino de degradacion normal).
 * `src.api.main_unified_redis` se sustituye por un objeto minimo con una base
-  de conocimiento falsa. Asi NO se importa la app real, y se evita R-1 (la
-  configuracion de structlog de los tests) y la cascada de arranque.
+  de conocimiento falsa. Asi NO se importa la app real, y se evita R-1 (logging de los
+  tests distinto del de la app: la configuracion de structlog de los tests) y la cascada de arranque.
 * `knowledge_base.get_knowledge_base` se convierte en una trampa: si alguien
   vuelve a llamarla, el test falla.
 """

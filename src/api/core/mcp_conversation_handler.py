@@ -33,8 +33,9 @@ from src.api.core.parallel_processor import (
     execute_mcp_operations_parallel
 )
 
-# R-2 parte 2 + R-4 (17/11/2026): textos de los modos degradados, en el idioma
-# del cliente (es/en/fr/de/it). El modulo solo usa la libreria estandar (sin IO
+# R-2 parte 2 (respuesta honesta cuando la base de conocimiento no responde)
+# + R-4 (textos del modo degradado en el idioma del cliente), 17/11/2026:
+# textos de los modos degradados, en el idioma del cliente (es/en/fr/de/it). El modulo solo usa la libreria estandar (sin IO
 # ni red), asi que importarlo a nivel de modulo no puede romper el arranque.
 from src.api.core.localized_messages import (
     kb_unavailable_message,
@@ -523,7 +524,8 @@ async def get_mcp_conversation_recommendations(
 
                         kb_answer = None
                         kb_obj = None
-                        # R-2 parte 2 (17/11/2026): por que no hay respuesta, si no la hay.
+                        # R-2 parte 2 (respuesta honesta cuando la base de conocimiento no responde), 17/11/2026.
+                        # por que no hay respuesta, si no la hay.
                         #   "no_instance" -> no existe la base de conocimiento (fallo su arranque)
                         #   "no_answer"   -> la consulta se hizo pero no devolvio nada
                         #   "error"       -> la consulta lanzo una excepcion
@@ -542,7 +544,8 @@ async def get_mcp_conversation_recommendations(
                         except Exception as resolve_e:
                             logger.warning(f"⚠️ Error resolving KB from main_unified_redis: {resolve_e}")
 
-                        # R-2 parte 2 (17/11/2026): ELIMINADO el "final fallback" que usaba
+                        # R-2 parte 2 (respuesta honesta cuando la base de conocimiento no responde), 17/11/2026.
+                        # ELIMINADO el "final fallback" que usaba
                         # SimpleKnowledgeBase (knowledge_base.py) cuando no habia base de
                         # conocimiento v2. Motivos:
                         #   1. Estaba roto: se llamaba con language=/category=, que
@@ -772,7 +775,8 @@ async def get_mcp_conversation_recommendations(
                                 }
                             }
                         else:
-                            # R-2 parte 2 (17/11/2026): antes, aqui el flujo seguia hacia la
+                            # R-2 parte 2 (respuesta honesta cuando la base de conocimiento no responde), 17/11/2026.
+                            # antes, aqui el flujo seguia hacia la
                             # busqueda de PRODUCTOS para una pregunta de politica, y acababa en
                             # el texto provisional fijo en espanol. Ahora se responde con un
                             # mensaje honesto en el idioma del cliente que enlaza a la pagina de
@@ -784,7 +788,7 @@ async def get_mcp_conversation_recommendations(
                             # la trata igual (early return, sin personalizacion).
                             #
                             # El log `kb_unavailable_reply` tiene un token fijo para poder
-                            # CONTAR cuantas veces ocurre (leccion de R-8: un respaldo que nadie
+                            # CONTAR cuantas veces ocurre (leccion de R-8, modelos LFM retirados en OpenRouter: un respaldo que nadie
                             # mide puede ocultar un fallo durante meses).
                             _honest_answer = kb_unavailable_message(language, intent_result.sub_intent)
                             logger.warning(
@@ -3971,7 +3975,8 @@ async def get_mcp_conversation_recommendations(
         # your query: '...'". Por eso es un texto que se puede leer sin
         # verguenza si vuelve a aflorar.
         #
-        # R-4 (17/11/2026): antes estaba fijo en espanol y afloraba en espanol
+        # R-4 (textos del modo degradado en el idioma del cliente), 17/11/2026.
+        # antes estaba fijo en espanol y afloraba en espanol
         # tambien a clientes en ingles (test de idioma). Ahora sale en el idioma
         # de la peticion (localized_messages.no_products_placeholder).
         final_response = {
@@ -4343,7 +4348,8 @@ async def get_mcp_conversation_recommendations(
         # Emergency fallback
         return {
             "recommendations": [],
-            # R-4 (17/11/2026): antes, fijo en ingles y repitiendo la consulta del
+            # R-4 (textos del modo degradado en el idioma del cliente), 17/11/2026.
+            # antes, fijo en ingles y repitiendo la consulta del
             # usuario (texto no confiable reflejado). Ahora en su idioma y sin eco.
             "ai_response": emergency_message(language),
             "metadata": {

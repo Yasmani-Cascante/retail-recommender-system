@@ -2,7 +2,8 @@
 Mensajes localizados para los modos degradados del chat
 =======================================================
 
-R-2 parte 2 + R-4 (17/11/2026). Ver
+R-2 parte 2 (respuesta honesta cuando la base de conocimiento no responde)
++ R-4 (textos del modo degradado en el idioma del cliente), 17/11/2026. Ver
 docs/0_plans/Transformers/Visual_search/Composite_Embedding_Granular/Evaluacion_Integral_16092026/
 DCT_Alineacion_Venv_Diagnostico_Suite_16112026.md
 
@@ -13,7 +14,7 @@ fijo, escrito en un momento distinto y en un idioma distinto:
 
   * Sin respuesta de la base de conocimiento -> el chat buscaba PRODUCTOS para
     una pregunta de politica (y caia al texto provisional de abajo).
-  * Texto provisional sin productos -> siempre en espanol (R-4).
+  * Texto provisional sin productos -> siempre en espanol (R-4, textos del modo degradado).
   * Respaldo de emergencia -> siempre en ingles y repitiendo la consulta.
 
 Este modulo es la UNICA fuente de esos textos: localizados, revisados y
@@ -256,7 +257,8 @@ def kb_unavailable_message(language: Optional[str], sub_intent: Any) -> str:
 
 def no_products_placeholder(language: Optional[str], has_products: bool) -> str:
     """
-    Texto provisional de la respuesta de productos (R-4). Solo llega al usuario
+    Texto provisional de la respuesta de productos (R-4, textos del modo
+    degradado en el idioma del cliente). Solo llega al usuario
     si la personalizacion no lo sobrescribe; por eso debe estar en su idioma.
     """
     templates = _SOME_PRODUCTS_TEMPLATES if has_products else _NO_PRODUCTS_TEMPLATES

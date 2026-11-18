@@ -1,5 +1,6 @@
 """
-Tests de src/api/core/localized_messages.py (R-2 parte 2 + R-4, 17/11/2026).
+Tests de src/api/core/localized_messages.py (R-2 parte 2 (respuesta honesta cuando la base de conocimiento no responde)
++ R-4 (textos del modo degradado en el idioma del cliente), 17/11/2026).
 
 Modulo puro (sin IO): estos tests no necesitan Redis, base de datos ni red.
 """
@@ -80,7 +81,7 @@ def test_kb_unavailable_message_always_has_a_markdown_link(language, sub_intent)
 
 
 def test_kb_unavailable_message_contains_no_invented_store_data():
-    """El mensaje no afirma datos de la tienda (la leccion de R-2)."""
+    """El mensaje no afirma datos de la tienda (la leccion de R-2, respaldo con contenido ficticio)."""
     for language in lm.SUPPORTED_LANGUAGES:
         msg = lm.kb_unavailable_message(language, "policy_payment")
         for forbidden in ("CLABE", "+52", "MXN", "@", "días hábiles"):
@@ -88,7 +89,7 @@ def test_kb_unavailable_message_contains_no_invented_store_data():
 
 
 # ---------------------------------------------------------------------------
-# Texto provisional (R-4) y emergencia
+# Texto provisional (R-4, textos del modo degradado) y emergencia
 # ---------------------------------------------------------------------------
 
 def test_no_products_placeholder_spanish_text_unchanged():
