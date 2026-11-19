@@ -1,4 +1,4 @@
-# DCT -- Alineacion del venv local con produccion y diagnostico de la suite (13/11/2026 - 16/11/2026)
+# DCT -- Alineacion del venv local con produccion y diagnostico de la suite (13/11/2026 - 18/11/2026)
 
 Documento de continuidad tecnica del pendiente 4 del incidente de credenciales
 (`DCT_Incidente_Credenciales_Expuestas_31102026.md`, seccion 8): alinear el venv local con
@@ -27,6 +27,16 @@ adjunta. Ningun valor secreto aparece en este documento. Las evidencias en bruto
 - **Mitigaciones en produccion (16/11/2026)** [V], solo configuracion y misma imagen: R-2
   (`KB_ENABLE_FALLBACK=false`, revision `00341-mr8`) y R-8 (`LFM_MCP_ENABLED` y `LFM_KB_ENABLED=false`,
   revision `00342-c6x`). Detalle en la seccion 10.
+- **R-2 parte 2 (respuesta honesta cuando la base de conocimiento no responde) y R-4 (textos de los modos
+  degradados en el idioma del cliente) en produccion el 18/11/2026** [V]: el chat contesta con un mensaje
+  honesto en el idioma del cliente y un enlace a la pagina de Shopify del tema, sin productos ni contenido
+  ficticio. Commits `3efe6a4` y `ef4b99c`, imagen `:ef4b99c`, revision `00344-2f2`; modo degradado probado
+  en la revision sin trafico `00345-wub`. Detalle en la seccion 11.
+- R-8 (modelos LFM retirados) verificado dos dias despues [V]: 0 fallos LFM desde el despliegue de la
+  mitigacion (seccion 10).
+- Hallazgos nuevos: R-10 (politicas legales de Shopify con contenido de plantilla), R-11 (respaldo Claude
+  apuntando a modelos retirados; riesgo latente) y R-12 (la sincronizacion puede guardar contenido en espanol
+  como traduccion). Siguiente cambio: opcion C, enlaces construidos desde `kb_contents` (seccion 12).
 
 ## 2. Alineacion del venv
 
@@ -125,14 +135,17 @@ vigilen; es el motivo de `tools/validation/check_env_drift.py` (pendiente), que 
 | Id | Hallazgo | Gravedad | Estado / propuesta |
 |---|---|---|---|
 | R-1 | **Logging de los tests distinto del de la app**: `tests/conftest.py` fija `wrapper_class=structlog.BoundLogger` y la app no fija ninguna, asi que hereda la de los tests. 12 llamadas con argumentos posicionales en `main_unified_redis.py` (L423, 460, 463, 467, 472, 1323, 1359, 1367, 1374, 1539, 1612, 1647) lanzan `TypeError` solo en pytest. 0 casos en produccion en 30 dias [V] | Media (solo suite; falsea los e2e de degradacion) | Opciones: (a) `configure_structlog()` fija `wrapper_class=structlog.make_filtering_bound_logger(logging.NOTSET)`, la clase efectiva hoy en produccion [V], y deja de depender del estado global; (b) quitar `wrapper_class` del conftest; (c) pasar las 12 llamadas a pares clave-valor. Evaluar (a) en laboratorio con la suite completa (los tests H1 reconfiguran `structlog`) |
-| R-2 | **Respaldo de la base de conocimiento con contenido ficticio**: `SimpleKnowledgeBase` (telefonos `+52`, envios en MXN, **cuenta bancaria y CLABE inventadas**), solo en el codigo (nunca en `kb_contents` ni en Redis). Capa 4 de `ShopifyKnowledgeBase.get_answer()` (firma correcta; `fallback_enabled=True` por el valor por defecto de `config.py`, no declarado en `env-vars.yaml` [V]). Con cobertura completa (13 temas x `es`/`en`/`fr` [V]) se alcanzaba por `GET /api/v1/kb/answer?...&category=X` **sin clave** (`category=ZAPATOS` -> 200 con la CLABE [V]) o con Supabase caido y la cache fria. El respaldo propio del handler (L541) ademas esta roto por firma | Alta (accesible sin clave) | **Mitigado** 16/11/2026 (seccion 10): `KB_ENABLE_FALLBACK=false`; el modulo y sus tests se conservan. Pendiente parte 2: mensaje honesto del handler (con R-4). 0 respuestas ficticias servidas en 30 dias, con solo 2 consultas a la base de conocimiento [V] |
+| R-2 | **Respaldo de la base de conocimiento con contenido ficticio**: `SimpleKnowledgeBase` (telefonos `+52`, envios en MXN, **cuenta bancaria y CLABE inventadas**), solo en el codigo (nunca en `kb_contents` ni en Redis). Capa 4 de `ShopifyKnowledgeBase.get_answer()` (firma correcta; `fallback_enabled=True` por el valor por defecto de `config.py`, no declarado en `env-vars.yaml` [V]). Con cobertura completa (13 temas x `es`/`en`/`fr` [V]) se alcanzaba por `GET /api/v1/kb/answer?...&category=X` **sin clave** (`category=ZAPATOS` -> 200 con la CLABE [V]) o con Supabase caido y la cache fria. El respaldo propio del handler (L541) ademas esta roto por firma | Alta (accesible sin clave) | **Mitigado** 16/11/2026 (seccion 10): `KB_ENABLE_FALLBACK=false`; el modulo y sus tests se conservan. **Cerrado**: parte 2 en produccion el 18/11/2026 (seccion 11), el handler ya no llama a `SimpleKnowledgeBase` y responde con un mensaje honesto. 0 respuestas ficticias servidas en 30 dias, con solo 2 consultas a la base de conocimiento [V] |
 | R-3 | **Apagado con variable sin asignar** (`lfm_keepalive_task`) cuando el arranque se aborta | Baja | Pendiente |
-| R-4 | **Texto provisional fijo en espanol** (`mcp_conversation_handler.py` L3915): llega al usuario si no hay productos ni contrato | Media | Pendiente: texto segun el idioma de la peticion |
+| R-4 | **Texto provisional fijo en espanol** (`mcp_conversation_handler.py` L3915): llega al usuario si no hay productos ni contrato | Media | **Cerrado** 18/11/2026 (seccion 11): textos provisional y de emergencia segun el idioma de la peticion; el de emergencia ya no repite la consulta del usuario |
 | R-5 | **Test de velocidad de Redis mal calibrado**: calibrado para ~150 ms por operacion; hoy 100 SET tardan 10-28 ms y el pipeline ~1 ms, asi que la relacion es ruido [V] | Baja (suite) | `perf_counter`, mas operaciones, mediana, o comprobar solo el orden |
 | R-6 | **Tres modulos no se recolectan** [V]: `tests/performance/conftest.py` define `pytest_plugins` fuera de la raiz; `test_mcp_bridge_integration.py` existe con el mismo nombre en `tests/mcp/integration/` y en `tests/phase0_consolidation/`; `test_shopify_kb_client_logging` importa `assert_event_logged` de `conftest`, que resuelve a `tests/mcp/conftest.py` | Baja (suite) | Mover `pytest_plugins`, renombrar un duplicado, mover el helper a un modulo propio |
 | R-7 | **`addopts` del `pytest.ini` en cada ejecucion**: `--cov-fail-under=40` hace fallar toda ejecucion parcial (codigo 1 con el test en verde) y la medicion de cobertura altera los tiempos | Baja (suite) | Cobertura solo en la ejecucion completa; tests de rendimiento aparte y sin cobertura |
-| R-8 | **Modelos LFM retirados en OpenRouter**: `liquid/lfm-2-24b-a2b` (redactor de respuestas, calentamiento y keep-alive) y `liquid/lfm-2.5-1.2b-instruct:free` (reformulacion de la base de conocimiento), fijos en `claude_config.py` (L95, L116), devuelven 404 "no longer available" [V]. Errores todos los dias de la ventana de 30 dias de logs [V]; mas de 3 meses segun Yasmani [Y]. El respaldo GPT-4o-mini respondia en silencio, tras una llamada fallida (~190 ms medidos en la reformulacion) | Media (integracion muerta sin aviso; latencia y ruido) | **Mitigado** 16/11/2026 (seccion 10). Pendiente: decidir sustituto (candidatos en OpenRouter: `liquid/lfm-2.5-24b-a2b`, `liquid/lfm-3-1.7b:free` [H]) o retirar el codigo LFM; identificadores de modelo a configuracion; metrica de que camino responde |
+| R-8 | **Modelos LFM retirados en OpenRouter**: `liquid/lfm-2-24b-a2b` (redactor de respuestas, calentamiento y keep-alive) y `liquid/lfm-2.5-1.2b-instruct:free` (reformulacion de la base de conocimiento), fijos en `claude_config.py` (L95, L116), devuelven 404 "no longer available" [V]. Errores todos los dias de la ventana de 30 dias de logs [V]; mas de 3 meses segun Yasmani [Y]. El respaldo GPT-4o-mini respondia en silencio, tras una llamada fallida (~190 ms medidos en la reformulacion) | Media (integracion muerta sin aviso; latencia y ruido) | **Mitigado** 16/11/2026 (seccion 10) y verificado el 18/11: 0 fallos LFM desde entonces [V]. Pendiente: decidir sustituto (candidatos en OpenRouter: `liquid/lfm-2.5-24b-a2b`, `liquid/lfm-3-1.7b:free` [H]) o retirar el codigo LFM; identificadores de modelo a configuracion; metrica de que camino responde |
 | R-9 | **Piezas de la base de conocimiento rotas o duplicadas** [V]: `ServiceFactory.get_knowledge_base()` llama al constructor con `db=`, `redis=`, `shopify=` (los parametros son `db_pool`, `redis_service`, `shopify_client`), asi que siempre lanza `TypeError`, y fija `enable_fallback=True` ignorando el ajuste; `kb_config.py` define otra vez `KB_ENABLE_FALLBACK`; el log "System will use fallback KB (hardcoded) only" (`main_unified_redis.py` L2423) describe un respaldo que no funciona | Baja | Higiene: arreglar o retirar; una sola fuente de configuracion |
+| R-10 | **Politicas legales de Shopify con contenido de plantilla** (Ajustes > Politicas; no son las paginas de la base de conocimiento): marcadores `[INSERT ...]` sin rellenar, reembolso en 10 dias frente a 5-7 en la base de conocimiento, legislacion aplicable de Chile, sin politica de envios y un correo personal como contacto [V] | Alta antes de abrir la tienda (texto legal visible para clientes) | Decision de Yasmani: redactar las politicas reales y alinearlas con la base de conocimiento. No es un cambio de codigo |
+| R-11 | **Respaldo Claude apuntando a modelos retirados**: cada arranque registra `Resolved CLAUDE_MODEL_TIER 'HAIKU' to claude-3-haiku-20240307` [V], modelo retirado por Anthropic el 20/04/2026; `claude-sonnet-4-20250514` se retiro el 15/06/2026 [V: documentacion de Anthropic]. Solo actua si falla GPT-4o-mini. 0 errores de Claude o Anthropic en 30 dias en los logs estructurados (`jsonPayload.event`), con control positivo (el filtro si encontro 3 eventos LFM que mencionan "Claude") [V]; un error registrado como texto plano (`textPayload`) no saldria en esa consulta [H] | Media (latente: el dia que falle GPT-4o-mini, el respaldo tambien fallara) | Pasar a `claude-haiku-4-5-20251001` (sustituto recomendado) y llevar los identificadores de modelo a configuracion; junto con la decision de R-8 |
+| R-12 | **La sincronizacion puede guardar contenido en espanol como traduccion**: `sync_single_page` (`shopify_kb_sync.py` L613) usa el contenido original cuando falta la traduccion de un idioma configurado ("mejor tener contenido en idioma incorrecto"); `sync_page` solo sincroniza las traducciones que existen [V, lectura de codigo]. Hoy los 13 temas tienen titulo traducido en `en` y `fr` [V]; el contenido no se ha comprobado | Baja (latente) | Registrar un aviso cuando se use ese respaldo y decidir si se prefiere el respaldo de idioma explicito de la base de conocimiento; junto con la opcion C |
 
 Observaciones:
 - Redis local: la app no alcanza su Redis ni con `.env` (timeout); se degrada bien [V].
@@ -152,14 +165,27 @@ Observaciones:
   responde GPT-4o-mini [V].
 - El commit `3b91ca1` (13/11, "cierre de S-13 y S-14") guardo una version anterior del DCT del incidente; la
   corrige `c1cfc51`. Lo delato un `numstat` de 98/20 frente a 9/3 previsto [V].
+- Revisiones del 18/11 [V]: `00345-wub` (prueba, creada a las 15:10:14 UTC) es anterior a `00344-2f2`
+  (normal, 15:22:41 UTC); el numero del nombre no indica el orden de creacion [H: causa no aclarada] y
+  `00343` no aparece en la lista [H: la consumio el despliegue rechazado]. Ordenar por `creationTimestamp`.
+- `--env-vars-file` sustituye todas las variables de entorno, no las mezcla [V]: `KB_USE_SHOPIFY_CMS=false`
+  (solo en la revision de prueba, 50 variables) no paso a `00344-2f2` (49 variables). `env-vars.yaml` es la
+  configuracion completa de las variables no secretas.
+- La respuesta de `GET /api/v1/kb/answer` no incluye el campo `type` (el router no lo devuelve) [V].
+- `kb_contents` representa "sin categoria" de dos formas: 20 filas con `category` NULL y 19 con `'general'`;
+  el indice unico (`COALESCE(category, 'general')`) las trata igual [V]. Sin efecto hoy; las consultas deben
+  aceptar las dos.
+- Los 39 registros generales tienen `last_synced` 18/11 15:25, 3 minutos despues de crear `00344-2f2`
+  (15:22:41 UTC) si esa hora es UTC [H: sincronizacion al arrancar].
+- En la consola de Windows los acentos de `kb_links.txt` salen mal (p. ej. `Guφa`): es la pagina de codigos
+  de la consola, no los datos [H].
 
 ## 8. Pendientes, en orden
 
 1. ~~R-2: decision y mitigacion~~: **hecho** 16/11/2026 (opcion B por configuracion, seccion 10).
 2. ~~R-8: mitigacion~~: **hecho** 16/11/2026 (seccion 10).
-3. R-2 parte 2 + R-4 (codigo, laboratorio primero): mensaje honesto en el idioma del cliente cuando no hay
-   respuesta informativa; retirar o someter al ajuste el respaldo del handler; texto provisional segun el
-   idioma; corregir los logs enganosos de R-8 y R-9.
+3. ~~R-2 parte 2 + R-4~~: **hecho** 18/11/2026 (seccion 11). De ese punto queda corregir los logs enganosos
+   de R-8 y R-9, que pasa a higiene (punto 7). Siguiente cambio: punto 9.
 4. R-8, decision de producto: sustituto LFM o retirada del codigo; identificadores de modelo a configuracion;
    metrica de que camino responde (LFM / GPT-4o-mini / Claude / texto fijo) con aviso.
 5. R-1 (laboratorio y suite completa; si se elige (a), es un cambio de produccion con despliegue propio).
@@ -167,6 +193,11 @@ Observaciones:
    (fallos que cambian de mensaje).
 7. Higiene: R-3, R-5, R-6, R-7, R-9; metadatos del paquete (`pip check`); `tools/validation/README.md`.
 8. Continuar con los pendientes 5 a 10 del DCT del incidente.
+9. **Opcion C, siguiente cambio** (seccion 12): enlaces del mensaje honesto desde `kb_contents`, con la tabla
+   fija como respaldo de arranque. Antes, decision de Yasmani sobre la pagina del tema `unknown`.
+10. R-11 (respaldo Claude con modelos retirados): modelo vigente y en configuracion, junto con el punto 4.
+11. R-10 (politicas legales de plantilla): politicas reales en Shopify antes de abrir la tienda (Yasmani).
+12. R-12 (contenido en espanol guardado como traduccion): aviso al usarlo, junto con el punto 9.
 
 ## 9. Lecciones
 
@@ -201,6 +232,26 @@ Observaciones:
   tratar un 404 de proveedor como fallo permanente (desactivar y avisar), no como transitorio.
 - **Verificar lo que entra en el commit**, no solo lo que hay en disco: un `numstat` inesperado delato un
   commit anterior incompleto.
+- **Verificar en el destino lo que se transporta**: la herramienta de lectura anadio un salto de linea final a
+  la copia del handler y el paquete v1 dio estado OTRO; el `--check` lo detecto antes de escribir. Para bytes
+  exactos, transportar en base64 o comprobar el hash en el destino.
+- **Comparar identidades completas**: `list-tags` mostraba un digest recortado, la comparacion "distinta" fue
+  falsa y el despliegue se rechazo por una ruta de imagen invalida. Tomar el digest de `docker inspect`,
+  validarlo con una expresion regular y etiquetar la imagen con el commit.
+- **`--no-traffic` deja el trafico fijado a una revision**: tras la prueba, `update-traffic --to-latest` y
+  quitar la etiqueta; si no, los despliegues siguientes no reciben trafico.
+- **Probar el modo degradado con configuracion, no con codigo**: una revision sin trafico con
+  `KB_USE_SHOPIFY_CMS=false` ejercito el camino de error real en Cloud Run sin tocar produccion.
+- **Un recuento es tan bueno como su filtro**: "200 coincidencias de `claude-3-haiku`" eran un INFO de cada
+  arranque y el tope de la consulta; filtrar por gravedad o por campo estructurado y comprobar si el total
+  coincide con `--limit`.
+- **El nombre de una columna no es un contrato**: `shopify_url`, en una tabla por idioma, parecia la URL de
+  cada idioma; el codigo que la escribe guarda la misma para todos. Antes de construir sobre un dato, leer
+  quien lo escribe.
+- **`ConvertFrom-Json` puede emitir el array como un solo objeto** (visto en esta consola: todas las
+  revisiones en una fila); encerrarlo entre parentesis para que la tuberia recorra los elementos.
+- **Los identificadores necesitan su descripcion tambien en los comentarios del codigo**: "R-2 parte 2" no
+  dice nada a quien lea el fichero mas adelante (correccion de Yasmani; commit `ef4b99c`).
 
 ## 10. Mitigaciones en produccion (16/11/2026)
 
@@ -216,3 +267,85 @@ anterior>=100`.
 Latencia de R-8 con 3 muestras desde el cliente: 3337 / 2836 / 1376 ms antes y 3010 / 4202 / 1354 ms despues.
 No es concluyente: con 3 muestras, la variacion entre peticiones (hasta ~1,4 s) es mayor que el efecto esperado
 (~190 ms). La evidencia es la desaparicion de la llamada fallida previa en los logs, no el cronometro.
+
+Verificacion de R-8 el 18/11 [V]: los eventos `WARNING` o mas con `LFM` en 30 dias son 49, todos de
+`00340-ssm` y `00341-mr8`; el ultimo, el 16/11 a las 22:15:35 UTC, es de `00341-mr8`, 3 minutos despues de
+crear `00342-c6x` (22:12:54 UTC) [H: la instancia anterior aun no se habia retirado]. 0 eventos en
+`00342-c6x`, `00345-wub` y `00344-2f2`. Llegaban cada ~5 minutos, con la regularidad de una tarea periodica
+[H: el keep-alive de LFM, el mismo de R-3], no de trafico de clientes.
+
+## 11. R-2 parte 2 y R-4 en produccion (18/11/2026)
+
+Commits `3efe6a4` (codigo y tests) y `ef4b99c` (solo comentarios: descripcion junto a cada identificador),
+subidos el 18/11 (`25891db..ef4b99c`) despues de validar en produccion.
+
+Cambios en `src/api/core/mcp_conversation_handler.py` (+81/-19 en `3efe6a4`) y modulo nuevo
+`src/api/core/localized_messages.py` (solo libreria estandar, sin IO):
+
+| Cambio | Antes | Despues |
+|---|---|---|
+| Respaldo final del handler | Llamaba a `SimpleKnowledgeBase` con `language=`/`category=` (firma rota) y su contenido es ficticio | Llamada eliminada; el modulo `knowledge_base.py` y sus tests se conservan |
+| Pregunta informativa sin respuesta | Seguia a la busqueda de productos y acababa en el texto provisional en espanol | Mensaje honesto en el idioma del cliente con enlace a la pagina de Shopify del tema, sin productos; log `kb_unavailable_reply reason=... sub_intent=... language=...` para poder contarlo; metadata `kb_unavailable` y `kb_unavailable_reason` (`no_instance`, `no_answer`, `error`) |
+| Texto provisional sin productos (R-4) | Fijo en espanol | Segun el idioma de la peticion |
+| Respaldo de emergencia | Fijo en ingles y repitiendo la consulta del usuario | Segun el idioma y sin eco de la consulta |
+
+Decisiones de Yasmani [Y]: textos aprobados; idiomas es/en/fr/de/it, espanol si no se reconoce; enlazar a las
+paginas de la base de conocimiento y no a las politicas de Shopify (ver R-10); de/it abren la pagina en
+espanol mientras no haya traduccion publicada; eliminar la llamada rota a `SimpleKnowledgeBase`.
+
+Enlaces: rutas relativas `/pages/<handle>`, con prefijo `/en/` o `/fr/` (idiomas publicados en la tienda),
+comprobadas en la tienda por Yasmani [Y]. La tabla de handles es fija en el codigo: riesgo de desfase, que
+aborda la opcion C (seccion 12).
+
+Laboratorio [V]: 128 tests nuevos (124 de `localized_messages` y 4 del handler, aislado sin Redis, base de
+datos ni arranque de la app; una trampa registra cualquier llamada a `SimpleKnowledgeBase`). Control
+negativo: los tests del handler fallan contra el codigo anterior. `ef4b99c` comprobado con un oraculo AST:
+solo cambian comentarios y docstrings. Aplicacion con paquetes de tres estados (BASE / YA APLICADO / OTRO) y
+hash antes y despues; el paquete v1 dio OTRO por un salto de linea final anadido a la copia leida y la v2
+recalculo los hashes.
+
+| Paso | Resultado [V] |
+|---|---|
+| Imagen | `gcr.io/retail-recommendations-449216/retail-recommender:ef4b99c`, `sha256:5fe2ccbbb16b7f861053a5fee49631e7802e72587158327c9ebc788b297cd8d2`, construida en local. El primer intento de despliegue se rechazo por un digest recortado, sin crear revision |
+| Modo degradado: `00345-wub`, sin trafico, etiqueta `kbtest`, `KB_USE_SHOPIFY_CMS=false` | Preguntas en ingles y en espanol -> mensaje honesto en su idioma con enlace, `reason=no_instance`, sin productos |
+| Produccion: `00344-2f2`, 100 %, configuracion normal | Politica de devoluciones en ingles con el contenido real; pregunta de producto -> 8 recomendaciones; `kb/answer` general -> 200 sin CLABE y `ZAPATOS` -> 404; `fallback_enabled=False`; 0 `kb_unavailable_reply`; 0 `ERROR` |
+| Limpieza | Trafico de nuevo a la ultima revision (`--to-latest`) y etiqueta `kbtest` eliminada |
+
+Vuelta atras: `gcloud run services update-traffic retail-recommender --region us-central1
+--to-revisions=retail-recommender-00342-c6x=100` (imagen anterior `e7b9c6fa...`, con las mitigaciones de la
+seccion 10).
+
+## 12. Siguiente cambio: opcion C (enlaces construidos desde `kb_contents`)
+
+Problema: `KB_PAGE_HANDLES` es una tabla fija. Si se cambia el handle de una pagina en Shopify, el mensaje
+honesto enlaza a una pagina que no existe y nadie lo sabe hasta el siguiente despliegue.
+
+Datos del 18/11 (`check_kb_links.py`, solo lectura; salida en `diag_14112026\kb_links.txt`) [V]:
+- 39 filas generales: 13 temas x es/en/fr; ningun tema falta en la base de datos ni en la tabla fija.
+- El handle es el mismo en los tres idiomas de cada tema.
+- 12 de 13 temas coinciden con la tabla fija. **Discrepa `unknown`**: la base de datos tiene
+  `mensaje-de-ayuda-general` y la tabla fija `preguntas-frecuentes-faq` (la misma que `general_faq`).
+- `shopify_url` no sirve como enlace por idioma: vale `https://ai-shoppings.myshopify.com/pages/<handle>` en
+  los tres idiomas (asi la construye `shopify_kb_sync.py`, L580, L764 y L836), sin prefijo de idioma y con el
+  dominio `myshopify.com`. La URL por idioma sale de `shopify_handle` y la regla de prefijos de
+  `localized_messages`.
+- `title` esta traducido en `en` y `fr` en los 13 temas; si falta traduccion, la sincronizacion guarda el
+  titulo en espanol (L620, L814).
+- Shopify (Admin API, 18/11) [V]: `mensaje-de-ayuda-general` esta publicada y su texto esta escrito para el
+  chat ("No pudimos clasificar tu pregunta... Intenta preguntarme sobre..."), no para un visitante de la
+  tienda; `preguntas-frecuentes-faq` esta publicada y es una pagina de preguntas frecuentes.
+
+Diseno propuesto [H, a validar en laboratorio]:
+1. Mapa `sub_intent -> handle` (y titulos en/fr) leido de las filas generales de `kb_contents` (`category`
+   NULL o `'general'`), refrescado al terminar la sincronizacion diaria y con cada webhook de pagina.
+2. Guardado en memoria como "ultimo valor bueno": si una lectura falla o llega incompleta, se conserva el
+   anterior.
+3. La tabla fija sigue como respaldo de arranque en frio y para los titulos de/it.
+4. Excepciones declaradas en el codigo (p. ej. `unknown`), no deducidas.
+5. Aviso `kb_link_map_drift` cuando la base de datos y la tabla fija difieren.
+6. Tests: mapa completo, lectura fallida (se conserva el anterior), arranque sin base de datos (tabla fija) y
+   handle cambiado.
+
+Decision pendiente de Yasmani: pagina del tema `unknown`. Recomendacion: mantener `preguntas-frecuentes-faq`
+(contenido para personas) como excepcion declarada, y revisar si `mensaje-de-ayuda-general` debe seguir
+visible en la tienda [H: comprobar antes si la sincronizacion necesita que este publicada].
