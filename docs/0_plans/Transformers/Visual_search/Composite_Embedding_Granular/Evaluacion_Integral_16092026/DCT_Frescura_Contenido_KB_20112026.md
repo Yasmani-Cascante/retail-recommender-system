@@ -27,7 +27,8 @@ esta expuesto todavia. Este documento es la lista de lo que hay que cerrar antes
  Shopify: paginas + traducciones (Translate & Adapt)    <- FUENTE DE VERDAD (la edita la tienda)
      |  sincronizacion por instancia de Cloud Run:
      |    - completa al arrancar (todas las traducciones publicadas)
-     |    - incremental cada 5 min y por webhook (solo paginas cambiadas, idiomas de KB_SYNC_LANGUAGES)
+     |    - incremental cada 5 min mientras la instancia vive (solo paginas cambiadas, idiomas de KB_SYNC_LANGUAGES)
+     |    - Shopify NO envia webhooks de paginas: no hay sincronizacion inmediata al editar
      v
  kb_contents en PostgreSQL (Supabase)                     <- COPIA de trabajo (39 filas generales: 13 temas x es/en/fr)
      v
@@ -51,9 +52,11 @@ esta expuesto todavia. Este documento es la lista de lo que hay que cerrar antes
 Evidencia de la sincronizacion [V, lectura de codigo y configuracion]: `KBBackgroundSyncJob` se arranca en cada
 instancia (`main_unified_redis.py` L2133) con `KB_ENABLE_BACKGROUND_SYNC=true` e intervalo de 5 min (valores por
 defecto de `config.py`); primer ciclo `sync_all_pages()` (completa), siguientes `sync_single_page()` por pagina
-cambiada (`shopify_kb_sync.py` L1953-2081). `KB_WEBHOOKS_ENABLED=true` en `env-vars.yaml`; segun los docstrings,
-el webhook tambien entra por `sync_single_page()` [H]. Una pagina sin cambios solo actualiza `last_synced`
-(L1398) y una con cambios invalida Redis, que es compartido entre instancias.
+cambiada (`shopify_kb_sync.py` L1953-2081). `KB_WEBHOOKS_ENABLED=true` y hay 4 webhooks registrados, pero al
+editar una pagina el 20/11 no llego ninguno y el propio job lo declara (`note=shopify_pages_webhooks_not_supported`)
+[V]: las paginas solo se sincronizan por sondeo y al arrancar una instancia. Arranques de `00344-2f2` con
+sincronizacion completa: 18/11 15:25, 19/11 07:02, 20/11 07:02, 16:08 y 18:07 UTC [V]. Una pagina sin cambios
+solo actualiza `last_synced` (L1398) y una con cambios invalida Redis, que es compartido entre instancias.
 
 ## 3. Mecanismos y huecos de frescura (estado 20/11/2026)
 
@@ -61,7 +64,7 @@ el webhook tambien entra por `sync_single_page()` [H]. Una pagina sin cambios so
 |---|---|
 | Sincronizacion cada 5 min por instancia | Funciona [V] |
 | Invalidacion de Redis al cambiar una pagina | Funciona [V, codigo]; Redis compartido |
-| R-13: el frances no se actualiza al editar una pagina | **Hueco** [V]; R-13a lo cierra para es/en/fr (seccion 7) |
+| R-13: el frances no se actualiza al editar una pagina | **Cerrado para es/en/fr** con R-13a el 20/11 [V] (seccion 7); R-13b retira la lista manual |
 | R-12: si falta una traduccion, se guarda el texto en espanol | Idioma equivocado, no informacion vieja [V]; lo cierra R-13b |
 | Primeros minutos tras arrancar una instancia | Posible copia vieja hasta que acaba la sincronizacion completa [H] |
 | Limite de antiguedad de la copia (`KB_BUFFER_MAX_AGE_HOURS=48`) | Configurado; comportamiento al superarlo no verificado [H] |
@@ -108,7 +111,8 @@ Observaciones:
 
 ## 6. Plan, en orden
 
-1. **R-13a** (el frances no se actualiza al editar una pagina; configuracion): `KB_SYNC_LANGUAGES: "es,en,fr"`. Seccion 7.
+1. ~~**R-13a**~~ (el frances no se actualiza al editar una pagina; configuracion): **hecho** 20/11/2026, revision
+   `00345-xd5`. Seccion 7.
 2. **R-10** (politicas legales de Shopify con contenido de plantilla): alinear las politicas con la base de
    conocimiento. Yasmani, en Shopify, sin codigo.
 3. **R-13b** (codigo, laboratorio primero): la sincronizacion incremental usa los idiomas publicados en Shopify,
@@ -146,7 +150,33 @@ Vuelta atras: `gcloud run services update-traffic retail-recommender --region us
 --to-revisions=retail-recommender-00344-2f2=100`, y despues `--to-latest` cuando se corrija (`--no-traffic` y
 `--to-revisions` dejan el trafico fijado; leccion del 18/11).
 
-Resultados: **pendiente**.
+Resultados (20/11/2026) [V]. Commits `fd6f458` (documentacion) y `441692e` (`env-vars.yaml`):
+
+| Comprobacion | Antes | Despues |
+|---|---|---|
+| Revision | `00344-2f2` | `00345-xd5`, 100 %, sigue a la ultima |
+| Imagen | `5fe2ccbb...` | la misma |
+| Variables (secretas) | 49 (11) | 50 (11); `KB_SYNC_LANGUAGES=es,en,fr` |
+| `configured_languages` en `service_initialized` | `['es', 'en']` en los 5 arranques del 18 al 20/11 | `['es', 'en', 'fr']` (20:41:42 UTC) |
+| `sync_single_page_language_synced` en 7 dias | ninguno (sin ediciones con una instancia viva) | prueba funcional: `es`, `en` y `fr` |
+| `/kb/answer?sub_intent=policy_return` | - | es/en/fr -> 200 (487 / 430 / 500 bytes) |
+| `ERROR` | - | 0 en 30 min (y 0 en los 617 eventos descargados, 20:40-20:52 UTC) |
+
+Prueba funcional (logs descargados) [V]: titulo de `mensaje-de-ayuda-general` cambiado a " (prueba)"; el ciclo
+incremental 3 (20:51:54 UTC) detecto 1 pagina cambiada (`158935941429`) y la sincronizo en `es`, `en` y `fr`
+(`status=synced`, 0 errores). Ciclo 2 (20:46:54) sin cambios. El titulo se restauro a las 20:52:07 UTC (Admin
+API) [V]. La consulta del terminal salio vacia porque se ejecuto antes del ciclo 3 [H: por la hora].
+
+Incidencias:
+- `numstat` de `env-vars.yaml` 5/1 en vez de 5/0: la linea borrada es la linea en blanco final [H: el contenido
+  actual conserva las 39 claves y `KB_ENABLE_FALLBACK: "false"`; confirmar con `git show 441692e`].
+- La linea de vuelta atras se ejecuto sin que hiciera falta y fallo antes de llamar a la API: `$r` (respuesta de
+  `Invoke-WebRequest`) piso `$R` (region) porque en PowerShell las variables no distinguen mayusculas. Error de
+  diseno del bloque (Claude) [V]. Produccion no cambio [H: confirmar trafico].
+- El nombre `00345` se repite (`00345-wub` de la prueba del 18/11 y `00345-xd5`) [V]: el numero no es una
+  secuencia unica; identificar revisiones por nombre completo y fecha.
+- El comentario de R-13a en `env-vars.yaml` dice "cada 5 min y webhooks": los webhooks de paginas no existen.
+  Se corrige al retirar la variable en R-13b.
 
 ## 8. Lecciones
 
@@ -160,3 +190,9 @@ Resultados: **pendiente**.
   publico por la tienda; la visibilidad de una pagina se puede cambiar sin afectar a la sincronizacion.
 - **Bloques de comandos autosuficientes**: un bloque que usa variables de otra sesion falla con errores enganosos
   (`C:\check_kb_links.py`); cada bloque define lo que usa.
+- **En PowerShell `$r` y `$R` son la misma variable**: usar nombres largos y distintos (`$region`, `$resp`) y no
+  reutilizar nombres cortos en bucles.
+- **La vuelta atras no va en el bloque lineal**: los comandos condicionales se dan aparte o protegidos por una
+  condicion (`if (...) { ... }`), para que copiar el bloque entero no los ejecute.
+- **Un resultado vacio puede ser un problema de tiempo**: la prueba funcional dependia de un ciclo de 5 minutos;
+  la consulta debe esperar al ciclo (o buscar el evento del ciclo) antes de concluir.
