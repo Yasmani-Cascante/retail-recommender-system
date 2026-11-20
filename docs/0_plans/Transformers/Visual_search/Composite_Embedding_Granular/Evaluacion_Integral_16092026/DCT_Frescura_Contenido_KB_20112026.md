@@ -19,7 +19,10 @@ todos los dias, asi que sus defectos pesan mas. Criterio de prioridad acordado [
 consecuencia**.
 
 La tienda esta hoy protegida con contrasena ("Store access is restricted", captura del 20/11) [V]: ningun cliente
-esta expuesto todavia. Este documento es la lista de lo que hay que cerrar antes de abrir.
+esta expuesto todavia. **Aclaracion 20/11 [Y]**: `ai-shoppings` es una tienda de demostracion sin clientes reales;
+sus paginas y politicas contienen datos de ejemplo a proposito. El sistema es el producto; el contenido lo aporta
+cada tienda cliente. Este documento sigue la calidad del camino normal del sistema y lo que el producto debe
+exigir o comprobar en cada tienda.
 
 ## 2. Como llega el contenido al cliente (glosario)
 
@@ -70,7 +73,8 @@ solo actualiza `last_synced` (L1398) y una con cambios invalida Redis, que es co
 | Limite de antiguedad de la copia (`KB_BUFFER_MAX_AGE_HOURS=48`) | Configurado; comportamiento al superarlo no verificado [H] |
 | Aviso si la sincronizacion falla repetidamente | Solo un log `kb_sync_cycle_failed` (ERROR); no se ha visto una alerta [H] |
 | Reformulacion por GPT-4o-mini | Riesgo de afirmar algo que el documento no dice; solo un caso comprobado (PayPal) |
-| R-10: politicas legales de Shopify con contenido de plantilla | **Mayor riesgo legal hoy**, fuera del codigo: reembolso 10 dias (Shopify) frente a 5-7 (base de conocimiento) |
+| R-10: politicas legales de Shopify con contenido de plantilla | Contenido de ejemplo en la demo [Y]; en una tienda real lo aporta la tienda. Ver inventario |
+| R-14: las paginas de la base de conocimiento tienen contenido ficticio de plantilla | Contenido de ejemplo a proposito en la demo [Y]; el chat lo sirve tal cual [V]. Para tiendas reales: verificador de contenido por tienda (seccion 6). Inventario en `Inventario_Contenido_Plantilla_R10_R14_20112026.md` |
 
 No es asesoria legal: la responsabilidad del contenido es de la tienda; lo que esta en nuestra mano es que el
 sistema no se aparte de la fuente y que se pueda rastrear de donde sale cada respuesta.
@@ -79,7 +83,8 @@ sistema no se aparte de la fuente y que se pueda rastrear de donde sale cada res
 
 | Id | Hallazgo | Gravedad | Estado |
 |---|---|---|---|
-| R-13 | **El frances no se actualiza al editar una pagina**: la sincronizacion incremental (`sync_single_page`, L602) solo recorre los idiomas de `KB_SYNC_LANGUAGES`, que no esta en `env-vars.yaml`, asi que vale el valor por defecto `"es,en"` (L202). La sincronizacion completa, en cambio, escribe todas las traducciones publicadas, pero solo corre al arrancar una instancia. Una edicion llega al frances solo con el siguiente arranque [V]. Evidencia indirecta: las 3 filas de `unknown` (es/en/fr) tienen `last_synced` 20/11 07:02, la hora de una sincronizacion completa [V] [H: arranque de instancia] | Media (contenido desactualizado para clientes en frances) | R-13a (configuracion) en curso; R-13b (codigo) planificado |
+| R-13 | **El frances no se actualiza al editar una pagina**: la sincronizacion incremental (`sync_single_page`, L602) solo recorre los idiomas de `KB_SYNC_LANGUAGES`, que no esta en `env-vars.yaml`, asi que vale el valor por defecto `"es,en"` (L202). La sincronizacion completa, en cambio, escribe todas las traducciones publicadas, pero solo corre al arrancar una instancia. Una edicion llega al frances solo con el siguiente arranque [V]. Evidencia indirecta: las 3 filas de `unknown` (es/en/fr) tienen `last_synced` 20/11 07:02, la hora de una sincronizacion completa [V] [H: arranque de instancia] | Media (contenido desactualizado para clientes en frances) | R-13a (configuracion) hecho el 20/11; R-13b (codigo) planificado |
+| R-14 | **Las paginas de la base de conocimiento tienen contenido ficticio de plantilla** (las que el chat sirve): correos de `tutienda.com`, telefonos `+1 (555) 123-4567`, `+1 (800) 555-0123` y `+52 55 1234 5678`, "Calle Principal 123", envios a EE. UU./Espana/Mexico (la tienda no envia a Mexico ni a America Latina), monedas USD/EUR/MXN (la tienda usa CLP, CHF, MXN), Apple Pay y Google Pay (no disponibles), RFC, "VIP Club", tarjetas regalo; y contradicciones entre paginas. Las traducciones copian lo mismo [V, Admin API 20/11]. Misma clase de riesgo que R-2, pero en la fuente de verdad | Baja en la demo (datos de ejemplo a proposito [Y]); requisito de producto para tiendas reales | Inventario en `Inventario_Contenido_Plantilla_R10_R14_20112026.md`; verificador de contenido por tienda (plan, punto 4) |
 | R-12 | Ampliado: con idiomas no publicados en `KB_SYNC_LANGUAGES`, `get_page_translations()` no los pide (`_get_shop_locales` solo devuelve los publicados) y `sync_single_page` (L613) escribiria el texto en espanol etiquetado como esos idiomas, solo para las paginas editadas [V, codigo] | Baja hoy; Media si se anaden idiomas a la variable | Lo cierra R-13b |
 
 Observaciones:
@@ -107,19 +112,24 @@ Observaciones:
 | 20/11 | Propuesta `"es,en,fr,de,it,pt"` descartada por ahora [Y] | `de`/`it`/`pt` no existen en Shopify: se guardaria texto en espanol con esas etiquetas (R-12) [V]. Camino correcto para Suiza: anadir y traducir `de`/`it` en Translate & Adapt, publicarlos y que R-13b los recoja solo |
 | 20/11 | `pt` fuera de alcance por ahora (criterio delegado en Claude) [Y] | Ni Chile ni Suiza lo necesitan; no esta en Shopify; exigiria textos aprobados (`SUPPORTED_LANGUAGES` es es/en/fr/de/it). Reconsiderar si aparecen clientes en portugues |
 | 20/11 | Nuevo orden de prioridades (seccion 6) [Y] | Clientes afectados x consecuencia |
+| 20/11 | El contenido de la demo (paginas y politicas) es de ejemplo a proposito; no se corrige ahora [Y] | Cada tienda cliente aporta el suyo; el inventario queda como caso de prueba y lista de incorporacion |
 | 20/11 | Opcion C: el enlace de respaldo no debe prometer que la respuesta esta en preguntas frecuentes (observacion de Yasmani) | Propuesta pendiente de decidir: "Puedes revisar nuestras paginas de ayuda en el [Centro de ayuda](...) o [contactarnos](...)". Centro de ayuda: pagina nueva mantenida en Shopify, o el buscador de la tienda limitado a paginas [H: verificar que Shopify lo admite]. Handle de "Contact" por verificar [H] |
 
 ## 6. Plan, en orden
 
 1. ~~**R-13a**~~ (el frances no se actualiza al editar una pagina; configuracion): **hecho** 20/11/2026, revision
    `00345-xd5`. Seccion 7.
-2. **R-10** (politicas legales de Shopify con contenido de plantilla): alinear las politicas con la base de
-   conocimiento. Yasmani, en Shopify, sin codigo.
-3. **R-13b** (codigo, laboratorio primero): la sincronizacion incremental usa los idiomas publicados en Shopify,
+Orden de los puntos 2 a 4 revisado el 20/11 tras la aclaracion sobre la demo (propuesta de Claude, pendiente de
+confirmar [Y]):
+
+2. **R-13b** (codigo, laboratorio primero): la sincronizacion incremental usa los idiomas publicados en Shopify,
    como la completa, y solo escribe las traducciones que existen (cierra tambien R-12); se retira
-   `KB_SYNC_LANGUAGES`. Anadir aqui una alerta si la sincronizacion falla repetidamente.
-4. **Fidelidad de la reformulacion**: conjunto de preguntas con respuesta conocida; comprobar que GPT-4o-mini no
-   afirma nada que el documento no diga.
+   `KB_SYNC_LANGUAGES`. Anadir aqui una alerta si la sincronizacion falla repetidamente. Antes: limpiar el disco
+   virtual de Docker.
+3. **Fidelidad de la reformulacion**: conjunto de preguntas con respuesta conocida; comprobar que GPT-4o-mini no
+   afirma nada que el documento no diga. Es responsabilidad directa del sistema, sea cual sea la tienda.
+4. **Verificador de contenido por tienda y lista de incorporacion** (producto; R-10 y R-14 como caso de prueba):
+   detectar contenido de plantilla e incoherencias con la configuracion de la tienda antes de activar el chat.
 5. **Opcion C** (enlaces del mensaje honesto desde `kb_contents`; diseno en el DCT anterior, seccion 12, ajustado
    el 20/11: refresco al final de cada ciclo de sincronizacion con cambios, ultimo valor bueno en memoria, y al
    caer a la pagina de respaldo cambian a la vez direccion y titulo). Texto del respaldo pendiente (seccion 5).
@@ -165,14 +175,16 @@ Resultados (20/11/2026) [V]. Commits `fd6f458` (documentacion) y `441692e` (`env
 Prueba funcional (logs descargados) [V]: titulo de `mensaje-de-ayuda-general` cambiado a " (prueba)"; el ciclo
 incremental 3 (20:51:54 UTC) detecto 1 pagina cambiada (`158935941429`) y la sincronizo en `es`, `en` y `fr`
 (`status=synced`, 0 errores). Ciclo 2 (20:46:54) sin cambios. El titulo se restauro a las 20:52:07 UTC (Admin
-API) [V]. La consulta del terminal salio vacia porque se ejecuto antes del ciclo 3 [H: por la hora].
+API) [V] y la restauracion se sincronizo en el ciclo siguiente (20:56:58 UTC, 3 idiomas) [V]. La consulta del
+terminal salio vacia porque se ejecuto antes del ciclo 3 [H: por la hora].
 
 Incidencias:
-- `numstat` de `env-vars.yaml` 5/1 en vez de 5/0: la linea borrada es la linea en blanco final [H: el contenido
-  actual conserva las 39 claves y `KB_ENABLE_FALLBACK: "false"`; confirmar con `git show 441692e`].
+- `numstat` de `env-vars.yaml` 5/1 en vez de 5/0: la linea borrada es la linea en blanco final [V: `git show
+  441692e` muestra una sola linea `-` vacia; las 39 claves y `KB_ENABLE_FALLBACK: "false"` siguen].
+- Push del 20/11: `72062e3..d46f16e` (commits `fd6f458`, `441692e` y `d46f16e`) [V].
 - La linea de vuelta atras se ejecuto sin que hiciera falta y fallo antes de llamar a la API: `$r` (respuesta de
   `Invoke-WebRequest`) piso `$R` (region) porque en PowerShell las variables no distinguen mayusculas. Error de
-  diseno del bloque (Claude) [V]. Produccion no cambio [H: confirmar trafico].
+  diseno del bloque (Claude) [V]. Produccion no cambio: `00345-xd5` 100 %, sigue a la ultima [V].
 - El nombre `00345` se repite (`00345-wub` de la prueba del 18/11 y `00345-xd5`) [V]: el numero no es una
   secuencia unica; identificar revisiones por nombre completo y fecha.
 - El comentario de R-13a en `env-vars.yaml` dice "cada 5 min y webhooks": los webhooks de paginas no existen.
@@ -196,3 +208,6 @@ Incidencias:
   condicion (`if (...) { ... }`), para que copiar el bloque entero no los ejecute.
 - **Un resultado vacio puede ser un problema de tiempo**: la prueba funcional dependia de un ciclo de 5 minutos;
   la consulta debe esperar al ciclo (o buscar el evento del ciclo) antes de concluir.
+- **Confirmar el contexto antes de clasificar la gravedad**: el contenido de plantilla se trato como un riesgo
+  legal de la tienda hasta que Yasmani aclaro que es una demo con datos de ejemplo. El mismo hallazgo pasa de
+  "corregir antes de abrir" a "requisito de producto" (verificador de contenido por tienda).
