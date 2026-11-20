@@ -199,6 +199,10 @@ Observaciones:
 11. R-10 (politicas legales de plantilla): politicas reales en Shopify antes de abrir la tienda (Yasmani).
 12. R-12 (contenido en espanol guardado como traduccion): aviso al usarlo, junto con el punto 9.
 
+**Actualizacion 20/11/2026**: los puntos 9 a 12 se reordenan por riesgo para el cliente y continuan en
+`DCT_Frescura_Contenido_KB_20112026.md` (nuevo hallazgo R-13, el frances no se actualiza al editar una pagina;
+decisiones del 19-20/11; la opcion C pasa detras de R-13 y R-10).
+
 ## 9. Lecciones
 
 - **Un fallo temprano tapa los siguientes**: al instalar `httpx2`, un test paso de un fallo a otro distinto;
