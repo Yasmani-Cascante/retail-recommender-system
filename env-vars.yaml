@@ -62,8 +62,5 @@ RECS_VISUAL_FILTER_IN_SEARCH: "1"
 # contenido ficticio de plantilla). Sin respuesta real -> 404 / "sin respuesta", nunca datos
 # inventados. Reversible: "true". Ver DCT_Alineacion_Venv_Diagnostico_Suite_16112026.md, R-2.
 KB_ENABLE_FALLBACK: "false"
-# R-13a (20/11/2026), el frances no se actualizaba al editar una pagina: la sincronizacion incremental
-# (cada 5 min y webhooks) solo actualiza los idiomas de esta lista; sin ella el codigo usa "es,en".
-# Debe coincidir con los idiomas PUBLICADOS en Shopify (hoy es/en/fr): un idioma no publicado guardaria
-# el texto en espanol (R-12). Ver DCT_Frescura_Contenido_KB_20112026.md, seccion 7.
-KB_SYNC_LANGUAGES: "es,en,fr"
+# R-13b (22/11/2026): KB_SYNC_LANGUAGES retirada. La sincronizacion de la base de conocimiento usa los
+# idiomas PUBLICADOS en Shopify; el codigo ya no lee esta variable. Ver DCT_Frescura_Contenido_KB_20112026.md.

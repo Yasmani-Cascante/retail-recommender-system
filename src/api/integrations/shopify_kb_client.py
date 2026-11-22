@@ -873,6 +873,25 @@ class ShopifyKBClient(ShopifyIntegration):
         return is_valid    
     
 
+    async def get_translation_locales(self) -> List[str]:
+        """
+        Idiomas de traduccion PUBLICADOS en la tienda (sin el idioma principal).
+
+        R-13b (22/11/2026), la sincronizacion incremental usa los idiomas publicados en
+        Shopify: antes los decidia una lista manual (KB_SYNC_LANGUAGES), que se desfasaba
+        de la tienda. Usa la misma fuente que get_page_translations() y la sincronizacion
+        completa: _get_shop_locales(), con su cache en memoria de 1 hora.
+
+        A diferencia de get_page_translations(), NO se traga los errores: si Shopify no
+        responde, la excepcion llega a quien llama, que decide el respaldo. Asi "no hay
+        idiomas" y "no he podido saberlo" no se confunden.
+
+        Returns:
+            Lista de codigos de idioma, p. ej. ["en", "fr"].
+        """
+        _primary_locale, translation_locales = await self._get_shop_locales()
+        return list(translation_locales)
+
     async def _get_shop_locales(self) -> Tuple[str, List[str]]:
         """
         Get shop locales with 1-hour in-memory cache.

@@ -187,22 +187,13 @@ class ShopifyKBSyncService:
             "true", "1", "yes", "on"
         )
 
-        # ✅ M4: Lista de idiomas configurados para sincronización incremental (webhooks).
-        #
-        # sync_single_page() usa esta lista para saber qué idiomas iterar al hacer
-        # fetch y upsert de cada traducción. Se configura via env var para flexibilidad
-        # sin necesidad de redeploy al agregar un mercado nuevo.
-        #
-        # Variable: KB_SYNC_LANGUAGES (comma-separated)
-        # Default:  "es,en"  (español = idioma base, inglés = traducción principal)
-        # Ejemplo:  KB_SYNC_LANGUAGES=es,en,pt,fr
-        #
-        # NOTA: El idioma base ("es") debe incluirse siempre. Es el contenido original
-        # de Shopify que se sincroniza en sync_page() como default_language.
-        raw_languages = os.getenv("KB_SYNC_LANGUAGES", "es,en")
-        self._configured_languages: List[str] = [
-            lang.strip() for lang in raw_languages.split(",") if lang.strip()
-        ]
+        # R-13b (22/11/2026), la sincronizacion incremental usa los idiomas publicados en
+        # Shopify: aqui se leia KB_SYNC_LANGUAGES, una lista manual de idiomas para
+        # sync_single_page(). Se retira porque se desfasaba de la tienda (con su valor por
+        # defecto "es,en" el frances no se actualizaba al editar una pagina: R-13) y porque
+        # un idioma de la lista sin traduccion guardaba el texto en espanol (R-12).
+        # Ahora sync_single_page() pregunta a Shopify en cada pagina (cache de 1 h en el
+        # cliente), igual que la sincronizacion completa.
 
         # ✅ L2: Feature flag para Content Versioning.
         #
@@ -254,7 +245,8 @@ class ShopifyKBSyncService:
             content_versioning_enabled=self._use_content_versioning,
             max_versions_per_content=self._max_versions_per_content,
             optimization_phase="M1+M2+M3+M4+L2",
-            configured_languages=self._configured_languages,
+            # R-13b: los idiomas ya no son configuracion; salen de la tienda en cada pagina.
+            language_source="shopify_published_locales",
         )
     
     # ──────────────────────────────────────────────────────────────────────
@@ -509,11 +501,16 @@ class ShopifyKBSyncService:
         1. Fetch de la página por ID (get_page_by_id, async via asyncio.to_thread)
         2. Fetch de metafields para validar que sea una página KB
         3. Fetch de todas las traducciones disponibles vía get_page_translations()
-        4. Para cada idioma configurado (KB_SYNC_LANGUAGES):
-           - Si hay traduccion: usar traduccion
-           - Si no: usar contenido original (fallback seguro)
+        4. Para el idioma base y cada idioma PUBLICADO en Shopify (R-13b, 22/11/2026):
+           - Idioma base: contenido original de la pagina.
+           - Traduccion existente: se escribe.
+           - Traduccion inexistente: NO se escribe la fila y se registra
+             kb_translation_missing. Si ya habia una fila de ese idioma, se conserva
+             (no se borra: get_page_translations() devuelve {} tambien cuando falla).
+             El chat usa entonces el respaldo de idioma de la base de conocimiento.
         5. Upsert en PostgreSQL (protegido por M3 distributed_lock si aplica)
-        6. Retornar resumen con idiomas sincronizados y errores
+           e invalidacion de la clave de Redis de ese idioma (R-15, 22/11/2026).
+        6. Retornar resumen con idiomas sincronizados, omitidos y errores
 
         INTEGRACIÓN CON FASES PREVIAS:
         ─────────────────────────────────
@@ -593,13 +590,34 @@ class ShopifyKBSyncService:
             )
             translations = {}
 
-        # ── PASO 4: Sincronizar cada idioma configurado ───────────────────────
-        # self._configured_languages viene de KB_SYNC_LANGUAGES env var.
-        # Ejemplo: ["es", "en"] cuando KB_SYNC_LANGUAGES="es,en"
+        # ── PASO 4: Idiomas a sincronizar = idioma base + idiomas PUBLICADOS ──
+        # R-13b (22/11/2026), la sincronizacion incremental usa los idiomas publicados
+        # en Shopify: antes salian de KB_SYNC_LANGUAGES (lista manual). La fuente es la
+        # misma que usa get_page_translations(), asi que solo se piden traducciones de
+        # idiomas que la tienda publica.
+        # Si Shopify no responde, se sincroniza solo el idioma base y se avisa: las
+        # filas de traduccion existentes no se tocan.
+        try:
+            published_locales: List[str] = await self.shopify.get_translation_locales()
+        except Exception as e:
+            logger.warning(
+                "sync_single_page_locales_fetch_failed",
+                page_id=page_id,
+                error=str(e),
+                error_type=type(e).__name__,
+                fallback="default_language_only",
+            )
+            published_locales = []
+
+        target_languages: List[str] = [default_language] + [
+            locale for locale in published_locales if locale != default_language
+        ]
+
         synced_languages: List[str] = []
+        skipped_languages: List[str] = []
         errors: List[Dict] = []
 
-        for language in self._configured_languages:
+        for language in target_languages:
             try:
                 if language == default_language:
                     # ── Idioma base: contenido original de Shopify ─────────────
@@ -607,10 +625,26 @@ class ShopifyKBSyncService:
                     title = page.title
                 else:
                     # ── Idioma de traducción ───────────────────────────────────
-                    # Si Shopify no tiene traducción, usamos el contenido original
-                    # como fallback (mejor tener contenido en idioma incorrecto
-                    # que no tener contenido para esa entrada KB).
-                    html_content = translations.get(language, page.body_html or "")
+                    # R-13b (22/11/2026): si Shopify no tiene la traduccion, NO se
+                    # escribe la fila. Antes se guardaba el texto original (espanol)
+                    # etiquetado como este idioma (R-12). Una fila anterior de este
+                    # idioma, si existe, se conserva: no se borra, porque
+                    # get_page_translations() devuelve {} tambien cuando falla la
+                    # llamada y borrar por un error de red eliminaria contenido bueno.
+                    # El chat usa entonces el respaldo de idioma de la base de
+                    # conocimiento (en -> es; otros -> es, en).
+                    if language not in translations:
+                        logger.warning(
+                            "kb_translation_missing",
+                            page_id=page_id,
+                            handle=page.handle,
+                            language=language,
+                            sub_intent=sub_intent,
+                            action="row_not_written_existing_row_kept",
+                        )
+                        skipped_languages.append(language)
+                        continue
+                    html_content = translations[language]
 
                     # Fetch título traducido (retorna None si no existe → fallback al original)
                     try:
@@ -638,6 +672,24 @@ class ShopifyKBSyncService:
                     shopify_url=shopify_url,
                     shopify_handle=page.handle,
                 )
+
+                # R-15 (22/11/2026), la sincronizacion incremental no invalidaba Redis:
+                # el chat lee primero Redis (24 h), asi que sin esto una edicion
+                # detectada por el sondeo podia no llegar al cliente hasta 24 h.
+                # sync_page() (sincronizacion completa) ya lo hacia. Un fallo de Redis
+                # no anula la escritura en PostgreSQL: se avisa y el idioma cuenta
+                # como sincronizado (la clave caducara con su TTL).
+                try:
+                    await self._invalidate_cache(sub_intent, language, category)
+                except Exception as cache_error:
+                    logger.warning(
+                        "sync_single_page_cache_invalidation_failed",
+                        page_id=page_id,
+                        language=language,
+                        sub_intent=sub_intent,
+                        error=str(cache_error),
+                        error_type=type(cache_error).__name__,
+                    )
 
                 synced_languages.append(language)
 
@@ -674,6 +726,8 @@ class ShopifyKBSyncService:
             "handle": page.handle,
             "sub_intent": sub_intent,
             "languages_synced": synced_languages,
+            # R-13b: idiomas publicados sin traduccion (fila no escrita ni borrada)
+            "languages_skipped": skipped_languages,
             "errors": errors,
         }
 
@@ -682,6 +736,7 @@ class ShopifyKBSyncService:
             page_id=page_id,
             status=status,
             languages_count=len(synced_languages),
+            languages_skipped=skipped_languages,
             errors_count=len(errors),
         )
 
