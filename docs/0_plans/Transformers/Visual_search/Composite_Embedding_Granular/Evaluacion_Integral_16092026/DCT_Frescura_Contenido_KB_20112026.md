@@ -30,7 +30,7 @@ exigir o comprobar en cada tienda.
  Shopify: paginas + traducciones (Translate & Adapt)    <- FUENTE DE VERDAD (la edita la tienda)
      |  sincronizacion por instancia de Cloud Run:
      |    - completa al arrancar (todas las traducciones publicadas)
-     |    - incremental cada 5 min mientras la instancia vive (solo paginas cambiadas, idiomas de KB_SYNC_LANGUAGES)
+     |    - incremental cada 5 min mientras la instancia vive (solo paginas cambiadas; idiomas publicados desde R-13b)
      |    - Shopify NO envia webhooks de paginas: no hay sincronizacion inmediata al editar
      v
  kb_contents en PostgreSQL (Supabase)                     <- COPIA de trabajo (39 filas generales: 13 temas x es/en/fr)
@@ -59,18 +59,20 @@ cambiada (`shopify_kb_sync.py` L1953-2081). `KB_WEBHOOKS_ENABLED=true` y hay 4 w
 editar una pagina el 20/11 no llego ninguno y el propio job lo declara (`note=shopify_pages_webhooks_not_supported`)
 [V]: las paginas solo se sincronizan por sondeo y al arrancar una instancia. Arranques de `00344-2f2` con
 sincronizacion completa: 18/11 15:25, 19/11 07:02, 20/11 07:02, 16:08 y 18:07 UTC [V]. Una pagina sin cambios
-solo actualiza `last_synced` (L1398) y una con cambios invalida Redis, que es compartido entre instancias.
+solo actualiza `last_synced` (L1398). La sincronizacion completa invalida Redis por idioma (L768, L841); la
+incremental (`sync_single_page`) **no lo invalidaba** (R-15) [V, codigo, 22/11]; corregido con R-13b el 23/11
+(seccion 8). Redis es compartido entre instancias.
 
-## 3. Mecanismos y huecos de frescura (estado 20/11/2026)
+## 3. Mecanismos y huecos de frescura (estado 20/11/2026, actualizado 23/11)
 
 | Mecanismo o hueco | Estado |
 |---|---|
 | Sincronizacion cada 5 min por instancia | Funciona [V] |
-| Invalidacion de Redis al cambiar una pagina | Funciona [V, codigo]; Redis compartido |
-| R-13: el frances no se actualiza al editar una pagina | **Cerrado para es/en/fr** con R-13a el 20/11 [V] (seccion 7); R-13b retira la lista manual |
-| R-12: si falta una traduccion, se guarda el texto en espanol | Idioma equivocado, no informacion vieja [V]; lo cierra R-13b |
+| Invalidacion de Redis al cambiar una pagina | **Corregido el 23/11** (R-15, incluido en R-13b, revision `00346-f5w`): la incremental invalida la clave de cada idioma que escribe [V, codigo y tests]; prueba de punta a punta en la seccion 8. Hasta entonces solo invalidaba la completa y el chat podia servir la version anterior hasta 24 h (correccion del 22/11: antes figuraba como "funciona") |
+| R-13: el frances no se actualiza al editar una pagina | **Cerrado**: R-13a el 20/11 (seccion 7) y R-13b el 23/11, que usa los idiomas publicados en Shopify sin lista manual [V] (seccion 8) |
+| R-12: si falta una traduccion, se guarda el texto en espanol | **Cerrado con R-13b** el 23/11: la fila no se escribe y se registra `kb_translation_missing` [V, tests] |
 | Primeros minutos tras arrancar una instancia | Posible copia vieja hasta que acaba la sincronizacion completa [H] |
-| Limite de antiguedad de la copia (`KB_BUFFER_MAX_AGE_HOURS=48`) | Configurado; comportamiento al superarlo no verificado [H] |
+| Limite de antiguedad de la copia (`KB_BUFFER_MAX_AGE_HOURS=48`) | Al superarlo registra `kb_buffer_stale`; si la base de conocimiento tiene cliente de Shopify configurado sirve la copia igualmente (la capa de Shopify no esta implementada) y si no, no hay respuesta [V, codigo `knowledge_base_v2.py`, 22/11]. Cual de los dos casos se da en produccion: log de arranque `shopify_client_configured` [H] |
 | Aviso si la sincronizacion falla repetidamente | Solo un log `kb_sync_cycle_failed` (ERROR); no se ha visto una alerta [H] |
 | Reformulacion por GPT-4o-mini | Riesgo de afirmar algo que el documento no dice; solo un caso comprobado (PayPal) |
 | R-10: politicas legales de Shopify con contenido de plantilla | Contenido de ejemplo en la demo [Y]; en una tienda real lo aporta la tienda. Ver inventario |
@@ -83,9 +85,10 @@ sistema no se aparte de la fuente y que se pueda rastrear de donde sale cada res
 
 | Id | Hallazgo | Gravedad | Estado |
 |---|---|---|---|
-| R-13 | **El frances no se actualiza al editar una pagina**: la sincronizacion incremental (`sync_single_page`, L602) solo recorre los idiomas de `KB_SYNC_LANGUAGES`, que no esta en `env-vars.yaml`, asi que vale el valor por defecto `"es,en"` (L202). La sincronizacion completa, en cambio, escribe todas las traducciones publicadas, pero solo corre al arrancar una instancia. Una edicion llega al frances solo con el siguiente arranque [V]. Evidencia indirecta: las 3 filas de `unknown` (es/en/fr) tienen `last_synced` 20/11 07:02, la hora de una sincronizacion completa [V] [H: arranque de instancia] | Media (contenido desactualizado para clientes en frances) | R-13a (configuracion) hecho el 20/11; R-13b (codigo) planificado |
+| R-13 | **El frances no se actualiza al editar una pagina**: la sincronizacion incremental (`sync_single_page`, L602) solo recorre los idiomas de `KB_SYNC_LANGUAGES`, que no esta en `env-vars.yaml`, asi que vale el valor por defecto `"es,en"` (L202). La sincronizacion completa, en cambio, escribe todas las traducciones publicadas, pero solo corre al arrancar una instancia. Una edicion llega al frances solo con el siguiente arranque [V]. Evidencia indirecta: las 3 filas de `unknown` (es/en/fr) tienen `last_synced` 20/11 07:02, la hora de una sincronizacion completa [V] [H: arranque de instancia] | Media (contenido desactualizado para clientes en frances) | Cerrado: R-13a (configuracion) el 20/11; R-13b (codigo) el 23/11 |
 | R-14 | **Las paginas de la base de conocimiento tienen contenido ficticio de plantilla** (las que el chat sirve): correos de `tutienda.com`, telefonos `+1 (555) 123-4567`, `+1 (800) 555-0123` y `+52 55 1234 5678`, "Calle Principal 123", envios a EE. UU./Espana/Mexico (la tienda no envia a Mexico ni a America Latina), monedas USD/EUR/MXN (la tienda usa CLP, CHF, MXN), Apple Pay y Google Pay (no disponibles), RFC, "VIP Club", tarjetas regalo; y contradicciones entre paginas. Las traducciones copian lo mismo [V, Admin API 20/11]. Misma clase de riesgo que R-2, pero en la fuente de verdad | Baja en la demo (datos de ejemplo a proposito [Y]); requisito de producto para tiendas reales | Inventario en `Inventario_Contenido_Plantilla_R10_R14_20112026.md`; verificador de contenido por tienda (plan, punto 4) |
-| R-12 | Ampliado: con idiomas no publicados en `KB_SYNC_LANGUAGES`, `get_page_translations()` no los pide (`_get_shop_locales` solo devuelve los publicados) y `sync_single_page` (L613) escribiria el texto en espanol etiquetado como esos idiomas, solo para las paginas editadas [V, codigo] | Baja hoy; Media si se anaden idiomas a la variable | Lo cierra R-13b |
+| R-15 | **La sincronizacion incremental no invalida Redis**: `sync_single_page()` escribe en `kb_contents` pero no llama a `_invalidate_cache()`, y el sondeo (`KBBackgroundSyncJob._run`, L2053) tampoco; solo lo hace la sincronizacion completa (`sync_page`, L768 y L841). El chat lee primero Redis (`knowledge_base_v2.py`, TTL 24 h), asi que una edicion detectada por el sondeo puede no llegar al cliente hasta 24 h o hasta el siguiente arranque [V, codigo]. El manejador de webhooks si invalida (SCAN+DELETE), pero Shopify no envia webhooks de paginas. La validacion de R-13a comprobo la escritura en `kb_contents`, no lo que sirve el chat. **Confirmado en produccion el 22/11** [V]: con la cache llena, se anadio "PRUEBA-R15" a la pagina oculta `mensaje-de-ayuda-general`; el sondeo la sincronizo (13:59:30 UTC, `00345-xd5`, 3 idiomas) y `/kb/answer?sub_intent=unknown&language=es` siguio sin "PRUEBA-R15"; edicion deshecha a las 14:06:29 UTC (Admin API). Que `kb_contents` tuviera el texto nuevo se deduce del codigo (el hash del contenido cambio) [H] | Media (contenido desactualizado tras editar) | Corregido con R-13b [Y, 22/11]; en produccion el 23/11 (seccion 8) |
+| R-12 | Ampliado: con idiomas no publicados en `KB_SYNC_LANGUAGES`, `get_page_translations()` no los pide (`_get_shop_locales` solo devuelve los publicados) y `sync_single_page` (L613) escribiria el texto en espanol etiquetado como esos idiomas, solo para las paginas editadas [V, codigo] | Baja hoy; Media si se anaden idiomas a la variable | Cerrado con R-13b (23/11) |
 
 Observaciones:
 - Idiomas de la tienda (Admin API, 20/11) [V]: `es` (principal), `en` y `fr`, los tres publicados. `de`, `it` y
@@ -95,12 +98,35 @@ Observaciones:
   que seria codigo muerto [H]. Higiene, familia de R-9 (piezas de la base de conocimiento rotas o duplicadas).
 - Cambiar solo una traduccion en Translate & Adapt quiza no cambia el `updated_at` de la pagina; el sondeo no la
   detectaria hasta el siguiente arranque [H]. Comprobar con R-13b.
+- Un cambio solo de titulo no se guarda: la deteccion de cambios compara el hash del contenido Markdown, no el
+  titulo (`_execute_upsert`, L1393-1414; solo actualiza `last_synced`) [V, codigo, 22/11]. Impacto bajo hoy (el
+  chat responde con el contenido); relevante si la opcion C usa los titulos de `kb_contents`.
+- El comentario de `_execute_upsert` (L1414) dice que una pagina sin cambios "sale ANTES de `_invalidate_cache` en
+  `sync_page()`", pero `_upsert_kb_content` no devuelve nada y `sync_page()` invalida despues sin condicion (L768,
+  L841) [V, codigo, 23/11]: cada sincronizacion completa vacia la cache de todas las paginas, cambien o no. Efecto:
+  tras cada arranque, la primera consulta de cada tema va a PostgreSQL (milisegundos). Inocuo; corregir el
+  comentario en un cambio de higiene.
+- 23/11, logs del control positivo [V]: el arranque en frio de una instancia tardo ~110 s (la primera peticion,
+  12:58:08 UTC, espero hasta `service_initialized` a las 12:59:44); con la tienda abierta, el primer cliente tras un
+  periodo sin trafico esperaria ese tiempo. Tema ya estudiado en `CloudRun_MinInstances_Architecture_Analysis`;
+  revisar antes de abrir la tienda. Fuera del alcance de este documento.
+- 23/11, mismo arranque [V]: el log de configuracion de Redis muestra `SSL: False` con un host de Redis Cloud
+  (`redislabs.com`): la conexion con la cache, contrasena incluida, no va cifrada [H: depende del plan de Redis
+  Cloud y de la red]. Seguridad, fuera del alcance de este documento; anotado para la lista de pendientes.
+- Respaldo de idioma de la base de conocimiento [V, codigo, 22/11]: si falta la fila pedida, `en` prueba `es`, y
+  cualquier otro idioma prueba `es` y despues `en` (`knowledge_base_v2.py`, `get_answer`). Por eso R-13b puede no
+  escribir una traduccion inexistente sin dejar al cliente sin respuesta.
 - `Invoke-RestMethod` de Windows PowerShell 5.1 muestra mal los acentos de `/kb/answer` (lee la respuesta como
   Latin-1 si la cabecera no trae `charset`) [H]; un navegador la lee como UTF-8.
 - 20/11 20:20: el disco del equipo de Yasmani se lleno (`ENOSPC` al escribir este documento) [V]. Yasmani libero
   12 GB (918,4 GB usados). El disco virtual de Docker Desktop (`docker_data.vhdx`) ocupa **647,6 GB** [V]: las
   imagenes construidas en local se acumulan y el disco virtual no se reduce solo. Limpiar y compactar antes del
   siguiente `docker build` (R-13b); R-13a no construye imagen.
+- 21-22/11, limpieza de Docker [V]: dentro de Docker, de ~256 GB (33 imagenes, 74 contenedores, 134 GB de cache de
+  construccion) a ~65 GB (6 imagenes); se conservan la imagen de produccion `:ef4b99c` y la de vuelta atras. La
+  compactacion del `.vhdx` con diskpart (Docker cerrado, `wsl --shutdown`, consola de administrador) lo redujo de
+  647,6 a **68,5 GB**; espacio libre en C: de 11 a **590,8 GB**. Un primer intento no compacto nada (Docker seguia en
+  marcha) [H].
 
 ## 5. Decisiones
 
@@ -112,6 +138,8 @@ Observaciones:
 | 20/11 | Propuesta `"es,en,fr,de,it,pt"` descartada por ahora [Y] | `de`/`it`/`pt` no existen en Shopify: se guardaria texto en espanol con esas etiquetas (R-12) [V]. Camino correcto para Suiza: anadir y traducir `de`/`it` en Translate & Adapt, publicarlos y que R-13b los recoja solo |
 | 20/11 | `pt` fuera de alcance por ahora (criterio delegado en Claude) [Y] | Ni Chile ni Suiza lo necesitan; no esta en Shopify; exigiria textos aprobados (`SUPPORTED_LANGUAGES` es es/en/fr/de/it). Reconsiderar si aparecen clientes en portugues |
 | 20/11 | Nuevo orden de prioridades (seccion 6) [Y] | Clientes afectados x consecuencia |
+| 22/11 | Orden del plan revisado confirmado [Y] | - |
+| 22/11 | R-13b: idiomas = publicados en Shopify y se retira `KB_SYNC_LANGUAGES`; si falta una traduccion publicada, no se escribe la fila y se registra un aviso; si una traduccion desaparece, no se borra la fila (solo aviso); la alerta de sincronizacion fallida va aparte [Y] | `get_page_translations()` devuelve `{}` tanto si no hay traduccion como si falla la llamada: borrar seria peligroso [V, codigo] |
 | 20/11 | El contenido de la demo (paginas y politicas) es de ejemplo a proposito; no se corrige ahora [Y] | Cada tienda cliente aporta el suyo; el inventario queda como caso de prueba y lista de incorporacion |
 | 20/11 | Opcion C: el enlace de respaldo no debe prometer que la respuesta esta en preguntas frecuentes (observacion de Yasmani) | Propuesta pendiente de decidir: "Puedes revisar nuestras paginas de ayuda en el [Centro de ayuda](...) o [contactarnos](...)". Centro de ayuda: pagina nueva mantenida en Shopify, o el buscador de la tienda limitado a paginas [H: verificar que Shopify lo admite]. Handle de "Contact" por verificar [H] |
 
@@ -122,12 +150,13 @@ Observaciones:
 Orden de los puntos 2 a 4 revisado el 20/11 tras la aclaracion sobre la demo (propuesta de Claude, pendiente de
 confirmar [Y]):
 
-2. **R-13b** (codigo, laboratorio primero): la sincronizacion incremental usa los idiomas publicados en Shopify,
-   como la completa, y solo escribe las traducciones que existen (cierra tambien R-12); se retira
-   `KB_SYNC_LANGUAGES`. Anadir aqui una alerta si la sincronizacion falla repetidamente. Antes: limpiar el disco
-   virtual de Docker.
+2. ~~**R-13b + R-15**~~ (la sincronizacion incremental usa los idiomas publicados en Shopify y vacia la cache de
+   Redis al escribir; codigo): **desplegado y validado** el 23/11/2026, revision `00346-f5w`, commit `8ebc527`
+   (en GitHub). Seccion 8.
+   La alerta de sincronizacion fallida va aparte (decision 22/11).
 3. **Fidelidad de la reformulacion**: conjunto de preguntas con respuesta conocida; comprobar que GPT-4o-mini no
    afirma nada que el documento no diga. Es responsabilidad directa del sistema, sea cual sea la tienda.
+   **En curso** desde el 23/11: `DCT_Fidelidad_Reformulacion_KB_23112026.md` (hallazgos R-16 a R-19 y plan).
 4. **Verificador de contenido por tienda y lista de incorporacion** (producto; R-10 y R-14 como caso de prueba):
    detectar contenido de plantilla e incoherencias con la configuracion de la tienda antes de activar el chat.
 5. **Opcion C** (enlaces del mensaje honesto desde `kb_contents`; diseno en el DCT anterior, seccion 12, ajustado
@@ -190,7 +219,96 @@ Incidencias:
 - El comentario de R-13a en `env-vars.yaml` dice "cada 5 min y webhooks": los webhooks de paginas no existen.
   Se corrige al retirar la variable en R-13b.
 
-## 8. Lecciones
+## 8. R-13b + R-15: procedimiento y validacion
+
+Cambio, commit `8ebc527` (4 ficheros, +385/-34) [V]:
+- `shopify_kb_sync.py`, `sync_single_page()`: sincroniza el idioma base y los idiomas **publicados** en Shopify
+  (se retira `KB_SYNC_LANGUAGES`). Si falta una traduccion publicada, no escribe la fila y registra
+  `kb_translation_missing`; una fila anterior de ese idioma se conserva. Si Shopify no responde al pedir los
+  idiomas, sincroniza solo el idioma base y avisa (`sync_single_page_locales_fetch_failed`). Tras cada escritura
+  invalida la clave de Redis de ese idioma (R-15); un fallo de Redis solo avisa
+  (`sync_single_page_cache_invalidation_failed`) y no anula la escritura. El resultado y el log anaden
+  `languages_skipped`; el log de arranque cambia `configured_languages` por `language_source`.
+- `shopify_kb_client.py`: metodo publico `get_translation_locales()` (misma fuente y cache de 1 h que la
+  sincronizacion completa; no se traga los errores).
+- `env-vars.yaml`: retirada `KB_SYNC_LANGUAGES` (38 variables planas + 11 secretas = 49).
+- `tests/unit/test_sync_single_page_languages.py`: 16 tests nuevos, con control negativo (fallan con el codigo
+  anterior).
+
+Laboratorio y aplicacion: paquete `R13b_patch.zip` (SHA-256 `D6B5B80D...02E52CCB`) que clasifica cada fichero
+como BASE / YA APLICADO / OTRO y verifica los hashes antes y despues de escribir; 136 tests pasados en el venv de
+Yasmani [V]. Imagen construida en local (24 min; un primer intento fallo por red al pedir el token de Docker Hub)
+y desplegada con `gcloud run services update --image <digest> --env-vars-file env-vars.yaml`, que conserva los
+11 secretos.
+
+Resultados (23/11/2026) [V]:
+
+| Comprobacion | Antes | Despues |
+|---|---|---|
+| Revision | `00345-xd5` | `00346-f5w`, 100 %, sigue a la ultima |
+| Imagen | `:ef4b99c` (`sha256:5fe2ccbb...`) | `:8ebc527` (`sha256:b4362574...f42df3e242`) |
+| Variables (secretas) | 50 (11) | 49 (11); `KB_SYNC_LANGUAGES` ausente |
+| Log de arranque de `ShopifyKBSyncService` | `configured_languages=['es','en','fr']` | `language_source=shopify_published_locales` |
+| `/kb/answer?sub_intent=policy_return` es/en/fr | 200 | 200 |
+| `ERROR` tras el despliegue | 0 | 0 |
+| Edicion de prueba (sincronizacion incremental) | - | es/en/fr, `languages_skipped=[]`, 0 errores |
+
+Prueba de punta a punta de R-15 (prueba D), con la pagina oculta `mensaje-de-ayuda-general` (tema `unknown`) y
+logs de peticion (`kb_answer_request`, `kb_cache_hit`, `kb_buffer_hit`) [V]. Instancias A (`...bd55f9`) y B
+(`...bdc123`), ambas de `00346-f5w`:
+
+| Hora UTC | Instancia | Paso |
+|---|---|---|
+| 00:57:50 | A | Arranque y sincronizacion completa |
+| 01:03:09 | A | D1: consulta `unknown`/es -> `kb_buffer_hit` (PostgreSQL), que la guarda en Redis |
+| entre D1 y 01:08 | - | D2: se anade "PRUEBA-R15" a la pagina |
+| 01:08:01 | A | Ciclo incremental 3: sincroniza la pagina en es/en/fr, `languages_skipped=[]` |
+| 01:21:52 | **B, nueva** | Arranque; sincronizacion completa de 01:21:54 a 01:22:03 |
+| 01:22:01 | B | D3: consulta -> `kb_buffer_hit`; respuesta con "PRUEBA-R15" |
+| 01:23:27 | - | D4: edicion deshecha (`updatedAt` de la Admin API) |
+| 01:27:05 | B | Ciclo incremental 2: sincroniza la reversion en 3 idiomas |
+| 01:31:41 | B | D5: consulta -> `kb_buffer_hit`; respuesta sin "PRUEBA-R15" |
+
+Ninguna consulta encontro la clave en Redis: en las tres falto el `kb_cache_hit`. Antes de R-15 (22/11,
+`00345-xd5`) la misma prueba sirvio la version vieja [V].
+
+Atribucion. La instancia B arranco en mitad de la prueba [H: la desperto D3, 15 min despues de la ultima
+peticion a A], y su sincronizacion completa tambien vacia la cache, asi que el resultado no basta por si solo. D3
+cayo dentro de esa sincronizacion. El dato que decide es cuando invalido la completa la clave
+`kb:unknown:es:general` (log `page_default_language_synced` con `sub_intent=unknown`, emitido justo despues de
+invalidar, L768-777):
+- **Antes de D3**: D3 guardo en Redis la version con "PRUEBA-R15" y nada mas que el ciclo incremental de 01:27:05
+  pudo borrarla antes de D5. Prueba R-15 el tramo de la reversion.
+- **Despues de D3**: en D3 la clave ya faltaba sin que la completa la hubiera tocado; solo el ciclo incremental de
+  01:08:01 pudo borrar la que guardo D1 (TTL 24 h). Prueba R-15 el tramo de la edicion.
+- Solo quedaria sin probar si la invalidacion cayo en los ~100 ms entre la peticion D3 y su lectura.
+
+Ademas hace falta un control positivo: que la cache funcione en `00346-f5w` (una segunda consulta identica debe
+dar `kb_cache_hit`). Sin el, faltar el acierto de cache no prueba nada.
+
+Resultado de la primera consulta (23/11) [V]: la sincronizacion completa de B registro
+`page_default_language_synced` de la pagina `158935941429` (`unknown`, es) a las **01:21:58.32**, 3,5 s **antes**
+de D3. Entre D3 (01:22:01.88, que guardo en Redis la version con "PRUEBA-R15") y D5 (01:31:41) no arranco
+ninguna instancia y la pagina no tiene webhooks: lo unico que borro la clave es el ciclo incremental de las
+01:27:05. **El tramo de la reversion prueba R-15**, a falta del control positivo de la cache. Descartado sin
+prueba directa: desalojo de la clave por memoria de Redis [H: improbable con una clave de <1 KB].
+
+Control positivo de la cache (23/11, revision `00346-f5w`, instancia `...cb16c7`) [V]: dos consultas identicas a
+`/api/v1/kb/answer?sub_intent=policy_return&language=es`; la primera (13:09:41 UTC) `kb_buffer_hit`, 440 ms; la
+segunda (13:10:05 UTC) **`kb_cache_hit`**, 11 ms. Redis guarda y sirve respuestas en esta revision. Un primer
+intento devolvio 404 porque la ruta del comando estaba mal (`/kb/answer` en lugar de `/api/v1/kb/answer`; error de
+Claude) [V: la peticion D5 del Logs Explorer muestra la ruta completa].
+
+**Atribucion cerrada (23/11) [V]: R-15 funciona en produccion.** La sincronizacion incremental de las 01:27:05
+borro la clave que D3 habia guardado, y D5 sirvio el contenido revertido. Con esto se da por validado R-13b + R-15.
+El `git push` del 23/11 respondio `Everything up-to-date`: `8ebc527` ya estaba en GitHub (subido antes del cierre
+de esta validacion) [V: `origin/feature/visual_search` = `8ebc527`].
+
+Vuelta atras: `gcloud run services update-traffic retail-recommender --project retail-recommendations-449216
+--region us-central1 --to-revisions=retail-recommender-00345-xd5=100` (esa revision conserva
+`KB_SYNC_LANGUAGES=es,en,fr`), y `--to-latest` cuando se corrija.
+
+## 9. Lecciones
 
 - **La lista escrita a mano es un patron que se repite**: tabla de handles (opcion C), `KB_SYNC_LANGUAGES`
   (R-13) y modelos fijos en `claude_config.py` (R-8, R-11). Preguntarse: este valor lo decido yo (configuracion)
@@ -211,3 +329,19 @@ Incidencias:
 - **Confirmar el contexto antes de clasificar la gravedad**: el contenido de plantilla se trato como un riesgo
   legal de la tienda hasta que Yasmani aclaro que es una demo con datos de ejemplo. El mismo hallazgo pasa de
   "corregir antes de abrir" a "requisito de producto" (verificador de contenido por tienda).
+- **Verificar el efecto, no solo el mecanismo**: la validacion de R-13a comprobo la escritura en `kb_contents`, no
+  lo que sirve el chat; por eso R-15 paso inadvertido dos dias. La prueba de cierre debe mirar lo que ve el cliente.
+- **En un servicio con escalado automatico, la instancia es una variable del experimento**: cada arranque ejecuta
+  su propio codigo de inicio (aqui, una sincronizacion completa que vacia la cache). Registrar `labels.instanceId`
+  en cada paso y, si la prueba es larga, mantener la instancia despierta con una peticion ligera cada pocos minutos.
+- **Una prueba con ida y vuelta da dos oportunidades**: si un evento externo contamina un tramo (edicion), el otro
+  (reversion) puede aislar el efecto.
+- **Un control positivo antes de interpretar una ausencia**: "no hubo acierto de cache" solo prueba algo si la
+  cache funciona.
+- **Los comentarios tambien pueden estar equivocados**: el de L1414 describe un comportamiento que el codigo no
+  tiene. Verificar el flujo real antes de apoyarse en un comentario.
+- **Dar las horas con su zona y comprobar la de la herramienta**: el Logs Explorer muestra la hora local (CET,
+  UTC+1); las horas de este documento son UTC. Buscar "01:22" en la vista CET lleva a las 00:22 UTC, donde no
+  hubo actividad. Poner el selector de zona del Logs Explorer en UTC al contrastar con documentos.
+- **Copiar las rutas de la evidencia, no de la abreviatura del documento**: el documento escribia `/kb/answer`
+  como abreviatura y el comando la tomo como ruta real (404). La ruta exacta estaba en los logs de peticion.
