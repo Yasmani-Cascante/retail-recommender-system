@@ -129,6 +129,25 @@ kb_webhook_hmac_failures_total = Counter(
     "Webhooks rechazados por HMAC inválido (potencial ataque)",
 )
 
+# ══════════════════════════════════════════════════════════════════════════
+# LLM: QUE CAMINO PRODUJO CADA TEXTO (paso 1 del plan de modelos, 25/11/2026)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Una muestra por cada texto que entrega un uso de LLM (reformulacion KB,
+# redactor de producto, mensaje de busqueda visual), etiquetada con el camino
+# que lo produjo (lfm, main_model, claude, template, document_as_is,
+# generic_message, no_message). Usos, caminos y combinaciones validas viven en
+# src/api/core/llm_routes.py; se incrementa SOLO via llm_routes.record_llm_route().
+#
+# Nombre con prefijo "recommender_" para que gcp_metrics_exporter.py lo exporte
+# a Cloud Monitoring (custom.googleapis.com/recommender_llm_route_total) sin
+# cambiar su lista de prefijos.
+llm_route_total = Counter(
+    "recommender_llm_route_total",
+    "Textos entregados por cada uso de LLM, por camino que los produjo",
+    ["use", "route"],
+)
+
 # ════════════════════════════════════════════════════════════════════════
 # PRE-INICIALIZACIÓN DE LABEL SETS (M3 GCP Export Fix)
 # ════════════════════════════════════════════════════════════════════════
@@ -187,6 +206,14 @@ for _r in _LOCK_RESULTS:
 for _s in _SYNC_STATUSES:
     kb_sync_operations_total.labels(status=_s)
 
+# recommender_llm_route_total{use, route} — solo las combinaciones validas
+# (12 series). Import local: llm_routes no importa este modulo al cargarse,
+# asi que no hay import circular.
+from src.api.core.llm_routes import LLM_ROUTES_BY_USE as _LLM_ROUTES_BY_USE
+for _use, _routes in _LLM_ROUTES_BY_USE.items():
+    for _route in _routes:
+        llm_route_total.labels(use=_use, route=_route)
+
 
 # ════════════════════════════════════════════════════════════════════════
 # LOGGING
@@ -195,6 +222,6 @@ for _s in _SYNC_STATUSES:
 logger.info(
     "prometheus_metrics_module_loaded",
     module="prometheus_metrics",
-    metrics_count=10,
+    metrics_count=11,
     integration_phase="M3"
 )

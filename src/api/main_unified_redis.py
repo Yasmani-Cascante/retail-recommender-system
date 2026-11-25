@@ -1587,25 +1587,49 @@ async def lifespan(app: FastAPI):
                     return
 
                 from src.api.core.llm_client import UnifiedLLMClient
-                from src.api.core.claude_config import GPT4O_MINI_FALLBACK_CONFIG
-
-                client = UnifiedLLMClient(
-                    provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
-                    model=GPT4O_MINI_FALLBACK_CONFIG['model'],
-                    max_tokens=1,
-                    temperature=GPT4O_MINI_FALLBACK_CONFIG['temperature'],
+                # Paso 1 (25/11/2026): antes se calentaba GPT4O_MINI_FALLBACK_CONFIG['model'],
+                # el dict que compartian cuatro usos. Ahora se calientan los modelos
+                # principales de la reformulacion KB y del redactor (cada uno con su
+                # configuracion), sin repetir. Hoy los dos son openai/gpt-4o-mini -> una sola
+                # llamada, identica a la de antes (1 token, temperatura 0.7, 14 s).
+                # La busqueda visual tiene su propio calentamiento (PASO 8.5e, abajo).
+                from src.api.core.claude_config import (
+                    get_openrouter_warmup_models,
+                    get_product_redactor_llm_config,
                 )
+                _warmup_models = get_openrouter_warmup_models()
+                # Temperatura irrelevante para 1 token; se usa la del redactor (0.7), que es
+                # la que enviaba la llamada anterior, para que la peticion sea la misma.
+                _warmup_temperature = get_product_redactor_llm_config()['temperature']
 
-                logger.info("gpt4o_mini_warmup_started")
-                resp = await asyncio.wait_for(
-                    client.complete(
-                        "Eres un asistente util.",
-                        "Responde hola.",
-                    ),
-                    timeout=14.0  # mismo presupuesto generoso que LFM
-                )
-                logger.info("gpt4o_mini_warmup_complete model=%s tokens_out=%d",
-                            resp.model, resp.output_tokens)
+                async def _warmup_one_openrouter_model(_model_id: str) -> None:
+                    """Una llamada de 1 token a un modelo; sus errores no afectan a los demas."""
+                    try:
+                        client = UnifiedLLMClient(
+                            provider='openrouter',
+                            model=_model_id,
+                            max_tokens=1,
+                            temperature=_warmup_temperature,
+                        )
+                        logger.info("gpt4o_mini_warmup_started model=%s", _model_id)
+                        resp = await asyncio.wait_for(
+                            client.complete(
+                                "Eres un asistente util.",
+                                "Responde hola.",
+                            ),
+                            timeout=14.0  # mismo presupuesto generoso que LFM
+                        )
+                        logger.info("gpt4o_mini_warmup_complete model=%s tokens_out=%d",
+                                    resp.model, resp.output_tokens)
+                    except asyncio.TimeoutError:
+                        logger.warning("gpt4o_mini_warmup_timeout: > 14s model=%s", _model_id)
+                    except Exception as _one_e:
+                        logger.warning("gpt4o_mini_warmup_error: %s model=%s", _one_e, _model_id)
+
+                # En paralelo: con dos modelos distintos el tiempo total sigue acotado a
+                # ~14 s (no 28 s), asi el aviso de "warmup terminado" que usa la
+                # disponibilidad (finally, abajo) no se retrasa.
+                await asyncio.gather(*(_warmup_one_openrouter_model(_m) for _m in _warmup_models))
             except asyncio.TimeoutError:
                 logger.warning("gpt4o_mini_warmup_timeout: > 14s")
             except Exception as _e:

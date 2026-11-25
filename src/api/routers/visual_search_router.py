@@ -55,6 +55,16 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from src.api.security_auth import get_api_key
+# Paso 1 (25/11/2026): cuenta que camino produjo cada mensaje de busqueda visual
+# (metrica recommender_llm_route_total{use="visual_search_message", route=...}).
+# Modulo ligero (solo logging); el contador se importa de forma perezosa dentro.
+from src.api.core.llm_routes import (
+    record_llm_route,
+    USE_VISUAL_SEARCH_MESSAGE,
+    ROUTE_LFM,
+    ROUTE_MAIN_MODEL,
+    ROUTE_NO_MESSAGE,
+)
 
 logger = structlog.get_logger(__name__)
 router  = APIRouter()
@@ -158,15 +168,25 @@ def _get_vs_gpt4o_client():
         if os.environ.get('GPT4O_MINI_FALLBACK_ENABLED', 'false').lower() != 'true':
             return None
         from src.api.core.llm_client import UnifiedLLMClient
-        from src.api.core.claude_config import GPT4O_MINI_FALLBACK_CONFIG
+        # Paso 1 (25/11/2026): configuracion propia de este uso (antes compartia el dict
+        # GPT4O_MINI_FALLBACK_CONFIG con la reformulacion KB, el redactor y el arranque).
+        # Valores identicos a los que se enviaban: modelo por defecto openai/gpt-4o-mini,
+        # 120 tokens (antes fijado aqui), temperatura 0.7. El modelo sale de
+        # VISUAL_SEARCH_MESSAGE_LLM_MODEL. Nombres de singleton y de log conservados.
+        from src.api.core.claude_config import get_visual_search_message_llm_config
+        _vs_cfg = get_visual_search_message_llm_config()
         _vs_gpt4o_client = UnifiedLLMClient(
-            provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
-            model=GPT4O_MINI_FALLBACK_CONFIG['model'],
-            max_tokens=120,
-            temperature=GPT4O_MINI_FALLBACK_CONFIG['temperature'],
+            provider=_vs_cfg['provider'],
+            model=_vs_cfg['model'],
+            max_tokens=_vs_cfg['max_tokens'],
+            temperature=_vs_cfg['temperature'],
         )
         logger.info('vs_gpt4o_client_singleton_initialized',
-                    model=GPT4O_MINI_FALLBACK_CONFIG['model'])
+                    model=_vs_cfg['model'],
+                    use=_vs_cfg['use'],
+                    model_source=_vs_cfg['model_source'],
+                    max_tokens=_vs_cfg['max_tokens'],
+                    temperature=_vs_cfg['temperature'])
     return _vs_gpt4o_client
 
 
@@ -237,8 +257,8 @@ async def _generate_visual_search_message(recommendations: List[dict], language:
     encontrados por busqueda visual, usando el mismo cliente LLM y los
     mismos modelos que el resto de la conversacion (LFM2-24B primario via
     OpenRouter, GPT-4o-mini de respaldo -- ver UnifiedLLMClient en
-    src/api/core/llm_client.py y LFM_MCP_CONFIG / GPT4O_MINI_FALLBACK_CONFIG
-    en src/api/core/claude_config.py).
+    src/api/core/llm_client.py y LFM_MCP_CONFIG / get_visual_search_message_llm_config()
+    en src/api/core/claude_config.py; paso 1, 25/11/2026).
 
     DECISION DE PRODUCTO (27/06/2026): este endpoint (busqueda por similitud
     visual) antes no generaba ningun texto -- el frontend mostraba una
@@ -272,6 +292,8 @@ async def _generate_visual_search_message(recommendations: List[dict], language:
 
     api_key = os.environ.get('OPENROUTER_API_KEY')
     if not api_key:
+        # Sin clave no se puede llamar a ningun modelo: el frontend usara su plantilla.
+        record_llm_route(USE_VISUAL_SEARCH_MESSAGE, ROUTE_NO_MESSAGE)
         return None
 
     titles = [
@@ -369,6 +391,7 @@ async def _generate_visual_search_message(recommendations: List[dict], language:
                 timeout=10.0,
             )
             logger.info('visual_search_message_lfm_ok', model=resp.model)
+            record_llm_route(USE_VISUAL_SEARCH_MESSAGE, ROUTE_LFM)
             return resp.content
         except Exception as e:
             logger.warning('visual_search_message_lfm_failed',
@@ -385,12 +408,15 @@ async def _generate_visual_search_message(recommendations: List[dict], language:
                 timeout=8.0,
             )
             logger.info('visual_search_message_gpt4o_mini_ok', model=resp.model)
+            record_llm_route(USE_VISUAL_SEARCH_MESSAGE, ROUTE_MAIN_MODEL)
             return resp.content
         except Exception as e:
             logger.warning('visual_search_message_gpt4o_mini_failed',
                            error=str(e) or repr(e),
                            error_type=type(e).__name__)
 
+    # Ningun modelo respondio (o no estaban habilitados): el frontend usa su plantilla.
+    record_llm_route(USE_VISUAL_SEARCH_MESSAGE, ROUTE_NO_MESSAGE)
     return None
 
 

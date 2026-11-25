@@ -52,7 +52,20 @@ from src.api.mcp.models.mcp_models import (
 # Liquid AI integration
 import os
 from src.api.core.llm_client import UnifiedLLMClient, LLMResponse
-from src.api.core.claude_config import LFM_MCP_CONFIG, GPT4O_MINI_FALLBACK_CONFIG
+# Paso 1 (25/11/2026): el modelo principal del redactor tiene su propia configuracion
+# (get_product_redactor_llm_config, variable PRODUCT_REDACTOR_LLM_MODEL) en lugar del
+# dict GPT4O_MINI_FALLBACK_CONFIG que compartian cuatro usos. Ver claude_config.py.
+from src.api.core.claude_config import LFM_MCP_CONFIG, get_product_redactor_llm_config
+# Paso 1 (25/11/2026): cuenta que camino produjo cada texto del redactor (metrica
+# recommender_llm_route_total{use="product_redactor", route=...}). Ver llm_routes.py.
+from src.api.core.llm_routes import (
+    record_llm_route,
+    USE_PRODUCT_REDACTOR,
+    ROUTE_LFM,
+    ROUTE_MAIN_MODEL,
+    ROUTE_CLAUDE,
+    ROUTE_GENERIC_MESSAGE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,13 +153,22 @@ class MCPPersonalizationEngine:
         # Prerequisito: OPENROUTER_API_KEY configurado (compartido con LFM).
         self._gpt4o_mini_fallback_enabled = os.environ.get('GPT4O_MINI_FALLBACK_ENABLED', 'false').lower() == 'true'
         if self._gpt4o_mini_fallback_enabled:
+            # Paso 1 (25/11/2026): configuracion propia del redactor. Valores identicos a
+            # los que se enviaban (modelo por defecto openai/gpt-4o-mini, 300 tokens,
+            # temperatura 0.7); el modelo sale de PRODUCT_REDACTOR_LLM_MODEL.
+            # Nombre del atributo y texto del log conservados (busquedas de logs existentes).
+            _redactor_cfg = get_product_redactor_llm_config()
             self._gpt4o_mini_client = UnifiedLLMClient(
-                provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
-                model=GPT4O_MINI_FALLBACK_CONFIG['model'],
-                max_tokens=GPT4O_MINI_FALLBACK_CONFIG['max_tokens'],
-                temperature=GPT4O_MINI_FALLBACK_CONFIG['temperature'],
+                provider=_redactor_cfg['provider'],
+                model=_redactor_cfg['model'],
+                max_tokens=_redactor_cfg['max_tokens'],
+                temperature=_redactor_cfg['temperature'],
             )
-            logger.info('GPT-4o-mini fallback enabled: model=%s', GPT4O_MINI_FALLBACK_CONFIG['model'])
+            logger.info(
+                'GPT-4o-mini fallback enabled: model=%s (use=%s model_source=%s max_tokens=%d temperature=%.1f)',
+                _redactor_cfg['model'], _redactor_cfg['use'], _redactor_cfg['model_source'],
+                _redactor_cfg['max_tokens'], _redactor_cfg['temperature'],
+            )
         else:
             self._gpt4o_mini_client = None
             logger.info('GPT-4o-mini fallback disabled — generic response on LFM failure')
@@ -1522,6 +1544,7 @@ class MCPPersonalizationEngine:
                 )
                 logger.info('LFM MCP response: model=%s in=%d out=%d',
                         resp.model, resp.input_tokens, resp.output_tokens)
+                record_llm_route(USE_PRODUCT_REDACTOR, ROUTE_LFM)
                 return resp.content
             except Exception as e:
                 logger.warning('LFM MCP call failed, falling back to GPT-4o-mini: %s', e)
@@ -1554,6 +1577,7 @@ class MCPPersonalizationEngine:
                         nano_resp.model, nano_resp.input_tokens, nano_resp.output_tokens,
                         self._lfm_mcp_enabled,
                     )
+                    record_llm_route(USE_PRODUCT_REDACTOR, ROUTE_MAIN_MODEL)
                     return nano_resp.content
                 except asyncio.TimeoutError:
                     logger.warning('gpt4o_mini_fallback_timeout_8s -- lfm_was_active=%s', self._lfm_mcp_enabled)
@@ -1569,6 +1593,7 @@ class MCPPersonalizationEngine:
             # Si LFM solo estaba desactivado y GPT-4o-mini tambien fallo/disabled,
             # el flujo cae al bloque Claude (legacy path) para no perder la respuesta.
             if _lfm_failed:
+                record_llm_route(USE_PRODUCT_REDACTOR, ROUTE_GENERIC_MESSAGE)
                 return "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
             # LFM disabled + GPT-4o-mini off/failed -> continuar a ruta Claude
 
@@ -1628,6 +1653,10 @@ class MCPPersonalizationEngine:
             max_retries = 2
             timeout = 15  # interno; el externo (8.0s) lo cancela primero en prod
             response_text = "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
+            # Paso 1 (25/11/2026): si ningun intento de Claude responde, response_text se
+            # queda en el mensaje generico de arriba. Esta marca distingue los dos casos
+            # para la metrica de caminos (claude frente a generic_message).
+            _claude_answered = False
             
             for attempt in range(max_retries + 1):
                 try:
@@ -1644,6 +1673,7 @@ class MCPPersonalizationEngine:
                     )
                     
                     response_text = claude_response.content[0].text
+                    _claude_answered = True
                     break  # Success, exit retry loop
                     
                 except asyncio.TimeoutError:
@@ -1687,10 +1717,15 @@ class MCPPersonalizationEngine:
                     pass  # response_text ya es el string de Claude, mantenerlo
 
             logger.info(f"✅ Claude personalized response ready ({len(response_text)} chars)")
+            record_llm_route(
+                USE_PRODUCT_REDACTOR,
+                ROUTE_CLAUDE if _claude_answered else ROUTE_GENERIC_MESSAGE,
+            )
             return response_text
 
         except Exception as e:
             logger.error(f"Error generating Claude personalized response: {e}")
+            record_llm_route(USE_PRODUCT_REDACTOR, ROUTE_GENERIC_MESSAGE)
             return "Te ayudo a encontrar lo que buscas. ¿Qué te interesa hoy?"
     
     def _load_market_configurations(self) -> Dict[str, MarketConfig]:

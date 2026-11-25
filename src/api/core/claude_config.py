@@ -18,7 +18,7 @@ Last Updated: 2025-07-25
 import os
 import logging
 from enum import Enum
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
 # NOTE: lru_cache removido intencionalmente (fix 21/03/2026).
 # lru_cache congela el resultado del PRIMER import: si CLAUDE_MODEL_TIER
@@ -119,31 +119,138 @@ LFM_KB_CONFIG = {
     'description': 'LFM2.5-1.2B-Instruct — KB contextualisation (direct response, free tier)',
 }
 
-# ─── GPT-4o-mini Fallback Config (OpenRouter) ─────────────────────────
-# Reemplaza Claude Haiku como fallback cuando LFM falla.
+# ─── Modelo principal de OpenRouter POR USO (paso 1 del plan de modelos, 25/11/2026) ───
 #
-# DISEÑO:
-#   - Mismo proveedor que LFM (OpenRouter): usa OPENROUTER_API_KEY existente.
-#     Sin credenciales adicionales, sin billing separado que gestionar.
-#   - La conexion TCP a OpenRouter ya esta warm gracias al LFM keep-alive
-#     (PASO 8.7, intervalo 300s). No se necesita warm-up propio.
-#   - UnifiedLLMClient maneja todas las diferencias de API (system prompt,
-#     finish_reason, content extraction) de forma transparente.
+# ANTES: un unico dict, GPT4O_MINI_FALLBACK_CONFIG ('openai/gpt-4o-mini', 300 tokens,
+# temperatura 0.7), alimentaba CUATRO usos distintos:
+#   1. la reformulacion de la base de conocimiento (kb_contextualizer.py, temperatura
+#      fijada a 0.3 en el propio fichero);
+#   2. el redactor de producto (mcp_personalization_engine.py);
+#   3. el mensaje de la busqueda visual (visual_search_router.py, max_tokens fijado a 120);
+#   4. el calentamiento de arranque (main_unified_redis.py, 1 token).
+# Cambiar su modelo cambiaba los cuatro a la vez, y solo la reformulacion KB tiene
+# bateria de fidelidad (DCT_Fidelidad_Reformulacion_KB_23112026.md, seccion 7.13).
+# Ademas, el nombre ya no describia la realidad: con LFM apagado (R-8) este modelo no
+# es un "fallback", responde el 100 % del trafico.
 #
-# MODELO: GPT-4o-mini — arquitectura "omni" disenada para conversacion natural.
-#   Mejor tono conversacional que modelos nano; excelente espanol y multilingue.
-#   Ideal para respuestas fashion de 2-3 frases con prompt estructurado.
-#   Activar con A/B test de 20+ queries antes del 100% en produccion.
+# AHORA: una configuracion por uso, nombrada por QUIEN la usa y no por el modelo que
+# lleva, con su propia variable de entorno para el identificador del modelo:
 #
-# COSTO: $0.15/M input, $0.60/M output (mas economico que Claude Haiku 3)
-# MODELO OpenRouter: openai/gpt-4o-mini
-GPT4O_MINI_FALLBACK_CONFIG = {
-    'provider': 'openrouter',
-    'model': 'openai/gpt-4o-mini',
-    'max_tokens': 300,   # mismo limite que Claude Haiku — respuesta conversacional breve
-    'temperature': 0.7,  # mismo que LFM y Claude Haiku — tono natural, algo de variedad
-    'description': 'GPT-4o-mini — fallback MCP/KB cuando LFM falla (reemplaza Claude Haiku)',
-}
+#   Uso (funcion)                           Variable de entorno                max_tokens  temperatura
+#   --------------------------------------  ---------------------------------  ----------  -----------
+#   get_kb_reformulation_llm_config()       KB_REFORMULATION_LLM_MODEL         300         0.3
+#   get_product_redactor_llm_config()       PRODUCT_REDACTOR_LLM_MODEL         300         0.7
+#   get_visual_search_message_llm_config()  VISUAL_SEARCH_MESSAGE_LLM_MODEL    120         0.7
+#
+# Los valores de max_tokens y temperatura son EXACTAMENTE los que cada uso enviaba
+# antes de este cambio (sin cambio de comportamiento). Solo el identificador del
+# modelo pasa a configuracion (env-vars.yaml): es lo unico que el paso 2 cambiara.
+#
+# Si la variable no existe o esta vacia, se usa OPENROUTER_MAIN_MODEL_DEFAULT (el
+# modelo de hoy) y la configuracion lo dice en 'model_source' = 'default', para que
+# los logs de arranque muestren si el valor vino de la configuracion o del codigo.
+#
+# Se lee os.environ EN CADA LLAMADA (sin caches a nivel de modulo), por la misma
+# leccion del 21/03/2026 que motivo quitar lru_cache en este fichero: un valor
+# congelado en el import puede no ver la configuracion definitiva del contenedor.
+# El coste es despreciable: cada uso llama a su funcion una vez, al crear su cliente.
+#
+# El interruptor GPT4O_MINI_FALLBACK_ENABLED (que activa este camino en los tres
+# usos) NO cambia en este paso: renombrarlo es un cambio de despliegue aparte.
+
+OPENROUTER_MAIN_MODEL_DEFAULT = 'openai/gpt-4o-mini'
+
+
+def _resolve_use_model(env_var_name: str) -> Tuple[str, str]:
+    """
+    Devuelve (modelo, origen) para un uso.
+
+    origen = 'env'     -> el valor viene de la variable de entorno (env-vars.yaml)
+    origen = 'default' -> variable ausente o vacia: se usa el modelo por defecto
+    Se eliminan espacios al principio y al final (un espacio pegado al copiar en
+    env-vars.yaml haria que OpenRouter rechazara el identificador).
+    """
+    configured = (os.environ.get(env_var_name) or '').strip()
+    if configured:
+        return configured, 'env'
+    return OPENROUTER_MAIN_MODEL_DEFAULT, 'default'
+
+
+def _build_use_config(use: str, env_var_name: str, max_tokens: int,
+                      temperature: float, description: str) -> Dict[str, Any]:
+    """
+    Construye el dict de configuracion de un uso.
+
+    Mantiene las mismas claves que usaban los llamadores con el dict anterior
+    ('provider', 'model', 'max_tokens', 'temperature', 'description') y anade:
+      'use'           -> nombre del uso (coincide con llm_routes.USE_*)
+      'model_source'  -> 'env' o 'default' (ver _resolve_use_model)
+      'model_env_var' -> nombre de la variable que gobierna el modelo de este uso
+    Devuelve un dict NUEVO en cada llamada: un llamador que lo modifique no puede
+    contaminar la configuracion de otro uso (el problema del dict compartido).
+    """
+    model, source = _resolve_use_model(env_var_name)
+    return {
+        'use': use,
+        'provider': 'openrouter',
+        'model': model,
+        'model_source': source,
+        'model_env_var': env_var_name,
+        'max_tokens': max_tokens,
+        'temperature': temperature,
+        'description': description,
+    }
+
+
+def get_kb_reformulation_llm_config() -> Dict[str, Any]:
+    """Reformulacion de la base de conocimiento (kb_contextualizer.generate_contextual_answer)."""
+    return _build_use_config(
+        use='kb_reformulation',
+        env_var_name='KB_REFORMULATION_LLM_MODEL',
+        max_tokens=300,    # el valor que enviaba (300 del dict anterior; el 250/500 de ese
+                           # fichero solo aplica al escalon Claude)
+        temperature=0.3,   # el valor que enviaba (fijado en kb_contextualizer.py): respuestas factuales
+        description='Reformulacion KB: responde a la pregunta usando solo el documento de politica',
+    )
+
+
+def get_product_redactor_llm_config() -> Dict[str, Any]:
+    """Redactor de producto (MCPPersonalizationEngine._generate_claude_personalized_response)."""
+    return _build_use_config(
+        use='product_redactor',
+        env_var_name='PRODUCT_REDACTOR_LLM_MODEL',
+        max_tokens=300,    # el valor que enviaba (dict anterior)
+        temperature=0.7,   # el valor que enviaba (dict anterior): tono natural, algo de variedad
+        description='Redactor de producto: texto conversacional que acompana a las recomendaciones',
+    )
+
+
+def get_visual_search_message_llm_config() -> Dict[str, Any]:
+    """Mensaje de la busqueda visual (visual_search_router._generate_visual_search_message)."""
+    return _build_use_config(
+        use='visual_search_message',
+        env_var_name='VISUAL_SEARCH_MESSAGE_LLM_MODEL',
+        max_tokens=120,    # el valor que enviaba (fijado en visual_search_router.py): una frase
+        temperature=0.7,   # el valor que enviaba (dict anterior)
+        description='Busqueda visual: una frase que presenta los productos encontrados',
+    )
+
+
+def get_openrouter_warmup_models() -> List[str]:
+    """
+    Modelos a calentar al arrancar (main_unified_redis.py, _warmup_gpt4o_mini_connection).
+
+    Son los modelos principales de la reformulacion KB y del redactor, sin repetir y
+    en ese orden. La busqueda visual NO entra aqui: tiene su propio calentamiento
+    (visual_search_router.warmup_vs_gpt4o_singleton) sobre su propio cliente.
+    Hoy los dos usos tienen el mismo modelo -> una sola llamada, igual que antes.
+    Si el paso 2 los separa, se calientan los dos.
+    """
+    models: List[str] = []
+    for config in (get_kb_reformulation_llm_config(), get_product_redactor_llm_config()):
+        if config['model'] not in models:
+            models.append(config['model'])
+    return models
 
 
 class ClaudeConfigurationService:

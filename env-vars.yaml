@@ -54,6 +54,15 @@ APP_PUBLIC_URL: "https://retail-recommender-178362262166.us-central1.run.app"
 MINILM_INTENT_ENABLED: "true"
 GPT4O_MINI_FALLBACK_ENABLED: "true"
 FORCE_GPT4O_MINI_FALLBACK: "false"
+# Paso 1 del plan de modelos (25/11/2026): modelo principal de OpenRouter POR USO. Antes
+# los tres usos (y el calentamiento de arranque) compartian GPT4O_MINI_FALLBACK_CONFIG en
+# claude_config.py. Los tres valores son el modelo de hoy: este cambio no altera el
+# comportamiento. El paso 2 cambiara SOLO KB_REFORMULATION_LLM_MODEL (decision en
+# DCT_Fidelidad_Reformulacion_KB_23112026.md, 7.13). Si una variable falta o esta vacia,
+# el codigo usa openai/gpt-4o-mini y lo indica en el log (model_source=default).
+KB_REFORMULATION_LLM_MODEL: "openai/gpt-4o-mini"
+PRODUCT_REDACTOR_LLM_MODEL: "openai/gpt-4o-mini"
+VISUAL_SEARCH_MESSAGE_LLM_MODEL: "openai/gpt-4o-mini"
 GCS_BUCKET_NAME: "retail-recommendations-449216-tfidf-model"
 RECS_VISUAL_POOL_BASE: "100"
 RECS_MAX_ALTERNATIVES: "8"

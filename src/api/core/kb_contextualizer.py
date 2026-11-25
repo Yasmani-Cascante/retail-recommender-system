@@ -66,7 +66,21 @@ if TYPE_CHECKING:
     from src.api.mcp_services.size_profile.service import SizeProfile
 
 from src.api.core.llm_client import UnifiedLLMClient
-from src.api.core.claude_config import LFM_KB_CONFIG, GPT4O_MINI_FALLBACK_CONFIG
+# Paso 1 (25/11/2026): el modelo principal de este uso tiene su propia configuracion
+# (get_kb_reformulation_llm_config, variable KB_REFORMULATION_LLM_MODEL) en lugar del
+# dict GPT4O_MINI_FALLBACK_CONFIG que compartian cuatro usos. Ver claude_config.py.
+from src.api.core.claude_config import LFM_KB_CONFIG, get_kb_reformulation_llm_config
+# Paso 1 (25/11/2026): cuenta que camino produjo cada respuesta (metrica
+# recommender_llm_route_total{use="kb_reformulation", route=...}). Ver llm_routes.py.
+from src.api.core.llm_routes import (
+    record_llm_route,
+    USE_KB_REFORMULATION,
+    ROUTE_LFM,
+    ROUTE_MAIN_MODEL,
+    ROUTE_CLAUDE,
+    ROUTE_TEMPLATE,
+    ROUTE_DOCUMENT_AS_IS,
+)
 
 # ── Singleton KB GPT-4o-mini client ──────────────────────────────────────────
 # FIX (12/06/2026 — kb_gpt4o_mini_timeout): El cliente per-call creaba una nueva
@@ -928,10 +942,16 @@ async def generate_contextual_answer(
                 anthropic_client = mcp_engine.claude
         except Exception as client_e:
             logger.error("❌ KB Contextualizer: Could not obtain Anthropic client: %s", client_e)
+            # None -> el llamador sirve el documento KB tal cual
+            record_llm_route(USE_KB_REFORMULATION, ROUTE_DOCUMENT_AS_IS)
             return None
 
     if anthropic_client is None:
         logger.warning("⚠️ KB Contextualizer: No Anthropic client available — skipping contextualisation")
+        # Nota (paso 1): sin cliente Anthropic se sale ANTES de probar LFM y el modelo
+        # principal, aunque esten activos. Comportamiento previo, sin cambios aqui;
+        # registrado en el DCT. La metrica lo hace visible.
+        record_llm_route(USE_KB_REFORMULATION, ROUTE_DOCUMENT_AS_IS)
         return None
 
     # FIX (10/06/2026): max_tokens se define aqui solo para controlar la longitud
@@ -1141,6 +1161,7 @@ async def generate_contextual_answer(
                     "KB out_of_stock template (%s, no LLM called): handle=%s sizes=%s",
                     lang_key, product_context.get("handle", "?"), _sizes,
                 )
+                record_llm_route(USE_KB_REFORMULATION, ROUTE_TEMPLATE)
                 return _tpl
             # Idioma no contemplado en el dict: continuar hacia LLM para no dar
             # una respuesta en idioma incorrecto. Cobertura actual: es/en/fr/de/it.
@@ -1180,6 +1201,7 @@ async def generate_contextual_answer(
                 "✅ KB Contextualizer (LFM): answer in %.0fms (%d chars) model=%s sub_intent=%s",
                 elapsed_ms, len(resp.content), resp.model, sub_intent,
             )
+            record_llm_route(USE_KB_REFORMULATION, ROUTE_LFM)
             return resp.content
         except Exception as lfm_e:
             # Cualquier fallo de LFM (timeout, API error, etc.) cae aqui.
@@ -1198,13 +1220,24 @@ async def generate_contextual_answer(
             # FIX (12/06/2026): Singleton — reutiliza pool TCP/TLS vs per-call.
             global _kb_gpt4o_mini_singleton
             if _kb_gpt4o_mini_singleton is None:
+                # Paso 1 (25/11/2026): configuracion propia de este uso. Valores identicos
+                # a los que se enviaban (modelo por defecto openai/gpt-4o-mini, 300 tokens,
+                # temperatura 0.3); el modelo sale de KB_REFORMULATION_LLM_MODEL.
+                # El nombre de la variable del singleton y los textos de log se conservan
+                # para no romper busquedas de logs existentes.
+                _kb_main_cfg = get_kb_reformulation_llm_config()
                 _kb_gpt4o_mini_singleton = UnifiedLLMClient(
-                    provider=GPT4O_MINI_FALLBACK_CONFIG['provider'],
-                    model=GPT4O_MINI_FALLBACK_CONFIG['model'],
-                    max_tokens=GPT4O_MINI_FALLBACK_CONFIG['max_tokens'],
-                    temperature=0.3,
+                    provider=_kb_main_cfg['provider'],
+                    model=_kb_main_cfg['model'],
+                    max_tokens=_kb_main_cfg['max_tokens'],
+                    temperature=_kb_main_cfg['temperature'],
                 )
-                logger.info('KB GPT-4o-mini singleton created — connection pool ready')
+                logger.info(
+                    'KB GPT-4o-mini singleton created — connection pool ready '
+                    '(use=%s model=%s model_source=%s max_tokens=%d temperature=%.1f)',
+                    _kb_main_cfg['use'], _kb_main_cfg['model'], _kb_main_cfg['model_source'],
+                    _kb_main_cfg['max_tokens'], _kb_main_cfg['temperature'],
+                )
             resp = await asyncio.wait_for(
                 _kb_gpt4o_mini_singleton.complete(system_prompt, user_prompt),
                 timeout=8.0,  # ampliado a 8s: singleton warm pero OpenRouter puede tardar
@@ -1214,6 +1247,7 @@ async def generate_contextual_answer(
                 "KB Contextualizer (GPT-4o-mini): answer in %.0fms (%d chars) model=%s sub_intent=%s",
                 elapsed_ms, len(resp.content), resp.model, sub_intent,
             )
+            record_llm_route(USE_KB_REFORMULATION, ROUTE_MAIN_MODEL)
             return resp.content
         except Exception as gpt4o_mini_e:
             # Fallo de GPT-4o-mini: cae hacia Claude Haiku como ultimo recurso.
@@ -1261,6 +1295,7 @@ async def generate_contextual_answer(
             len(answer),
         )
 
+        record_llm_route(USE_KB_REFORMULATION, ROUTE_CLAUDE)
         return answer
 
     except asyncio.TimeoutError:
@@ -1269,6 +1304,7 @@ async def generate_contextual_answer(
             "falling back to generic KB document",
             sub_intent,
         )
+        record_llm_route(USE_KB_REFORMULATION, ROUTE_DOCUMENT_AS_IS)
         return None
 
     except Exception as api_e:
@@ -1278,4 +1314,5 @@ async def generate_contextual_answer(
             api_e,
             exc_info=True,
         )
+        record_llm_route(USE_KB_REFORMULATION, ROUTE_DOCUMENT_AS_IS)
         return None
