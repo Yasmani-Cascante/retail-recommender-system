@@ -60,7 +60,7 @@ FORCE_GPT4O_MINI_FALLBACK: "false"
 # comportamiento. El paso 2 cambiara SOLO KB_REFORMULATION_LLM_MODEL (decision en
 # DCT_Fidelidad_Reformulacion_KB_23112026.md, 7.13). Si una variable falta o esta vacia,
 # el codigo usa openai/gpt-4o-mini y lo indica en el log (model_source=default).
-KB_REFORMULATION_LLM_MODEL: "openai/gpt-4o-mini"
+KB_REFORMULATION_LLM_MODEL: "openai/gpt-4.1-mini"
 PRODUCT_REDACTOR_LLM_MODEL: "openai/gpt-4o-mini"
 VISUAL_SEARCH_MESSAGE_LLM_MODEL: "openai/gpt-4o-mini"
 GCS_BUCKET_NAME: "retail-recommendations-449216-tfidf-model"
