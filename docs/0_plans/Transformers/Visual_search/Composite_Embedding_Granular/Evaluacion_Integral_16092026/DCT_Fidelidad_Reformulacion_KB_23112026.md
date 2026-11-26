@@ -75,6 +75,7 @@ Express y Discover; PayPal, Apple Pay, Google Pay; "Compras >$300: Hasta 6 cuota
 | R-29 | **La reformulacion KB depende del cliente de Anthropic aunque responda otro modelo**: si `generate_contextual_answer` no recibe ni obtiene un cliente Anthropic, sale con `None` (documento tal cual) **antes** de probar LFM y el modelo principal (`kb_contextualizer.py` L923-935) [V, codigo]. Hoy no ocurre (hay `ANTHROPIC_API_KEY`) [H]; ocurriria si se retira la clave de Anthropic o falla su cliente. El paso 1 no lo cambia y lo hace visible (`document_as_is`) | Baja hoy; Media si se retira Claude (R-11) | Mover la comprobacion al escalon Claude, en un cambio aparte |
 | R-30 | **Una consulta de producto repetida recibe la plantilla y no el texto del redactor**: "Busco un vestido para una boda" dio el 25/11 un texto redactado la primera vez (2.419 ms, "Te recomiendo el Vestido Largo Isi Burdeo...") y, al repetirla con otra sesion, `strategy_used=cached` y la respuesta "Aqui tienes algunas opciones que pueden encajar." (399-489 ms) [V, sondas de produccion]. Es la plantilla `_SOME_PRODUCTS_TEMPLATES` de `localized_messages.py`, que segun su comentario "solo llega al usuario si la personalizacion no lo sobrescribe" [V, codigo]: la ruta de cache no pasa por el redactor [H: falta leer la ruta exacta] | Media para la experiencia (un cliente que repite o reformula igual recibe una frase generica); afecta a R-8(b) y a las sondas del paso 1 (hay que usar consultas nuevas) | Registrado; se estudia con R-8(b) |
 | R-31 | **Una peticion de producto clasificada como pregunta de informacion**: "Necesito una chaqueta para el invierno" (es, mercado CL, sesion nueva) recibio el 25/11 el menu de ayuda "No pudimos clasificar tu pregunta especificamente... Devoluciones y Cambios..." con 0 productos, en 303 ms [V, una sonda en `00346-f5w`]. La causa no esta estudiada [H: alguna regla de intencion informativa reconoce "invierno" o "necesito"]. Afecta a la experiencia de compra, no a la fidelidad | Media (por confirmar con mas consultas) | Registrado; reproducir con el clasificador en el laboratorio antes de decidir |
+| R-32 | **Preguntas de garantia y de cancelacion que no llegan a su documento en produccion**: con las mismas 3 x 2 repeticiones antes y despues del paso 2 [V, sondas 26/11]: "Si la cremallera de un vestido se rompe a los 45 dias, ¿me lo cambian por garantia?" se clasifica `policy_return` y se responde con la politica de devoluciones ("no se menciona garantia"), aunque la tienda tiene pagina de garantia; "The sole of my shoes came off 70 days after I bought them, is it covered by the warranty?" se clasifica `unknown` (menu de ayuda); "I placed my order 5 hours ago, can I cancel it for free?" va a `account_modifications` sin entidades y recibe el documento tal cual. La bateria del laboratorio fijaba el `sub_intent` de cada pregunta, asi que no media el enrutamiento | **Alta** para garantia (el cliente oye que no hay garantia); Media para cancelacion (recibe el documento correcto, sin reformular) | Registrado; estudiar la deteccion de intencion de garantia (es/en) antes del verificador por tienda |
 | R-26 | **El servicio de embeddings usa un modelo que Liquid marca como obsoleto**: `LiquidAI/LFM2-ColBERT-350M` (`colbert_retriever.py` L27); sucesor `LFM2.5-ColBERT-350M` [V, liquid.ai/models]. Los pesos se descargan al construir la imagen (Dockerfile L58) y en ejecucion no hay descarga: no afecta al servicio actual [V]. La proxima construccion de la imagen depende de que Hugging Face siga sirviendo los pesos obsoletos [H] | Baja | Registrado. "Retirar el codigo LFM" (R-8) no incluye esta parte: la fase C de ColBERT esta activa (`LFM_COLBERT_ENABLED=true`) |
 
 Observaciones:
@@ -886,6 +887,74 @@ patron que los otros dos usos; su cliente se registro con `model_source=env`].
 El paso 2 tiene que cambiar tambien la prueba `test_env_vars_yaml_declares_todays_model_for_every_use`, que hoy
 exige `openai/gpt-4o-mini` en los tres usos.
 
+Cierre documental: commit `f5b0b83`; `fceb1aa` y `f5b0b83` subidos a `origin/feature/visual_search` el 26/11 [Y].
+
+### 7.15 Paso 2: reformulacion KB con GPT-4.1-mini (laboratorio, 26/11)
+
+Decision de seguir: Yasmani, 26/11 [Y]. `openai/gpt-4.1-mini` sigue disponible en OpenRouter, sin aviso de
+retirada, a 0,40 / 1,60 USD por millon de tokens de entrada / salida [V, pagina del modelo, 26/11].
+
+**Cambio** (2 ficheros; sin codigo y sin imagen nueva):
+- `env-vars.yaml`: `KB_REFORMULATION_LLM_MODEL: "openai/gpt-4.1-mini"`; las otras dos variables siguen en
+  `openai/gpt-4o-mini` (el redactor y la busqueda visual no tienen bateria de fidelidad: R-8(b)).
+- `test_llm_use_config_and_routes.py`: la prueba de `env-vars.yaml` pasa a exigir el modelo decidido por uso. El
+  valor por defecto del codigo no cambia (`openai/gpt-4o-mini`, con `model_source=default` en el log).
+
+**Evidencia de laboratorio** [V]: 37/37 pruebas; con el `env-vars.yaml` anterior la prueba nueva falla (control
+negativo). Diferencial con las variables del fichero: la reformulacion KB pide `openai/gpt-4.1-mini` con 300 tokens
+y temperatura 0.3 (las condiciones medidas en la fase de finalistas, ejecucion "41Mp"); redactor y busqueda visual,
+identicos a hoy. El calentamiento pasa a dos modelos en paralelo (`gpt-4.1-mini`, `gpt-4o-mini`).
+
+**Despliegue previsto**: solo configuracion. `gcloud run services update --env-vars-file env-vars.yaml` sobre la
+imagen del paso 1 (`sha256:9842b3c7...`); guardias: commit hecho, HEAD con el modelo decidido e imagen actual igual a
+la del paso 1. Vuelta atras: trafico a `00347-lgs`.
+
+**Validacion prevista en produccion** (el efecto del modelo en el servicio real, no solo en el laboratorio): 9
+preguntas x 3 repeticiones contra `/v1/mcp/conversation`, antes (`00347-lgs`) y despues, guardando respuesta
+completa, intencion detectada, reformulacion y tiempo. Seis son controles que pasan la puerta y que GPT-4o-mini
+fallaba 3 de 3 en el laboratorio (ORD-C2 en, WAR-C1 es, WAR-C3 en, SIZ-C1 es/en/fr); tres son preguntas que ambos
+modelos respondian bien (RET-C2b es, PAY-C1 es, PAY-B1 es). Revision manual con los criterios de la seccion 7.13.
+Ademas: logs con `model=openai/gpt-4.1-mini` en las respuestas KB, dos llamadas de calentamiento, `ERROR` = 0.
+
+**Aplicacion y despliegue (26/11)** [V]:
+- Yasmani habia cambiado a mano el valor en `env-vars.yaml` antes de ejecutar [Y]; el script de aplicacion lo
+  clasifico como OTRO y no aplico nada (correcto). En consecuencia el commit **`09d68da`** lleva solo la linea del
+  modelo (sin el comentario) y **no** la prueba actualizada: en `HEAD` la prueba de `env-vars.yaml` falla (1 de
+  37), como mostro `paso2_1_pruebas.ps1`. El valor desplegado es el correcto (difiere del laboratorio solo en 4
+  lineas de comentario). Se corrige con un commit de seguimiento (prueba + comentario), sin despliegue.
+- Despliegue de configuracion sobre la imagen del paso 1: revision **`00348-lhc`**, 100 % del trafico, misma imagen
+  (`sha256:9842b3c7...`), 52 variables (11 secretas).
+
+**Validacion en produccion (26/11, 09:56-10:08 hora local)** [V]:
+
+| Comprobacion | Antes (`00347-lgs`, gpt-4o-mini) | Despues (`00348-lhc`, gpt-4.1-mini) |
+|---|---|---|
+| `KB_REFORMULATION_LLM_MODEL` | `openai/gpt-4o-mini` | `openai/gpt-4.1-mini`; redactor y busqueda visual sin cambio |
+| Modelo que respondio (logs de la reformulacion KB) | - | `openai/gpt-4.1-mini` en 21 de 21 |
+| Calentamiento | 1 modelo | 2 en paralelo (`gpt-4.1-mini` devolvio 10 tokens con `max_tokens=1` [V, log]; coste despreciable) |
+| Sondas reformuladas (de 27) | 21 | 21 |
+| Tiempo de las reformuladas, mediana (max) | 1.789 ms (3.055) | 1.447 ms (2.408) |
+| `kb_reformulation/main_model` en `/metrics` | 21 | 21 |
+| Errores en sondas / `ERROR` en logs | 0 / - | 0 / 0 |
+
+Revision manual de las 54 respuestas (criterios de 7.13):
+
+| Pregunta | Antes (gpt-4o-mini) | Despues (gpt-4.1-mini) |
+|---|---|---|
+| SIZ-C1 es/en/fr (cintura 70, cadera 100, "talla S?") | **INFIEL 9/9**: "elige la M" (la cadera 100 no cabe en M, 94-98) | **Recomienda L 9/9**. es y fr FIEL (6); en INFERENCIA (3): "your measurements fall into the size L range" y "waist 70 between M and L" (la cintura 70 es M), conclusion correcta |
+| PAY-B1 es (Mercado Pago) | FIEL 3/3 ("el documento no menciona") | INFERENCIA 3/3: "no aceptamos Mercado Pago" (patron ya medido en el laboratorio, 12 de 31) |
+| PAY-C1 es (6 cuotas con $200) | FIEL 3/3 | FIEL 3/3 |
+| RET-C2b es (reembolso en efectivo) | FIEL 3/3 | FIEL 3/3 |
+| WAR-C1 es (cremallera a los 45 dias) | Mal enrutada a `policy_return` (R-32). INFERENCIA 1 ("no se puede cambiar"), FIEL 2 respecto al documento de devoluciones | Igual enrutamiento; FIEL 3/3 respecto al documento de devoluciones |
+| WAR-C3 en, ORD-C2 en | No llegan a la reformulacion (R-32): menu de ayuda / documento tal cual | Igual |
+
+Resultado: **respuestas infieles que llegan al cliente: 9 -> 0**; inferencias: 1 -> 6, del tipo ya conocido. Es el
+perfil medido en el laboratorio. La primera peticion de la fase "antes" tardo **112 s** (arranque en frio de una
+instancia de `00347-lgs`) [V]; no es efecto del cambio, pero es lo que veria un cliente tras un periodo sin
+trafico (ver `CloudRun_MinInstances_Architecture_Analysis`).
+
+**Paso 2 desplegado y validado** (pendiente el commit de seguimiento de la prueba).
+
 ## 8. Lecciones
 
 - **Un respaldo que pasa a principal necesita la evaluacion del principal**: GPT-4o-mini se eligio como respaldo
@@ -947,6 +1016,12 @@ exige `openai/gpt-4o-mini` en los tres usos.
   ficheros `.ps1` con `2>&1 | Tee-Object`, y en ASCII (PowerShell 5.1 lee un `.ps1` sin BOM como ANSI).
 - **Una sonda repetida puede no recorrer el camino que se quiere medir**: la segunda consulta de producto vino de
   la cache y no paso por el redactor (R-30). Antes y despues se usan consultas nuevas.
+- **La bateria de laboratorio mide un tramo; las sondas de produccion miden el camino entero**: el laboratorio daba el
+  `sub_intent` de cada pregunta y asi no podia ver que la garantia se enruta a devoluciones o a `unknown` (R-32).
+- **Un paso que se para debe parar la cadena**: el 26/11 el script de aplicacion se nego a escribir (fichero
+  editado a mano) y la prueba fallo, pero los pasos siguientes se ejecutaron igual y el commit salio sin la prueba.
+  Los proximos despliegues iran en un solo script que se detiene en el primer fallo y exige pruebas en verde antes
+  del commit.
 - **Reutilizar la consulta que ya funciono**: la consulta de logs del 24/11 encontro las lineas pero imprimio solo
   la hora, porque los logs estructurados guardan el texto en `jsonPayload.event`, no en `textPayload` ni
   `jsonPayload.message`. El 16/11 (R-11) ya se habia resuelto asi. Antes de escribir una consulta nueva, buscar
