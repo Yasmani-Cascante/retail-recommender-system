@@ -60,6 +60,10 @@ FORCE_GPT4O_MINI_FALLBACK: "false"
 # comportamiento. El paso 2 cambiara SOLO KB_REFORMULATION_LLM_MODEL (decision en
 # DCT_Fidelidad_Reformulacion_KB_23112026.md, 7.13). Si una variable falta o esta vacia,
 # el codigo usa openai/gpt-4o-mini y lo indica en el log (model_source=default).
+# Paso 2 (26/11/2026): la reformulacion KB pasa a GPT-4.1-mini. Evidencia: fase de finalistas
+# (DCT_Fidelidad_Reformulacion_KB_23112026.md, 7.13): 0 respuestas infieles que lleguen al cliente
+# frente a 18 de GPT-4o-mini, controles 10 de 10 en es/en/fr, misma latencia; mismo prompt de produccion.
+# El redactor y la busqueda visual NO cambian (no tienen bateria de fidelidad; R-8(b)).
 KB_REFORMULATION_LLM_MODEL: "openai/gpt-4.1-mini"
 PRODUCT_REDACTOR_LLM_MODEL: "openai/gpt-4o-mini"
 VISUAL_SEARCH_MESSAGE_LLM_MODEL: "openai/gpt-4o-mini"

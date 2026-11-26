@@ -154,14 +154,22 @@ class TestUseConfigFromEnvironment:
         first["model"] = "contaminado"
         assert claude_config.get_product_redactor_llm_config()["model"] == TODAY_MODEL
 
-    def test_env_vars_yaml_declares_todays_model_for_every_use(self):
+    def test_env_vars_yaml_declares_the_decided_model_for_every_use(self):
         # env-vars.yaml es la fuente de verdad de las variables planas en produccion.
+        # Paso 2 (26/11/2026): SOLO la reformulacion KB cambia a GPT-4.1-mini (decision del DCT,
+        # seccion 7.13); el redactor y la busqueda visual siguen con el modelo de antes.
+        # El valor por defecto del codigo (TODAY_MODEL) no cambia: si la variable faltara, el
+        # log lo diria con model_source=default.
         import pathlib
         import yaml
         repo_root = pathlib.Path(__file__).resolve().parents[2]
         env = yaml.safe_load((repo_root / "env-vars.yaml").read_text(encoding="utf-8"))
-        for name in USE_ENV_VARS:
-            assert env.get(name) == TODAY_MODEL, name
+        expected = {
+            "KB_REFORMULATION_LLM_MODEL": "openai/gpt-4.1-mini",
+            "PRODUCT_REDACTOR_LLM_MODEL": TODAY_MODEL,
+            "VISUAL_SEARCH_MESSAGE_LLM_MODEL": TODAY_MODEL,
+        }
+        assert {name: env.get(name) for name in USE_ENV_VARS} == expected
 
 
 class TestWarmupModels:
