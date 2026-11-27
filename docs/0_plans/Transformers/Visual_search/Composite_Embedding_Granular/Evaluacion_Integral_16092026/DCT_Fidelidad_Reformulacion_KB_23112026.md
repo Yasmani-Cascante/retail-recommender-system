@@ -75,7 +75,10 @@ Express y Discover; PayPal, Apple Pay, Google Pay; "Compras >$300: Hasta 6 cuota
 | R-29 | **La reformulacion KB depende del cliente de Anthropic aunque responda otro modelo**: si `generate_contextual_answer` no recibe ni obtiene un cliente Anthropic, sale con `None` (documento tal cual) **antes** de probar LFM y el modelo principal (`kb_contextualizer.py` L923-935) [V, codigo]. Hoy no ocurre (hay `ANTHROPIC_API_KEY`) [H]; ocurriria si se retira la clave de Anthropic o falla su cliente. El paso 1 no lo cambia y lo hace visible (`document_as_is`) | Baja hoy; Media si se retira Claude (R-11) | Mover la comprobacion al escalon Claude, en un cambio aparte |
 | R-30 | **Una consulta de producto repetida recibe la plantilla y no el texto del redactor**: "Busco un vestido para una boda" dio el 25/11 un texto redactado la primera vez (2.419 ms, "Te recomiendo el Vestido Largo Isi Burdeo...") y, al repetirla con otra sesion, `strategy_used=cached` y la respuesta "Aqui tienes algunas opciones que pueden encajar." (399-489 ms) [V, sondas de produccion]. Es la plantilla `_SOME_PRODUCTS_TEMPLATES` de `localized_messages.py`, que segun su comentario "solo llega al usuario si la personalizacion no lo sobrescribe" [V, codigo]: la ruta de cache no pasa por el redactor [H: falta leer la ruta exacta] | Media para la experiencia (un cliente que repite o reformula igual recibe una frase generica); afecta a R-8(b) y a las sondas del paso 1 (hay que usar consultas nuevas) | Registrado; se estudia con R-8(b) |
 | R-31 | **Una peticion de producto clasificada como pregunta de informacion**: "Necesito una chaqueta para el invierno" (es, mercado CL, sesion nueva) recibio el 25/11 el menu de ayuda "No pudimos clasificar tu pregunta especificamente... Devoluciones y Cambios..." con 0 productos, en 303 ms [V, una sonda en `00346-f5w`]. La causa no esta estudiada [H: alguna regla de intencion informativa reconoce "invierno" o "necesito"]. Afecta a la experiencia de compra, no a la fidelidad | Media (por confirmar con mas consultas) | Registrado; reproducir con el clasificador en el laboratorio antes de decidir |
-| R-32 | **Preguntas de garantia y de cancelacion que no llegan a su documento en produccion**: con las mismas 3 x 2 repeticiones antes y despues del paso 2 [V, sondas 26/11]: "Si la cremallera de un vestido se rompe a los 45 dias, ¿me lo cambian por garantia?" se clasifica `policy_return` y se responde con la politica de devoluciones ("no se menciona garantia"), aunque la tienda tiene pagina de garantia; "The sole of my shoes came off 70 days after I bought them, is it covered by the warranty?" se clasifica `unknown` (menu de ayuda); "I placed my order 5 hours ago, can I cancel it for free?" va a `account_modifications` sin entidades y recibe el documento tal cual. La bateria del laboratorio fijaba el `sub_intent` de cada pregunta, asi que no media el enrutamiento | **Alta** para garantia (el cliente oye que no hay garantia); Media para cancelacion (recibe el documento correcto, sin reformular) | Registrado; estudiar la deteccion de intencion de garantia (es/en) antes del verificador por tienda |
+| R-32 | **Preguntas de garantia y de cancelacion que no llegan a su documento en produccion**: con las mismas 3 x 2 repeticiones antes y despues del paso 2 [V, sondas 26/11]: "Si la cremallera de un vestido se rompe a los 45 dias, ¿me lo cambian por garantia?" se clasifica `policy_return` y se responde con la politica de devoluciones ("no se menciona garantia"), aunque la tienda tiene pagina de garantia; "The sole of my shoes came off 70 days after I bought them, is it covered by the warranty?" se clasifica `unknown` (menu de ayuda); "I placed my order 5 hours ago, can I cancel it for free?" va a `account_modifications` sin entidades y recibe el documento tal cual. La bateria del laboratorio fijaba el `sub_intent` de cada pregunta, asi que no media el enrutamiento | **Alta** para garantia (el cliente oye que no hay garantia); Media para cancelacion (recibe el documento correcto, sin reformular) | Alcance medido el 26/11 (7.16): **69 de 162** preguntas de la bateria no llegan a su documento (garantia 20/24, pedidos 19/24, materiales 12/18); cinco mecanismos, M1-M5 |
+| R-33 | **La carga de MiniLM borra el token de HuggingFace del disco**: `MiniLMIntentClassifier.load()` llama a `HfFolder.delete_token()` para forzar acceso anonimo; pensado para Cloud Run, pero en un equipo de desarrollo o en pruebas borra el token guardado [V, lectura 26/11] | Baja (no afecta a clientes) | Registrado; el simulador de R-32 lo neutraliza |
+| R-34 | **Paginas de la base de conocimiento con contenido de plantilla que contradice a la tienda** [V, Shopify 26/11]: `cancelaciones-y-modificaciones-de-pedidos` dice "cancelacion gratis antes de 1 hora", "modificar hasta 30 minutos", cargo de $2, `pedidos@tutienda.com` y +1 (555) 123-4567, mientras `donde-esta-mi-pedido` dice "antes de 2 horas: gratis" y `orders@ai-shoppings.com`; `preguntas-frecuentes-faq` usa `info@tutienda.com` y +1 (555) 123-4567; `mensaje-de-ayuda-general` (el menu de `unknown`) da WhatsApp +52 55 1234 5678 y `ayuda@tutienda.com`; la politica de privacidad dice "En Tu Tienda". En la bateria llegan a esas paginas 16 preguntas de pedidos (cancelaciones) y 29 (menu) | **Alta**: el cliente recibe plazos contradictorios y contactos que no existen | **Cerrado el 26/11** (7.17): 6 paginas corregidas en es/en/fr y validadas en produccion (6 de 6 sondas) |
+| R-35 | **Las preguntas de cancelacion nunca se reformulan: la puerta de reformulacion no tiene patrones para `account_modifications`** [V, lectura de `kb_contextualizer.py` 26/11]: `has_specific_entities` solo tiene patrones para 7 temas; sin patrones devuelve False y se sirve la pagina entera. "Hice el pedido hace 5 horas, ¿puedo cancelarlo gratis?" recibe toda la pagina de cancelaciones y el cliente debe deducir que ya no es gratis (sondas R-34). En frances se suma R-20 ("annuler" no esta en los patrones de `account_orders`) | Media (la respuesta es correcta pero no contesta a la pregunta concreta) | Registrado; activar la reformulacion aqui expone al error ya medido "5 horas esta dentro de las 2 horas": medir primero en el banco de fidelidad |
 | R-26 | **El servicio de embeddings usa un modelo que Liquid marca como obsoleto**: `LiquidAI/LFM2-ColBERT-350M` (`colbert_retriever.py` L27); sucesor `LFM2.5-ColBERT-350M` [V, liquid.ai/models]. Los pesos se descargan al construir la imagen (Dockerfile L58) y en ejecucion no hay descarga: no afecta al servicio actual [V]. La proxima construccion de la imagen depende de que Hugging Face siga sirviendo los pesos obsoletos [H] | Baja | Registrado. "Retirar el codigo LFM" (R-8) no incluye esta parte: la fase C de ColBERT esta activa (`LFM_COLBERT_ENABLED=true`) |
 
 Observaciones:
@@ -955,6 +958,218 @@ trafico (ver `CloudRun_MinInstances_Architecture_Analysis`).
 
 **Paso 2 desplegado y validado** (pendiente el commit de seguimiento de la prueba).
 
+### 7.16 R-32: enrutamiento de garantia y pedidos (laboratorio, 26/11)
+
+**Pregunta**: por que tres preguntas de las sondas no llegan a su documento (WAR-C1 es a devoluciones, WAR-C3 en a
+`unknown`, ORD-C2 en a `account_modifications`) y cuantas preguntas mas de la bateria estan en el mismo caso.
+
+**Como se mide**: un simulador de enrutado (`r32_enrutado.py`) ejecuta el detector hibrido de produccion (mismo
+codigo, mismos `.pkl`, mismas variables: `ML_CONFIDENCE_THRESHOLD=0.8`, `INTENT_CONFIDENCE_THRESHOLD=0.7`,
+`MINILM_BACKEND=torch`) sobre las 54 preguntas x es/en/fr y aplica la misma decision de umbral que
+`mcp_conversation_handler.py`. Guarda lo que dijo cada capa aunque no se use (puntuacion de cada sub_intent en la
+capa 1, intent y confianza de la capa 2, las 3 etiquetas MiniLM mas cercanas). Sin produccion ni LLM. Los 5
+ficheros del detector y los 2 `.pkl` del laboratorio tienen el mismo hash que el repo en `cf9882e` [V].
+El laboratorio no puede descargar MiniLM (HuggingFace bloqueado), asi que aqui corren las capas 1 y 2; la
+ejecucion completa se hace en el `venv` local (mismas versiones que `requirements.cloudrun.txt` [V]).
+
+**Recordatorio del flujo** (lectura de `intent_detection.py` y `hybrid_detector.py`) [V]:
+1. Capa 1 (reglas): cada sub_intent suma 0,4 por palabra clave, +0,3 si hay palabra de pregunta, +0,2 por
+   contexto negativo. Gana la puntuacion **estrictamente** mayor: en un empate gana el sub_intent declarado
+   antes (`policy_return` esta antes que `policy_warranty`). Solo es informacional con 0,7 o mas.
+2. Si la confianza de la capa 1 es **menor** que 0,8, capa 2 (sklearn, solo informacional/transaccional). Con 0,8
+   exactos la capa 1 decide sola.
+3. GUARD: si la capa 1 dijo transaccional con un patron real (p. ej. "comprar", "take", "get") y la capa 2 dice
+   informacional, se mantiene transaccional. Solo hay excepcion para necesito/quiero/need/want.
+4. Si la capa 2 cambia a informacional, el sub_intent pasa a `unknown` y se consulta MiniLM; su etiqueta se usa
+   si el coseno es 0,50 o mas.
+
+**Resultado de las capas 1 y 2** [V, laboratorio]: 68 de las 162 consultas no pasan por MiniLM (su ruta es
+definitiva); 57 aciertan y **11 fallan**. Las otras 94 (51 fr, 24 es, 19 en) dependen de MiniLM: pendiente de la
+ejecucion local.
+
+| Consulta | Va a | Mecanismo |
+|---|---|---|
+| WAR-C1 es "...se rompe a los 45 dias, ¿me lo cambian por garantia?" | devoluciones | M1: `garantia` es palabra clave de `policy_return` y `dias` tambien: 0,8 frente a 0,4 de garantia. 0,8 = umbral, decide la capa 1 |
+| WAR-C3 es y WAR-A3 es "...se despego a los 70/40 dias..., ¿lo cubre la garantia?" | devoluciones | M1 (igual) |
+| WAR-A2 en "How long is the warranty on shoes...?" | devoluciones | M1 + empate 0,7 / 0,7: gana el declarado antes |
+| WAR-A1 es "Se me descosio una costura a la semana de comprar..., ¿lo cubre la garantia?" | **productos** | M2: empate 0,4/0,4 (no informacional); "comprar" activa transaccional y el GUARD ignora a la capa 2 (informacional 0,76) |
+| RET-A2b en "Does processing a return take 5-7 business days?" | **productos** | M2: "take" |
+| ORD-B2 en "Do I get a discount coupon if my order was lost?" | **productos** | M2: "get" |
+| ORD-B1 es/en "Mi pedido llego danado, ¿me mandan uno nuevo gratis?" | envios | M3: `pedido`/`order` son palabras clave de envios y de pedidos; "mandan"/"send" suman a envios |
+| CAR-A2 en "At what temperature should I wash cotton clothes?" | materiales | M3: "cotton" + "what" (0,7) frente a "wash" sin palabra de pregunta (0,4) |
+| CAR-C1 fr "Puis-je laver mon jean a 60°C...?" | productos | Sin reglas en frances; la capa 2 dice transaccional (0,63) |
+
+Mecanismos:
+- **M1 - palabras clave de garantia dentro de devoluciones**: `policy_return` incluye `garantia|warranty` y
+  `dias|plazo|tiempo`. Cualquier pregunta de garantia que mencione un plazo puntua mas en devoluciones.
+- **M2 - verbos de compra comunes que bloquean a la capa 2**: "comprar", "take", "get" aparecen en preguntas de
+  politica ("a la semana de comprar", "take 5-7 days", "do I get a coupon") y el GUARD impide que la capa 2 las
+  corrija. El resultado es peor que un documento equivocado: el cliente recibe productos.
+- **M3 - palabras compartidas entre sub_intents** (pedido/order, cotton+what): el sub_intent con mas
+  coincidencias gana aunque la pregunta sea de otro.
+
+**Ejecucion completa en el equipo local (26/11, 16:33)** [V]: mismas versiones que produccion, los 7 hashes
+coinciden, capa 3 cargada en 8,4 s. **Control: 9 de 9 consultas de las sondas de produccion coinciden** (sub_intent y
+metodo), incluidas 3 resueltas por MiniLM (ORD-C2 en, SIZ-C1 fr, RET-C2b es). Las capas 1 y 2 dan exactamente lo mismo
+en el laboratorio que en el equipo local (162 de 162).
+
+Que recibe el cliente en las 162 consultas (la ruta se traduce en contenido leyendo las paginas de Shopify, 26/11):
+
+| Resultado | Consultas | es | en | fr |
+|---|---|---|---|---|
+| Documento correcto | **93** | 33 | 32 | 28 |
+| Menu de ayuda (`unknown`, pagina `mensaje-de-ayuda-general`) | 29 | 5 | 9 | 15 |
+| Pagina `cancelaciones-y-modificaciones-de-pedidos` (contradice a la correcta, ver R-34) | 16 | 6 | 5 | 5 |
+| Otro documento de la tienda | 19 | 9 | 5 | 5 |
+| Productos (busqueda de catalogo) | 5 | 1 | 3 | 1 |
+
+Por tema: pagos 21/21 y tallas 18/18 correctos; envios 10/18; devoluciones 16/21; cuidados 13/18;
+**materiales 6/18; pedidos 5/24; garantia 4/24**.
+
+Por capa que decidio:
+
+| Metodo | Correcto | Fallo | Fallos |
+|---|---|---|---|
+| Capa 1 (reglas) | 37 | 8 | M1, M2, M3 (tabla anterior): 5 a otro documento, 3 a productos |
+| Capa 2 (sklearn) | 20 | 33 | **29 al menu de ayuda**: la capa 2 dice "informacional" sin tema y MiniLM no llega a 0,50 (coseno 0,26-0,48); 2 a otro documento; 2 a productos |
+| Capa 3 (MiniLM) | 36 | 28 | 16 a la pagina de cancelaciones, 12 a otro documento |
+
+**M4 - MiniLM por debajo de su umbral**: en las 29 consultas del menu, la etiqueta mas cercana de MiniLM es la
+correcta en 15 y equivocada en 14 (p. ej. MAT-B2 a pagos). Bajar `MINILM_MIN_CONFIDENCE` cambiaria la mitad de los menus
+por un documento equivocado. Ademas no bastaria con la variable: el handler exige 0,5 a `miniml_semantic`, asi que una
+etiqueta con 0,45 iria a productos (umbral en codigo).
+
+**M5 - la pagina de cancelaciones**: 16 preguntas de pedidos van a `account_modifications`. Para las de cancelar o
+modificar es el tema correcto segun el enum, pero la pagina contradice a la de pedidos (R-34). El fallo es de contenido,
+no de enrutado.
+
+**Arnes de laboratorio con MiniLM grabado** (`simular_con_minilm_inyectado.py`): la prediccion de MiniLM solo depende
+del texto, asi que se sustituye el modelo por las predicciones grabadas en el equipo local (con la misma regla previa
+`_WARRANTY_DEFECTO_RE`). Con el codigo de produccion reproduce el resultado local **162 de 162** [V]. Permite medir
+cambios en reglas, en la capa 2 y en umbrales sin otra ejecucion local; no sirve para cambios en MiniLM.
+
+**Primer experimento (E1, laboratorio)**: quitar `garantia|warranty` de las palabras clave de devoluciones. 93 -> 96:
+WAR-A2 en, WAR-C3 es y WAR-A3 es llegan a garantia; sin regresiones. WAR-C1 es pasa de devoluciones al menu de ayuda:
+garantia solo reconoce "garantia/defecto/reparar" y no "se rompe", "cubre", "me lo cambian". Seguir anadiendo palabras
+de la bateria seria ajustarse a las preguntas de control; antes hace falta un conjunto de preguntas de garantia y pedidos
+que no esten en la bateria.
+
+**Observacion lateral (R-33)**: `MiniLMIntentClassifier.load()` llama a `HfFolder.delete_token()` para forzar el
+acceso anonimo en Cloud Run. Fuera de Cloud Run (equipo de desarrollo, pruebas) borra el token de HuggingFace
+guardado en disco. El simulador lo neutraliza antes de cargar.
+
+### 7.17 R-34: contenido de la tienda corregido en Shopify (26/11)
+
+Decision de Yasmani [Y]: los textos son de prueba (se sustituiran por los de cada cliente), asi que se aplican sin
+revision previa, con las herramientas de Shopify. Sin despliegue: produccion relee Shopify cada 5 minutos.
+
+**Regla de redaccion**: solo datos que ya estan en las paginas de referencia, coherentes entre si
+(`donde-esta-mi-pedido`, `como-devolver-un-producto`, `como-funcionan-los-envios`, `metodos-de-pago`,
+`garantia-y-defectos`, `guia-de-tallas`). Unico dato nuevo: `support@ai-shoppings.com` (contacto general) y
+`privacy@ai-shoppings.com`, en el dominio de la tienda. Un script comprobo que cada cifra de las paginas reescritas
+aparece en alguna pagina de referencia (0 cifras nuevas) [V].
+
+| Pagina (tema KB) | Cambio |
+|---|---|
+| `cancelaciones-y-modificaciones-de-pedidos` (`account_modifications`) | Reescrita: antes de 2 h gratis; despues, consultar disponibilidad; enviado: devolucion. Fuera "1 hora", "30 minutos", cargo de $2, `pedidos@tutienda.com`, +1 (555) 123-4567 |
+| `preguntas-frecuentes-faq` (`general_faq`) | Reescrita como resumen fiel. Corrige envio gratis ($75 -> $50), cuotas ($50 -> $100), reembolso (7-10 -> 5-7 dias), paises; fuera VIP Club, tarjetas regalo, descuento de newsletter y contactos de plantilla |
+| `mensaje-de-ayuda-general` (`unknown`, sin publicar) | Mismo menu de temas, con Pedidos y Garantia; fuera WhatsApp +52 55 1234 5678 y `ayuda@tutienda.com` |
+| `politica-de-privacidad-y-proteccion-de-datos` | "Tu Tienda" -> AI-Shoppings; `privacy@ai-shoppings.com`; telefono de la tienda; fuera la direccion ficticia |
+| `guia-de-cuidado-de-productos`, `guia-de-materiales-y-tejidos` | Solo `info@tutienda.com` -> `support@ai-shoppings.com` |
+
+**Traducciones**: las paginas tienen traduccion en y fr en Shopify, y la sincronizacion las usa (la respuesta inglesa
+de produccion salia de la traduccion) [V, `shopify_kb_client.get_page_translations`]. Cambiar solo el espanol habria
+dejado el ingles y el frances con el contenido viejo. Orden aplicado por pagina, para que la sincronizacion por
+`updated_at` no capture una mezcla: (1) registrar en/fr nuevas, (2) actualizar el espanol (cambia `updated_at`),
+(3) volver a registrar en/fr con el nuevo identificador del espanol (`outdated=false`).
+
+**Verificacion en Shopify** [V, 26/11 16:24 UTC]: las 6 paginas coinciden con los ficheros del laboratorio en los 3
+idiomas (Shopify solo anade saltos de linea entre etiquetas); 0 traducciones cambiadas desfasadas; 0 restos de
+plantilla en las 15 paginas. La guia de tallas en ingles ya estaba marcada como desfasada desde el 27/02; tiene las
+mismas cifras que el espanol, no se toca.
+
+Copia de seguridad previa (cuerpo y traducciones de las 15 paginas) en el laboratorio:
+`pages_backup_26112026.json` (sha256 `70dcbe60...`) y `translations_backup_26112026.json` (`128abbeb...`).
+
+**Sincronizacion en produccion** [V, logs del 26/11 aportados por Yasmani]: una instancia nueva de `00348-lhc` hizo
+la sincronizacion completa a las 16:48:42 UTC: 13 de 13 paginas, cada una en es/en/fr (`page_sync_completed`,
+`languages_synced`), 0 fallos, 10,4 s; el ciclo incremental de las 16:53 no encontro mas cambios. La sincronizacion
+invalida la cache Redis de cada pagina cuyo hash cambio (`_invalidate_cache`, log a nivel DEBUG, no visible).
+
+**Validado en produccion** [V, `r34_sondas_180426.jsonl`, 26/11 17:04 UTC, revision `00348-lhc`]: 6 de 6 PASA
+(0 restos de plantilla; las 4 de pedidos dicen "2 horas"). ORD-C2 es/en y ORD-C3 es reciben la pagina de cancelaciones
+nueva; ORD-C2 fr recibe "donde esta mi pedido" en frances, que da la misma regla; WAR-C3 en/fr reciben el menu nuevo con
+`support@ai-shoppings.com`. Ninguna se reformula (`kb_contextualised=false`): se sirve el documento tal cual, ahora
+coherente. Los "??" de la consola son solo la representacion de los emojis en PowerShell 5.1; el JSONL los guarda bien.
+La primera version del script fallo en la consulta de logs (ver leccion); la segunda encontro 4 ciclos de sincronizacion.
+
+Lo que R-34 no cambia: el enrutado (R-32). WAR-C3 sigue recibiendo el menu en vez de la pagina de garantia, y las
+preguntas de pedidos siguen sin reformularse.
+
+### 7.18 R-32: conjunto de preguntas nuevas, congelado antes de los experimentos (26/11)
+
+Para no ajustar las reglas a la bateria (54 preguntas que ya conocemos), 31 preguntas nuevas x es/en/fr (93 consultas):
+8 de garantia, 8 de pedidos, 6 de materiales y 9 de control (devoluciones, envios, pagos, cuidados, tallas), con los
+temas aceptables de cada una (p. ej. cancelar: `account_modifications` o `account_orders`, que desde R-34 dan la misma
+regla). `r32_holdout_questions.json`, **sha256 `9cf70b6c3c83b93a96d7a87a60f612f1ee225e249e8f991cfb0b8382c3cda4bc`**,
+congelado el 26/11 antes de cualquier cambio de reglas. Parecido maximo con una pregunta de la bateria: 0,76 (dos
+consultas demasiado parecidas se sustituyeron antes de congelar). Limitacion: las escribio quien escribira la
+correccion; se mitiga congelandolas antes y midiendo tambien los controles.
+
+Primera foto con capas 1 y 2 (laboratorio) [V]: de las 31 consultas que no dependen de MiniLM fallan 15, con los mismos
+mecanismos: M1 ("How long is the warranty on jewelry?" -> devoluciones), M2 ("I want to cancel the purchase...", "If my
+purchase is 60 dollars...", "Do I have to pay shipping to return something?" -> productos), M3 ("¿Como se en que estado
+esta mi pedido?" -> envios) y uno nuevo: "¿Que datos necesito para hacer un reclamo de garantia?" -> privacidad ("datos").
+Pendiente: grabar las 93 consultas con MiniLM en el equipo local.
+
+**Opcion estudiada para M4 (Yasmani pregunta si un modelo puede enlazar las consultas con su documento)**: un
+clasificador con LLM como capa de rescate (solo cuando las capas actuales acaban en `unknown` o MiniLM queda bajo su
+umbral) es la candidata para M4. No sustituye la correccion de reglas: en M1 la regla decide sola con 0,8 y el modelo no
+llegaria a consultarse. El laboratorio no alcanza OpenRouter; el experimento se haria en el equipo local.
+
+### 7.19 R-32: correccion de la capa de reglas (laboratorio, 27/11)
+
+Grabacion local de las 93 preguntas nuevas (27/11 02:07, mismas versiones, 7 hashes OK); el arnes la reproduce 93/93
+[V]. **Linea base de las preguntas nuevas: 41/93** (garantia 6/24, pedidos 9/24, materiales 7/18, controles 19/27).
+
+Protocolo: las correcciones se disenan a partir de los mecanismos vistos en la bateria (M1-M3); las preguntas nuevas
+solo miden. Cada variante se mide con el arnes en los dos conjuntos y, ademas, en 14 peticiones de compra formuladas
+como pregunta (`compras_control.py`), que no estan en ninguno de los dos conjuntos y deben seguir yendo a productos.
+
+| Variante | Bateria (162) | Nuevas (93) | Compras que siguen en productos (base 8/14) |
+|---|---|---|---|
+| Linea base (produccion) | 93 | 41 | 8 |
+| C1: quitar `garantia/warranty` de devoluciones | 96 (+3 -0) | 43 (+2 -0) | - |
+| C1+C3: ademas quitar `pedido/order` de envios | 97 (+4 -0) | 49 (+8 -0) | - |
+| + C2a: verbo de compra en pregunta con tema informacional -> "sin patron" | 98 (+5 -0) | 51 (+10 -0) | **6 (rompe 2)** |
+| + C2b: igual, devolviendo el tema de la capa 1 | 100 (+7 -0) | 52 (+11 -0) | **6 (rompe 2)** |
+| **+ C2c: C2b solo para temas de politica o cuenta** | **100 (+7 -0)** | **52 (+11 -0)** | **8 (igual)** |
+
+C2a y C2b rompian "Do you have cotton t-shirts I can buy?" y "Where can I buy leather boots?": las palabras de material
+tambien describen productos. C2c excluye material, cuidado y talla de la regla (criterio de diseno, no ajustado a las
+preguntas nuevas). Las 8/14 compras de la linea base confirman R-31: el codigo actual ya manda 6 de 14 compras a un
+documento; C2c no lo empeora ni lo arregla.
+
+**Cambio propuesto** (`src/api/core/intent_detection.py`, 46 lineas de diff, LF):
+- M1: eliminar `r"\b(garantía|warranty|garantia)\b"` de las palabras clave de POLICY_RETURN.
+- M3: eliminar `pedido|order` de las palabras clave de POLICY_SHIPPING (queda `paquete|package`).
+- M2: en `detect()`, si la consulta es pregunta, la capa 1 encontro un tema de politica o cuenta y lo unico
+  transaccional es PURCHASE_INTENT, se devuelve el tema informacional con su confianza (< 0,7); el hibrido consulta la
+  capa 2 y ya no hay patron que el GUARD proteja. `info_result` se inicializa a `None` antes del paso 2.
+
+**Pruebas** [V]: `tests/unit/test_r32_routing_rules.py` (nuevo, 13 pruebas): 13/13 con el codigo nuevo y 8 fallan con
+el antiguo (cada prueba detecta el cambio). Suite de deteccion (`test_handler_kb_unavailable`,
+`test_hybrid_detector_layer3`, `test_intent_detection_availability` + las nuevas): 56 pasan y 1 falla igual que con el
+codigo de produccion: `test_layer3_not_triggered_when_ml_confident` esta desactualizada (MiniLM v2 consulta la capa 3
+cuando la capa 2 dice informacional sin tema); no se toca en este cambio.
+
+**Lo que queda** (con el cambio): bateria 62 fallos = 30 menu (`unknown`) + 28 MiniLM a otro documento + 4 de la capa 2;
+nuevas 41 fallos = 26 menu + 11 MiniLM + 4 restantes (2 de reglas). La capa de reglas queda casi resuelta; el resto es
+M4, candidato a la capa de rescate con LLM.
+
+**Observacion lateral**: el comentario del GUARD en `hybrid_detector.py` dice que la excepcion de verbos genericos exige
+confianza de la capa 2 >= 0,75, pero el codigo no la comprueba.
+
 ## 8. Lecciones
 
 - **Un respaldo que pasa a principal necesita la evaluacion del principal**: GPT-4o-mini se eligio como respaldo
@@ -1026,3 +1241,12 @@ trafico (ver `CloudRun_MinInstances_Architecture_Analysis`).
   la hora, porque los logs estructurados guardan el texto en `jsonPayload.event`, no en `textPayload` ni
   `jsonPayload.message`. El 16/11 (R-11) ya se habia resuelto asi. Antes de escribir una consulta nueva, buscar
   en los DCT la que ya dio resultado.
+- **En un sistema RAG, el enrutado y el contenido se evaluan juntos**: por sub_intent, las 16 preguntas que iban a
+  cancelaciones parecian casi bien y el menu de ayuda parecia un fallo inofensivo; leyendo el contenido, las dos rutas
+  entregaban plazos o contactos falsos (R-34).
+- **Cambiar una pagina multilingue es cambiar todas sus traducciones**: Shopify guarda cada idioma aparte; corregir
+  solo el idioma principal deja al cliente en ingles y en frances con el texto viejo.
+- **PowerShell 5.1 y filtros de gcloud: "sin espacios, sin comillas" no basta**: un valor con `:` (una hora,
+  `timestamp>=2026-11-26T16:17:00Z`) rompe el filtro ("syntax error ... token ':'"). Para limitar por hora se usa
+  `--freshness` y se filtra en PowerShell. Y `ConvertFrom-Json` difiere entre 5.1 y 7 (enumeracion del array y
+  conversion de fechas): con un bucle explicito el mismo codigo funciona en las dos.
