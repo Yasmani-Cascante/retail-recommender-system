@@ -75,7 +75,7 @@ Express y Discover; PayPal, Apple Pay, Google Pay; "Compras >$300: Hasta 6 cuota
 | R-29 | **La reformulacion KB depende del cliente de Anthropic aunque responda otro modelo**: si `generate_contextual_answer` no recibe ni obtiene un cliente Anthropic, sale con `None` (documento tal cual) **antes** de probar LFM y el modelo principal (`kb_contextualizer.py` L923-935) [V, codigo]. Hoy no ocurre (hay `ANTHROPIC_API_KEY`) [H]; ocurriria si se retira la clave de Anthropic o falla su cliente. El paso 1 no lo cambia y lo hace visible (`document_as_is`) | Baja hoy; Media si se retira Claude (R-11) | Mover la comprobacion al escalon Claude, en un cambio aparte |
 | R-30 | **Una consulta de producto repetida recibe la plantilla y no el texto del redactor**: "Busco un vestido para una boda" dio el 25/11 un texto redactado la primera vez (2.419 ms, "Te recomiendo el Vestido Largo Isi Burdeo...") y, al repetirla con otra sesion, `strategy_used=cached` y la respuesta "Aqui tienes algunas opciones que pueden encajar." (399-489 ms) [V, sondas de produccion]. Es la plantilla `_SOME_PRODUCTS_TEMPLATES` de `localized_messages.py`, que segun su comentario "solo llega al usuario si la personalizacion no lo sobrescribe" [V, codigo]: la ruta de cache no pasa por el redactor [H: falta leer la ruta exacta] | Media para la experiencia (un cliente que repite o reformula igual recibe una frase generica); afecta a R-8(b) y a las sondas del paso 1 (hay que usar consultas nuevas) | Registrado; se estudia con R-8(b) |
 | R-31 | **Una peticion de producto clasificada como pregunta de informacion**: "Necesito una chaqueta para el invierno" (es, mercado CL, sesion nueva) recibio el 25/11 el menu de ayuda "No pudimos clasificar tu pregunta especificamente... Devoluciones y Cambios..." con 0 productos, en 303 ms [V, una sonda en `00346-f5w`]. La causa no esta estudiada [H: alguna regla de intencion informativa reconoce "invierno" o "necesito"]. Afecta a la experiencia de compra, no a la fidelidad | Media (por confirmar con mas consultas) | Registrado; reproducir con el clasificador en el laboratorio antes de decidir |
-| R-32 | **Preguntas de garantia y de cancelacion que no llegan a su documento en produccion**: con las mismas 3 x 2 repeticiones antes y despues del paso 2 [V, sondas 26/11]: "Si la cremallera de un vestido se rompe a los 45 dias, ¿me lo cambian por garantia?" se clasifica `policy_return` y se responde con la politica de devoluciones ("no se menciona garantia"), aunque la tienda tiene pagina de garantia; "The sole of my shoes came off 70 days after I bought them, is it covered by the warranty?" se clasifica `unknown` (menu de ayuda); "I placed my order 5 hours ago, can I cancel it for free?" va a `account_modifications` sin entidades y recibe el documento tal cual. La bateria del laboratorio fijaba el `sub_intent` de cada pregunta, asi que no media el enrutamiento | **Alta** para garantia (el cliente oye que no hay garantia); Media para cancelacion (recibe el documento correcto, sin reformular) | Alcance medido el 26/11 (7.16): **69 de 162** preguntas de la bateria no llegan a su documento (garantia 20/24, pedidos 19/24, materiales 12/18); cinco mecanismos, M1-M5 |
+| R-32 | **Preguntas de garantia y de cancelacion que no llegan a su documento en produccion**: con las mismas 3 x 2 repeticiones antes y despues del paso 2 [V, sondas 26/11]: "Si la cremallera de un vestido se rompe a los 45 dias, ¿me lo cambian por garantia?" se clasifica `policy_return` y se responde con la politica de devoluciones ("no se menciona garantia"), aunque la tienda tiene pagina de garantia; "The sole of my shoes came off 70 days after I bought them, is it covered by the warranty?" se clasifica `unknown` (menu de ayuda); "I placed my order 5 hours ago, can I cancel it for free?" va a `account_modifications` sin entidades y recibe el documento tal cual. La bateria del laboratorio fijaba el `sub_intent` de cada pregunta, asi que no media el enrutamiento | **Alta** para garantia (el cliente oye que no hay garantia); Media para cancelacion (recibe el documento correcto, sin reformular) | Alcance medido el 26/11 (7.16): 69 de 162 no llegan a su documento. **M1-M3 corregidos y validados en produccion el 27/11** (7.20: 9 -> 27 de 28 sondas, 0 empeoran); M5 resuelto por R-34; **pendiente M4** (capa de rescate) |
 | R-33 | **La carga de MiniLM borra el token de HuggingFace del disco**: `MiniLMIntentClassifier.load()` llama a `HfFolder.delete_token()` para forzar acceso anonimo; pensado para Cloud Run, pero en un equipo de desarrollo o en pruebas borra el token guardado [V, lectura 26/11] | Baja (no afecta a clientes) | Registrado; el simulador de R-32 lo neutraliza |
 | R-34 | **Paginas de la base de conocimiento con contenido de plantilla que contradice a la tienda** [V, Shopify 26/11]: `cancelaciones-y-modificaciones-de-pedidos` dice "cancelacion gratis antes de 1 hora", "modificar hasta 30 minutos", cargo de $2, `pedidos@tutienda.com` y +1 (555) 123-4567, mientras `donde-esta-mi-pedido` dice "antes de 2 horas: gratis" y `orders@ai-shoppings.com`; `preguntas-frecuentes-faq` usa `info@tutienda.com` y +1 (555) 123-4567; `mensaje-de-ayuda-general` (el menu de `unknown`) da WhatsApp +52 55 1234 5678 y `ayuda@tutienda.com`; la politica de privacidad dice "En Tu Tienda". En la bateria llegan a esas paginas 16 preguntas de pedidos (cancelaciones) y 29 (menu) | **Alta**: el cliente recibe plazos contradictorios y contactos que no existen | **Cerrado el 26/11** (7.17): 6 paginas corregidas en es/en/fr y validadas en produccion (6 de 6 sondas) |
 | R-35 | **Las preguntas de cancelacion nunca se reformulan: la puerta de reformulacion no tiene patrones para `account_modifications`** [V, lectura de `kb_contextualizer.py` 26/11]: `has_specific_entities` solo tiene patrones para 7 temas; sin patrones devuelve False y se sirve la pagina entera. "Hice el pedido hace 5 horas, ¿puedo cancelarlo gratis?" recibe toda la pagina de cancelaciones y el cliente debe deducir que ya no es gratis (sondas R-34). En frances se suma R-20 ("annuler" no esta en los patrones de `account_orders`) | Media (la respuesta es correcta pero no contesta a la pregunta concreta) | Registrado; activar la reformulacion aqui expone al error ya medido "5 horas esta dentro de las 2 horas": medir primero en el banco de fidelidad |
@@ -1170,6 +1170,38 @@ M4, candidato a la capa de rescate con LLM.
 **Observacion lateral**: el comentario del GUARD en `hybrid_detector.py` dice que la excepcion de verbos genericos exige
 confianza de la capa 2 >= 0,75, pero el codigo no la comprueba.
 
+### 7.20 R-32: correccion de reglas validada en produccion (27/11)
+
+Commits `e03e439` (codigo y pruebas) y `36d4653` (DCT). Imagen
+`gcr.io/retail-recommendations-449216/retail-recommender@sha256:c733cbbe406d078fa7619a6a59a7f333ee1bfbb0e43ab1c6e0539abc3a2ac224`,
+revision **`retail-recommender-00349-88s`** (100 % del trafico; vuelta atras: 00348-lhc). Pruebas antes del commit:
+56 en verde y 1 excluida por nombre (`test_layer3_not_triggered_when_ml_confident`, desactualizada desde cf9882e).
+
+Validacion [V, `r32_despliegue_27112026`]:
+
+| Comprobacion | Resultado |
+|---|---|
+| Digest desplegado = construido | Si |
+| Variables de entorno | 52 (11 secretas), sin cambios |
+| KB `policy_warranty` es/en/fr | HTTP 200 |
+| ERROR en la revision nueva | 0 |
+| Sondas "antes" (00348-lhc) como predijo el laboratorio | **28 de 28** (el laboratorio reproduce produccion) |
+| Sondas "despues" (00349-88s) como predijo el laboratorio | **28 de 28** |
+| Ruta correcta | **9 -> 27 de 28** |
+| Sondas que empeoran | **0** (5 controles y 4 compras siguen igual) |
+
+Ejemplos: "Se me descosio una costura a la semana de comprar..., ¿lo cubre la garantia?" pasa de productos a garantia;
+"How long is the warranty on jewelry?" de devoluciones a garantia; "¿Como se en que estado esta mi pedido?" de envios a
+pedidos; "Do I have to pay shipping to return something?" de productos a devoluciones. La que sigue mal es la prevista:
+WAR-C1 es (cremallera a los 45 dias) pasa de devoluciones al menu de ayuda; necesita la capa de rescate (M4).
+
+Latencia: la primera sonda "antes" tardo 104 s (arranque en frio de la revision anterior); las demas, 0,2-3 s en las dos
+revisiones.
+
+**Estado de R-32**: M1, M2 y M3 corregidos y validados. M5 resuelto por R-34. **Pendiente M4** (consultas que acaban en el
+menu o que MiniLM manda al documento equivocado: 26 + 11 de las 93 preguntas nuevas), candidato a la capa de rescate con
+LLM, que se probara en el equipo local.
+
 ## 8. Lecciones
 
 - **Un respaldo que pasa a principal necesita la evaluacion del principal**: GPT-4o-mini se eligio como respaldo
@@ -1250,3 +1282,6 @@ confianza de la capa 2 >= 0,75, pero el codigo no la comprueba.
   `timestamp>=2026-11-26T16:17:00Z`) rompe el filtro ("syntax error ... token ':'"). Para limitar por hora se usa
   `--freshness` y se filtra en PowerShell. Y `ConvertFrom-Json` difiere entre 5.1 y 7 (enumeracion del array y
   conversion de fechas): con un bucle explicito el mismo codigo funciona en las dos.
+- **Predecir las sondas antes de desplegar convierte la validacion en una prueba**: el laboratorio predijo la ruta de las
+  28 sondas antes y despues (28 de 28 en ambas). Una sonda que no coincidiera habria senalado una diferencia entre el
+  laboratorio y produccion antes de dar el cambio por bueno, en vez de descubrirla despues.
