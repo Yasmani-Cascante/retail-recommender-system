@@ -94,7 +94,9 @@ class IntentPatterns:
                 r"\b(devolución|devolucion|devolver|devoluciones|return|returns)\b",
                 r"\b(reembolso|refund|reintegro)\b",
                 r"\b(cambio|cambiar|exchange)\b",
-                r"\b(garantía|warranty|garantia)\b",
+                # R-32 M1 (27/11/2026): eliminado r"\b(garantía|warranty|garantia)\b". Garantia tiene su propio
+                # tema (POLICY_WARRANTY); aqui hacia que "¿...se rompe a los 45 dias, me lo cambian por garantia?"
+                # puntuara 0,8 en devoluciones (garantia + dias) frente a 0,4 en garantia.
                 r"\b(regresar|devuelta|volver)\b",   # LATAM variants
                 r"\b(días|plazo|tiempo)\b",           # Time references
             ],
@@ -121,7 +123,9 @@ class IntentPatterns:
                 r"\b(envíos?|envios?|envía(n|s)?|envia(n|s)?|shipping|deliver(y|s)?|entregas?)\b",
                 r"\b(enviar|mandar|manda|mandan|send|ship)\b",
                 r"\b(domicilio|a\s+casa|home\s+delivery|a\s+mi\s+casa)\b",
-                r"\b(paquete|package|pedido|order)\b",
+                # R-32 M3 (27/11/2026): eliminados "pedido|order" (tema de ACCOUNT_ORDERS). Con ellos,
+                # "¿Como se en que estado esta mi pedido?" empataba con pedidos y ganaba envios por ir antes.
+                r"\b(paquete|package)\b",
                 r"\b(rastreo|tracking|seguimiento)\b",
             ],
             "question_words": [
@@ -612,6 +616,20 @@ class IntentPatterns:
 # INTENT DETECTOR
 # ═══════════════════════════════════════════════════════════════
 
+# R-32 M2 (27/11/2026): temas informacionales cuyas palabras clave NO describen productos.
+# Se usa en detect() (paso 3): un verbo de compra generico dentro de una pregunta sobre uno de estos temas no
+# convierte la consulta en busqueda de productos. Material, cuidado y talla quedan fuera a proposito: sus
+# palabras ("algodon", "cuero", "talla M") tambien describen productos ("Do you have cotton t-shirts I can buy?").
+_POLICY_OR_ACCOUNT_SUB_INTENTS = frozenset({
+    InformationalSubIntent.POLICY_RETURN.value,
+    InformationalSubIntent.POLICY_SHIPPING.value,
+    InformationalSubIntent.POLICY_PAYMENT.value,
+    InformationalSubIntent.POLICY_WARRANTY.value,
+    InformationalSubIntent.ACCOUNT_ORDERS.value,
+    InformationalSubIntent.ACCOUNT_MODIFICATIONS.value,
+})
+
+
 class RuleBasedIntentDetector:
     """
     Rule-based intent detector.
@@ -720,6 +738,7 @@ class RuleBasedIntentDetector:
         # ═══════════════════════════════════════════════════════
 
         is_question = self._is_question(query)
+        info_result = None  # R-32: definido siempre (se consulta tambien en el paso 3)
 
         # ═══════════════════════════════════════════════════════
         # STEP 2: Try informational detection
@@ -742,6 +761,29 @@ class RuleBasedIntentDetector:
         # ═══════════════════════════════════════════════════════
 
         trans_result = self._detect_transactional(query)
+
+        # R-32 M2 (27/11/2026): verbos de compra genericos (comprar/buy/purchase, llevar/take/get, pay) dentro
+        # de una PREGUNTA que ya tiene palabras de un tema de politica o cuenta ("Do I have to pay shipping to
+        # return something?", "...a la semana de comprar un vestido, ¿lo cubre la garantia?"). El verbo no indica
+        # que el cliente quiera productos. Antes, PURCHASE_INTENT ganaba y el GUARD del detector hibrido impedia
+        # que la capa 2 lo corrigiera: el cliente recibia productos en vez de la politica.
+        weak_purchase_in_question = (
+            is_question
+            and info_result is not None
+            and trans_result is not None
+            and trans_result.sub_intent == TransactionalSubIntent.PURCHASE_INTENT.value
+            # Solo temas de POLITICA o CUENTA: sus palabras ("garantia", "envio", "devolver") no describen
+            # productos. Las de material/cuidado/talla si ("camisetas de algodon"): ahi el verbo de compra
+            # puede ser una peticion de productos y se mantiene el comportamiento anterior.
+            and info_result.sub_intent in _POLICY_OR_ACCOUNT_SUB_INTENTS
+        )
+        if weak_purchase_in_question:
+            # Se devuelve el tema informacional de la capa 1 con su confianza (< 0.7, si no habria salido en el
+            # paso 2). Como es < ML_CONFIDENCE_THRESHOLD, el detector hibrido consulta la capa 2, que lo confirma
+            # o lo corrige; ya no hay patron transaccional que el GUARD proteja.
+            self.metrics["informational_detected"] += 1
+            self._update_avg_confidence(info_result.confidence)
+            return info_result
 
         # Lower threshold for transactional (0.5) since single keyword is strong signal
         if trans_result and trans_result.confidence >= 0.5:
