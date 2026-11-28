@@ -79,7 +79,7 @@ Express y Discover; PayPal, Apple Pay, Google Pay; "Compras >$300: Hasta 6 cuota
 | R-33 | **La carga de MiniLM borra el token de HuggingFace del disco**: `MiniLMIntentClassifier.load()` llama a `HfFolder.delete_token()` para forzar acceso anonimo; pensado para Cloud Run, pero en un equipo de desarrollo o en pruebas borra el token guardado [V, lectura 26/11] | Baja (no afecta a clientes) | Registrado; el simulador de R-32 lo neutraliza |
 | R-34 | **Paginas de la base de conocimiento con contenido de plantilla que contradice a la tienda** [V, Shopify 26/11]: `cancelaciones-y-modificaciones-de-pedidos` dice "cancelacion gratis antes de 1 hora", "modificar hasta 30 minutos", cargo de $2, `pedidos@tutienda.com` y +1 (555) 123-4567, mientras `donde-esta-mi-pedido` dice "antes de 2 horas: gratis" y `orders@ai-shoppings.com`; `preguntas-frecuentes-faq` usa `info@tutienda.com` y +1 (555) 123-4567; `mensaje-de-ayuda-general` (el menu de `unknown`) da WhatsApp +52 55 1234 5678 y `ayuda@tutienda.com`; la politica de privacidad dice "En Tu Tienda". En la bateria llegan a esas paginas 16 preguntas de pedidos (cancelaciones) y 29 (menu) | **Alta**: el cliente recibe plazos contradictorios y contactos que no existen | **Cerrado el 26/11** (7.17): 6 paginas corregidas en es/en/fr y validadas en produccion (6 de 6 sondas) |
 | R-35 | **Las preguntas de cancelacion nunca se reformulan: la puerta de reformulacion no tiene patrones para `account_modifications`** [V, lectura de `kb_contextualizer.py` 26/11]: `has_specific_entities` solo tiene patrones para 7 temas; sin patrones devuelve False y se sirve la pagina entera. "Hice el pedido hace 5 horas, ¿puedo cancelarlo gratis?" recibe toda la pagina de cancelaciones y el cliente debe deducir que ya no es gratis (sondas R-34). En frances se suma R-20 ("annuler" no esta en los patrones de `account_orders`) | Media (la respuesta es correcta pero no contesta a la pregunta concreta) | Registrado; activar la reformulacion aqui expone al error ya medido "5 horas esta dentro de las 2 horas": medir primero en el banco de fidelidad |
-| R-36 | **Un mensaje que empieza con un saludo recibe solo el saludo y su pregunta se ignora** [V, laboratorio 27/11, capa de reglas identica a 00349-88s; pendiente sonda de produccion]: `_detect_greeting` se ejecuta antes que todo lo demas y sus patrones aceptan "hola/hey/hi/hello/buenas/buenos dias..." al PRINCIPIO del mensaje aunque siga una pregunta (el comentario del codigo lo declara: "the greeting wins"). "Hola, ¿cuanto cuesta el envio a Madrid?", "Buenas tardes, quiero unos zapatos negros talla 40" y "Hi, can I return a dress I bought last week?" -> GREETING 0,95 -> plantilla de bienvenida, sin respuesta ni productos. Aparecio en los mensajes "de cliente" de M4 ("hola!! a las zapas q compre se les despego la suela...") | **Alta** (empezar con un saludo es habitual en un chat; afecta a preguntas y a compras) | Registrado; la capa de rescate (T1) no lo cubre (la ruta es "saludo", no el menu) |
+| R-36 | **Un mensaje que empieza con un saludo recibe solo el saludo y su pregunta se ignora** [V, laboratorio 27/11, capa de reglas identica a 00349-88s; pendiente sonda de produccion]: `_detect_greeting` se ejecuta antes que todo lo demas y sus patrones aceptan "hola/hey/hi/hello/buenas/buenos dias..." al PRINCIPIO del mensaje aunque siga una pregunta (el comentario del codigo lo declara: "the greeting wins"). "Hola, ¿cuanto cuesta el envio a Madrid?", "Buenas tardes, quiero unos zapatos negros talla 40" y "Hi, can I return a dress I bought last week?" -> GREETING 0,95 -> plantilla de bienvenida, sin respuesta ni productos. Aparecio en los mensajes "de cliente" de M4 ("hola!! a las zapas q compre se les despego la suela...") | **Alta** (empezar con un saludo es habitual en un chat; afecta a preguntas y a compras) | Medido y decidido el 28/11 (7.32): variante A (el saludo solo gana si el mensaje es solo un saludo), 345 -> 356 de 420 sin perdidas; paquete `r36_paquete.zip` listo para desplegar |
 | R-26 | **El servicio de embeddings usa un modelo que Liquid marca como obsoleto**: `LiquidAI/LFM2-ColBERT-350M` (`colbert_retriever.py` L27); sucesor `LFM2.5-ColBERT-350M` [V, liquid.ai/models]. Los pesos se descargan al construir la imagen (Dockerfile L58) y en ejecucion no hay descarga: no afecta al servicio actual [V]. La proxima construccion de la imagen depende de que Hugging Face siga sirviendo los pesos obsoletos [H] | Baja | Registrado. "Retirar el codigo LFM" (R-8) no incluye esta parte: la fase C de ColBERT esta activa (`LFM_COLBERT_ENABLED=true`) |
 
 Observaciones:
@@ -1590,11 +1590,50 @@ Medicion con el arnes (MiniLM grabado) en los seis conjuntos y T1/v3 encima con 
   y X-01 en. Siguen mal: X-01 es ("hola!! a las zapas q compre se les despego la suela...": las reglas ya no lo tratan
   como saludo, pero MiniLM lo lleva al prototipo de saludo, coseno 0,53, por el "hola!!") y G-08 es/en ("como saco
   una mancha de grasa...": tallas y productos con seguridad, no es un problema del saludo).
-- **Variante B**: pendiente de medir. Necesita la prediccion de MiniLM de los 14 textos sin saludo, que el laboratorio
-  no puede calcular: `r36_restos_paquete.zip` (`r36_restos.json`, sha256 `20552b4b...`) la graba en el equipo de
-  Yasmani con el codigo del repo sin cambios.
+- **Variante B: 345 -> 357 de 420 (+12, 0 perdidas)**, con la prediccion de MiniLM de los 14 textos sin saludo grabada
+  en el equipo de Yasmani (`r36_restos_enrutado.jsonl`, 28/11 11:59, 7 hashes OK; codigo del repo sin cambios). Sobre A
+  solo gana G-08 es ("como saco una mancha de grasa..." -> cuidado). X-01 es sigue mal: sin el saludo, MiniLM lo lleva a
+  disponibilidad (coseno 0,57) en vez de garantia.
+- Las predicciones del arnes para los textos sin saludo coinciden con las rutas grabadas en Windows para esos textos.
 
-Pendiente de decidir [Y] con la medicion de B: A (cambio minimo) o B (si gana algo mas sin perder nada).
+**Decision [Y] (28/11): variante A.** B gana 1 consulta de 420 a cambio de tocar tambien `hybrid_detector.py` y de cambiar
+el texto que reciben sklearn y MiniLM en todos los mensajes con saludo; A recoge 11 de las 12 mejoras con un cambio en
+una funcion.
+
+Implementacion de A (lab `/home/claude/lab/r36/code`) [V]: `intent_detection.py` (`_GREETING_WORDS`,
+`_GREETING_ONLY_RE`, `is_greeting_only` y 3 lineas en `_detect_greeting`) y `tests/unit/test_r36_greeting_only.py`
+(64 pruebas: 23 saludos puros siguen siendo saludo; 14 mensajes con saludo y contenido ya no lo son; casos limite).
+Con el codigo anterior, los 14 mensajes con contenido eran saludo (14/14) y los 23 saludos puros tambien (sin
+regresion). Pruebas del area: 159 en verde; `tests/unit` con los mismos 47 fallos previos del entorno del laboratorio.
+Sondas (`sondas_r36.json`, 34): 14 de R-36 (11 deben acertar y 3 se predicen mal: X-01 es -> saludo, G-08 es ->
+tallas, G-08 en -> productos), 12 saludos puros (deben seguir en saludo) y 8 controles de M4. El script de sondas
+reconoce ya el saludo (`primary_intent=greeting` -> `saludo`; fallo de 7.31).
+
+### 7.33 R-32 M4: alerta sobre la capa LLM (diseno, 28/11)
+
+Inventario (solo lectura, 28/11) [V]: un canal de aviso por email ("Yasmani"), 5 politicas de alerta (latencia, errores
+HTTP, servicio caido, sincronizacion KB), ninguna metrica basada en logs.
+
+Decision [Y]: avisar si se abre el corte automatico o si hay 5 fallos en 15 minutos.
+- Metricas basadas en logs: `intent_router_breaker_open` (`jsonPayload.event` contiene
+  `intent_llm_router_breaker state=open`) e `intent_router_failed` (contiene `intent_llm_router route=failed`), del
+  servicio `retail-recommender`. Solo cuentan desde que existen.
+- Politica `[WARNING] Intent router LLM degraded (R-32 M4)`: condicion 1 = suma de aperturas en 5 min > 0; condicion 2
+  = suma de fallos en 15 min > 4; combinador OR; cierre automatico a los 30 min; canal "Yasmani"; la documentacion de
+  la alerta explica que el chat sigue funcionando (los mensajes reciben el menu) y que comprobar.
+- Script `r32m4_alerta_1_crear.ps1` (idempotente; definiciones en ficheros por las comillas de PowerShell 5.1).
+  Independiente del despliegue de R-36: no toca el servicio.
+- Limite: no se puede probar de punta a punta sin provocar fallos reales en produccion; se comprueba que las metricas y
+  la politica existen y estan activas.
+
+### 7.34 R-32: lo que espera a datos reales (28/11)
+
+- **Modo sombra** (clasificar con el LLM en segundo plano todos los mensajes, sin cambiar la respuesta, para medir T5 con
+  trafico real): no tiene sentido mientras la tienda sea de demostracion (solo registraria nuestras sondas). Condicion
+  de arranque: trafico real de clientes. Coste estimado entonces: ~0,2 USD por 1000 mensajes.
+- **Revision de las descripciones del prompt v3**: cuando se sustituyan las paginas de prueba por las del cliente (o se
+  anada un sub_intent), revisar las 11 descripciones de `ROUTER_TOPICS` contra el contenido real y volver a medir antes
+  de cambiarlas (la prueba del hash obliga a ello).
 
 ## 8. Lecciones
 
