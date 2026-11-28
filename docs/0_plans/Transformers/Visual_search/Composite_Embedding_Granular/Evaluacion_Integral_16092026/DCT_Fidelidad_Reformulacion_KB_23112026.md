@@ -79,7 +79,8 @@ Express y Discover; PayPal, Apple Pay, Google Pay; "Compras >$300: Hasta 6 cuota
 | R-33 | **La carga de MiniLM borra el token de HuggingFace del disco**: `MiniLMIntentClassifier.load()` llama a `HfFolder.delete_token()` para forzar acceso anonimo; pensado para Cloud Run, pero en un equipo de desarrollo o en pruebas borra el token guardado [V, lectura 26/11] | Baja (no afecta a clientes) | Registrado; el simulador de R-32 lo neutraliza |
 | R-34 | **Paginas de la base de conocimiento con contenido de plantilla que contradice a la tienda** [V, Shopify 26/11]: `cancelaciones-y-modificaciones-de-pedidos` dice "cancelacion gratis antes de 1 hora", "modificar hasta 30 minutos", cargo de $2, `pedidos@tutienda.com` y +1 (555) 123-4567, mientras `donde-esta-mi-pedido` dice "antes de 2 horas: gratis" y `orders@ai-shoppings.com`; `preguntas-frecuentes-faq` usa `info@tutienda.com` y +1 (555) 123-4567; `mensaje-de-ayuda-general` (el menu de `unknown`) da WhatsApp +52 55 1234 5678 y `ayuda@tutienda.com`; la politica de privacidad dice "En Tu Tienda". En la bateria llegan a esas paginas 16 preguntas de pedidos (cancelaciones) y 29 (menu) | **Alta**: el cliente recibe plazos contradictorios y contactos que no existen | **Cerrado el 26/11** (7.17): 6 paginas corregidas en es/en/fr y validadas en produccion (6 de 6 sondas) |
 | R-35 | **Las preguntas de cancelacion nunca se reformulan: la puerta de reformulacion no tiene patrones para `account_modifications`** [V, lectura de `kb_contextualizer.py` 26/11]: `has_specific_entities` solo tiene patrones para 7 temas; sin patrones devuelve False y se sirve la pagina entera. "Hice el pedido hace 5 horas, ¿puedo cancelarlo gratis?" recibe toda la pagina de cancelaciones y el cliente debe deducir que ya no es gratis (sondas R-34). En frances se suma R-20 ("annuler" no esta en los patrones de `account_orders`) | Media (la respuesta es correcta pero no contesta a la pregunta concreta) | Registrado; activar la reformulacion aqui expone al error ya medido "5 horas esta dentro de las 2 horas": medir primero en el banco de fidelidad |
-| R-36 | **Un mensaje que empieza con un saludo recibe solo el saludo y su pregunta se ignora** [V, laboratorio 27/11, capa de reglas identica a 00349-88s; pendiente sonda de produccion]: `_detect_greeting` se ejecuta antes que todo lo demas y sus patrones aceptan "hola/hey/hi/hello/buenas/buenos dias..." al PRINCIPIO del mensaje aunque siga una pregunta (el comentario del codigo lo declara: "the greeting wins"). "Hola, ¿cuanto cuesta el envio a Madrid?", "Buenas tardes, quiero unos zapatos negros talla 40" y "Hi, can I return a dress I bought last week?" -> GREETING 0,95 -> plantilla de bienvenida, sin respuesta ni productos. Aparecio en los mensajes "de cliente" de M4 ("hola!! a las zapas q compre se les despego la suela...") | **Alta** (empezar con un saludo es habitual en un chat; afecta a preguntas y a compras) | Medido y decidido el 28/11 (7.32): variante A (el saludo solo gana si el mensaje es solo un saludo), 345 -> 356 de 420 sin perdidas; paquete `r36_paquete.zip` listo para desplegar |
+| R-36 | **Un mensaje que empieza con un saludo recibe solo el saludo y su pregunta se ignora** [V, laboratorio 27/11, capa de reglas identica a 00349-88s; pendiente sonda de produccion]: `_detect_greeting` se ejecuta antes que todo lo demas y sus patrones aceptan "hola/hey/hi/hello/buenas/buenos dias..." al PRINCIPIO del mensaje aunque siga una pregunta (el comentario del codigo lo declara: "the greeting wins"). "Hola, ¿cuanto cuesta el envio a Madrid?", "Buenas tardes, quiero unos zapatos negros talla 40" y "Hi, can I return a dress I bought last week?" -> GREETING 0,95 -> plantilla de bienvenida, sin respuesta ni productos. Aparecio en los mensajes "de cliente" de M4 ("hola!! a las zapas q compre se les despego la suela...") | **Alta** (empezar con un saludo es habitual en un chat; afecta a preguntas y a compras) | **Desplegado y validado el 28/11** en `00351-8xn` (7.32, 7.35): el saludo solo gana si el mensaje es solo un saludo; sondas 20 -> 31 de 34, 34/34 como se predijo, 0 empeoran |
+| R-37 | **Preguntas de manchas y cuidado que no llegan a la pagina de cuidado** [V, laboratorio 28/11, 7.35]: en ingles, el patron de compra `\b(take|get)\b` reconoce "get" en "how do i get it out" y la proteccion del detector hibrido impide que sklearn o el LLM lo corrijan (-> productos); en espanol faltan palabras clave de cuidado (mancha, quitar, sacar, desteñir, encoger) y MiniLM decide (-> tallas). En los conjuntos: 3 de 6 consultas de manchas fallan; 26 de 33 preguntas de cuidado aciertan | Media (preguntas de cuidado habituales; el cliente recibe productos o la guia de tallas) | Registrado; opciones a (regla previa de manchas), b (palabras clave + C2c para cuidado) y c ("get"/"take" como verbos genericos) a medir con un conjunto propio congelado |
 | R-26 | **El servicio de embeddings usa un modelo que Liquid marca como obsoleto**: `LiquidAI/LFM2-ColBERT-350M` (`colbert_retriever.py` L27); sucesor `LFM2.5-ColBERT-350M` [V, liquid.ai/models]. Los pesos se descargan al construir la imagen (Dockerfile L58) y en ejecucion no hay descarga: no afecta al servicio actual [V]. La proxima construccion de la imagen depende de que Hugging Face siga sirviendo los pesos obsoletos [H] | Baja | Registrado. "Retirar el codigo LFM" (R-8) no incluye esta parte: la fase C de ColBERT esta activa (`LFM_COLBERT_ENABLED=true`) |
 
 Observaciones:
@@ -1635,6 +1636,46 @@ Decision [Y]: avisar si se abre el corte automatico o si hay 5 fallos en 15 minu
   anada un sub_intent), revisar las 11 descripciones de `ROUTER_TOPICS` contra el contenido real y volver a medir antes
   de cambiarlas (la prueba del hash obliga a ello).
 
+### 7.35 R-36: despliegue y validacion en produccion; alerta creada; R-37 registrado (28/11)
+
+Ejecutado por Yasmani con `r36_paquete.zip` [V, salida de su terminal]:
+- Linea base en `00350-d66` (12:24): 34/34 sondas como predijo el laboratorio, 20 rutas correctas (el script ya
+  reconoce el saludo: G-01 cuenta bien).
+- `r36_1`: HEAD `b426d74`, los 2 ficheros con el hash esperado; **240 pruebas en verde** (1 desactualizada excluida a la
+  vista); commits `1820f19` (codigo) y `2c71072` (DCT).
+- `r36_2`: imagen `2c71072`, digest `sha256:9c951bdd...`, revision **`retail-recommender-00351-8xn`** con el 100 % del
+  trafico; digest desplegado == construido; 57 variables (11 secretas), sin cambios.
+- Sondas despues (13:19) y `r36_3`:
+
+| | Antes (00350-d66) | Despues (00351-8xn) |
+|---|---|---|
+| Ruta correcta (34 sondas) | 20 | **31** |
+| Como predijo el laboratorio | 34 | **34** |
+| Sondas que empeoran | - | **0** |
+| ERROR en la revision nueva | - | 0 |
+| Controles que fallan (12 saludos puros + 8 de M4) | - | 0 |
+| Decisiones de la capa LLM | - | 2 (`topic`, las previstas: X-01 en y G-06 en), 537-685 ms |
+| Corte automatico abierto | - | 0 |
+
+- Los 3 fallos que quedan son los previstos: X-01 es (sigue en saludo por MiniLM) y G-08 es/en (manchas, R-37).
+- Tiempos: los mensajes de R-36 pasan de 300 ms (la plantilla de saludo, inmediata) a 2608 ms de mediana (la respuesta
+  real: pagina de ayuda o busqueda de productos). Saludos puros y controles sin cambio.
+
+Alerta (`r32m4_alerta_1_crear.ps1`) [V]: creadas las metricas `intent_router_breaker_open` e `intent_router_failed` y la
+politica `[WARNING] Intent router LLM degraded (R-32 M4)`, activada y con 1 canal. Los "Created [...]" en rojo son
+salida normal de gcloud por stderr (PowerShell 5.1 la muestra como error), no fallos.
+
+R-37 [V, laboratorio, codigo de 00351-8xn]: de las 6 consultas de manchas de los conjuntos (G-08 y X-05 x 3 idiomas)
+fallan 3: G-08 es (-> tallas), G-08 en y X-05 en (-> productos). Causas: en ingles, "get" encaja con el patron de compra
+`\b(take|get)\b` y la proteccion del detector hibrido (GUARD) mantiene la compra aunque sklearn diga informativo con
+0,88; en espanol, "mancha"/"sacar" no estan entre las palabras clave de cuidado (lavar, limpieza, cuidado, planchar,
+secar) y MiniLM decide. 26 de las 33 preguntas de cuidado de los conjuntos aciertan; las demas van a materiales cuando
+nombran un tejido ("wash cotton clothes", "can silk go in the dryer") o a productos. Con 6 consultas de manchas no hay
+base suficiente: se medira con un conjunto propio (consultas de cuidado y manchas, mas compras de control que las
+mencionen) antes de elegir entre las opciones a, b y c del registro.
+
+Pendiente: `git push` (lo ejecuta Yasmani).
+
 ## 8. Lecciones
 
 - **Un respaldo que pasa a principal necesita la evaluacion del principal**: GPT-4o-mini se eligio como respaldo
@@ -1727,3 +1768,6 @@ Decision [Y]: avisar si se abre el corte automatico o si hay 5 fallos en 15 minu
 - **Los avisos "LF will be replaced by CRLF" de git en Windows**: el repo guarda LF, pero la copia de trabajo puede
   pasar a CRLF la proxima vez que git toque el fichero, y entonces su sha256 cambia aunque el contenido no. Las guardias
   por hash de los scripts deberian comparar el contenido normalizado (`git hash-object`) o aceptar los dos finales.
+- **Una regla que falla puede fallar por razones distintas en cada idioma**: "como saco una mancha" (palabra clave que
+  falta) y "how do i get a stain out" (verbo de compra demasiado amplio) son la misma pregunta con dos causas. Antes de
+  escribir una regla para el sintoma conviene encontrar la causa en cada idioma (R-37).
