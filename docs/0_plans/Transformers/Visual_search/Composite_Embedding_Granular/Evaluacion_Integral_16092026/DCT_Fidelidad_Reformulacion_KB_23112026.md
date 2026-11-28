@@ -75,7 +75,7 @@ Express y Discover; PayPal, Apple Pay, Google Pay; "Compras >$300: Hasta 6 cuota
 | R-29 | **La reformulacion KB depende del cliente de Anthropic aunque responda otro modelo**: si `generate_contextual_answer` no recibe ni obtiene un cliente Anthropic, sale con `None` (documento tal cual) **antes** de probar LFM y el modelo principal (`kb_contextualizer.py` L923-935) [V, codigo]. Hoy no ocurre (hay `ANTHROPIC_API_KEY`) [H]; ocurriria si se retira la clave de Anthropic o falla su cliente. El paso 1 no lo cambia y lo hace visible (`document_as_is`) | Baja hoy; Media si se retira Claude (R-11) | Mover la comprobacion al escalon Claude, en un cambio aparte |
 | R-30 | **Una consulta de producto repetida recibe la plantilla y no el texto del redactor**: "Busco un vestido para una boda" dio el 25/11 un texto redactado la primera vez (2.419 ms, "Te recomiendo el Vestido Largo Isi Burdeo...") y, al repetirla con otra sesion, `strategy_used=cached` y la respuesta "Aqui tienes algunas opciones que pueden encajar." (399-489 ms) [V, sondas de produccion]. Es la plantilla `_SOME_PRODUCTS_TEMPLATES` de `localized_messages.py`, que segun su comentario "solo llega al usuario si la personalizacion no lo sobrescribe" [V, codigo]: la ruta de cache no pasa por el redactor [H: falta leer la ruta exacta] | Media para la experiencia (un cliente que repite o reformula igual recibe una frase generica); afecta a R-8(b) y a las sondas del paso 1 (hay que usar consultas nuevas) | Registrado; se estudia con R-8(b) |
 | R-31 | **Una peticion de producto clasificada como pregunta de informacion**: "Necesito una chaqueta para el invierno" (es, mercado CL, sesion nueva) recibio el 25/11 el menu de ayuda "No pudimos clasificar tu pregunta especificamente... Devoluciones y Cambios..." con 0 productos, en 303 ms [V, una sonda en `00346-f5w`]. La causa no esta estudiada [H: alguna regla de intencion informativa reconoce "invierno" o "necesito"]. Afecta a la experiencia de compra, no a la fidelidad | Media (por confirmar con mas consultas) | Registrado; reproducir con el clasificador en el laboratorio antes de decidir |
-| R-32 | **Preguntas de garantia y de cancelacion que no llegan a su documento en produccion**: con las mismas 3 x 2 repeticiones antes y despues del paso 2 [V, sondas 26/11]: "Si la cremallera de un vestido se rompe a los 45 dias, ¿me lo cambian por garantia?" se clasifica `policy_return` y se responde con la politica de devoluciones ("no se menciona garantia"), aunque la tienda tiene pagina de garantia; "The sole of my shoes came off 70 days after I bought them, is it covered by the warranty?" se clasifica `unknown` (menu de ayuda); "I placed my order 5 hours ago, can I cancel it for free?" va a `account_modifications` sin entidades y recibe el documento tal cual. La bateria del laboratorio fijaba el `sub_intent` de cada pregunta, asi que no media el enrutamiento | **Alta** para garantia (el cliente oye que no hay garantia); Media para cancelacion (recibe el documento correcto, sin reformular) | Alcance medido el 26/11 (7.16): 69 de 162 no llegan a su documento. **M1-M3 corregidos y validados en produccion el 27/11** (7.20: 9 -> 27 de 28 sondas, 0 empeoran); M5 resuelto por R-34; **M4 decidido el 27/11** (7.21-7.27: T1 con prompt v3, gpt-4.1-mini; en implementacion en laboratorio, 7.28) |
+| R-32 | **Preguntas de garantia y de cancelacion que no llegan a su documento en produccion**: con las mismas 3 x 2 repeticiones antes y despues del paso 2 [V, sondas 26/11]: "Si la cremallera de un vestido se rompe a los 45 dias, ¿me lo cambian por garantia?" se clasifica `policy_return` y se responde con la politica de devoluciones ("no se menciona garantia"), aunque la tienda tiene pagina de garantia; "The sole of my shoes came off 70 days after I bought them, is it covered by the warranty?" se clasifica `unknown` (menu de ayuda); "I placed my order 5 hours ago, can I cancel it for free?" va a `account_modifications` sin entidades y recibe el documento tal cual. La bateria del laboratorio fijaba el `sub_intent` de cada pregunta, asi que no media el enrutamiento | **Alta** para garantia (el cliente oye que no hay garantia); Media para cancelacion (recibe el documento correcto, sin reformular) | Alcance medido el 26/11 (7.16): 69 de 162 no llegan a su documento. **M1-M3 corregidos y validados en produccion el 27/11** (7.20: 9 -> 27 de 28 sondas, 0 empeoran); M5 resuelto por R-34; **M4 desplegado y validado el 28/11** en `00350-d66` (T1 con prompt v3, gpt-4.1-mini, corte automatico; 7.21-7.31) |
 | R-33 | **La carga de MiniLM borra el token de HuggingFace del disco**: `MiniLMIntentClassifier.load()` llama a `HfFolder.delete_token()` para forzar acceso anonimo; pensado para Cloud Run, pero en un equipo de desarrollo o en pruebas borra el token guardado [V, lectura 26/11] | Baja (no afecta a clientes) | Registrado; el simulador de R-32 lo neutraliza |
 | R-34 | **Paginas de la base de conocimiento con contenido de plantilla que contradice a la tienda** [V, Shopify 26/11]: `cancelaciones-y-modificaciones-de-pedidos` dice "cancelacion gratis antes de 1 hora", "modificar hasta 30 minutos", cargo de $2, `pedidos@tutienda.com` y +1 (555) 123-4567, mientras `donde-esta-mi-pedido` dice "antes de 2 horas: gratis" y `orders@ai-shoppings.com`; `preguntas-frecuentes-faq` usa `info@tutienda.com` y +1 (555) 123-4567; `mensaje-de-ayuda-general` (el menu de `unknown`) da WhatsApp +52 55 1234 5678 y `ayuda@tutienda.com`; la politica de privacidad dice "En Tu Tienda". En la bateria llegan a esas paginas 16 preguntas de pedidos (cancelaciones) y 29 (menu) | **Alta**: el cliente recibe plazos contradictorios y contactos que no existen | **Cerrado el 26/11** (7.17): 6 paginas corregidas en es/en/fr y validadas en produccion (6 de 6 sondas) |
 | R-35 | **Las preguntas de cancelacion nunca se reformulan: la puerta de reformulacion no tiene patrones para `account_modifications`** [V, lectura de `kb_contextualizer.py` 26/11]: `has_specific_entities` solo tiene patrones para 7 temas; sin patrones devuelve False y se sirve la pagina entera. "Hice el pedido hace 5 horas, ¿puedo cancelarlo gratis?" recibe toda la pagina de cancelaciones y el cliente debe deducir que ya no es gratis (sondas R-34). En frances se suma R-20 ("annuler" no esta en los patrones de `account_orders`) | Media (la respuesta es correcta pero no contesta a la pregunta concreta) | Registrado; activar la reformulacion aqui expone al error ya medido "5 horas esta dentro de las 2 horas": medir primero en el banco de fidelidad |
@@ -1531,6 +1531,71 @@ secretas), `test_r32_llm_intent_router.py` (+13 pruebas: 57). Verificacion [V]: 
 equivalencia con la simulacion intacta (690/840, 0 rutas distintas). El paquete `r32m4_paquete.zip` se rehace
 (hashes nuevos; la validacion espera 57/11 variables y 0 aperturas del corte).
 
+### 7.31 R-32 M4: despliegue y validacion en produccion (28/11)
+
+Ejecutado por Yasmani con `r32m4_paquete_v2.zip` [V, salida de su terminal y JSONL de las sondas]:
+- Linea base en `00349-88s` (01:59): 24 de 25 sondas como predijo el laboratorio.
+- `r32m4_1`: HEAD `2f312e9`, los 8 ficheros con el hash esperado antes y despues de copiar; **151 pruebas en verde**
+  (1 desactualizada excluida a la vista); commits `8402efd` (codigo) y `53b06b2` (DCT).
+- `r32m4_2`: imagen `53b06b2`, digest `sha256:9202aab6...`, revision **`retail-recommender-00350-d66`** con el 100 %
+  del trafico. Digest desplegado == construido. 57 variables (11 secretas), las 5 `INTENT_ROUTER_*` con su valor.
+- Sondas despues (02:23) y `r32m4_3`:
+
+| | Antes (00349-88s) | Despues (00350-d66) |
+|---|---|---|
+| Ruta correcta (25 sondas) | 9 | **24** |
+| Como predijo el laboratorio | 25 | **25** |
+| Sondas que empeoran | - | **0** |
+| ERROR en la revision nueva | - | 0 |
+| Decisiones de la capa en los logs | - | 16 (12 `topic`, 4 `product_search`), una por sonda de rescate |
+| Corte automatico abierto | - | 0 |
+| Controles con la capa actuando | - | 0 |
+
+- Las 16 sondas de rescate acabaron donde predijo el laboratorio: 15 en su pagina o en productos y la prevista como
+  error ("¿Cuanto cobran por reparar un zapato?" -> cuidado, en vez de garantia).
+- El script mostro 24/25 y "DISTINTO" en G-01 ("hola"), pero es un **fallo del script de sondas, no del sistema**: la
+  respuesta fue `primary_intent=greeting` (plantilla de saludo, 254/266 ms) antes y despues; el script solo distinguia
+  `kb:<tema>` y "productos" y clasifico el saludo como productos. Corregido el recuento: 25/25 como se predijo, 9 -> 24
+  rutas correctas.
+- Tiempos: el LLM tardo en produccion mediana 511 ms (437-769) frente a 860 ms medidos desde Windows. Las sondas de
+  rescate pasan de mediana 370 ms (el menu, inmediato e inutil) a 1957 ms: la llamada al LLM mas la respuesta real
+  (pagina de ayuda o busqueda de productos, ~2,8 s). Controles sin cambio (1378 -> 999 ms, ruido).
+- Observacion aparte [H]: la primera sonda de la linea base tardo 111,9 s en `00349-88s` (arranque en frio a las 2 de
+  la madrugada); despues del despliegue la primera tardo 3,8 s. No tiene que ver con M4.
+
+Pendiente: `git push` (lo ejecuta Yasmani); alerta sobre `route=failed` / `state=open`; R-36 (saludo que se traga la
+pregunta); modo sombra para medir T5 con trafico real; revisar las descripciones del prompt cuando lleguen las paginas
+del cliente real (7.29).
+
+### 7.32 R-36: el saludo ya no se traga la pregunta (laboratorio, 28/11)
+
+Problema [V, 7.22-7.27]: el paso 0 de las reglas devuelve GREETING (0,95, sin pasar por ninguna otra capa) para
+cualquier mensaje que EMPIECE por un saludo en es/en. En los seis conjuntos de R-32, 16 de los 20 mensajes que empiezan
+por saludo traen una pregunta o una compra y reciben solo la plantilla ("hola! busco un bolso negro de cuero",
+"buenas, cuanto tarda el envio a mexico?"). La capa LLM (T1) no los ve: no acaban en el menu.
+
+Diseno: el saludo solo gana si el mensaje es SOLO un saludo (`is_greeting_only`: palabras de saludo y cortesia en
+es/en/fr, signos y emojis, hasta 80 caracteres; "hola", "buenas tardes!", "hola, que tal?", "hey 👋", "hi there").
+Si trae algo mas, el mensaje sigue la deteccion normal. Dos variantes:
+- **A**: deteccion normal sobre el mensaje COMPLETO (solo cambia `_detect_greeting`).
+- **B**: ademas se QUITA el saludo del principio antes de las tres capas (`strip_greeting_prefix`, en el detector de
+  reglas y en el hibrido), porque el saludo no aporta tema y confunde a las capas estadisticas.
+
+Medicion con el arnes (MiniLM grabado) en los seis conjuntos y T1/v3 encima con las etiquetas v3 grabadas
+(`/home/claude/lab/r36/medir_r36.py`; la base es el codigo desplegado en `00350-d66`) [V]:
+- Control del arnes con el codigo desplegado: 419/420 rutas iguales a las grabadas en Windows (la diferencia, P-11 en
+  "do you have long dresses in green?", no tiene saludo: sklearn da 0,848 en Windows y menos de 0,6 en el laboratorio,
+  con las mismas versiones; sin explicar). Por eso las variantes se comparan con la base pasada por el MISMO arnes.
+- **Variante A: 345 -> 356 de 420 (+11, 0 perdidas)** en las dos repeticiones. Ganan G-03, G-04, G-05, G-06, G-07 (es/en)
+  y X-01 en. Siguen mal: X-01 es ("hola!! a las zapas q compre se les despego la suela...": las reglas ya no lo tratan
+  como saludo, pero MiniLM lo lleva al prototipo de saludo, coseno 0,53, por el "hola!!") y G-08 es/en ("como saco
+  una mancha de grasa...": tallas y productos con seguridad, no es un problema del saludo).
+- **Variante B**: pendiente de medir. Necesita la prediccion de MiniLM de los 14 textos sin saludo, que el laboratorio
+  no puede calcular: `r36_restos_paquete.zip` (`r36_restos.json`, sha256 `20552b4b...`) la graba en el equipo de
+  Yasmani con el codigo del repo sin cambios.
+
+Pendiente de decidir [Y] con la medicion de B: A (cambio minimo) o B (si gana algo mas sin perder nada).
+
 ## 8. Lecciones
 
 - **Un respaldo que pasa a principal necesita la evaluacion del principal**: GPT-4o-mini se eligio como respaldo
@@ -1617,3 +1682,9 @@ equivalencia con la simulacion intacta (690/840, 0 rutas distintas). El paquete 
 - **Fijar el criterio antes de medir y respetarlo cuando no favorece**: T5 con v3 acertaba el 97 % y T1 el 82 %, pero el
   criterio escrito antes de medir exigia cero perdidas en un conjunto nunca visto, y T5 perdia 3 compras. Si se cambia el
   criterio despues de ver el resultado, la validacion deja de ser una prueba.
+- **Un script de sondas debe saber traducir TODAS las respuestas posibles**: el de M4 heredo del de R-32 (reglas) una
+  traduccion con solo dos rutas (pagina o productos) y marco como fallo un saludo correcto. Al anadir un tipo de sonda
+  nuevo (aqui, el saludo) hay que comprobar que el script sabe reconocer su respuesta.
+- **Los avisos "LF will be replaced by CRLF" de git en Windows**: el repo guarda LF, pero la copia de trabajo puede
+  pasar a CRLF la proxima vez que git toque el fichero, y entonces su sha256 cambia aunque el contenido no. Las guardias
+  por hash de los scripts deberian comparar el contenido normalizado (`git hash-object`) o aceptar los dos finales.
