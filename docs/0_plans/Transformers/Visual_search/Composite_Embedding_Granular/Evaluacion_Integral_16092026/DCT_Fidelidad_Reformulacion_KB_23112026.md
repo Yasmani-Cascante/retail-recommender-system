@@ -75,10 +75,11 @@ Express y Discover; PayPal, Apple Pay, Google Pay; "Compras >$300: Hasta 6 cuota
 | R-29 | **La reformulacion KB depende del cliente de Anthropic aunque responda otro modelo**: si `generate_contextual_answer` no recibe ni obtiene un cliente Anthropic, sale con `None` (documento tal cual) **antes** de probar LFM y el modelo principal (`kb_contextualizer.py` L923-935) [V, codigo]. Hoy no ocurre (hay `ANTHROPIC_API_KEY`) [H]; ocurriria si se retira la clave de Anthropic o falla su cliente. El paso 1 no lo cambia y lo hace visible (`document_as_is`) | Baja hoy; Media si se retira Claude (R-11) | Mover la comprobacion al escalon Claude, en un cambio aparte |
 | R-30 | **Una consulta de producto repetida recibe la plantilla y no el texto del redactor**: "Busco un vestido para una boda" dio el 25/11 un texto redactado la primera vez (2.419 ms, "Te recomiendo el Vestido Largo Isi Burdeo...") y, al repetirla con otra sesion, `strategy_used=cached` y la respuesta "Aqui tienes algunas opciones que pueden encajar." (399-489 ms) [V, sondas de produccion]. Es la plantilla `_SOME_PRODUCTS_TEMPLATES` de `localized_messages.py`, que segun su comentario "solo llega al usuario si la personalizacion no lo sobrescribe" [V, codigo]: la ruta de cache no pasa por el redactor [H: falta leer la ruta exacta] | Media para la experiencia (un cliente que repite o reformula igual recibe una frase generica); afecta a R-8(b) y a las sondas del paso 1 (hay que usar consultas nuevas) | Registrado; se estudia con R-8(b) |
 | R-31 | **Una peticion de producto clasificada como pregunta de informacion**: "Necesito una chaqueta para el invierno" (es, mercado CL, sesion nueva) recibio el 25/11 el menu de ayuda "No pudimos clasificar tu pregunta especificamente... Devoluciones y Cambios..." con 0 productos, en 303 ms [V, una sonda en `00346-f5w`]. La causa no esta estudiada [H: alguna regla de intencion informativa reconoce "invierno" o "necesito"]. Afecta a la experiencia de compra, no a la fidelidad | Media (por confirmar con mas consultas) | Registrado; reproducir con el clasificador en el laboratorio antes de decidir |
-| R-32 | **Preguntas de garantia y de cancelacion que no llegan a su documento en produccion**: con las mismas 3 x 2 repeticiones antes y despues del paso 2 [V, sondas 26/11]: "Si la cremallera de un vestido se rompe a los 45 dias, ¿me lo cambian por garantia?" se clasifica `policy_return` y se responde con la politica de devoluciones ("no se menciona garantia"), aunque la tienda tiene pagina de garantia; "The sole of my shoes came off 70 days after I bought them, is it covered by the warranty?" se clasifica `unknown` (menu de ayuda); "I placed my order 5 hours ago, can I cancel it for free?" va a `account_modifications` sin entidades y recibe el documento tal cual. La bateria del laboratorio fijaba el `sub_intent` de cada pregunta, asi que no media el enrutamiento | **Alta** para garantia (el cliente oye que no hay garantia); Media para cancelacion (recibe el documento correcto, sin reformular) | Alcance medido el 26/11 (7.16): 69 de 162 no llegan a su documento. **M1-M3 corregidos y validados en produccion el 27/11** (7.20: 9 -> 27 de 28 sondas, 0 empeoran); M5 resuelto por R-34; **pendiente M4** (capa de rescate) |
+| R-32 | **Preguntas de garantia y de cancelacion que no llegan a su documento en produccion**: con las mismas 3 x 2 repeticiones antes y despues del paso 2 [V, sondas 26/11]: "Si la cremallera de un vestido se rompe a los 45 dias, ¿me lo cambian por garantia?" se clasifica `policy_return` y se responde con la politica de devoluciones ("no se menciona garantia"), aunque la tienda tiene pagina de garantia; "The sole of my shoes came off 70 days after I bought them, is it covered by the warranty?" se clasifica `unknown` (menu de ayuda); "I placed my order 5 hours ago, can I cancel it for free?" va a `account_modifications` sin entidades y recibe el documento tal cual. La bateria del laboratorio fijaba el `sub_intent` de cada pregunta, asi que no media el enrutamiento | **Alta** para garantia (el cliente oye que no hay garantia); Media para cancelacion (recibe el documento correcto, sin reformular) | Alcance medido el 26/11 (7.16): 69 de 162 no llegan a su documento. **M1-M3 corregidos y validados en produccion el 27/11** (7.20: 9 -> 27 de 28 sondas, 0 empeoran); M5 resuelto por R-34; **M4 decidido el 27/11** (7.21-7.27: T1 con prompt v3, gpt-4.1-mini; en implementacion en laboratorio, 7.28) |
 | R-33 | **La carga de MiniLM borra el token de HuggingFace del disco**: `MiniLMIntentClassifier.load()` llama a `HfFolder.delete_token()` para forzar acceso anonimo; pensado para Cloud Run, pero en un equipo de desarrollo o en pruebas borra el token guardado [V, lectura 26/11] | Baja (no afecta a clientes) | Registrado; el simulador de R-32 lo neutraliza |
 | R-34 | **Paginas de la base de conocimiento con contenido de plantilla que contradice a la tienda** [V, Shopify 26/11]: `cancelaciones-y-modificaciones-de-pedidos` dice "cancelacion gratis antes de 1 hora", "modificar hasta 30 minutos", cargo de $2, `pedidos@tutienda.com` y +1 (555) 123-4567, mientras `donde-esta-mi-pedido` dice "antes de 2 horas: gratis" y `orders@ai-shoppings.com`; `preguntas-frecuentes-faq` usa `info@tutienda.com` y +1 (555) 123-4567; `mensaje-de-ayuda-general` (el menu de `unknown`) da WhatsApp +52 55 1234 5678 y `ayuda@tutienda.com`; la politica de privacidad dice "En Tu Tienda". En la bateria llegan a esas paginas 16 preguntas de pedidos (cancelaciones) y 29 (menu) | **Alta**: el cliente recibe plazos contradictorios y contactos que no existen | **Cerrado el 26/11** (7.17): 6 paginas corregidas en es/en/fr y validadas en produccion (6 de 6 sondas) |
 | R-35 | **Las preguntas de cancelacion nunca se reformulan: la puerta de reformulacion no tiene patrones para `account_modifications`** [V, lectura de `kb_contextualizer.py` 26/11]: `has_specific_entities` solo tiene patrones para 7 temas; sin patrones devuelve False y se sirve la pagina entera. "Hice el pedido hace 5 horas, ¿puedo cancelarlo gratis?" recibe toda la pagina de cancelaciones y el cliente debe deducir que ya no es gratis (sondas R-34). En frances se suma R-20 ("annuler" no esta en los patrones de `account_orders`) | Media (la respuesta es correcta pero no contesta a la pregunta concreta) | Registrado; activar la reformulacion aqui expone al error ya medido "5 horas esta dentro de las 2 horas": medir primero en el banco de fidelidad |
+| R-36 | **Un mensaje que empieza con un saludo recibe solo el saludo y su pregunta se ignora** [V, laboratorio 27/11, capa de reglas identica a 00349-88s; pendiente sonda de produccion]: `_detect_greeting` se ejecuta antes que todo lo demas y sus patrones aceptan "hola/hey/hi/hello/buenas/buenos dias..." al PRINCIPIO del mensaje aunque siga una pregunta (el comentario del codigo lo declara: "the greeting wins"). "Hola, ¿cuanto cuesta el envio a Madrid?", "Buenas tardes, quiero unos zapatos negros talla 40" y "Hi, can I return a dress I bought last week?" -> GREETING 0,95 -> plantilla de bienvenida, sin respuesta ni productos. Aparecio en los mensajes "de cliente" de M4 ("hola!! a las zapas q compre se les despego la suela...") | **Alta** (empezar con un saludo es habitual en un chat; afecta a preguntas y a compras) | Registrado; la capa de rescate (T1) no lo cubre (la ruta es "saludo", no el menu) |
 | R-26 | **El servicio de embeddings usa un modelo que Liquid marca como obsoleto**: `LiquidAI/LFM2-ColBERT-350M` (`colbert_retriever.py` L27); sucesor `LFM2.5-ColBERT-350M` [V, liquid.ai/models]. Los pesos se descargan al construir la imagen (Dockerfile L58) y en ejecucion no hay descarga: no afecta al servicio actual [V]. La proxima construccion de la imagen depende de que Hugging Face siga sirviendo los pesos obsoletos [H] | Baja | Registrado. "Retirar el codigo LFM" (R-8) no incluye esta parte: la fase C de ColBERT esta activa (`LFM_COLBERT_ENABLED=true`) |
 
 Observaciones:
@@ -1202,6 +1203,334 @@ revisiones.
 menu o que MiniLM manda al documento equivocado: 26 + 11 de las 93 preguntas nuevas), candidato a la capa de rescate con
 LLM, que se probara en el equipo local.
 
+### 7.21 R-32 M4: experimento de clasificacion del tema con LLM (diseno, 27/11)
+
+Decision de Yasmani [Y]: comparar gpt-4.1-mini y gpt-4o-mini. `r32_m4_llm.py` (equipo local, OpenRouter): cada consulta de
+la bateria y de las preguntas nuevas (255) se clasifica con los dos modelos, 2 repeticiones, temperatura 0, `max_tokens`
+12. El prompt (sha256 `691a4aab...`) lista los 11 temas con pagina propia (una linea que resume el CONTENIDO de cada
+pagina, no las preguntas), `product_search` (quiere comprar) y `none`. `general_faq` queda fuera: resume todos los temas
+y atraeria cualquier pregunta dudosa. Respuestas que no son una etiqueta, o que nombran dos, cuentan como `invalid`.
+
+Analisis (`analisis_m4.py`, laboratorio): simula la capa de rescate sobre el enrutado de 00349-88s (grabado con el arnes,
+validado 28/28 en produccion), con cuatro disparadores: T1 solo lo que acaba en el menu; T2 T1 + lo que MiniLM manda a un
+documento; T3 todo lo que va a un documento y no decidio la capa de reglas; T4 siempre (techo). T1-T3 nunca tocan una
+consulta que hoy va a productos: las 14 compras de control no estan en el experimento y no se podria medir si se rompen.
+Por cada modelo y disparador: aciertos, ganancias y perdidas frente a hoy, llamadas al LLM (latencia que se anade), coste y
+estabilidad entre repeticiones.
+
+**Resultados** [V, `r32_m4_llm.jsonl`, 1.020 llamadas el 27/11 14:08-14:10, 0 errores, 0 respuestas invalidas]. Bateria con el
+criterio de R-34 para las 5 preguntas de cancelar (ORD-A1, A3, C1, C2, C3: se acepta tambien la pagina de cancelaciones,
+igual que en las preguntas nuevas); sin ese criterio, 15 de los 19 "fallos" de gpt-4.1-mini eran justo eso.
+
+| | gpt-4.1-mini | gpt-4o-mini |
+|---|---|---|
+| Latencia p50 / p95 | 852 / 1.239 ms | 684 / 875 ms |
+| Coste por 1.000 llamadas | 0,18 USD | 0,07 USD |
+| Misma etiqueta en las 2 repeticiones | 254/255 | 254/255 |
+| LLM solo, bateria (hoy 113/162) | **158** | 148 |
+| LLM solo, preguntas nuevas (hoy 52/93) | **93** | 91 |
+| T1 bateria / nuevas (llamadas 19 % / 28 %) | **142 (+29 -0) / 78 (+26 -0)** | 139 (+26 -0) / 77 (+25 -0) |
+| T2 bateria / nuevas (llamadas 60 % / 69 %) | 155 (+44 -2) / 89 (+37 -0) | 147 (+37 -3) / 88 (+36 -0) |
+| T3 bateria / nuevas (llamadas 77 % / 88 %) | 156 (+45 -2) / 90 (+38 -0) | 148 (+38 -3) / 89 (+37 -0) |
+
+Las 2 perdidas de gpt-4.1-mini (T2/T3) son ORD-B1 en/fr, "Mi pedido llego danado, ¿me mandan uno nuevo gratis?", enviada
+a garantia. La pagina de garantia responde mejor que la de pedidos ("te enviamos una etiqueta de devolucion GRATIS...
+enviamos el reemplazo"; la de pedidos solo dice "contacta a orders@"): caso ambiguo, no se cambia la bateria.
+
+**Limitacion**: las dos baterias las escribio un LLM (lenguaje claro y bien formado); el 93/93 es optimista para mensajes
+reales de clientes (erratas, jerga, varias preguntas en una). Antes de producir conviene un conjunto escrito por Yasmani.
+
+**Lectura**: T1 con gpt-4.1-mini rescata las consultas que hoy reciben el menu (+29 / +26) sin perder ninguna y solo anade
+latencia (p50 0,85 s) al 19-28 % de las consultas; coste despreciable (~0,05 USD por 1.000 consultas). T2 gana +15 / +11
+mas pero hace pagar la latencia al 60-70 % y empieza a cambiar decisiones defendibles.
+
+### 7.22 R-32 M4: mensajes "de cliente" y disparador T5 (27/11)
+
+Decision de Yasmani [Y]: gpt-4.1-mini + T1; los mensajes "de cliente" los escribe Claude. 9 mensajes x es/en/fr
+(`r32_mensajes_cliente.json`, sha256 `bd608540...`, congelado antes de clasificar): erratas, sin tildes, abreviaturas,
+jerga, temas sin su palabra clave y una busqueda de productos. Enrutado grabado con el detector completo y el codigo de
+`2f312e9` (= 00349-88s) y clasificacion con gpt-4.1-mini (2 repeticiones, 0 errores, 27/27 estables, 0,01 USD) [V].
+
+| | Hoy | T1 | LLM solo |
+|---|---|---|---|
+| Mensajes "de cliente" (27) | 14 | 18 (+4 -0) | **27** |
+
+En estos mensajes el sistema actual falla casi siempre **con seguridad**, no en el menu: "dress is too small, can I send it
+back?" -> productos; "spilled red wine on my white shirt..." -> productos (capa de reglas); "mi pedio no llega y ya pasaron
+como 10 dias" -> envios; "me quedo chico el vestido, lo puedo mandar de vuelta?" -> tallas; y los dos que empiezan con
+saludo -> saludo (R-36). T1 solo actua sobre el menu y no ve ninguno de esos.
+
+**T5** (simulado): se mantiene lo que la capa de reglas decide con confianza >= 0,8 (salvo saludo); el LLM decide el resto,
+incluido lo que hoy va a productos o a saludo:
+
+| Conjunto | Hoy | T1 | T5 | Llamadas LLM con T5 |
+|---|---|---|---|---|
+| Bateria (162, criterio de cancelar) | 113 | 142 (+29 -0) | 158 (+47 -2) | 78 % |
+| Preguntas nuevas (93) | 52 | 78 (+26 -0) | 93 (+41 -0) | 91 % |
+| Mensajes "de cliente" (27) | 14 | 18 (+4 -0) | 27 (+13 -0) | 93 % |
+
+Las 2 perdidas de T5 son ORD-B1 en/fr (pedido danado -> garantia, caso ambiguo, 7.21). T5 resolveria tambien R-36 en
+estos mensajes. Pero T5 manda al LLM consultas que hoy van a productos, y la seguridad con **peticiones de compra** no esta
+medida (solo X-07 en 3 idiomas, correcto): falta un conjunto de compras y saludos antes de poder elegir T5. Coste de T5:
+~0,85 s mas (p50) en la mayoria de las consultas.
+
+### 7.23 R-32 M4: compras y saludos; T1 frente a T5 en los cuatro conjuntos (27/11)
+
+Decision [Y]: "medir T5 primero". Conjunto de compras y saludos escrito por Claude y congelado antes de clasificar
+(`r32_compras_saludos.json`, sha256 `d8c27ae6...`): 10 compras (P-01..P-10; P-10 "¿cuando vuelven las tallas S?" acepta
+tambien `product_availability`), 2 saludos puros (G-01, G-02 -> saludo), saludo + compra (G-03 -> productos) y saludo +
+pregunta (G-04 -> envios), x es/en/fr = 42. Enrutado grabado en Windows con el codigo de `2f312e9` (7 hashes OK) y
+gpt-4.1-mini con el prompt `691a4aab...` (84 llamadas, 0 errores, p50 891 ms, p95 1175 ms, 0,015 USD; 41/42 estables:
+P-09 es rep 2 dijo `product_sizing`) [V].
+
+| Conjunto | Hoy | T1 | T5 | T5p | Llamadas LLM T1 / T5 |
+|---|---|---|---|---|---|
+| Bateria (162) | 113 | 142 | 158 | 156 | 30 / 126 |
+| Preguntas nuevas (93) | 52 | 78 | 93 | 90 | 26 / 85 |
+| Mensajes "de cliente" (27) | 14 | 18 | 27 | 23 | 4 / 25 |
+| Compras y saludos (42) | 25 | 32 | 34 | 36 | 10 / 42 |
+| **Total (324)** | **204 (63 %)** | **270 (83 %)** | **312 (96 %)** | **305 (94 %)** | **22 % / 86 %** |
+
+T5p = T5 sin tocar lo que hoy va a productos. Repeticion 2: T5 311, el resto igual [V] (`t5/analisis_t5.py`).
+
+Lo que mide el conjunto de compras [V]:
+- Saludos puros: el LLM dice `none` y se quedan en saludo (6/6). El saludo no se rompe con T5.
+- R-36 (el saludo se traga la pregunta): T5 corrige G-03 y G-04 en es/en; T1 no los ve (hoy van a saludo, no al menu).
+- Compras que hoy acaban en el menu (P-06 "busco un vestido para una boda en la playa", P-08 "algo abrigado para
+  la nieve", en los 3 idiomas, y P-04 en): T1 y T5 las mandan a productos.
+- **Lo que el LLM confunde**: "¿tienen X en talla Y?" lo manda a `product_availability` (P-02 "tienen jeans skinny talle
+  28??" y P-05 "¿Tienen chaquetas de cuero en talla M?", en los 3 idiomas), y una compra con condicion de envio
+  ("tenis blancos con envio rapido", es/fr) a `policy_shipping`. La pagina de disponibilidad explica reposiciones y
+  alertas; no dice si hay chaquetas de cuero en M: el cliente queria ver productos.
+- Perdidas de T5 frente a hoy: P-02 es (productos -> disponibilidad) y P-04 fr (productos -> envios), mas ORD-B1 en/fr
+  de la bateria (caso ambiguo, 7.21). T1 no pierde nada en ningun conjunto.
+
+Lectura [H]: T5 acierta 42 consultas mas que T1 en total, pero pasa por el LLM el 86 % de los mensajes, incluidas casi
+todas las compras, que son la mayor parte del trafico real y aqui solo hay 10 (30 consultas). Con 2 compras perdidas de
+30, una tasa parecida en trafico real seria visible. Las dos confusiones son de **definicion de etiquetas** del prompt
+(que es "disponibilidad" y que es "buscar productos"), no de idioma ni de erratas, y se pueden corregir en el prompt y
+volver a medir. Coste de T5: ~0,9 s mas (p50) en el 86 % de los mensajes; 0,18 USD por 1000 mensajes.
+
+Opciones para decidir [Y]:
+- **A. Prompt v2 + nueva medicion** (recomendada): redefinir `product_availability` (reposiciones y alertas de stock,
+  no "¿tienen X en talla Y?") y `product_search` (incluye "¿tienen X...?" y compras con condiciones de talla, color,
+  precio o envio); ampliar el conjunto de compras a ~25 (mas peticiones "¿tienen...?" y con condiciones); medir
+  v1 y v2 en los cuatro conjuntos (~700 llamadas, ~0,15 USD). Si v2 no pierde compras, T5 con v2.
+- **B. T1 ahora** (sin riesgo para compras, 83 %) y R-36 como cambio aparte en la capa de reglas.
+- **C. T5p**: 94 %, protege lo que hoy va a productos, pero renuncia a corregir las preguntas de ayuda que hoy caen en
+  productos (ej. "dress is too small, can I send it back?").
+
+### 7.24 R-32 M4: prompt v2 (diseno, 27/11)
+
+Decision [Y]: opcion A (prompt v2 y medir). v2 (`r32_m4_llm.py --prompt v2`, sha256 del prompt `4b8f3508...`) mantiene
+las mismas etiquetas, el mismo orden y la misma plantilla; solo cambian dos definiciones [V]:
+- `product_availability`: "Stock policy: when sold-out items or sizes are restocked, back-in-stock alerts, how stock is
+  updated. Not for asking whether the store has a kind of product in some size or color (that is product_search)."
+- `product_search`: "...including 'do you have X (in size/color Y)?' and product requests with conditions such as size,
+  color, price, occasion or fast delivery. Not a question about a store policy."
+El prompt v1 sigue dando `691a4aab...` (comprobado), asi que los resultados anteriores siguen valiendo.
+
+Conjunto nuevo congelado antes de clasificar (`r32_compras2.json`, sha256 `19830dbe...`, 15 x es/en/fr = 45):
+P-11..P-20 compras "¿tienen X...?" y con condiciones (entrega rapida, material, lavado, precio); A-01..A-03 preguntas
+reales de disponibilidad (reposiciones, alertas, "esta agotado, ¿vuelve?"), para comprobar que v2 no las manda a
+productos (la bateria no tiene ninguna); G-05 saludo + "¿tienen...?" y G-06 saludo + garantia (R-36).
+Medicion: v2 en los cinco conjuntos y v1 en el conjunto nuevo (gpt-4.1-mini, 2 repeticiones, 828 llamadas, ~0,15 USD).
+Criterio fijado antes de ver resultados: T5 con v2 solo si no pierde compras ni preguntas de disponibilidad frente a hoy
+y supera a T1; si no, opcion B (T1 + R-36 aparte).
+
+### 7.25 R-32 M4: resultados del prompt v2 (27/11)
+
+Ejecucion en Windows [V]: enrutado de hoy de `r32_compras2.json` (7 hashes OK, 45 lineas) y gpt-4.1-mini: v2 en los cinco
+conjuntos (738 llamadas, 0 errores, 1 invalida, p50 861 ms, p95 1121 ms, 0,149 USD) y v1 en el conjunto nuevo (90
+llamadas, 0 errores). Analisis: `v2/analisis_v2.py`.
+
+| Conjunto | Hoy | T1/v1 | T5/v1 | T1/v2 | T5/v2 |
+|---|---|---|---|---|---|
+| Bateria (162) | 113 | 142 | 158 | 141 | 157 |
+| Preguntas nuevas (93) | 52 | 78 | 93 | 78 | 93 |
+| Mensajes "de cliente" (27) | 14 | 18 | 27 | 18 | 27 |
+| Compras 1 (42) | 25 | 32 | 34 | 34 | 39 |
+| Compras 2 (45) | 18 | 24 | 29 | 27 | 43 |
+| **Total (369), rep 1 / rep 2** | 222 (60 %) | 294 / 294 | 341 / 339 | 298 / 300 | **359 / 361 (97 %)** |
+
+Lo que corrige v2 [V]: todas las peticiones "¿tienen X en talla Y?" (P-02, P-05, P-12, P-14, G-05) y "con envio rapido"
+(P-04, P-13) van a productos; las 9 preguntas reales de disponibilidad (A-01..A-03) siguen en disponibilidad en las dos
+repeticiones (hoy acierta 2 de 9). La bateria apenas cambia: WAR-B2 fr rep 1 respondio `product_warranty` (etiqueta que
+no existe; se queda la ruta de hoy) y SHP-B2 (en) fue inestable entre envios y pedidos.
+
+Lo que rompe v2 [V]: **P-09 "¿que me pongo con una falda negra?"** (consejo de conjunto) pasa de productos a
+`product_material` en es/fr (rep 1) y en es (rep 2); en en, `none`. Y P-06 es ("algo para regalarle a mi novia, unos 50
+dolares") alterna `none`/`product_search`. Son compras que hoy aciertan (P-09) y que v1 acertaba.
+
+**Criterio fijado en 7.24**: T5/v2 pierde P-09 es/fr frente a hoy, asi que **no lo cumple** -> opcion B (T1 + R-36 aparte),
+salvo nueva decision [Y].
+
+Variante calculada despues de ver los datos [H, a posteriori]: **T5g** = T5/v2 pero lo que hoy va a productos solo puede
+cambiarlo el LLM hacia politicas o cuenta, nunca hacia un tema de producto (material, cuidado, tallas, disponibilidad).
+353/369 y 354/369 (96 %), sin perder nada frente a hoy salvo ORD-B1 (ambiguo); renuncia a A-03 ("esta agotado, ¿vuelve?",
+que hoy va a productos). Como se diseno mirando estos mismos datos, necesitaria un conjunto nuevo congelado para
+validarse.
+
+### 7.26 R-32 M4: prompt v3, proteccion T5g y conjunto de validacion (diseno, 27/11)
+
+Decision [Y]: una ronda mas, validada con un conjunto nuevo. Orden seguido para que la validacion sea limpia [V]:
+1. Primero se escribio y congelo `r32_compras3.json` (sha256 `e55ebeda...`, 17 x es/en/fr = 51), antes de escribir v3:
+   10 compras (consejos de conjunto, regalos, "¿tienen...?", compras con palabras de material, cuidado, talla o envio),
+   5 preguntas reales de producto que NO deben ir a productos (disponibilidad, material x2, cuidado, tallas) y 2 saludos
+   seguidos de compra o pregunta.
+2. Despues, v3 (`8691b753...`) = v2 + "outfit or styling advice ('what goes with X?', 'what should I wear to...?'), gift
+   ideas" en `product_search`. v1 y v2 siguen dando `691a4aab...` y `4b8f3508...` (comprobado).
+3. Medicion: v3 en los seis conjuntos y v2 en el de validacion (936 llamadas, ~0,19 USD).
+
+Disparadores a comparar: T1, T5 y **T5g** (T5, pero lo que hoy va a productos solo lo puede cambiar el LLM hacia una
+politica o la cuenta; nunca hacia material, cuidado, tallas o disponibilidad).
+
+Criterio fijado antes de medir: se elige la opcion mas simple que (a) no pierda nada frente a hoy en el conjunto de
+validacion, (b) no pierda nada frente a hoy en los otros cinco salvo ORD-B1 (ambiguo, 7.21), en las dos repeticiones, y
+(c) supere a T1. Orden de preferencia: T5/v3, despues T5g/v3, despues T5g/v2. Si ninguna cumple: T1 con el prompt que no
+pierda nada, y R-36 como cambio aparte.
+
+### 7.27 R-32 M4: resultados de v3 y decision por el criterio (27/11)
+
+Ejecucion en Windows [V]: enrutado de hoy del conjunto de validacion (7 hashes OK, 51 lineas); gpt-4.1-mini v3 en los
+seis conjuntos (840 llamadas, 0 errores, 0 invalidas, p50 862 ms, p95 1225 ms, 0,176 USD; 418/420 estables) y v2 en el
+de validacion (102 llamadas, 0 errores). Analisis: `v3/analisis_v3.py` (aplica el criterio de 7.26 tal cual).
+
+| Conjunto (rep 1 / rep 2) | Hoy | T1/v2 | T1/v3 | T5/v3 | T5g/v3 | T5g/v2 |
+|---|---|---|---|---|---|---|
+| Bateria (162) | 113 | 141/142 | 141 | 156 | 155 | 156 |
+| Preguntas nuevas (93) | 52 | 78 | 78 | 92 | 90 | 91 |
+| Mensajes "de cliente" (27) | 14 | 18 | 18 | 27 | 25 | 25 |
+| Compras 1 (42) | 25 | 34/35 | 35 | 42 | 42 | 41/42 |
+| Compras 2 (45) | 18 | 27 | 27 | 43 | 40 | 40 |
+| **Validacion (51)** | 28 | 43/42 | **46** | 47 | 49 | 46/45 |
+| **Total (840, dos rep.)** | 60 % | 81,3 % | **82,1 %** | 96,9 % | 95,5 % | 95,0 % |
+
+Criterio [V]:
+- **T5/v3** no cumple (a): en validacion pierde "looking for a wool coat that isn't itchy" y "i want shirts that don't
+  need ironing" (en; productos -> materiales) y "un bikini que me llegue antes del sabado" (es; productos -> envios).
+- **T5g/v3** y **T5g/v2** no cumplen (a): la proteccion evita las dos de materiales, pero no el bikini (envios es una
+  politica, la proteccion no lo para), en las dos repeticiones.
+- **T1/v2 y T1/v3** no pierden nada en ningun conjunto. T1/v3 es la mejor: 690/840 frente a 683/840.
+
+**Decision por el criterio fijado antes de medir: T1 con el prompt v3**, y R-36 como cambio aparte en la capa de reglas.
+Ganancia sobre hoy en estos conjuntos: de 60 % a 82 %, sin perdidas. En el conjunto de validacion (nunca usado para
+ajustar): de 28/51 a 46/51.
+
+Lo que T1 deja sin resolver (para despues, con datos reales): consultas que hoy van con seguridad al sitio equivocado
+(p. ej. "dress is too small, can I send it back?" -> productos), y los saludos seguidos de una pregunta (R-36). Patron que
+queda abierto para T5: compras con una condicion de entrega ("que me llegue antes del sabado") que el LLM lee como
+pregunta de envios. Tres rondas sinteticas (v1, v2, v3) muestran que cada ajuste del prompt corrige lo que mira y
+descubre un caso nuevo; la siguiente evidencia util es trafico real (modo sombra, ver 7.28 cuando se disene).
+
+### 7.28 R-32 M4: implementacion de T1 con el prompt v3 (laboratorio, 27/11)
+
+Decision [Y]: "vamos con el siguiente paso" (implementar T1/v3, 7.27). Hecho en el laboratorio sobre el codigo de
+`2f312e9` (extraido con `git archive` del repo; el `intent_detection.py` coincide con el desplegado, `24c2a38a...`).
+
+**Donde va la capa** [V, lectura de codigo]: en `mcp_conversation_handler.py`, justo despues de calcular el umbral
+efectivo (`_effective_threshold`) y antes de `if intent_result.confidence >= _effective_threshold:`. Ahi la condicion
+"este mensaje acabaria en el menu de ayuda" es exactamente la del laboratorio (INFORMATIONAL + `unknown` + confianza
+>= umbral, con el umbral de 0,5 o 0,7 que decide el handler). Ponerla en `hybrid_detector.py` habria obligado a
+duplicar la logica del umbral. El menu sale de `knowledge_base_v2.get_answer(InformationalSubIntent.UNKNOWN)`.
+
+**Ficheros** (lab: `m4impl/new`):
+
+| Fichero | Cambio |
+|---|---|
+| `src/api/core/llm_intent_router.py` (nuevo) | Prompt v3 literal (13 etiquetas), `parse_router_label` (igual que el laboratorio), `should_rescue` (disparador T1), `apply_router_decision`, `classify_unknown_route` (llamada con limite de tiempo, nunca lanza), `rescue_if_unknown` (punto de entrada) |
+| `src/api/core/mcp_conversation_handler.py` | 1 llamada: `intent_result = await rescue_if_unknown(intent_result, conversation_query, _effective_threshold)` |
+| `src/api/core/claude_config.py` | `get_intent_router_llm_config()`: uso `intent_router`, variable `INTENT_ROUTER_LLM_MODEL`, 12 tokens, temperatura 0 |
+| `src/api/core/llm_routes.py` | Uso `intent_router` y 4 caminos: `topic`, `product_search`, `no_label`, `failed` |
+| `src/api/core/prometheus_metrics.py` | Solo el comentario (16 series en vez de 12) |
+| `env-vars.yaml` | `INTENT_ROUTER_ENABLED: "true"`, `INTENT_ROUTER_LLM_MODEL: "openai/gpt-4.1-mini"`, `INTENT_ROUTER_TIMEOUT_S: "3"` (41 -> 44 variables planas) |
+| `tests/unit/test_r32_llm_intent_router.py` (nuevo) | 44 pruebas (57 con el corte automatico, 7.30) (prompt = hash medido, lectura de etiquetas, disparador, decisiones, tiempo agotado, errores, metrica, log sin texto del cliente, handler con la capa encendida/apagada/fallando y rama de compra, detenida al entrar para no ejecutar el flujo de productos) |
+| `tests/unit/test_llm_use_config_and_routes.py` | El cuarto uso en las pruebas de configuracion por uso y de `env-vars.yaml` |
+
+Garantias de diseno: con "none", una etiqueta no valida, tiempo agotado (3 s; p95 medido 1,2 s), error o la capa
+apagada, el resultado es el mismo objeto de antes (el menu). `product_search` -> TRANSACTIONAL / `product_search`, la
+misma convencion que usa el detector hibrido cuando el ML cambia la intencion a compra. El texto del cliente no va al
+log (solo su longitud); token fijo `intent_llm_router` para contar decisiones y metrica
+`recommender_llm_route_total{use="intent_router"}`. Interruptor `INTENT_ROUTER_ENABLED` (apagado por defecto en el
+codigo) para desactivarla sin reconstruir la imagen.
+
+Verificacion en el laboratorio [V]:
+- Pruebas: las 44 nuevas + las de configuracion por uso + `test_handler_kb_unavailable.py` + `test_r32_routing_rules.py`:
+  99 en verde. `tests/unit` completo: 880 -> 925 en verde, y **los mismos 47 fallos/errores que el codigo de partida**
+  (entorno del laboratorio sin Redis ni mercados, y la prueba desactualizada de la capa 3; lista identica, `diff` vacio).
+  Las pruebas nuevas no cargan con el codigo anterior (el modulo no existe).
+- **Equivalencia con la medicion** (`m4impl/equiv/equivalencia_t1.py`): las 420 consultas de los seis conjuntos con su
+  resultado de intencion grabado y la etiqueta v3 grabada, pasadas por las funciones del codigo nuevo: 690/840 aciertos,
+  196 llamadas al LLM, **0 rutas distintas de la simulacion T1/v3**. La reconstruccion del resultado grabado reproduce la
+  ruta de hoy en 420/420.
+
+Paquete de despliegue (`r32m4_paquete.zip`): `r32m4_0_sondas.ps1` (antes/despues), `r32m4_1_aplicar_probar_commit.ps1`
+(comprueba HEAD `2f312e9` y el hash de cada fichero antes de copiar; pruebas; commit A codigo y B DCT; el DCT ya esta en el
+repo), `r32m4_2_construir_desplegar.ps1`, `r32m4_3_validar.ps1` (55/11 variables, decisiones `intent_llm_router` en los
+logs por camino y con su tiempo, controles sin la capa, tiempos antes/despues) y `r32m4_vuelta_atras.ps1` (a `00349-88s`;
+alternativa: `INTENT_ROUTER_ENABLED: "false"` sin reconstruir).
+
+Sondas de produccion (`sondas_r32_m4.json`, 25): 16 de rescate (hoy `kb:unknown`; etiqueta v3 estable en las dos
+repeticiones; 15 deben acabar bien y 1, "¿Cuanto cobran por reparar un zapato?", se predice en cuidado, que no es la
+pagina aceptada) y 9 de control que no deben cambiar (4 paginas por reglas, 4 compras, 1 saludo).
+Despliegue: un cambio (codigo + las 3 variables), imagen nueva, base y validacion el mismo dia; vuelta atras a
+`00349-88s`.
+
+### 7.29 R-32 M4: revision antes de desplegar (28/11)
+
+Peticion [Y]: valorar si T1/v3 es optima y solida (rendimiento y mantenimiento) antes de ejecutar el paquete.
+
+Rendimiento [V]: latencia de gpt-4.1-mini en todas las llamadas medidas (2418, desde Windows): p50 860 ms, p95 1190 ms,
+p99 1671 ms, maximo 6956 ms; 5 de 2418 (0,2 %) por encima del limite de 3 s, que en produccion acabarian en el menu.
+Solo pasa por el LLM el ~23 % de los mensajes (los que hoy reciben el menu). Coste ~0,05 USD por 1000 mensajes.
+
+Valoracion [H]: solida como paso incremental (no puede empeorar nada: solo actua donde hoy se entrega el menu, y
+cualquier fallo vuelve al menu), pero no optima en absoluto: deja sin tocar los mensajes que hoy van con seguridad al
+sitio equivocado y los saludos con pregunta (R-36). Riesgos de mantenimiento identificados:
+- **El prompt describe el contenido de las paginas de prueba** ("30 dias", "etiqueta prepagada", "PayPal"...). Cuando
+  las paginas se sustituyan por las del cliente real, esas descripciones pueden dejar de ser ciertas: hay que revisarlas
+  y volver a medir en ese momento. Igual si se anade una pagina (un sub_intent nuevo).
+- **Dependencia externa en el camino de la respuesta**: si OpenRouter cae, cada mensaje rescatado espera 3 s antes del
+  menu. No hay corte automatico tras fallos seguidos (circuit breaker) ni alerta sobre `route=failed`.
+  -> Corte automatico incluido antes de desplegar (decision [Y] del 28/11, 7.30). La alerta queda pendiente.
+- **Cuatro capas de deteccion**: reglas, sklearn, MiniLM y LLM. Con trafico real en modo sombra se podra decidir si
+  alguna sobra, o entrenar un clasificador local con las etiquetas del LLM (sin red en el camino de la respuesta).
+- La evaluacion es con conjuntos sinteticos escritos en el laboratorio (tienda de demostracion sin trafico real).
+
+Modelos de Marqo en Hugging Face (organizacion `Marqo`, 38 modelos): el sistema YA usa `Marqo/marqo-fashionSigLIP`
+desde abril (busqueda visual, F-08, outfit). Su ficha anuncia "Marqo Fashion SigLIP 2" (+78 % de MRR y recall segun
+Marqo), pero no aparece entre los modelos publicados de la organizacion: sin confirmar que haya pesos abiertos [H].
+`marqo-ecommerce-embeddings-L` (652M, 1024 dimensiones, F32) no cabe en el embedding-service de 2 GiB;
+`-B` es generalista y su ficha no se compara con FashionSigLIP. Los modelos de texto (stella_en, gcl-e5, chimera) son
+en ingles y no resuelven el enrutado; `multilingual-e5-small` es una copia del de Microsoft. La torre de texto de
+FashionSigLIP esta marcada como ingles: las consultas en es/fr no deben ir directas a `encode_text`.
+
+### 7.30 R-32 M4: corte automatico (circuit breaker) antes de desplegar (28/11)
+
+Decision [Y]: "vamos a incluir el corte automatico ahora" (riesgo de 7.29: con OpenRouter caido cada mensaje
+rescatado esperaria 3 s). Mismo cambio y mismo despliegue que 7.28; solo crece `llm_intent_router.py`.
+
+Diseno (patron clasico de tres estados, por instancia, en memoria) [V, codigo y pruebas]:
+- **Cerrado**: se llama al LLM; se cuentan los fallos SEGUIDOS. Solo cuentan tiempo agotado y errores; "none" o una
+  etiqueta no valida son respuestas del LLM y reinician el contador.
+- **Abierto**: al llegar a `INTENT_ROUTER_BREAKER_FAILURES` fallos seguidos (3), no se llama al LLM durante
+  `INTENT_ROUTER_BREAKER_COOLDOWN_S` (60 s): el mensaje recibe el menu al instante. Camino nuevo de la metrica
+  `breaker_open` y aviso `intent_llm_router_breaker state=open` (WARNING, para poder contarlo y alertar).
+- **Semiabierto**: pasado el tiempo de espera, UNA llamada de prueba; los mensajes que llegan mientras esta en curso
+  reciben el menu (sin avalancha de esperas). Si responde -> cerrado (`state=closed`); si falla -> abierto otros 60 s.
+- Sin Redis ni locks: todo ocurre en el bucle de asyncio de un proceso; cada instancia de Cloud Run descubre la caida
+  por su cuenta con como mucho 3 esperas.
+
+Coste de una caida de OpenRouter por instancia: 3 mensajes con 3 s de espera, despues menu al instante, y una espera
+de 3 s como mucho por minuto (la llamada de prueba). Sin el corte: 3 s en cada mensaje rescatado.
+
+Ficheros que cambian respecto a 7.28: `llm_intent_router.py` (corte), `llm_routes.py` (camino `breaker_open`),
+`prometheus_metrics.py` (comentario: 17 series), `env-vars.yaml` (+2 variables: 41 -> 46 planas; 57 en total con 11
+secretas), `test_r32_llm_intent_router.py` (+13 pruebas: 57). Verificacion [V]: 112 pruebas del area en verde;
+`tests/unit` 938 en verde con los mismos 47 fallos/errores previos del entorno del laboratorio (`diff` vacio);
+equivalencia con la simulacion intacta (690/840, 0 rutas distintas). El paquete `r32m4_paquete.zip` se rehace
+(hashes nuevos; la validacion espera 57/11 variables y 0 aperturas del corte).
+
 ## 8. Lecciones
 
 - **Un respaldo que pasa a principal necesita la evaluacion del principal**: GPT-4o-mini se eligio como respaldo
@@ -1285,3 +1614,6 @@ LLM, que se probara en el equipo local.
 - **Predecir las sondas antes de desplegar convierte la validacion en una prueba**: el laboratorio predijo la ruta de las
   28 sondas antes y despues (28 de 28 en ambas). Una sonda que no coincidiera habria senalado una diferencia entre el
   laboratorio y produccion antes de dar el cambio por bueno, en vez de descubrirla despues.
+- **Fijar el criterio antes de medir y respetarlo cuando no favorece**: T5 con v3 acertaba el 97 % y T1 el 82 %, pero el
+  criterio escrito antes de medir exigia cero perdidas en un conjunto nunca visto, y T5 perdia 3 compras. Si se cambia el
+  criterio despues de ver el resultado, la validacion deja de ser una prueba.
