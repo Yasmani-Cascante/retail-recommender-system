@@ -141,6 +141,7 @@ LFM_KB_CONFIG = {
 #   get_kb_reformulation_llm_config()       KB_REFORMULATION_LLM_MODEL         300         0.3
 #   get_product_redactor_llm_config()       PRODUCT_REDACTOR_LLM_MODEL         300         0.7
 #   get_visual_search_message_llm_config()  VISUAL_SEARCH_MESSAGE_LLM_MODEL    120         0.7
+#   get_intent_router_llm_config()          INTENT_ROUTER_LLM_MODEL            12          0.0   (R-32 M4, 27/11/2026)
 #
 # Los valores de max_tokens y temperatura son EXACTAMENTE los que cada uso enviaba
 # antes de este cambio (sin cambio de comportamiento). Solo el identificador del
@@ -233,6 +234,28 @@ def get_visual_search_message_llm_config() -> Dict[str, Any]:
         max_tokens=120,    # el valor que enviaba (fijado en visual_search_router.py): una frase
         temperature=0.7,   # el valor que enviaba (dict anterior)
         description='Busqueda visual: una frase que presenta los productos encontrados',
+    )
+
+
+def get_intent_router_llm_config() -> Dict[str, Any]:
+    """
+    Enrutado de intencion con LLM (llm_intent_router.classify_unknown_route, R-32 M4, 27/11/2026).
+
+    Valores medidos en el laboratorio (DCT_Fidelidad_Reformulacion_KB_23112026.md, 7.21-7.27):
+      - temperatura 0: la misma etiqueta para el mismo mensaje (418 de 420 estables entre
+        dos repeticiones);
+      - max_tokens 12: la respuesta es UNA etiqueta (la mas larga, "account_modifications",
+        son unos 4 tokens); el margen cubre comillas o un punto.
+    El modelo sale de INTENT_ROUTER_LLM_MODEL (env-vars.yaml: openai/gpt-4.1-mini, el medido).
+    Sin la variable se usaria el modelo por defecto del codigo y el log lo diria
+    (model_source=default), igual que en los otros usos.
+    """
+    return _build_use_config(
+        use='intent_router',
+        env_var_name='INTENT_ROUTER_LLM_MODEL',
+        max_tokens=12,
+        temperature=0.0,
+        description='Enrutado: elige la pagina de ayuda (o la busqueda de productos) de un mensaje sin tema',
     )
 
 

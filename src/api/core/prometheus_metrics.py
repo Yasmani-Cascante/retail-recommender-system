@@ -207,7 +207,7 @@ for _s in _SYNC_STATUSES:
     kb_sync_operations_total.labels(status=_s)
 
 # recommender_llm_route_total{use, route} — solo las combinaciones validas
-# (12 series). Import local: llm_routes no importa este modulo al cargarse,
+# (17 series: 12 de los tres usos de texto + 5 del enrutado con LLM, R-32 M4). Import local: llm_routes no importa este modulo al cargarse,
 # asi que no hay import circular.
 from src.api.core.llm_routes import LLM_ROUTES_BY_USE as _LLM_ROUTES_BY_USE
 for _use, _routes in _LLM_ROUTES_BY_USE.items():

@@ -32,13 +32,16 @@ from src.api.core.llm_routes import (
     USE_KB_REFORMULATION,
     USE_PRODUCT_REDACTOR,
     USE_VISUAL_SEARCH_MESSAGE,
+    USE_INTENT_ROUTER,
 )
 
-# Variables nuevas del paso 1 (deben coincidir con env-vars.yaml)
+# Variables nuevas del paso 1 (deben coincidir con env-vars.yaml).
+# R-32 M4 (27/11/2026): se anade la del enrutado de intencion con LLM.
 USE_ENV_VARS = (
     "KB_REFORMULATION_LLM_MODEL",
     "PRODUCT_REDACTOR_LLM_MODEL",
     "VISUAL_SEARCH_MESSAGE_LLM_MODEL",
+    "INTENT_ROUTER_LLM_MODEL",
 )
 TODAY_MODEL = "openai/gpt-4o-mini"
 
@@ -104,6 +107,15 @@ class TestUseConfigDefaultsAreTodaysValues:
             ("openrouter", TODAY_MODEL, 120, 0.7)
         assert cfg["use"] == USE_VISUAL_SEARCH_MESSAGE
 
+    def test_intent_router_defaults(self, clean_use_env):
+        # R-32 M4: temperatura 0 y 12 tokens (una etiqueta), los valores medidos en el laboratorio.
+        cfg = claude_config.get_intent_router_llm_config()
+        assert (cfg["provider"], cfg["model"], cfg["max_tokens"], cfg["temperature"]) == \
+            ("openrouter", TODAY_MODEL, 12, 0.0)
+        assert cfg["model_source"] == "default"
+        assert cfg["use"] == USE_INTENT_ROUTER
+        assert cfg["model_env_var"] == "INTENT_ROUTER_LLM_MODEL"
+
     def test_shared_dict_no_longer_exists(self):
         # El dict compartido se retira: si alguien lo vuelve a importar, falla aqui.
         assert not hasattr(claude_config, "GPT4O_MINI_FALLBACK_CONFIG")
@@ -114,6 +126,7 @@ class TestUseConfigDefaultsAreTodaysValues:
             claude_config.get_kb_reformulation_llm_config()["use"],
             claude_config.get_product_redactor_llm_config()["use"],
             claude_config.get_visual_search_message_llm_config()["use"],
+            claude_config.get_intent_router_llm_config()["use"],
         }
         assert uses == set(LLM_ROUTES_BY_USE)
 
@@ -168,6 +181,8 @@ class TestUseConfigFromEnvironment:
             "KB_REFORMULATION_LLM_MODEL": "openai/gpt-4.1-mini",
             "PRODUCT_REDACTOR_LLM_MODEL": TODAY_MODEL,
             "VISUAL_SEARCH_MESSAGE_LLM_MODEL": TODAY_MODEL,
+            # R-32 M4 (27/11/2026): el modelo medido para el enrutado (DCT, 7.27)
+            "INTENT_ROUTER_LLM_MODEL": "openai/gpt-4.1-mini",
         }
         assert {name: env.get(name) for name in USE_ENV_VARS} == expected
 

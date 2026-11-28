@@ -16,6 +16,13 @@ Tres usos del sistema generan texto con un LLM y cada uno tiene una cascada de
     product_redactor        lfm -> main_model -> claude                  generic_message ("Te ayudo a encontrar...")
     visual_search_message   lfm -> main_model                            no_message (el frontend usa su plantilla)
 
+R-32 M4 (27/11/2026) anade un cuarto uso que no produce texto sino una DECISION de
+enrutado: intent_router (llm_intent_router.py). Sus "caminos" dicen que decidio:
+topic (una pagina de ayuda), product_search (busqueda de productos), no_label (el
+modelo dijo "none" o algo que no es una etiqueta: se mantiene el menu) y failed
+(tiempo agotado o error: se mantiene el menu) y breaker_open (corte automatico
+abierto tras fallos seguidos: no se llama al LLM y se mantiene el menu, 28/11/2026).
+
 Hasta hoy solo se podia saber que escalon respondio leyendo logs sueltos, con
 nombres distintos en cada fichero. Con LFM apagado y Claude apuntando a un modelo
 retirado (R-11), "main_model" responde el 100 % del trafico, pero nadie lo podia
@@ -52,6 +59,7 @@ logger = logging.getLogger(__name__)
 USE_KB_REFORMULATION = "kb_reformulation"            # kb_contextualizer.generate_contextual_answer
 USE_PRODUCT_REDACTOR = "product_redactor"            # MCPPersonalizationEngine._generate_claude_personalized_response
 USE_VISUAL_SEARCH_MESSAGE = "visual_search_message"  # visual_search_router._generate_visual_search_message
+USE_INTENT_ROUTER = "intent_router"                  # llm_intent_router.classify_unknown_route (R-32 M4)
 
 # ─── Caminos ───────────────────────────────────────────────────────────────────
 ROUTE_LFM = "lfm"                          # modelo Liquid (LFM_KB_ENABLED / LFM_MCP_ENABLED)
@@ -61,6 +69,12 @@ ROUTE_TEMPLATE = "template"                # texto fijo sin LLM (KB: producto ag
 ROUTE_DOCUMENT_AS_IS = "document_as_is"    # KB: ningun LLM respondio; se sirve el documento tal cual
 ROUTE_GENERIC_MESSAGE = "generic_message"  # redactor: ningun LLM respondio; mensaje generico
 ROUTE_NO_MESSAGE = "no_message"            # busqueda visual: ningun LLM respondio; plantilla del frontend
+# Caminos del enrutado con LLM (R-32 M4): que decidio la capa de rescate
+ROUTE_ROUTER_TOPIC = "topic"                    # el LLM eligio una pagina de ayuda
+ROUTE_ROUTER_PRODUCT_SEARCH = "product_search"  # el LLM dijo que es una compra -> busqueda de productos
+ROUTE_ROUTER_NO_LABEL = "no_label"              # "none" o respuesta no valida -> se mantiene el menu
+ROUTE_ROUTER_FAILED = "failed"                  # tiempo agotado o error -> se mantiene el menu
+ROUTE_ROUTER_BREAKER_OPEN = "breaker_open"      # corte automatico abierto: sin llamada -> se mantiene el menu
 
 # Combinaciones validas (uso -> caminos posibles). Es la unica fuente de verdad:
 # prometheus_metrics.py la usa para pre-inicializar las series a 0 y
@@ -74,6 +88,10 @@ LLM_ROUTES_BY_USE: Dict[str, Tuple[str, ...]] = {
     ),
     USE_VISUAL_SEARCH_MESSAGE: (
         ROUTE_LFM, ROUTE_MAIN_MODEL, ROUTE_NO_MESSAGE,
+    ),
+    USE_INTENT_ROUTER: (
+        ROUTE_ROUTER_TOPIC, ROUTE_ROUTER_PRODUCT_SEARCH, ROUTE_ROUTER_NO_LABEL, ROUTE_ROUTER_FAILED,
+        ROUTE_ROUTER_BREAKER_OPEN,
     ),
 }
 

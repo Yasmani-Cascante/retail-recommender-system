@@ -67,6 +67,18 @@ FORCE_GPT4O_MINI_FALLBACK: "false"
 KB_REFORMULATION_LLM_MODEL: "openai/gpt-4.1-mini"
 PRODUCT_REDACTOR_LLM_MODEL: "openai/gpt-4o-mini"
 VISUAL_SEARCH_MESSAGE_LLM_MODEL: "openai/gpt-4o-mini"
+# R-32 M4 (27/11/2026): capa de rescate del enrutado de intencion con LLM (llm_intent_router.py).
+# Solo actua en los mensajes que hoy acaban en el menu de ayuda; elige la pagina que los responde
+# o los manda a la busqueda de productos. Evidencia y criterio: DCT_Fidelidad_Reformulacion_KB_23112026.md,
+# 7.21-7.28 (prompt v3 medido con gpt-4.1-mini: 0 perdidas frente a hoy en 840 consultas).
+# Para apagarla sin reconstruir: INTENT_ROUTER_ENABLED: "false" y desplegar solo la configuracion.
+INTENT_ROUTER_ENABLED: "true"
+INTENT_ROUTER_LLM_MODEL: "openai/gpt-4.1-mini"
+INTENT_ROUTER_TIMEOUT_S: "3"
+# Corte automatico (28/11/2026): tras 3 fallos SEGUIDOS (tiempo agotado o error) deja de llamar al LLM
+# 60 s (menu al instante); luego una llamada de prueba decide si se reanuda. Por instancia.
+INTENT_ROUTER_BREAKER_FAILURES: "3"
+INTENT_ROUTER_BREAKER_COOLDOWN_S: "60"
 GCS_BUCKET_NAME: "retail-recommendations-449216-tfidf-model"
 RECS_VISUAL_POOL_BASE: "100"
 RECS_MAX_ALTERNATIVES: "8"

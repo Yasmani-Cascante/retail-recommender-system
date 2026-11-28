@@ -510,6 +510,22 @@ async def get_mcp_conversation_recommendations(
                     or _is_multilang_informational
                     else settings.intent_confidence_threshold
                 )
+
+                # R-32 M4 (27/11/2026): capa de rescate con LLM para los mensajes que
+                # acabarian en el MENU de ayuda (INFORMATIONAL con sub_intent "unknown" y
+                # confianza suficiente). Un LLM pequeno elige la pagina que los responde o
+                # los manda a la busqueda de productos. En cualquier otro caso (capa apagada,
+                # "none", tiempo agotado, error) devuelve intent_result sin cambios: nunca
+                # peor que antes. No lanza excepciones. Va DESPUES de calcular el umbral
+                # porque la condicion "acabaria en el menu" depende de el.
+                # Medicion y criterio: DCT_Fidelidad_Reformulacion_KB_23112026.md, 7.21-7.28.
+                # Si cambia a TRANSACTIONAL/product_search, la confianza no cambia y el flujo
+                # llega a la rama "TRANSACTIONAL QUERY -> Continue normal flow" de abajo.
+                from src.api.core.llm_intent_router import rescue_if_unknown
+                intent_result = await rescue_if_unknown(
+                    intent_result, conversation_query, _effective_threshold
+                )
+
                 if intent_result.confidence >= _effective_threshold:
                     
                     # INFORMATIONAL QUERY → Return knowledge base answer
