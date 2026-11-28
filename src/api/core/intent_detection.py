@@ -40,8 +40,15 @@ from src.api.core.intent_types import (
 # TRANSACTIONAL fallback — which produces products with no greeting.
 #
 # Confidence assigned: 0.95 (very high — these patterns are unambiguous).
-# If a query matches a greeting AND a transactional/informational pattern,
-# the greeting wins because it is checked first.
+#
+# R-36 (28/11/2026): un saludo al PRINCIPIO de un mensaje que trae algo mas ya
+# no gana. Antes, "hola! busco un bolso negro" o "buenas, cuanto tarda el envio
+# a mexico?" recibian solo la plantilla de saludo: la pregunta se perdia (medido
+# el 27/11: 16 de 20 mensajes que empiezan por saludo en los conjuntos de R-32).
+# Ahora el saludo solo gana si el mensaje es SOLO un saludo (_GREETING_ONLY_RE:
+# palabras de saludo y cortesia, signos y emojis). Si trae algo mas, el mensaje
+# sigue la deteccion normal completa, como si no empezara por un saludo.
+# Evidencia: DCT_Fidelidad_Reformulacion_KB_23112026.md, seccion 7.32.
 
 _GREETING_PATTERNS = [
     # English greetings
@@ -53,6 +60,33 @@ _GREETING_PATTERNS = [
     # Short conversational openers without topic
     re.compile(r"^\s*(hi+!*|hey!*|hola!*|hello!*)\s*$", re.IGNORECASE),
 ]
+
+# R-36: "el mensaje es SOLO un saludo". Una o varias palabras de saludo o cortesia
+# (es/en, y las francesas mas comunes por si llegan aqui), separadas por espacios,
+# signos o emojis ([\W_] = cualquier caracter que no es letra ni digito), y NADA mas.
+#   SI solo saludo:  "hola", "hi!", "buenas tardes!", "hola, que tal?", "hey 👋",
+#                    "good morning, how are you?", "hola a todos", "hi there"
+#   NO solo saludo:  "hola! busco un bolso negro", "hey the sole on my sneakers came off"
+# Se ancla al principio y al final (^...$) y se aplica a mensajes de hasta 80
+# caracteres: un saludo puro es corto, y el limite evita trabajo inutil en mensajes largos.
+_GREETING_WORDS = (
+    r"hola|hi+|hello|hey|howdy|greetings|hiya|yo"
+    r"|good\s*(?:morning|afternoon|evening|day|night)"
+    r"|buen[oa]s(?:\s*(?:d[ií]as|tardes|noches))?|saludos|qu[eé]\s*tal"
+    r"|c[oó]mo\s+(?:est[aá]s?|est[aá]n|va|vas)|todo\s+bien|how\s+are\s+(?:you|u)(?:\s+doing)?"
+    r"|how'?s\s+it\s+going|what'?s\s+up|there|everyone|everybody|all|guys|folks|team"
+    r"|a\s+todos|amig[oa]s?|chic[oa]s|equipo|y|and|tal"
+    r"|bonjour|bonsoir|salut|coucou|[cç]a\s+va"
+)
+_GREETING_ONLY_RE = re.compile(rf"^[\W_]*(?:(?:{_GREETING_WORDS})\b[\W_]*)+$", re.IGNORECASE)
+_GREETING_ONLY_MAX_CHARS = 80
+
+
+def is_greeting_only(query: str) -> bool:
+    """True si el mensaje es solo un saludo (R-36). Ver _GREETING_ONLY_RE."""
+    text = (query or "").strip()
+    return 0 < len(text) <= _GREETING_ONLY_MAX_CHARS and bool(_GREETING_ONLY_RE.match(text))
+
 
 logger = logging.getLogger(__name__)
 
@@ -831,6 +865,11 @@ class RuleBasedIntentDetector:
         query_stripped = query.strip()
         for pattern in _GREETING_PATTERNS:
             if pattern.search(query_stripped):
+                # R-36: empieza por un saludo pero trae algo mas -> NO es un saludo:
+                # el mensaje sigue la deteccion normal (la pregunta no se pierde).
+                if not is_greeting_only(query_stripped):
+                    logger.debug("Greeting prefix with more content: not a greeting (R-36)")
+                    return None
                 return IntentDetectionResult(
                     primary_intent=IntentType.GREETING,
                     sub_intent=None,
